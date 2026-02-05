@@ -1,0 +1,9 @@
+.react-router
+build
+node_modules
+README.md
+dist
+.pnpm-store
+.pnpm-store/
+.pnpm-debug.log
+.env
