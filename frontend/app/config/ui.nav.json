@@ -1,0 +1,113 @@
+{
+    "brand": {
+        "name": "KhataSathi",
+        "logoText": "KS"
+    },
+    "topbar": {
+        "searchPlaceholder": "Search product / invoice / customer..."
+    },
+    "sidebar": {
+        "mainLabel": "MAIN MENU",
+        "items": [
+            {
+                "key": "home",
+                "label": "Home",
+                "pageTitle": "Dashboard",
+                "icon": "home",
+                "to": "/",
+                "roles": [
+                    "admin",
+                    "cashier"
+                ]
+            },
+            {
+                "key": "analytics",
+                "label": "Analytics",
+                "pageTitle": "Analytics",
+                "icon": "analytics",
+                "to": "/analytics",
+                "roles": [
+                    "admin"
+                ]
+            },
+            {
+                "key": "products",
+                "label": "Products",
+                "pageTitle": "Products",
+                "icon": "inventory_2",
+                "to": "/products",
+                "roles": [
+                    "admin"
+                ]
+            },
+            {
+                "key": "discounts",
+                "label": "Discounts",
+                "pageTitle": "Discounts",
+                "icon": "percent",
+                "to": "/discounts",
+                "roles": [
+                    "admin"
+                ]
+            },
+            {
+                "key": "history",
+                "label": "History",
+                "pageTitle": "History",
+                "icon": "history",
+                "to": "/history",
+                "roles": [
+                    "admin",
+                    "cashier"
+                ]
+            },
+            {
+                "key": "alerts",
+                "label": "Alerts",
+                "pageTitle": "Alerts",
+                "icon": "notifications",
+                "to": "/alerts",
+                "roles": [
+                    "admin",
+                    "cashier"
+                ]
+            },
+            {
+                "key": "settings",
+                "label": "Settings",
+                "pageTitle": "Settings",
+                "icon": "settings",
+                "to": "/settings",
+                "roles": [
+                    "admin"
+                ],
+                "section": "bottom"
+            },
+            {
+                "key": "profile",
+                "label": "Profile",
+                "pageTitle": "Profile",
+                "icon": "person",
+                "to": "/profile",
+                "roles": [
+                    "admin",
+                    "cashier"
+                ],
+                "section": "bottom"
+            },
+            {
+                "key": "logout",
+                "label": "Logout",
+                "pageTitle": "Logout",
+                "icon": "logout",
+                "to": "/logout",
+                "roles": [
+                    "admin",
+                    "cashier"
+                ],
+                "danger": true,
+                "section": "bottom"
+            }
+        ]
+    }
+}
