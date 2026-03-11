@@ -1,14 +1,191 @@
-// This is your Prisma schema file,
-// learn more about it in the docs: https://pris.ly/d/prisma-schema
-
-// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
-// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+// KhataSathi — Prisma Schema (MySQL)
 
 generator client {
-  provider = "prisma-client"
-  output   = "../src/generated/prisma"
+  provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── Enums ──────────────────────────────────────────
+
+enum Role {
+  ADMIN
+  CASHIER
+}
+
+enum InvoiceStatus {
+  DRAFT
+  FINALIZED
+}
+
+enum PaymentMethod {
+  CASH
+  ESEWA
+  KHALTI
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+enum PaymentStatusInvoice {
+  UNPAID
+  PARTIALLY_PAID
+  PAID
+}
+
+enum StockTxType {
+  SALE
+  RESTOCK
+  ADJUSTMENT
+}
+
+// ─── Models ─────────────────────────────────────────
+
+model User {
+  id           String   @id @default(cuid())
+  name         String
+  email        String   @unique
+  passwordHash String
+  role         Role     @default(CASHIER)
+  isActive     Boolean  @default(true)
+  createdAt    DateTime @default(now())
+
+  invoices          Invoice[]
+  payments          Payment[]
+  stockTransactions StockTransaction[]
+  auditLogs         AuditLog[]
+}
+
+model LoginAttempt {
+  id        String   @id @default(cuid())
+  email     String
+  success   Boolean
+  ip        String?
+  createdAt DateTime @default(now())
+}
+
+model Brand {
+  id        String   @id @default(cuid())
+  name      String   @unique
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+
+  products Product[]
+}
+
+model Product {
+  id                  String   @id @default(cuid())
+  name                String
+  sku                 String   @unique
+  barcode             String?  @unique
+  brandId             String
+  category            String?
+  retailPrice         Float
+  wholesalePrice      Float
+  wholesaleQtyThreshold Int    @default(1)
+  stock               Int      @default(0)
+  lowStockThreshold   Int      @default(5)
+  isActive            Boolean  @default(true)
+  createdAt           DateTime @default(now())
+  updatedAt           DateTime @updatedAt
+
+  brand             Brand              @relation(fields: [brandId], references: [id])
+  invoiceItems      InvoiceItem[]
+  stockTransactions StockTransaction[]
+
+  @@index([barcode])
+  @@index([sku])
+}
+
+model Customer {
+  id             String   @id @default(cuid())
+  name           String
+  phone          String?  @unique
+  loyaltyPercent Float    @default(0)
+  isActive       Boolean  @default(true)
+  createdAt      DateTime @default(now())
+
+  invoices Invoice[]
+}
+
+model Invoice {
+  id                     String               @id @default(cuid())
+  invoiceNo              String               @unique
+  status                 InvoiceStatus        @default(DRAFT)
+  cashierId              String
+  customerId             String?
+  subTotal               Float                @default(0)
+  loyaltyDiscountPercent Float                @default(0)
+  loyaltyDiscountAmount  Float                @default(0)
+  netTotal               Float                @default(0)
+  paidTotal              Float                @default(0)
+  paymentStatus          PaymentStatusInvoice @default(UNPAID)
+  createdAt              DateTime             @default(now())
+  finalizedAt            DateTime?
+
+  cashier  User       @relation(fields: [cashierId], references: [id])
+  customer Customer?  @relation(fields: [customerId], references: [id])
+  items    InvoiceItem[]
+  payments Payment[]
+  stockTransactions StockTransaction[]
+}
+
+model InvoiceItem {
+  id               String   @id @default(cuid())
+  invoiceId        String
+  productId        String
+  qty              Int
+  appliedUnitPrice Float
+  lineTotal        Float
+  createdAt        DateTime @default(now())
+
+  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  product Product @relation(fields: [productId], references: [id])
+}
+
+model Payment {
+  id          String        @id @default(cuid())
+  invoiceId   String
+  method      PaymentMethod
+  amount      Float
+  status      PaymentStatus @default(PENDING)
+  reference   String?
+  createdById String
+  createdAt   DateTime      @default(now())
+
+  invoice   Invoice @relation(fields: [invoiceId], references: [id])
+  createdBy User    @relation(fields: [createdById], references: [id])
+}
+
+model StockTransaction {
+  id           String     @id @default(cuid())
+  productId    String
+  type         StockTxType
+  qtyDelta     Int
+  reason       String?
+  refInvoiceId String?
+  createdById  String
+  createdAt    DateTime   @default(now())
+
+  product Product  @relation(fields: [productId], references: [id])
+  invoice Invoice? @relation(fields: [refInvoiceId], references: [id])
+  createdBy User   @relation(fields: [createdById], references: [id])
+}
+
+model AuditLog {
+  id         String   @id @default(cuid())
+  actorId    String
+  action     String
+  entityType String
+  entityId   String
+  meta       Json?
+  createdAt  DateTime @default(now())
+
+  actor User @relation(fields: [actorId], references: [id])
 }
