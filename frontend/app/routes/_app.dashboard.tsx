@@ -1,4 +1,3 @@
-// frontend/app/routes/_app.dashboard.tsx
 import React, { useMemo, useState, useEffect } from "react";
 import CardShell from "~/components/ui/CardShell";
 import GIcon from "~/components/ui/GIcon";
@@ -6,6 +5,12 @@ import SectionTitle from "~/components/ui/SectionTitle";
 import DashboardSalesOverview, {
   type RangeKey,
 } from "~/components/blocks/dashboard/DashboardSalesOverview";
+import {
+  salesSummaryApi,
+  listInvoicesApi,
+  getLowStockApi,
+  listProductsApi,
+} from "~/lib/api/endpoints";
 
 type Kpi = {
   iconName: string;
@@ -39,8 +44,6 @@ type AlertRow = {
   icon: string;
   tag: "CRITICAL" | "LOW" | "INFO" | "SYSTEM";
 };
-
-type SalesBars = { today: number[]; week: number[]; month: number[] };
 
 function StatusPill({ status }: { status: "Paid" | "Partial" | "Unpaid" }) {
   const map = {
@@ -119,49 +122,28 @@ function PrimaryButton({
   );
 }
 
-async function safeJson<T>(res: Response): Promise<T | null> {
-  if (!res.ok) return null;
-  try {
-    return (await res.json()) as T;
-  } catch {
-    return null;
-  }
+function formatNpr(n: number) {
+  const s = Math.round(n).toString();
+  const withComma = s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+  return `NPR ${withComma}`;
 }
 
-function apiBase() {
-  return (import.meta as any).env?.VITE_API_URL || "";
+function todayIso() {
+  return new Date().toISOString().slice(0, 10);
 }
 
-function normalizeInvoiceResponse(v: unknown): InvoiceRow[] {
-  if (Array.isArray(v)) return v as InvoiceRow[];
-  if (v && typeof v === "object" && Array.isArray((v as any).items))
-    return (v as any).items as InvoiceRow[];
-  return [];
-}
-
-function normalizeSalesBars(v: unknown): SalesBars {
-  const blank: SalesBars = { today: [], week: [], month: [] };
-  if (!v || typeof v !== "object") return blank;
-
-  const today = Array.isArray((v as any).today) ? (v as any).today : [];
-  const week = Array.isArray((v as any).week) ? (v as any).week : [];
-  const month = Array.isArray((v as any).month) ? (v as any).month : [];
-
-  return { today, week, month };
+function daysAgoIso(days: number) {
+  const d = new Date();
+  d.setDate(d.getDate() - days);
+  return d.toISOString().slice(0, 10);
 }
 
 export default function Dashboard() {
-  const base = apiBase();
-
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
-  const [allBars, setAllBars] = useState<SalesBars>({
-    today: [],
-    week: [],
-    month: [],
-  });
+  const [salesBars] = useState<number[]>([]);
 
   const [range, setRange] = useState<RangeKey>("today");
 
@@ -169,56 +151,130 @@ export default function Dashboard() {
     let cancelled = false;
 
     async function load() {
-      const [k, invRaw, p, a, bRaw] = await Promise.all([
-        fetch(`${base}/api/dashboard/kpis`, {
-          headers: { Accept: "application/json" },
-        }).then((r) => safeJson<Kpi[]>(r)),
-        fetch(`${base}/api/dashboard/recent-invoices?days=7`, {
-          headers: { Accept: "application/json" },
-        }).then((r) => safeJson<unknown>(r)),
-        fetch(`${base}/api/dashboard/payment-summary`, {
-          headers: { Accept: "application/json" },
-        }).then((r) => safeJson<PaymentSummaryRow[]>(r)),
-        fetch(`${base}/api/dashboard/alerts`, {
-          headers: { Accept: "application/json" },
-        }).then((r) => safeJson<AlertRow[]>(r)),
-        fetch(`${base}/api/dashboard/sales-bars`, {
-          headers: { Accept: "application/json" },
-        }).then((r) => safeJson<unknown>(r)),
-      ]);
+      try {
+        const today = todayIso();
+        const weekAgo = daysAgoIso(7);
 
-      if (cancelled) return;
+        const [salesData, invoiceData, lowStockData, productData] =
+          await Promise.allSettled([
+            salesSummaryApi(weekAgo, today),
+            listInvoicesApi({ page: 1, pageSize: 5 }),
+            getLowStockApi(),
+            listProductsApi({ page: 1, pageSize: 1 }),
+          ]);
 
-      if (k) setKpis(k);
+        if (cancelled) return;
 
-      if (invRaw) setInvoices(normalizeInvoiceResponse(invRaw));
-      else setInvoices([]);
+        const builtKpis: Kpi[] = [];
 
-      if (p) setPaymentSummary(p);
-      else setPaymentSummary([]);
+        if (salesData.status === "fulfilled" && salesData.value) {
+          const s = salesData.value;
+          builtKpis.push({
+            iconName: "payments",
+            iconBgClass: "bg-orange-50 text-orange-700",
+            value: formatNpr(s.totalRevenue || 0),
+            label: "Total Sales (7d)",
+            badgeText: `${s.invoiceCount || 0} invoices`,
+            badgeIconName: "receipt_long",
+            badgeClass:
+              "bg-orange-50 text-orange-700 border-orange-100",
+          });
+          builtKpis.push({
+            iconName: "receipt_long",
+            iconBgClass: "bg-sky-50 text-sky-700",
+            value: String(s.invoiceCount || 0),
+            label: "Invoices (7d)",
+          });
+        }
 
-      if (a) setAlerts(a);
-      else setAlerts([]);
+        if (productData.status === "fulfilled" && productData.value) {
+          builtKpis.push({
+            iconName: "inventory_2",
+            iconBgClass: "bg-emerald-50 text-emerald-700",
+            value: String(productData.value.total || 0),
+            label: "Total Products",
+          });
+        }
 
-      if (bRaw) setAllBars(normalizeSalesBars(bRaw));
-      else setAllBars({ today: [], week: [], month: [] });
+        if (lowStockData.status === "fulfilled" && lowStockData.value) {
+          const lowItems = Array.isArray(lowStockData.value) ? lowStockData.value : [];
+          builtKpis.push({
+            iconName: "warning",
+            iconBgClass: "bg-rose-50 text-rose-700",
+            value: String(lowItems.length),
+            label: "Low Stock Items",
+            badgeText: lowItems.length > 0 ? "Action needed" : undefined,
+            badgeIconName: lowItems.length > 0 ? "priority_high" : undefined,
+            badgeClass:
+              lowItems.length > 0
+                ? "bg-rose-50 text-rose-700 border-rose-100"
+                : undefined,
+          });
+
+          const builtAlerts: AlertRow[] = lowItems.slice(0, 5).map(
+            (item: any) => ({
+              title: `Low stock: ${item.name || "Unknown product"}`,
+              time: `${item.stock ?? 0} left (threshold: ${item.lowStockThreshold ?? 0})`,
+              icon: "inventory_2",
+              tag: (item.stock ?? 0) <= 0 ? "CRITICAL" : "LOW",
+            }),
+          );
+          setAlerts(builtAlerts);
+        }
+
+        setKpis(builtKpis);
+
+        if (invoiceData.status === "fulfilled" && invoiceData.value) {
+          const raw = invoiceData.value.invoices || [];
+          const rows: InvoiceRow[] = raw.map((inv: any) => ({
+            invoiceNo: inv.invoiceNo || inv.id,
+            customer: inv.customer?.name || "Walk-in",
+            cashier: inv.user?.name || "—",
+            date: new Date(inv.createdAt).toLocaleDateString(),
+            total: formatNpr(inv.total || 0),
+            status:
+              inv.status === "PAID"
+                ? "Paid"
+                : inv.status === "PARTIAL"
+                  ? "Partial"
+                  : "Unpaid",
+          }));
+          setInvoices(rows);
+        }
+
+        const builtPayment: PaymentSummaryRow[] = [];
+        if (salesData.status === "fulfilled" && salesData.value) {
+          const s = salesData.value;
+          builtPayment.push({
+            label: "Total Revenue",
+            value: formatNpr(s.totalRevenue || 0),
+            icon: "account_balance",
+            iconBg: "bg-emerald-100 text-emerald-700",
+          });
+          builtPayment.push({
+            label: "Total Paid",
+            value: formatNpr(s.totalPaid || 0),
+            icon: "check_circle",
+            iconBg: "bg-sky-100 text-sky-700",
+          });
+          builtPayment.push({
+            label: "Outstanding",
+            value: formatNpr((s.totalRevenue || 0) - (s.totalPaid || 0)),
+            icon: "pending",
+            iconBg: "bg-orange-100 text-orange-700",
+          });
+        }
+        setPaymentSummary(builtPayment);
+      } catch {
+        // silently fail
+      }
     }
 
     load();
     return () => {
       cancelled = true;
     };
-  }, [base]);
-
-  const salesBars = useMemo(() => {
-    const arr =
-      range === "week"
-        ? allBars.week
-        : range === "month"
-          ? allBars.month
-          : allBars.today;
-    return Array.isArray(arr) ? arr : [];
-  }, [range, allBars]);
+  }, []);
 
   return (
     <div className="space-y-[20px] font-sans antialiased text-slate-900 pb-10">
@@ -368,36 +424,44 @@ export default function Dashboard() {
           <CardShell>
             <div className="px-[20px] py-[18px] border-b border-slate-50 flex justify-between items-center">
               <SectionTitle title="Alerts" />
-              <div className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]" />
+              {alerts.length > 0 && (
+                <div className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]" />
+              )}
             </div>
 
             <div className="p-[20px] pt-2 space-y-1">
-              {alerts.map((a, idx) => (
-                <div
-                  key={idx}
-                  className="group relative flex items-start gap-3 p-2.5 -mx-2 rounded-xl cursor-pointer transition-all duration-200 hover:bg-slate-50 hover:shadow-[inset_3px_0_0_0_#f97316]"
-                >
-                  <div className="h-9 w-9 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0 group-hover:bg-white group-hover:border-slate-200 transition-colors">
-                    <GIcon
-                      name={a.icon}
-                      sizePx={18}
-                      className="text-slate-400 group-hover:text-slate-600 transition-colors"
-                    />
-                  </div>
-
-                  <div className="flex-1 min-w-0">
-                    <div className="flex justify-between items-start mb-0.5">
-                      <p className="text-[12px] font-bold text-slate-800 leading-tight pr-2 truncate group-hover:text-slate-900">
-                        {a.title}
-                      </p>
-                      <AlertsPill label={a.tag} />
-                    </div>
-                    <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight group-hover:text-slate-500">
-                      {a.time}
-                    </p>
-                  </div>
+              {alerts.length === 0 ? (
+                <div className="text-[13px] text-slate-400 py-4 text-center">
+                  No alerts
                 </div>
-              ))}
+              ) : (
+                alerts.map((a, idx) => (
+                  <div
+                    key={idx}
+                    className="group relative flex items-start gap-3 p-2.5 -mx-2 rounded-xl cursor-pointer transition-all duration-200 hover:bg-slate-50 hover:shadow-[inset_3px_0_0_0_#f97316]"
+                  >
+                    <div className="h-9 w-9 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0 group-hover:bg-white group-hover:border-slate-200 transition-colors">
+                      <GIcon
+                        name={a.icon}
+                        sizePx={18}
+                        className="text-slate-400 group-hover:text-slate-600 transition-colors"
+                      />
+                    </div>
+
+                    <div className="flex-1 min-w-0">
+                      <div className="flex justify-between items-start mb-0.5">
+                        <p className="text-[12px] font-bold text-slate-800 leading-tight pr-2 truncate group-hover:text-slate-900">
+                          {a.title}
+                        </p>
+                        <AlertsPill label={a.tag} />
+                      </div>
+                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight group-hover:text-slate-500">
+                        {a.time}
+                      </p>
+                    </div>
+                  </div>
+                ))
+              )}
             </div>
           </CardShell>
         </div>
