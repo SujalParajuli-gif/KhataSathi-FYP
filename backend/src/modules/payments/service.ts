@@ -1,4 +1,3 @@
-// src/modules/payments/service.ts — Payment business logic
 import prisma from "../../db/prisma";
 
 /**

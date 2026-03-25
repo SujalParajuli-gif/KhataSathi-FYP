@@ -1,4 +1,3 @@
-// src/modules/brands/controller.ts — Brand route handlers
 import { Request, Response } from "express";
 import * as brandService from "./service";
 

@@ -1,6 +1,13 @@
-// src/db/prisma.ts — Singleton PrismaClient
-import { PrismaClient } from "@prisma/client";
+import * as PrismaPkg from "@prisma/client";
 
-const prisma = new PrismaClient();
+const PrismaClientCtor = (PrismaPkg as any).PrismaClient;
+
+if (!PrismaClientCtor) {
+  throw new Error(
+    "Prisma Client is not generated yet. Run 'pnpm install' and 'pnpm exec prisma generate' before starting the backend.",
+  );
+}
+
+const prisma = new PrismaClientCtor();
 
 export default prisma;

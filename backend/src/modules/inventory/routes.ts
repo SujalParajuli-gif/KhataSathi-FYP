@@ -1,4 +1,3 @@
-// src/modules/inventory/routes.ts — Inventory routes
 import { Router } from "express";
 import { restock, adjust, lowStock, stockTransactions } from "./controller";
 import { authGuard } from "../../middleware/auth";

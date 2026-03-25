@@ -1,4 +1,3 @@
-// src/modules/audit/controller.ts — Audit log route handler
 import { Request, Response } from "express";
 import * as auditService from "./service";
 

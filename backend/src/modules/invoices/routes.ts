@@ -1,30 +1,27 @@
-// src/modules/invoices/routes.ts — Invoice routes
 import { Router } from "express";
-import { createDraft, list, getOne, addItem, updateItem, removeItem, finalize } from "./controller";
+import {
+  createDraft,
+  list,
+  getOne,
+  addItem,
+  updateItem,
+  removeItem,
+  finalize,
+} from "./controller";
 import { authGuard } from "../../middleware/auth";
+import { requireRole } from "../../middleware/rbac";
 
-const router: ReturnType<typeof Router> = Router();
+const router = Router();
+
 router.use(authGuard);
 
-// POST /api/invoices — create draft
-router.post("/", createDraft);
-
-// GET /api/invoices — list with filters
 router.get("/", list);
-
-// GET /api/invoices/:id — get detail
 router.get("/:id", getOne);
 
-// POST /api/invoices/:id/items — add item
-router.post("/:id/items", addItem);
-
-// PUT /api/invoices/:id/items/:itemId — update item qty
-router.put("/:id/items/:itemId", updateItem);
-
-// DELETE /api/invoices/:id/items/:itemId — remove item
-router.delete("/:id/items/:itemId", removeItem);
-
-// POST /api/invoices/:id/finalize — lock invoice
-router.post("/:id/finalize", finalize);
+router.post("/", requireRole("CASHIER"), createDraft);
+router.post("/:id/items", requireRole("CASHIER"), addItem);
+router.patch("/:id/items/:itemId", requireRole("CASHIER"), updateItem);
+router.delete("/:id/items/:itemId", requireRole("CASHIER"), removeItem);
+router.post("/:id/finalize", requireRole("CASHIER"), finalize);
 
 export default router;

@@ -1,5 +1,6 @@
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
+import { listCustomersApi } from "~/lib/api/endpoints";
 
 // --- Types ---
 type DiscountType = "Wholesale %" | "Loyalty %";
@@ -149,50 +150,47 @@ function StatusBadge({ active }: { active: boolean }) {
 // --- Main Page ---
 
 export default function CustomerDiscountsPage() {
-  const [loyaltyDiscountPercent] = useState(2);
+  const [rows, setRows] = useState<CustomerDiscount[]>([]);
 
-  const [rows] = useState<CustomerDiscount[]>([
-    {
-      id: "d1",
-      customerName: "Ram Bahadur",
-      phone: "9841XXXXXX",
-      type: "Loyalty %",
-      valuePercent: loyaltyDiscountPercent,
-      note: "Auto-applies in billing when customer is marked loyalty.",
-      active: true,
-      updatedAtLabel: "Today",
-    },
-    {
-      id: "d2",
-      customerName: "Sita Sharma",
-      phone: "9803XXXXXX",
-      type: "Wholesale %",
-      valuePercent: 5,
-      note: "Admin-set customer wholesale discount (subtotal).",
-      active: true,
-      updatedAtLabel: "Yesterday",
-    },
-    {
-      id: "d3",
-      customerName: "Hari Krishna",
-      phone: "9860XXXXXX",
-      type: "Wholesale %",
-      valuePercent: 10,
-      note: "VIP / special rate (subtotal).",
-      active: true,
-      updatedAtLabel: "2 days ago",
-    },
-    {
-      id: "d4",
-      customerName: "Guest Customer",
-      phone: "-",
-      type: "Loyalty %",
-      valuePercent: 0,
-      note: "No discount for walk-in unless customer selected.",
-      active: false,
-      updatedAtLabel: "—",
-    },
-  ]);
+  useEffect(() => {
+    async function load() {
+      try {
+        const data = await listCustomersApi();
+        const items = Array.isArray(data) ? data : data.customers || [];
+        const mapped: CustomerDiscount[] = [];
+        for (const c of items) {
+          if (c.loyaltyPercent > 0) {
+            mapped.push({
+              id: c.id + "-loyalty",
+              customerName: c.name,
+              phone: c.phone || "—",
+              type: "Loyalty %",
+              valuePercent: c.loyaltyPercent,
+              note: "Customer loyalty rate",
+              active: c.isActive,
+              updatedAtLabel: new Date(c.updatedAt || c.createdAt || Date.now()).toLocaleDateString(),
+            });
+          }
+          if (c.wholesalePercent > 0) {
+            mapped.push({
+              id: c.id + "-wholesale",
+              customerName: c.name,
+              phone: c.phone || "—",
+              type: "Wholesale %",
+              valuePercent: c.wholesalePercent,
+              note: "Customer wholesale rate",
+              active: c.isActive,
+              updatedAtLabel: new Date(c.updatedAt || c.createdAt || Date.now()).toLocaleDateString(),
+            });
+          }
+        }
+        setRows(mapped);
+      } catch (err) {
+        console.error("Failed to load discount data", err);
+      }
+    }
+    load();
+  }, []);
 
   const [query, setQuery] = useState("");
   const [tab, setTab] = useState<"all" | "wholesale" | "loyalty">("all");
@@ -240,11 +238,6 @@ export default function CustomerDiscountsPage() {
             <div className="flex items-center gap-1.5">
               <Icon name="info" className="text-orange-500 text-[14px]" />
               <span>Wholesale overrides Loyalty</span>
-            </div>
-            <div className="w-px h-3 bg-slate-200" />
-            <div className="flex items-center gap-1.5">
-              <Icon name="verified" className="text-emerald-500 text-[14px]" />
-              <span>Loyalty Default: {formatPct(loyaltyDiscountPercent)}</span>
             </div>
           </div>
         </div>

@@ -1,6 +1,6 @@
-// frontend/app/components/layout/Sidebar.tsx
+import type { CSSProperties } from "react";
 import { NavLink } from "react-router";
-import GoogleIcon from "~/components/ui/GoogleIcon";
+import GIcon from "~/components/ui/GIcon";
 import navData from "~/config/ui.nav.json";
 import type { UserRole } from "~/lib/auth";
 
@@ -17,25 +17,15 @@ export default function Sidebar({
   isCollapsed,
   onCloseMobile,
 }: Props) {
-  // role-based items from JSON
   const items = navData.sidebar.items.filter((item) =>
     item.roles.includes(role),
   );
 
-  // split into main and bottom groups
-  const mainItems = items.filter(
-    (x) => !["settings", "profile", "logout"].includes(x.key),
-  );
-  const bottomItems = items.filter((x) =>
-    ["settings", "profile", "logout"].includes(x.key),
-  );
-
-  // only dashboard should require exact match
-  const isExact = (to: string) => to === "/dashboard";
+  const mainItems = items.filter((item) => item.section !== "bottom");
+  const bottomItems = items.filter((item) => item.section === "bottom");
 
   return (
     <>
-      {/* Mobile overlay */}
       <button
         type="button"
         onClick={onCloseMobile}
@@ -50,10 +40,8 @@ export default function Sidebar({
       <aside
         style={
           {
-            // collapsed width vs expanded width
-            // AppShell should use the same logic for its left margin (var(--sidebar-w))
             "--sidebar-w": isCollapsed ? "80px" : "260px",
-          } as React.CSSProperties
+          } as CSSProperties
         }
         className={[
           "fixed left-0 top-0 z-50 h-full bg-white",
@@ -64,8 +52,7 @@ export default function Sidebar({
           "lg:translate-x-0",
         ].join(" ")}
       >
-        {/* Brand */}
-        <div className="flex items-center gap-3 px-4 py-6 overflow-hidden">
+        <div className="flex items-center gap-3 overflow-hidden px-4 py-6">
           <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 font-bold text-white shadow-lg shadow-orange-200/50">
             {navData.brand.logoText}
           </div>
@@ -77,22 +64,20 @@ export default function Sidebar({
           )}
         </div>
 
-        {/* Section label */}
         {!isCollapsed && (
-          <div className="px-6 mb-2">
+          <div className="mb-2 px-6">
             <div className="text-[10px] font-extrabold uppercase tracking-[0.15em] text-slate-400/80">
               {navData.sidebar.mainLabel}
             </div>
           </div>
         )}
 
-        {/* Main nav */}
         <nav className="flex flex-col gap-1 px-3">
           {mainItems.map((item) => (
             <NavLink
               key={item.key}
               to={item.to}
-              end={isExact(item.to)}
+              end={item.to === "/"}
               onClick={onCloseMobile}
               title={isCollapsed ? item.label : undefined}
               className={({ isActive }) =>
@@ -110,12 +95,11 @@ export default function Sidebar({
             >
               {({ isActive }) => (
                 <>
-                  {/* active indicator */}
                   {isActive && (
                     <div className="absolute left-0 h-5 w-1 rounded-r-full bg-orange-600" />
                   )}
 
-                  <GoogleIcon
+                  <GIcon
                     name={item.icon}
                     className={[
                       "transition-transform duration-200 group-hover:scale-110",
@@ -134,7 +118,6 @@ export default function Sidebar({
           ))}
         </nav>
 
-        {/* Bottom nav */}
         <div className="absolute bottom-0 left-0 w-full px-3 pb-6">
           <div className="mx-3 mb-4 h-px bg-slate-100" />
 
@@ -143,7 +126,7 @@ export default function Sidebar({
               <NavLink
                 key={item.key}
                 to={item.to}
-                end={isExact(item.to)}
+                end
                 onClick={onCloseMobile}
                 title={isCollapsed ? item.label : undefined}
                 className={({ isActive }) =>
@@ -161,7 +144,7 @@ export default function Sidebar({
                   ].join(" ")
                 }
               >
-                <GoogleIcon
+                <GIcon
                   name={item.icon}
                   className={
                     item.danger

@@ -1,4 +1,3 @@
-// src/modules/inventory/service.ts — Inventory business logic
 import prisma from "../../db/prisma";
 
 /**

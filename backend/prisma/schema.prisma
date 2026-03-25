@@ -9,8 +9,6 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
-// ─── Enums ──────────────────────────────────────────
-
 enum Role {
   ADMIN
   CASHIER
@@ -45,21 +43,24 @@ enum StockTxType {
   ADJUSTMENT
 }
 
-// ─── Models ─────────────────────────────────────────
-
 model User {
-  id           String   @id @default(cuid())
-  name         String
-  email        String   @unique
-  passwordHash String
-  role         Role     @default(CASHIER)
-  isActive     Boolean  @default(true)
-  createdAt    DateTime @default(now())
+  id                String   @id @default(cuid())
+  name              String
+  email             String   @unique
+  phone             String?  @unique
+  passwordHash      String
+  role              Role     @default(CASHIER)
+  isActive          Boolean  @default(true)
+  lastLogin         DateTime?
+  profileImage      String?
+  nagariktaNo       String?
+  createdAt         DateTime @default(now())
 
   invoices          Invoice[]
   payments          Payment[]
   stockTransactions StockTransaction[]
   auditLogs         AuditLog[]
+  userAlerts        UserAlertRead[]
 }
 
 model LoginAttempt {
@@ -80,20 +81,21 @@ model Brand {
 }
 
 model Product {
-  id                  String   @id @default(cuid())
-  name                String
-  sku                 String   @unique
-  barcode             String?  @unique
-  brandId             String
-  category            String?
-  retailPrice         Float
-  wholesalePrice      Float
-  wholesaleQtyThreshold Int    @default(1)
-  stock               Int      @default(0)
-  lowStockThreshold   Int      @default(5)
-  isActive            Boolean  @default(true)
-  createdAt           DateTime @default(now())
-  updatedAt           DateTime @updatedAt
+  id                    String   @id @default(cuid())
+  name                  String
+  sku                   String   @unique
+  barcode               String?  @unique
+  brandId               String
+  category              String?
+  retailPrice           Float
+  wholesalePrice        Float
+  wholesaleQtyThreshold Int      @default(1)
+  stock                 Int      @default(0)
+  lowStockThreshold     Int      @default(5)
+  isActive              Boolean  @default(true)
+  imageUrl              String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
 
   brand             Brand              @relation(fields: [brandId], references: [id])
   invoiceItems      InvoiceItem[]
@@ -104,12 +106,14 @@ model Product {
 }
 
 model Customer {
-  id             String   @id @default(cuid())
-  name           String
-  phone          String?  @unique
-  loyaltyPercent Float    @default(0)
-  isActive       Boolean  @default(true)
-  createdAt      DateTime @default(now())
+  id               String   @id @default(cuid())
+  name             String
+  phone            String?  @unique
+  email            String?
+  loyaltyPercent   Float    @default(0)
+  wholesalePercent Float    @default(0)
+  isActive         Boolean  @default(true)
+  createdAt        DateTime @default(now())
 
   invoices Invoice[]
 }
@@ -129,10 +133,10 @@ model Invoice {
   createdAt              DateTime             @default(now())
   finalizedAt            DateTime?
 
-  cashier  User       @relation(fields: [cashierId], references: [id])
-  customer Customer?  @relation(fields: [customerId], references: [id])
-  items    InvoiceItem[]
-  payments Payment[]
+  cashier           User               @relation(fields: [cashierId], references: [id])
+  customer          Customer?          @relation(fields: [customerId], references: [id])
+  items             InvoiceItem[]
+  payments          Payment[]
   stockTransactions StockTransaction[]
 }
 
@@ -147,6 +151,17 @@ model InvoiceItem {
 
   invoice Invoice @relation(fields: [invoiceId], references: [id])
   product Product @relation(fields: [productId], references: [id])
+}
+
+model UserAlertRead {
+  id        String   @id @default(cuid())
+  userId    String
+  alertKey  String
+  createdAt DateTime @default(now())
+
+  user      User     @relation(fields: [userId], references: [id])
+
+  @@unique([userId, alertKey])
 }
 
 model Payment {
@@ -164,18 +179,18 @@ model Payment {
 }
 
 model StockTransaction {
-  id           String     @id @default(cuid())
+  id           String      @id @default(cuid())
   productId    String
   type         StockTxType
   qtyDelta     Int
   reason       String?
   refInvoiceId String?
   createdById  String
-  createdAt    DateTime   @default(now())
+  createdAt    DateTime    @default(now())
 
-  product Product  @relation(fields: [productId], references: [id])
-  invoice Invoice? @relation(fields: [refInvoiceId], references: [id])
-  createdBy User   @relation(fields: [createdById], references: [id])
+  product   Product  @relation(fields: [productId], references: [id])
+  invoice   Invoice? @relation(fields: [refInvoiceId], references: [id])
+  createdBy User     @relation(fields: [createdById], references: [id])
 }
 
 model AuditLog {

@@ -172,7 +172,7 @@ export default function Dashboard() {
           builtKpis.push({
             iconName: "payments",
             iconBgClass: "bg-orange-50 text-orange-700",
-            value: formatNpr(s.totalRevenue || 0),
+            value: formatNpr(s.totalRevenue || s.totalSales || 0),
             label: "Total Sales (7d)",
             badgeText: `${s.invoiceCount || 0} invoices`,
             badgeIconName: "receipt_long",
@@ -229,13 +229,13 @@ export default function Dashboard() {
           const rows: InvoiceRow[] = raw.map((inv: any) => ({
             invoiceNo: inv.invoiceNo || inv.id,
             customer: inv.customer?.name || "Walk-in",
-            cashier: inv.user?.name || "—",
+            cashier: inv.cashier?.name || "—",
             date: new Date(inv.createdAt).toLocaleDateString(),
-            total: formatNpr(inv.total || 0),
+            total: formatNpr(inv.netTotal || 0),
             status:
-              inv.status === "PAID"
+              inv.paymentStatus === "PAID" || inv.status === "PAID"
                 ? "Paid"
-                : inv.status === "PARTIAL"
+                : inv.paymentStatus === "PARTIALLY_PAID" || inv.status === "PARTIAL"
                   ? "Partial"
                   : "Unpaid",
           }));
@@ -247,13 +247,13 @@ export default function Dashboard() {
           const s = salesData.value;
           builtPayment.push({
             label: "Total Revenue",
-            value: formatNpr(s.totalRevenue || 0),
+            value: formatNpr(s.totalRevenue || s.totalSales || 0),
             icon: "account_balance",
             iconBg: "bg-emerald-100 text-emerald-700",
           });
           builtPayment.push({
             label: "Total Paid",
-            value: formatNpr(s.totalPaid || 0),
+            value: formatNpr(s.totalPaid || s.totalCollected || 0),
             icon: "check_circle",
             iconBg: "bg-sky-100 text-sky-700",
           });

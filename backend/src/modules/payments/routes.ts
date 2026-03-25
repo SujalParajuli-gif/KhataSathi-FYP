@@ -1,15 +1,13 @@
-// src/modules/payments/routes.ts — Payment routes (nested under invoices)
 import { Router } from "express";
 import { addPayment, listPayments } from "./controller";
 import { authGuard } from "../../middleware/auth";
+import { requireRole } from "../../middleware/rbac";
 
 const router: ReturnType<typeof Router> = Router();
+
 router.use(authGuard);
 
-// POST /api/invoices/:id/payments — add payment
-router.post("/:id/payments", addPayment);
-
-// GET /api/invoices/:id/payments — list payments
 router.get("/:id/payments", listPayments);
+router.post("/:id/payments", requireRole("CASHIER"), addPayment);
 
 export default router;

@@ -1,4 +1,3 @@
-// src/modules/payments/controller.ts — Payment route handlers
 import { Request, Response } from "express";
 import * as paymentService from "./service";
 

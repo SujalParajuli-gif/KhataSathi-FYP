@@ -382,19 +382,6 @@ export default function ProductsModals({
             />
           </div>
 
-          <div className="space-y-[6px]">
-            <div className="text-[12px] font-semibold text-slate-600">
-              Wholesale Threshold Qty
-            </div>
-            <input
-              type="number"
-              value={form.thresholdQty}
-              onChange={(e) =>
-                setForm((p) => ({ ...p, thresholdQty: Number(e.target.value) }))
-              }
-              className="w-full rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px] outline-none"
-            />
-          </div>
 
           <div className="space-y-[6px]">
             <div className="text-[12px] font-semibold text-slate-600">
@@ -410,25 +397,6 @@ export default function ProductsModals({
             />
           </div>
 
-          <div className="space-y-[6px] md:col-span-2">
-            <div className="text-[12px] font-semibold text-slate-600">
-              Low Stock Threshold
-            </div>
-            <input
-              type="number"
-              value={form.lowStockThreshold}
-              onChange={(e) =>
-                setForm((p) => ({
-                  ...p,
-                  lowStockThreshold: Number(e.target.value),
-                }))
-              }
-              className="w-full rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px] outline-none"
-            />
-            <div className="text-[12px] text-slate-500">
-              Used to mark stock as “Low Stock” and trigger alerts later.
-            </div>
-          </div>
         </div>
       </ModalShell>
 

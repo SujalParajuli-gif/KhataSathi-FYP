@@ -1,35 +1,42 @@
-// src/modules/products/routes.ts — Product routes
 import { Router } from "express";
 import multer from "multer";
+import path from "path";
+import prisma from "../../db/prisma";
 import { list, getOne, create, update, deactivate, categories, importCsv } from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 
 const router: ReturnType<typeof Router> = Router();
-const upload = multer({ storage: multer.memoryStorage() });
+const csvUpload = multer({ storage: multer.memoryStorage() });
 
-// All product routes require authentication
+const imgStorage = multer.diskStorage({
+  destination: (_req, _file, cb) => cb(null, path.join(__dirname, "../../../../uploads/products")),
+  filename: (_req, file, cb) => cb(null, `prod_${Date.now()}${path.extname(file.originalname)}`),
+});
+const imgUpload = multer({ storage: imgStorage, limits: { fileSize: 5 * 1024 * 1024 } });
+
 router.use(authGuard);
 
-// GET /api/products — list with search/filters
 router.get("/", list);
-
-// GET /api/products/categories — unique categories
 router.get("/categories", categories);
-
-// GET /api/products/:id — get one product
 router.get("/:id", getOne);
-
-// POST /api/products — create (admin only)
 router.post("/", requireRole("ADMIN"), create);
-
-// POST /api/products/import-csv — CSV import (admin only)
-router.post("/import-csv", requireRole("ADMIN"), upload.single("file"), importCsv);
-
-// PUT /api/products/:id — update (admin only)
+router.post("/import-csv", requireRole("ADMIN"), csvUpload.single("file"), importCsv);
 router.put("/:id", requireRole("ADMIN"), update);
-
-// PATCH /api/products/:id/deactivate — soft delete (admin only)
 router.patch("/:id/deactivate", requireRole("ADMIN"), deactivate);
+
+router.post("/:id/image", requireRole("ADMIN"), imgUpload.single("image"), async (req, res) => {
+  try {
+    if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
+    const imageUrl = `/uploads/products/${req.file.filename}`;
+    const product = await prisma.product.update({
+      where: { id: req.params.id },
+      data: { imageUrl },
+    });
+    res.json(product);
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+});
 
 export default router;

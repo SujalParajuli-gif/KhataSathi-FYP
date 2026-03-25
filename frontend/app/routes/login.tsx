@@ -42,6 +42,7 @@ function TextInput({
   left,
   type = "text",
   onEnter,
+  hasError,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -50,9 +51,10 @@ function TextInput({
   left?: React.ReactNode;
   type?: string;
   onEnter?: () => void;
+  hasError?: boolean;
 }) {
   return (
-    <div className="group h-[48px] rounded-[14px] border-2 border-slate-200 bg-slate-50 focus-within:bg-white focus-within:border-orange-500 transition-colors px-[14px] flex items-center gap-3">
+    <div className={cn("group h-[48px] rounded-[14px] border-2 bg-slate-50 focus-within:bg-white transition-colors px-[14px] flex items-center gap-3", hasError ? "border-rose-400" : "border-slate-200 focus-within:border-orange-500")}>
       {left}
       <input
         type={type}
@@ -116,7 +118,6 @@ export default function LoginPage() {
   const navigate = useNavigate();
 
   const [showPw, setShowPw] = useState(false);
-  const [remember, setRemember] = useState(true);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
 
@@ -126,10 +127,15 @@ export default function LoginPage() {
     password: "",
   });
 
+  const [touched, setTouched] = useState({ email: false, password: false });
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email);
+  const emailError = touched.email && formData.email.trim().length > 0 && !emailValid;
+  const pwError = touched.password && formData.password.length > 0 && formData.password.length < 4;
+
   // Redirect if already logged in
   React.useEffect(() => {
     if (isLoggedIn()) {
-      const stored = localStorage.getItem("khatasathi_auth_user") || sessionStorage.getItem("khatasathi_auth_user");
+      const stored = localStorage.getItem("khatasathi_auth_user");
       if (stored) {
         const user = JSON.parse(stored);
         navigate(user.role === "cashier" ? "/billing" : "/");
@@ -167,8 +173,9 @@ export default function LoginPage() {
         name: data.user.name,
         email: data.user.email,
         role: data.user.role.toLowerCase() as UserRole,
+        profileImage: data.user.profileImage,
       };
-      setAuthUser(user, remember);
+      setAuthUser(user);
 
       // Redirect by role
       if (user.role === "cashier") {
@@ -220,7 +227,10 @@ export default function LoginPage() {
               placeholder="e.g. admin@khatasathi.com"
               type="email"
               left={<Icon name="person" className="text-slate-400" />}
+              hasError={emailError}
+              onEnter={() => { setTouched({ email: true, password: true }); }}
             />
+            {emailError && <div className="text-[11px] text-rose-500 mt-1 font-semibold">Please enter a valid email address.</div>}
           </Field>
 
           <div className="space-y-2">
@@ -230,8 +240,9 @@ export default function LoginPage() {
                 onChange={(v) => setFormData((p) => ({ ...p, password: v }))}
                 placeholder="••••••••"
                 type={showPw ? "text" : "password"}
-                onEnter={() => (canSubmit ? onLogin() : null)}
+                onEnter={() => { setTouched({ email: true, password: true }); if (canSubmit) onLogin(); }}
                 left={<Icon name="lock" className="text-slate-400" />}
+                hasError={pwError}
                 right={
                   <button
                     type="button"
@@ -245,19 +256,9 @@ export default function LoginPage() {
                   </button>
                 }
               />
+              {pwError && <div className="text-[11px] text-rose-500 mt-1 font-semibold">Password must be at least 4 characters.</div>}
             </Field>
 
-            <div className="flex items-center">
-              <label className="inline-flex items-center gap-2 text-[12px] font-bold text-slate-600 select-none">
-                <input
-                  type="checkbox"
-                  checked={remember}
-                  onChange={(e) => setRemember(e.target.checked)}
-                  className="h-4 w-4"
-                />
-                Remember me
-              </label>
-            </div>
           </div>
 
           <Button

@@ -1,4 +1,3 @@
-// src/modules/brands/service.ts — Brands business logic
 import prisma from "../../db/prisma";
 
 export async function listBrands(activeOnly?: boolean) {

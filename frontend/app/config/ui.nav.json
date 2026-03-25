@@ -10,13 +10,32 @@
         "mainLabel": "MAIN MENU",
         "items": [
             {
-                "key": "home",
-                "label": "Home",
+                "key": "dashboard",
+                "label": "Dashboard",
                 "pageTitle": "Dashboard",
                 "icon": "home",
                 "to": "/",
                 "roles": [
-                    "admin",
+                    "admin"
+                ]
+            },
+            {
+                "key": "billing",
+                "label": "Billing",
+                "pageTitle": "Billing",
+                "icon": "point_of_sale",
+                "to": "/billing",
+                "roles": [
+                    "cashier"
+                ]
+            },
+            {
+                "key": "invoices",
+                "label": "Invoices",
+                "pageTitle": "Invoices",
+                "icon": "receipt_long",
+                "to": "/invoices",
+                "roles": [
                     "cashier"
                 ]
             },
@@ -73,6 +92,16 @@
                 ]
             },
             {
+                "key": "customer-discounts",
+                "label": "Customer Discounts",
+                "pageTitle": "Customer Discounts",
+                "icon": "loyalty",
+                "to": "/customer-discounts",
+                "roles": [
+                    "cashier"
+                ]
+            },
+            {
                 "key": "settings",
                 "label": "Settings",
                 "pageTitle": "Settings",
@@ -84,13 +113,23 @@
                 "section": "bottom"
             },
             {
-                "key": "profile",
+                "key": "profile-admin",
                 "label": "Profile",
                 "pageTitle": "Profile",
                 "icon": "person",
                 "to": "/profile",
                 "roles": [
-                    "admin",
+                    "admin"
+                ],
+                "section": "bottom"
+            },
+            {
+                "key": "profile-cashier",
+                "label": "Profile",
+                "pageTitle": "Profile",
+                "icon": "person",
+                "to": "/cashier-profile",
+                "roles": [
                     "cashier"
                 ],
                 "section": "bottom"

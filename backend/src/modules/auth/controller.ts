@@ -1,6 +1,5 @@
-// src/modules/auth/controller.ts — Auth route handlers
 import { Request, Response } from "express";
-import { loginUser, getMe } from "./service";
+import { loginUser, getMe, updateProfile as updateProfileService, uploadProfilePhoto } from "./service";
 
 export async function login(req: Request, res: Response) {
     try {
@@ -44,5 +43,31 @@ export async function me(req: Request, res: Response) {
     } catch (err) {
         console.error("Me error:", err);
         res.status(500).json({ error: "Internal server error" });
+    }
+}
+
+export async function updateProfile(req: Request, res: Response) {
+    try {
+        const { name, phone, password, profileImage } = req.body;
+        const user = await updateProfileService(req.user!.id, { name, phone, password, profileImage });
+        res.json({ user });
+    } catch (err: any) {
+        console.error("Update profile error:", err);
+        res.status(500).json({ error: err.message || "Internal server error" });
+    }
+}
+
+export async function uploadPhoto(req: Request, res: Response) {
+    try {
+        if (!req.file) {
+            res.status(400).json({ error: "No photo uploaded" });
+            return;
+        }
+        const photoUrl = `/uploads/${req.file.filename}`;
+        const user = await uploadProfilePhoto(req.user!.id, photoUrl);
+        res.json({ user });
+    } catch (err: any) {
+        console.error("Upload photo error:", err);
+        res.status(500).json({ error: err.message || "Internal server error" });
     }
 }

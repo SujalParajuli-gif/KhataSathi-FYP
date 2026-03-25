@@ -1,4 +1,3 @@
-// src/modules/inventory/controller.ts — Inventory route handlers
 import { Request, Response } from "express";
 import * as inventoryService from "./service";
 

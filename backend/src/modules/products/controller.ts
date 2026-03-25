@@ -1,4 +1,3 @@
-// src/modules/products/controller.ts — Product route handlers
 import { Request, Response } from "express";
 import * as productService from "./service";
 import { parse } from "csv-parse";

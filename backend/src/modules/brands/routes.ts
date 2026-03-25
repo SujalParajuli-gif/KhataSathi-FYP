@@ -1,4 +1,3 @@
-// src/modules/brands/routes.ts — Brand routes
 import { Router } from "express";
 import { list, getOne, create, update, deactivate } from "./controller";
 import { authGuard } from "../../middleware/auth";

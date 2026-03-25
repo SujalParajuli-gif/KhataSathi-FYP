@@ -1,73 +1,158 @@
-// frontend/app/lib/domain/products/products.api.ts
+import {
+  createProductApi,
+  deactivateProductApi,
+  getCategoriesApi,
+  listBrandsApi,
+  listProductsApi,
+  updateProductApi,
+} from "~/lib/api/endpoints";
 import type { Product, ProductsQuery, ProductStatus } from "./products.types";
 
-async function api<T>(input: RequestInfo, init?: RequestInit): Promise<T> {
-  const res = await fetch(input, {
-    ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...(init?.headers || {}),
-    },
-  });
+type BackendBrand = { id: string; name: string; isActive?: boolean };
+type BackendProduct = {
+  id: string;
+  name: string;
+  sku: string;
+  barcode?: string | null;
+  brandId?: string;
+  brand?: { id: string; name: string } | null;
+  category?: string | null;
+  retailPrice: number;
+  wholesalePrice: number;
+  wholesaleQtyThreshold?: number;
+  stock: number;
+  lowStockThreshold: number;
+  isActive: boolean;
+};
 
-  if (!res.ok) {
-    const text = await res.text().catch(() => "");
-    throw new Error(text || `Request failed (${res.status})`);
-  }
+let brandsCache: BackendBrand[] = [];
 
-  return (await res.json()) as T;
+function toFrontendProduct(product: BackendProduct): Product {
+  return {
+    id: product.id,
+    name: product.name,
+    sku: product.sku,
+    barcode: product.barcode ?? "",
+    imageUrl: "",
+    brand: product.brand?.name ?? "Unknown",
+    category: product.category ?? "Uncategorized",
+    retailPrice: Number(product.retailPrice ?? 0),
+    wholesalePrice: Number(product.wholesalePrice ?? 0),
+    thresholdQty: Number(product.wholesaleQtyThreshold ?? 1),
+    stock: Number(product.stock ?? 0),
+    lowStockThreshold: Number(product.lowStockThreshold ?? 0),
+    status: product.isActive ? "Active" : "Inactive",
+  };
 }
 
-// Assumed endpoints (backend-ready):
-// GET    /api/products?...
-// POST   /api/products
-// PUT    /api/products/:id
-// PATCH  /api/products/:id/status
-// POST   /api/products/bulk-status
-// GET    /api/products/meta (brands, categories)
+function getBrandIdByName(name?: string): string | undefined {
+  if (!name) return undefined;
+  return brandsCache.find((brand) => brand.name === name)?.id;
+}
+
+function mapStatusToActive(status?: ProductsQuery["status"]): string | undefined {
+  if (status === "active") return "true";
+  if (status === "inactive") return "false";
+  return undefined;
+}
+
+function applyClientSideStockFilter(
+  products: Product[],
+  stockStatus?: ProductsQuery["stockStatus"],
+): Product[] {
+  switch (stockStatus) {
+    case "in":
+      return products.filter((product) => product.stock > product.lowStockThreshold);
+    case "low":
+      return products.filter(
+        (product) => product.stock > 0 && product.stock <= product.lowStockThreshold,
+      );
+    case "out":
+      return products.filter((product) => product.stock <= 0);
+    default:
+      return products;
+  }
+}
 
 export async function fetchProducts(q: ProductsQuery) {
-  const sp = new URLSearchParams();
-  if (q.q) sp.set("q", q.q);
-  if (q.brand) sp.set("brand", q.brand);
-  if (q.category) sp.set("category", q.category);
-  if (q.stockStatus) sp.set("stockStatus", q.stockStatus);
-  if (q.status) sp.set("status", q.status);
-  if (typeof q.lowOnly === "boolean") sp.set("lowOnly", String(q.lowOnly));
-  if (q.page) sp.set("page", String(q.page));
-  if (q.pageSize) sp.set("pageSize", String(q.pageSize));
+  const response = await listProductsApi({
+    search: q.q,
+    brand: getBrandIdByName(q.brand),
+    category: q.category,
+    active: mapStatusToActive(q.status),
+    lowStock: q.lowOnly || q.stockStatus === "low" ? "true" : undefined,
+    page: q.page,
+    pageSize: q.pageSize,
+  });
 
-  return api<{ items: Product[]; total: number }>(`/api/products?${sp.toString()}`);
+  const mapped = (response.products ?? []).map(toFrontendProduct);
+  const filtered = applyClientSideStockFilter(mapped, q.stockStatus);
+
+  return {
+    items: filtered,
+    total:
+      q.stockStatus && q.stockStatus !== "all"
+        ? filtered.length
+        : Number(response.total ?? filtered.length),
+  };
 }
 
 export async function fetchProductsMeta() {
-  return api<{ brands: string[]; categories: string[] }>(`/api/products/meta`);
+  const [brands, categories] = await Promise.all([
+    listBrandsApi(false),
+    getCategoriesApi(),
+  ]);
+
+  brandsCache = Array.isArray(brands) ? brands : [];
+
+  return {
+    brands: brandsCache.map((brand) => brand.name),
+    categories: Array.isArray(categories) ? categories.filter(Boolean) : [],
+  };
 }
 
-export async function createProduct(p: Omit<Product, "id">) {
-  return api<Product>(`/api/products`, {
-    method: "POST",
-    body: JSON.stringify(p),
-  });
+function toBackendPayload(product: Omit<Product, "id">) {
+  const brandId = getBrandIdByName(product.brand);
+  if (!brandId) {
+    throw new Error(`Brand not found: ${product.brand}`);
+  }
+
+  return {
+    name: product.name,
+    sku: product.sku,
+    barcode: product.barcode || undefined,
+    brandId,
+    category: product.category || undefined,
+    retailPrice: Number(product.retailPrice),
+    wholesalePrice: Number(product.wholesalePrice),
+    wholesaleQtyThreshold: Number(product.thresholdQty ?? 1),
+    stock: Number(product.stock ?? 0),
+    lowStockThreshold: Number(product.lowStockThreshold ?? 0),
+    isActive: product.status === "Active",
+  };
 }
 
-export async function updateProduct(id: string, p: Omit<Product, "id">) {
-  return api<Product>(`/api/products/${encodeURIComponent(id)}`, {
-    method: "PUT",
-    body: JSON.stringify(p),
-  });
+export async function createProduct(product: Omit<Product, "id">) {
+  const created = await createProductApi(toBackendPayload(product));
+  return toFrontendProduct(created);
+}
+
+export async function updateProduct(id: string, product: Omit<Product, "id">) {
+  const updated = await updateProductApi(id, toBackendPayload(product));
+  return toFrontendProduct(updated);
 }
 
 export async function setProductStatus(id: string, status: ProductStatus) {
-  return api<{ ok: true }>(`/api/products/${encodeURIComponent(id)}/status`, {
-    method: "PATCH",
-    body: JSON.stringify({ status }),
-  });
+  if (status === "Inactive") {
+    await deactivateProductApi(id);
+    return { ok: true };
+  }
+
+  await updateProductApi(id, { isActive: true });
+  return { ok: true };
 }
 
 export async function bulkSetStatus(ids: string[], status: ProductStatus) {
-  return api<{ ok: true }>(`/api/products/bulk-status`, {
-    method: "POST",
-    body: JSON.stringify({ ids, status }),
-  });
+  await Promise.all(ids.map((id) => setProductStatus(id, status)));
+  return { ok: true };
 }

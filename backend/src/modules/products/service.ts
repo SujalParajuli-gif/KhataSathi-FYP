@@ -1,4 +1,3 @@
-// src/modules/products/service.ts — Products business logic
 import prisma from "../../db/prisma";
 
 interface ProductFilters {
@@ -39,26 +38,36 @@ export async function listProducts(filters: ProductFilters) {
 
     const skip = (page - 1) * pageSize;
 
-    const [products, total] = await Promise.all([
-        prisma.product.findMany({
+    if (lowStockOnly) {
+        // Fetch all matching the where clause
+        const allProducts = await prisma.product.findMany({
             where,
             include: { brand: { select: { id: true, name: true } } },
             orderBy: { createdAt: "desc" },
-            skip,
-            take: pageSize,
-        }),
-        prisma.product.count({ where }),
-    ]);
+        });
+        
+        // Filter in JS
+        const filtered = allProducts.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold);
+        const total = filtered.length;
+        
+        // Paginate in JS
+        const paged = filtered.slice(skip, skip + pageSize);
+        
+        return { products: paged, total, page, pageSize };
+    } else {
+        const [products, total] = await Promise.all([
+            prisma.product.findMany({
+                where,
+                include: { brand: { select: { id: true, name: true } } },
+                orderBy: { createdAt: "desc" },
+                skip,
+                take: pageSize,
+            }),
+            prisma.product.count({ where }),
+        ]);
 
-    // If lowStockOnly, filter after fetch
-    let result = products;
-    let finalTotal = total;
-    if (lowStockOnly) {
-        result = products.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold);
-        finalTotal = result.length;
+        return { products, total, page, pageSize };
     }
-
-    return { products: result, total: finalTotal, page, pageSize };
 }
 
 export async function getProduct(id: string) {

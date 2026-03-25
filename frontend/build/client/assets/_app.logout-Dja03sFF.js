@@ -1,0 +1,1 @@
+import{w as s,A as a,a as o,p as e}from"./chunk-WWGJGFF6-Cf0zlrZF.js";import{c as r}from"./auth-COmwGVQg.js";const l=s(function(){const t=a();return o.useEffect(()=>{r(),t("/login",{replace:!0})},[]),e.jsx("div",{className:"flex items-center justify-center h-64",children:e.jsx("p",{className:"text-slate-500 font-semibold",children:"Logging out..."})})});export{l as default};

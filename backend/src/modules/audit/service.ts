@@ -1,4 +1,3 @@
-// src/modules/audit/service.ts — Audit log business logic
 import prisma from "../../db/prisma";
 
 interface AuditFilters {

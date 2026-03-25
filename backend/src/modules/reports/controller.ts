@@ -1,4 +1,3 @@
-// src/modules/reports/controller.ts — Report route handlers
 import { Request, Response } from "express";
 import * as reportService from "./service";
 
