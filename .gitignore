@@ -1,11 +1,50 @@
 .DS_Store
 .env
+.env.*
+!.env.example
+
 /node_modules/
+**/node_modules/
+
+# build / bundler
+/build/
+/dist/
+**/dist/
+.vite/
+**/.vite/
+.pnpm-store/
+**/.pnpm-store/
 
 # React Router
 /.react-router/
-/build/
-**/node_modules/
-**/.vite/
-**/.pnpm-store/
-**/dist
+
+# logs
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+*.log
+
+# editor / OS
+.vscode/
+.idea/
+Thumbs.db
+
+# testing / coverage
+coverage/
+*.lcov
+
+# cache
+.cache/
+.parcel-cache/
+.eslintcache
+
+# local db / temp files
+*.sqlite
+*.sqlite3
+*.db
+tmp/
+temp/
+
+# backend uploads if generated at runtime
+uploads/
