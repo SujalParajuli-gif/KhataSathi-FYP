@@ -56,7 +56,26 @@ export async function listInvoices(filters: InvoiceFilters) {
       include: {
         cashier: { select: { id: true, name: true, email: true } },
         customer: { select: { id: true, name: true, phone: true, loyaltyPercent: true, wholesalePercent: true } },
-        payments: { select: { method: true, status: true, amount: true, createdAt: true }, orderBy: { createdAt: "desc" } },
+        items: {
+          select: {
+            id: true,
+            qty: true,
+            appliedUnitPrice: true,
+            lineTotal: true,
+            product: { select: { id: true, name: true, sku: true, barcode: true } },
+          },
+        },
+        payments: {
+          select: {
+            id: true,
+            method: true,
+            status: true,
+            amount: true,
+            reference: true,
+            createdAt: true,
+          },
+          orderBy: { createdAt: "desc" },
+        },
         _count: { select: { items: true, payments: true } },
       },
       orderBy: { createdAt: "desc" },
@@ -88,7 +107,7 @@ export async function getInvoice(id: string) {
   });
 }
 
-export async function addItem(invoiceId: string, productId: string, qty: number, unitPrice?: number) {
+export async function addItem(invoiceId: string, productId: string, qty: number) {
   const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
   if (!invoice) throw new Error("Invoice not found");
   if (invoice.status !== "DRAFT") throw new Error("Cannot modify a finalized invoice");
@@ -96,20 +115,22 @@ export async function addItem(invoiceId: string, productId: string, qty: number,
   const product = await prisma.product.findUnique({ where: { id: productId } });
   if (!product) throw new Error("Product not found");
   if (!product.isActive) throw new Error("Product is inactive");
+  if (product.stock <= 0) throw new Error("Product is out of stock");
 
   const computedUnitPrice = qty >= product.wholesaleQtyThreshold ? product.wholesalePrice : product.retailPrice;
-  const appliedUnitPrice = typeof unitPrice === "number" && unitPrice > 0 ? unitPrice : computedUnitPrice;
+  const appliedUnitPrice = computedUnitPrice;
   const lineTotal = appliedUnitPrice * qty;
 
   const existing = await prisma.invoiceItem.findFirst({ where: { invoiceId, productId } });
 
   if (existing) {
     const newQty = existing.qty + qty;
-    const recalculatedUnitPrice = typeof unitPrice === "number" && unitPrice > 0
-      ? unitPrice
-      : newQty >= product.wholesaleQtyThreshold
-        ? product.wholesalePrice
-        : product.retailPrice;
+    if (newQty > product.stock) {
+      throw new Error(`Insufficient stock for "${product.name}". Available: ${product.stock}, Requested: ${newQty}`);
+    }
+    const recalculatedUnitPrice = newQty >= product.wholesaleQtyThreshold
+      ? product.wholesalePrice
+      : product.retailPrice;
     const newLineTotal = recalculatedUnitPrice * newQty;
 
     const item = await prisma.invoiceItem.update({
@@ -118,6 +139,10 @@ export async function addItem(invoiceId: string, productId: string, qty: number,
     });
     await recomputeSubtotal(invoiceId);
     return item;
+  }
+
+  if (qty > product.stock) {
+    throw new Error(`Insufficient stock for "${product.name}". Available: ${product.stock}, Requested: ${qty}`);
   }
 
   const item = await prisma.invoiceItem.create({
@@ -135,6 +160,9 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
   const item = await prisma.invoiceItem.findUnique({ where: { id: itemId }, include: { product: true } });
   if (!item) throw new Error("Item not found");
   if (item.invoiceId !== invoiceId) throw new Error("Item does not belong to this invoice");
+  if (qty > item.product.stock) {
+    throw new Error(`Insufficient stock for "${item.product.name}". Available: ${item.product.stock}, Requested: ${qty}`);
+  }
 
   const appliedUnitPrice = qty >= item.product.wholesaleQtyThreshold ? item.product.wholesalePrice : item.product.retailPrice;
   const lineTotal = appliedUnitPrice * qty;
@@ -236,6 +264,52 @@ export async function finalizeInvoice(invoiceId: string, userId: string, discoun
           discountPercent: appliedDiscountPercent,
           netTotal,
           itemCount: invoice.items.length,
+        },
+      },
+    });
+  });
+
+  return getInvoice(invoiceId);
+}
+
+export async function cancelInvoice(invoiceId: string, userId: string) {
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      payments: true,
+    },
+  });
+
+  if (!invoice) throw new Error("Invoice not found");
+  if (invoice.status !== "FINALIZED") {
+    throw new Error("Only finalized invoices can be cancelled");
+  }
+  if (invoice.paymentStatus === "CANCELLED") {
+    throw new Error("Invoice is already cancelled");
+  }
+
+  const remainingDue = Math.max(0, invoice.netTotal - invoice.paidTotal);
+
+  await prisma.$transaction(async (tx) => {
+    await tx.invoice.update({
+      where: { id: invoiceId },
+      data: {
+        paymentStatus: "CANCELLED",
+      },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: userId,
+        action: "INVOICE_CANCELLED",
+        entityType: "Invoice",
+        entityId: invoiceId,
+        meta: {
+          invoiceNo: invoice.invoiceNo,
+          previousStatus: invoice.paymentStatus,
+          paidTotal: invoice.paidTotal,
+          netTotal: invoice.netTotal,
+          remainingDue,
         },
       },
     });

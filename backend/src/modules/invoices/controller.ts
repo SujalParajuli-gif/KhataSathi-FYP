@@ -33,7 +33,8 @@ export async function list(req: Request, res: Response) {
 
 export async function getOne(req: Request, res: Response) {
   try {
-    const invoice = await invoiceService.getInvoice(req.params.id);
+    const invoiceId = String(req.params.id);
+    const invoice = await invoiceService.getInvoice(invoiceId);
     if (!invoice) {
       res.status(404).json({ error: "Invoice not found" });
       return;
@@ -47,15 +48,21 @@ export async function getOne(req: Request, res: Response) {
 
 export async function addItem(req: Request, res: Response) {
   try {
-    const { productId, qty, unitPrice } = req.body;
+    const invoiceId = String(req.params.id);
+    const { productId, qty } = req.body;
     if (!productId || !qty || qty < 1) {
       res.status(400).json({ error: "productId and qty (>= 1) are required" });
       return;
     }
-    const item = await invoiceService.addItem(req.params.id, productId, Number(qty), unitPrice === undefined ? undefined : Number(unitPrice));
+    const item = await invoiceService.addItem(invoiceId, productId, Number(qty));
     res.status(201).json(item);
   } catch (err: any) {
-    if (err.message.includes("finalized") || err.message.includes("not found") || err.message.includes("inactive")) {
+    if (
+      err.message.includes("finalized") ||
+      err.message.includes("not found") ||
+      err.message.includes("inactive") ||
+      err.message.includes("stock")
+    ) {
       res.status(400).json({ error: err.message });
       return;
     }
@@ -66,15 +73,22 @@ export async function addItem(req: Request, res: Response) {
 
 export async function updateItem(req: Request, res: Response) {
   try {
+    const invoiceId = String(req.params.id);
+    const itemId = String(req.params.itemId);
     const { qty } = req.body;
     if (!qty || qty < 1) {
       res.status(400).json({ error: "qty (>= 1) is required" });
       return;
     }
-    const item = await invoiceService.updateItem(req.params.id, req.params.itemId, Number(qty));
+    const item = await invoiceService.updateItem(invoiceId, itemId, Number(qty));
     res.json(item);
   } catch (err: any) {
-    if (err.message.includes("finalized") || err.message.includes("not found")) {
+    if (
+      err.message.includes("finalized") ||
+      err.message.includes("not found") ||
+      err.message.includes("stock") ||
+      err.message.includes("belong")
+    ) {
       res.status(400).json({ error: err.message });
       return;
     }
@@ -85,10 +99,16 @@ export async function updateItem(req: Request, res: Response) {
 
 export async function removeItem(req: Request, res: Response) {
   try {
-    await invoiceService.removeItem(req.params.id, req.params.itemId);
+    const invoiceId = String(req.params.id);
+    const itemId = String(req.params.itemId);
+    await invoiceService.removeItem(invoiceId, itemId);
     res.json({ message: "Item removed" });
   } catch (err: any) {
-    if (err.message.includes("finalized") || err.message.includes("not found")) {
+    if (
+      err.message.includes("finalized") ||
+      err.message.includes("not found") ||
+      err.message.includes("belong")
+    ) {
       res.status(400).json({ error: err.message });
       return;
     }
@@ -99,10 +119,11 @@ export async function removeItem(req: Request, res: Response) {
 
 export async function finalize(req: Request, res: Response) {
   try {
+    const invoiceId = String(req.params.id);
     const userId = req.user!.id;
     const discountAmount = req.body?.discountAmount;
     const invoice = await invoiceService.finalizeInvoice(
-      req.params.id,
+      invoiceId,
       userId,
       discountAmount === undefined ? undefined : Number(discountAmount),
     );
@@ -113,6 +134,24 @@ export async function finalize(req: Request, res: Response) {
       return;
     }
     console.error("Finalize error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function cancel(req: Request, res: Response) {
+  try {
+    const invoice = await invoiceService.cancelInvoice(String(req.params.id), req.user!.id);
+    res.json(invoice);
+  } catch (err: any) {
+    if (
+      err.message.includes("not found") ||
+      err.message.includes("finalized") ||
+      err.message.includes("cancelled")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Cancel invoice error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

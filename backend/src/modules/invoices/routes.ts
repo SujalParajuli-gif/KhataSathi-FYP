@@ -7,6 +7,7 @@ import {
   updateItem,
   removeItem,
   finalize,
+  cancel,
 } from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
@@ -23,5 +24,6 @@ router.post("/:id/items", requireRole("CASHIER"), addItem);
 router.patch("/:id/items/:itemId", requireRole("CASHIER"), updateItem);
 router.delete("/:id/items/:itemId", requireRole("CASHIER"), removeItem);
 router.post("/:id/finalize", requireRole("CASHIER"), finalize);
+router.patch("/:id/cancel", requireRole("CASHIER", "ADMIN"), cancel);
 
 export default router;
