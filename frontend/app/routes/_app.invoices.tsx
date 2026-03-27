@@ -25,26 +25,26 @@ function statusPill(status: InvoiceStatusLabel) {
   const map: Record<InvoiceStatusLabel, { label: string; cls: string }> = {
     Paid: {
       label: "PAID",
-      cls: "bg-[#CFCFD3] text-[#000000] border-[#8C8889]", // Clouded Pearl
+      cls: "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]",
     },
     Partial: {
       label: "PARTIAL",
-      cls: "bg-[#FFFFFF] text-[#8C8889] border-[#8C8889]", // Pure Snow / Silver Slate
+      cls: "bg-[#FFF7E8] text-[#B7791F] border-[#F6D28B]",
     },
     Unpaid: {
       label: "UNPAID",
-      cls: "bg-rose-50 text-rose-700 border-rose-200", // Red for critical importance
+      cls: "bg-rose-50 text-rose-700 border-rose-200",
     },
     Cancelled: {
       label: "CANCELLED",
-      cls: "bg-[#CFCFD3] text-[#8C8889] border-[#CFCFD3]", // Clouded Pearl
+      cls: "bg-[#F3F4F6] text-[#6B7280] border-[#D1D5DB]",
     },
   };
 
   return (
     <span
       className={cn(
-        "px-[10px] py-[4px] rounded-[999px] text-[11px] font-extrabold border tracking-wider",
+        "px-[12px] py-[5px] rounded-full text-[11px] font-extrabold border tracking-wide",
         map[status].cls,
       )}
     >
@@ -56,6 +56,7 @@ function statusPill(status: InvoiceStatusLabel) {
 function methodChip(method: PaymentMethodLabel) {
   const base =
     "inline-flex items-center gap-1.5 px-[8px] py-[4px] rounded-[10px] text-[11px] font-bold border";
+
   if (method === "Cash") {
     return (
       <span
@@ -66,21 +67,31 @@ function methodChip(method: PaymentMethodLabel) {
       </span>
     );
   }
-  if (method === "eSewa" || method === "Khalti") {
+
+  if (method === "eSewa") {
     return (
       <span
-        className={cn(base, "bg-[#CFCFD3] text-[#000000] border-[#8C8889]")}
+        className={cn(base, "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]")}
       >
-        <Icon
-          name={method === "eSewa" ? "qr_code_2" : "account_balance_wallet"}
-          className="text-[13px]"
-        />
-        {method}
+        <Icon name="qr_code_2" className="text-[13px]" />
+        eSewa
       </span>
     );
   }
+
+  if (method === "Khalti") {
+    return (
+      <span
+        className={cn(base, "bg-[#F3E8FF] text-[#7C3AED] border-[#D8B4FE]")}
+      >
+        <Icon name="account_balance_wallet" className="text-[13px]" />
+        Khalti
+      </span>
+    );
+  }
+
   return (
-    <span className={cn(base, "bg-[#CFCFD3] text-[#8C8889] border-[#CFCFD3]")}>
+    <span className={cn(base, "bg-[#F3F4F6] text-[#6B7280] border-[#D1D5DB]")}>
       <Icon name="block" className="text-[13px]" />
       No Payment
     </span>
@@ -96,20 +107,74 @@ function calcSummary(invoices: AppInvoice[]) {
   const unpaid = invoices.filter(
     (invoice) => invoice.status === "Unpaid",
   ).length;
+  const due = invoices.filter(
+    (invoice) => invoice.status !== "Cancelled" && invoice.dueAmount > 0,
+  ).length;
   const cancelled = invoices.filter(
     (invoice) => invoice.status === "Cancelled",
   ).length;
+
   const totalSales = invoices.reduce(
     (sum, invoice) =>
       sum + (invoice.status !== "Cancelled" ? invoice.netTotal : 0),
     0,
   );
 
-  return { generated, paid, partial, unpaid, cancelled, totalSales };
+  const outstandingDue = invoices.reduce(
+    (sum, invoice) =>
+      sum + (invoice.status !== "Cancelled" ? invoice.dueAmount : 0),
+    0,
+  );
+
+  return {
+    generated,
+    paid,
+    partial,
+    unpaid,
+    due,
+    cancelled,
+    totalSales,
+    outstandingDue,
+  };
 }
 
 function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
+}
+
+function getCompactInvoiceSummary(invoice: AppInvoice) {
+  const rawItems = (invoice as any)?.items;
+
+  if (Array.isArray(rawItems) && rawItems.length > 0) {
+    const firstItem = rawItems[0];
+    const firstName =
+      firstItem?.productName || firstItem?.name || firstItem?.title || "Item";
+
+    const quantity =
+      firstItem?.quantity ?? firstItem?.qty ?? firstItem?.count ?? null;
+
+    const firstLabel = quantity
+      ? `${firstName} x${quantity}`
+      : String(firstName);
+
+    if (rawItems.length === 1) return firstLabel;
+
+    return `${firstLabel} + ${rawItems.length - 1} more`;
+  }
+
+  const raw = invoice.itemSummary?.trim();
+  if (!raw) return "No items";
+
+  const parts = raw
+    .split(",")
+    .map((item) => item.trim())
+    .filter(Boolean);
+
+  if (parts.length <= 1) {
+    return parts[0] || "No items";
+  }
+
+  return `${parts[0]} + ${parts.length - 1} more`;
 }
 
 type InvoiceEditPaymentMethod = "Cash" | "eSewa";
@@ -147,7 +212,6 @@ function InvoiceEditModal({
 
   return (
     <div className="fixed inset-0 z-[65]">
-      {/* Backdrop blur overlay with Midnight Mist opacity */}
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
@@ -190,7 +254,7 @@ function InvoiceEditModal({
                     paymentMethod === method
                       ? method === "Cash"
                         ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
-                        : "bg-emerald-600 text-white border-emerald-600"
+                        : "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
                       : "bg-[#FFFFFF] text-[#000000] border-[#CFCFD3] hover:bg-[#CFCFD3]",
                   )}
                 >
@@ -210,16 +274,19 @@ function InvoiceEditModal({
                 {invoice.customerSubtitle}
               </div>
             </div>
+
             <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
               <div className="text-[#8C8889] font-bold">Status</div>
               <div className="mt-2">{statusPill(invoice.status)}</div>
             </div>
+
             <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
               <div className="text-[#8C8889] font-bold">Total</div>
               <div className="font-mono font-extrabold text-[#000000] mt-1">
                 {formatNpr(invoice.netTotal)}
               </div>
             </div>
+
             <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
               <div className="text-[#8C8889] font-bold">Paid / Due</div>
               <div className="font-mono font-extrabold text-[#000000] mt-1">
@@ -258,7 +325,7 @@ function InvoiceEditModal({
           </div>
 
           {paymentMethod === "eSewa" && canSettle ? (
-            <div className="rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[12px] text-emerald-800">
+            <div className="rounded-[14px] border border-[#9DD8B2] bg-[#EAF8EF] px-4 py-3 text-[12px] text-[#179B4D]">
               This will create a pending eSewa attempt for the exact amount and
               redirect to the official sandbox form.
             </div>
@@ -285,6 +352,7 @@ function InvoiceEditModal({
                   ? "Continue to eSewa"
                   : "Add Payment"}
             </button>
+
             <button
               type="button"
               onClick={onMarkPaid}
@@ -293,6 +361,7 @@ function InvoiceEditModal({
             >
               Mark Fully Paid (Cash)
             </button>
+
             <button
               type="button"
               onClick={onCancelInvoice}
@@ -354,12 +423,10 @@ export default function CashierInvoicesPage() {
     load();
   }, []);
 
-  const filtered = useMemo(() => {
+  const scopedInvoices = useMemo(() => {
     const loweredQuery = query.trim().toLowerCase();
+
     return invoices
-      .filter((invoice) =>
-        activeTab === "All" ? true : invoice.status === activeTab,
-      )
       .filter((invoice) =>
         onlyMine && authUser?.id ? invoice.cashierId === authUser.id : true,
       )
@@ -368,6 +435,7 @@ export default function CashierInvoicesPage() {
       )
       .filter((invoice) => {
         if (!loweredQuery) return true;
+
         return [
           invoice.invoiceNo,
           invoice.customerName,
@@ -378,9 +446,15 @@ export default function CashierInvoicesPage() {
           .toLowerCase()
           .includes(loweredQuery);
       });
-  }, [activeTab, authUser?.id, invoices, methodFilter, onlyMine, query]);
+  }, [authUser?.id, invoices, methodFilter, onlyMine, query]);
 
-  const summary = useMemo(() => calcSummary(filtered), [filtered]);
+  const filtered = useMemo(() => {
+    return scopedInvoices.filter((invoice) =>
+      activeTab === "All" ? true : invoice.status === activeTab,
+    );
+  }, [activeTab, scopedInvoices]);
+
+  const summary = useMemo(() => calcSummary(scopedInvoices), [scopedInvoices]);
 
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -396,6 +470,7 @@ export default function CashierInvoicesPage() {
     const cached = invoices.find((invoice) => invoice.id === id) || null;
     setSelectedInvoiceId(id);
     setDetailInvoice(cached);
+
     try {
       const detailed = await hydrateInvoice(id);
       setDetailInvoice(detailed);
@@ -425,18 +500,22 @@ export default function CashierInvoicesPage() {
 
   function validatePaymentAmount(invoice: AppInvoice, overrideAmount?: number) {
     const nextAmount = overrideAmount ?? Number(paymentAmount);
+
     if (!Number.isFinite(nextAmount)) {
       setPaymentError("Enter a valid payment amount.");
       return null;
     }
+
     if (nextAmount <= 0) {
       setPaymentError("Payment amount must be greater than 0.");
       return null;
     }
+
     if (nextAmount > invoice.dueAmount) {
       setPaymentError("Payment amount cannot exceed the remaining due.");
       return null;
     }
+
     setPaymentError("");
     return nextAmount;
   }
@@ -444,25 +523,30 @@ export default function CashierInvoicesPage() {
   async function refreshInvoiceState(invoiceId: string) {
     await loadInvoices();
     const updated = await hydrateInvoice(invoiceId);
+
     setDetailInvoice((current) =>
       current?.id === invoiceId ? updated : current,
     );
+
     return updated;
   }
 
   async function handleAddPayment() {
     if (!editInvoice) return;
+
     const amount = validatePaymentAmount(editInvoice);
     if (amount === null) return;
 
     try {
       setSavingEdit(true);
+
       if (editPaymentMethod === "Cash") {
         await addPaymentApi(editInvoice.id, {
           method: "CASH",
           amount,
           status: "SUCCESS",
         });
+
         await refreshInvoiceState(editInvoice.id);
         closeEditInvoice();
       } else {
@@ -473,7 +557,7 @@ export default function CashierInvoicesPage() {
       }
     } catch (error: any) {
       setPaymentError(
-        error.response?.data?.error || "Failed to update invoice.",
+        error?.response?.data?.error || "Failed to update invoice.",
       );
     } finally {
       setSavingEdit(false);
@@ -482,6 +566,7 @@ export default function CashierInvoicesPage() {
 
   async function handleMarkFullyPaid() {
     if (!editInvoice) return;
+
     const amount = validatePaymentAmount(editInvoice, editInvoice.dueAmount);
     if (amount === null) return;
 
@@ -492,11 +577,12 @@ export default function CashierInvoicesPage() {
         amount,
         status: "SUCCESS",
       });
+
       await refreshInvoiceState(editInvoice.id);
       closeEditInvoice();
     } catch (error: any) {
       setPaymentError(
-        error.response?.data?.error || "Failed to mark invoice as paid.",
+        error?.response?.data?.error || "Failed to mark invoice as paid.",
       );
     } finally {
       setSavingEdit(false);
@@ -513,7 +599,7 @@ export default function CashierInvoicesPage() {
       closeEditInvoice();
     } catch (error: any) {
       setPaymentError(
-        error.response?.data?.error || "Failed to cancel invoice.",
+        error?.response?.data?.error || "Failed to cancel invoice.",
       );
     } finally {
       setSavingEdit(false);
@@ -530,7 +616,6 @@ export default function CashierInvoicesPage() {
 
   return (
     <div className="w-full">
-      {/* HEADER SECTION */}
       <div className="flex items-start justify-between gap-4 flex-wrap">
         <div>
           <div className="text-[24px] font-extrabold text-[#000000]">
@@ -545,6 +630,7 @@ export default function CashierInvoicesPage() {
             })}
           </div>
         </div>
+
         <div className="flex items-center gap-3">
           <div className="w-[360px] max-w-[70vw]">
             <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px] shadow-sm focus-within:border-[#000000] transition-colors">
@@ -560,6 +646,7 @@ export default function CashierInvoicesPage() {
               />
             </div>
           </div>
+
           <button
             type="button"
             onClick={() => setFilterOpen((value) => !value)}
@@ -571,8 +658,7 @@ export default function CashierInvoicesPage() {
         </div>
       </div>
 
-      {/* RESTRUCTURED SUMMARY METRICS ROW */}
-      <div className="grid grid-cols-1 md:grid-cols-4 gap-4 mt-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mt-6">
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
             Total Sales
@@ -591,43 +677,43 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
             Paid Invoices
           </div>
-          <div className="text-2xl font-extrabold text-[#000000] mt-1">
+          <div className="text-2xl font-extrabold text-[#179B4D] mt-1">
             {summary.paid}
           </div>
-          <div className="text-[12px] font-medium text-[#8C8889] mt-2 border-t border-[#CFCFD3]/50 pt-2">
-            <span className="font-extrabold text-[#000000]">
-              {summary.partial}
-            </span>{" "}
-            partially paid
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
+          <div className="text-[11px] font-extrabold text-[#B7791F] uppercase tracking-wider">
+            Partial Invoices
+          </div>
+          <div className="text-2xl font-extrabold text-[#B7791F] mt-1">
+            {summary.partial}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
+          <div className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider">
+            Unpaid Invoices
+          </div>
+          <div className="text-2xl font-extrabold text-rose-700 mt-1">
+            {summary.unpaid}
           </div>
         </div>
 
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
-            Unpaid / Due
+            Outstanding Due
           </div>
-          <div
-            className={cn(
-              "text-2xl font-extrabold mt-1",
-              summary.unpaid > 0 ? "text-rose-600" : "text-[#000000]",
-            )}
-          >
-            {summary.unpaid}
-          </div>
-          <div className="text-[12px] font-medium text-[#8C8889] mt-2 border-t border-[#CFCFD3]/50 pt-2">
-            <span className="font-extrabold text-[#000000]">
-              {summary.cancelled}
-            </span>{" "}
-            cancelled
+          <div className="text-2xl font-extrabold text-[#000000] mt-1">
+            {formatNpr(summary.outstandingDue)}
           </div>
         </div>
       </div>
 
-      {/* TABS & FILTERS */}
       <div className="mt-6 flex items-center gap-2 flex-wrap">
         {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
           (tab) => {
@@ -668,6 +754,7 @@ export default function CashierInvoicesPage() {
               <Icon name="close" className="text-[18px]" />
             </button>
           </div>
+
           <div className="mt-4 grid grid-cols-12 gap-5">
             <div className="col-span-4">
               <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
@@ -683,6 +770,7 @@ export default function CashierInvoicesPage() {
                 Show only my invoices
               </label>
             </div>
+
             <div className="col-span-8">
               <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
                 Payment Method
@@ -714,7 +802,6 @@ export default function CashierInvoicesPage() {
         </div>
       ) : null}
 
-      {/* FULL-WIDTH DATA TABLE WITH UPDATED SUMMARY COLUMN */}
       <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden shadow-sm">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[800px]">
@@ -740,13 +827,13 @@ export default function CashierInvoicesPage() {
                 </th>
               </tr>
             </thead>
+
             <tbody className="divide-y divide-[#CFCFD3]">
               {pageItems.map((invoice) => (
                 <tr
                   key={invoice.id}
                   className="hover:bg-[#CFCFD3]/20 transition-colors group"
                 >
-                  {/* Invoice & Date */}
                   <td className="px-5 py-4 align-top">
                     <div className="font-bold text-[#000000]">
                       {invoice.invoiceNo}
@@ -759,7 +846,6 @@ export default function CashierInvoicesPage() {
                     </div>
                   </td>
 
-                  {/* Customer */}
                   <td className="px-5 py-4 align-top">
                     <div className="flex items-center gap-3">
                       <div className="w-8 h-8 rounded-full bg-[#CFCFD3] border border-[#CFCFD3] flex items-center justify-center font-extrabold text-[#000000] text-xs shrink-0">
@@ -781,29 +867,25 @@ export default function CashierInvoicesPage() {
                     </div>
                   </td>
 
-                  {/* INTERACTIVE ORDER BADGE SUMMARY */}
                   <td className="px-5 py-4 align-top max-w-[260px]">
-                    <div
-                      className="inline-flex items-center gap-2 bg-[#CFCFD3]/30 border border-[#CFCFD3] px-3 py-1.5 rounded-[10px] w-full cursor-help hover:bg-[#CFCFD3]/60 transition-colors"
-                      title={invoice.itemSummary}
-                    >
+                    <div className="inline-flex items-center gap-2 bg-[#CFCFD3]/30 border border-[#CFCFD3] px-3 py-1.5 rounded-[10px] w-full hover:bg-[#CFCFD3]/60 transition-colors">
                       <Icon
                         name="shopping_bag"
                         className="text-[14px] text-[#8C8889] shrink-0"
                       />
                       <span className="text-[12px] font-medium text-[#000000] truncate">
-                        {invoice.itemSummary || "No items"}
+                        {getCompactInvoiceSummary(invoice)}
                       </span>
                     </div>
                   </td>
 
-                  {/* Status & Method */}
                   <td className="px-5 py-4 align-top">
                     <div className="flex flex-col items-start gap-2">
                       <div className="flex items-center gap-2">
                         {statusPill(invoice.status)}
                         {methodChip(invoice.paymentMethod)}
                       </div>
+
                       {invoice.status !== "Paid" &&
                         invoice.status !== "Cancelled" &&
                         invoice.dueAmount > 0 && (
@@ -814,14 +896,12 @@ export default function CashierInvoicesPage() {
                     </div>
                   </td>
 
-                  {/* Net Total */}
                   <td className="px-5 py-4 align-top text-right">
                     <div className="font-mono font-extrabold text-[#000000] text-[15px]">
                       {formatNpr(invoice.netTotal)}
                     </div>
                   </td>
 
-                  {/* Actions */}
                   <td className="px-5 py-4 align-top">
                     <div className="flex items-center justify-center gap-1 opacity-0 group-hover:opacity-100 transition-opacity focus-within:opacity-100">
                       <button
@@ -831,6 +911,7 @@ export default function CashierInvoicesPage() {
                       >
                         <Icon name="visibility" className="text-[16px]" />
                       </button>
+
                       <button
                         onClick={() => openEditInvoice(invoice)}
                         className="w-8 h-8 rounded-lg bg-[#CFCFD3]/50 hover:bg-[#000000] text-[#8C8889] hover:text-[#FFFFFF] flex items-center justify-center transition-colors"
@@ -838,6 +919,7 @@ export default function CashierInvoicesPage() {
                       >
                         <Icon name="edit" className="text-[16px]" />
                       </button>
+
                       <button
                         onClick={() => openInvoicePrint(invoice.id)}
                         className="w-8 h-8 rounded-lg bg-[#CFCFD3]/50 hover:bg-[#000000] text-[#8C8889] hover:text-[#FFFFFF] flex items-center justify-center transition-colors"
@@ -859,7 +941,6 @@ export default function CashierInvoicesPage() {
           </div>
         ) : null}
 
-        {/* PAGINATION FOOTER */}
         <div className="border-t-2 border-[#CFCFD3] bg-[#FFFFFF] p-4 flex items-center justify-center gap-2">
           <button
             type="button"
@@ -870,11 +951,13 @@ export default function CashierInvoicesPage() {
           >
             <Icon name="chevron_left" className="text-[18px]" />
           </button>
+
           {Array.from({ length: totalPages })
             .slice(0, 8)
             .map((_, index) => {
               const pageNumber = index + 1;
               const active = pageNumber === pageClamped;
+
               return (
                 <button
                   key={pageNumber}
@@ -891,6 +974,7 @@ export default function CashierInvoicesPage() {
                 </button>
               );
             })}
+
           <button
             type="button"
             onClick={() =>

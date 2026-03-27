@@ -1,17 +1,14 @@
-// frontend/app/routes/login.tsx
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import Icon from "~/components/ui/Icon";
 import navData from "~/config/ui.nav.json";
 import type { AuthUser, UserRole } from "~/lib/auth";
-import { setAuthUser, setToken, isLoggedIn } from "~/lib/auth";
+import { isLoggedIn, setAuthUser, setToken } from "~/lib/auth";
 import { loginApi } from "~/lib/api/endpoints";
 
-// --- Utility ---
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
-
 
 function Field({
   label,
@@ -25,7 +22,7 @@ function Field({
   return (
     <div className={className}>
       {label ? (
-        <div className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider mb-2">
+        <div className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.22em] text-[#8C8889]">
           {label}
         </div>
       ) : null}
@@ -54,7 +51,14 @@ function TextInput({
   hasError?: boolean;
 }) {
   return (
-    <div className={cn("group h-[48px] rounded-[14px] border-2 bg-slate-50 focus-within:bg-white transition-colors px-[14px] flex items-center gap-3", hasError ? "border-rose-400" : "border-slate-200 focus-within:border-orange-500")}>
+    <div
+      className={cn(
+        "flex h-[52px] items-center gap-3 rounded-[14px] border-2 bg-white px-[16px] transition-all duration-200 shadow-sm",
+        hasError
+          ? "border-rose-300"
+          : "border-[#CFCFD3] focus-within:border-[#000000] hover:border-[#8C8889]",
+      )}
+    >
       {left}
       <input
         type={type}
@@ -64,7 +68,7 @@ function TextInput({
         onKeyDown={(e) => {
           if (e.key === "Enter" && onEnter) onEnter();
         }}
-        className="w-full h-full bg-transparent outline-none text-[13px] font-bold text-slate-900 placeholder:text-slate-400 placeholder:font-medium"
+        className="h-full w-full bg-transparent text-[13px] font-bold text-[#000000] outline-none placeholder:font-medium placeholder:text-[#8C8889]"
       />
       {right}
     </div>
@@ -87,14 +91,14 @@ function Button({
   disabled?: boolean;
 }) {
   const baseClass =
-    "h-[48px] rounded-[14px] font-extrabold text-[13px] border-2 transition flex items-center justify-center gap-2 px-6 active:scale-95";
+    "h-[52px] rounded-[14px] border-2 px-6 text-[13px] font-extrabold transition flex items-center justify-center gap-2 active:scale-95";
   const variants = {
     primary:
-      "bg-orange-500 hover:bg-orange-600 text-white border-orange-500 shadow-md hover:shadow-lg shadow-orange-500/20",
+      "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937] shadow-md shadow-slate-900/15",
     outline:
-      "bg-white hover:bg-slate-50 text-slate-700 border-slate-200 hover:border-slate-300",
+      "border-[#CFCFD3] bg-white text-[#000000] hover:bg-[#F8FAFC] hover:border-[#8C8889]",
     ghost:
-      "bg-transparent border-transparent text-slate-500 hover:text-orange-600 hover:bg-orange-50",
+      "border-transparent bg-transparent text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
   };
 
   return (
@@ -106,7 +110,7 @@ function Button({
         baseClass,
         variants[variant],
         className,
-        disabled && "opacity-50 pointer-events-none",
+        disabled && "pointer-events-none opacity-50",
       )}
     >
       {children}
@@ -116,23 +120,23 @@ function Button({
 
 export default function LoginPage() {
   const navigate = useNavigate();
-
   const [showPw, setShowPw] = useState(false);
   const [loading, setLoading] = useState(false);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
-
-  // Form state
-  const [formData, setFormData] = useState({
-    email: "",
-    password: "",
-  });
-
+  const [formData, setFormData] = useState({ email: "", password: "" });
   const [touched, setTouched] = useState({ email: false, password: false });
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(formData.email);
-  const emailError = touched.email && formData.email.trim().length > 0 && !emailValid;
-  const pwError = touched.password && formData.password.length > 0 && formData.password.length < 4;
 
-  // Redirect if already logged in
+  const emailValue = formData.email.trim();
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
+  const emailError =
+    touched.email && !emailValue
+      ? "Email is required."
+      : touched.email && !emailValid
+        ? "Please enter a valid email address."
+        : "";
+  const passwordError =
+    touched.password && !formData.password ? "Password is required." : "";
+
   React.useEffect(() => {
     if (isLoggedIn()) {
       const stored = localStorage.getItem("khatasathi_auth_user");
@@ -141,33 +145,32 @@ export default function LoginPage() {
         navigate(user.role === "cashier" ? "/billing" : "/");
       }
     }
-  }, []);
+  }, [navigate]);
 
   const canSubmit = useMemo(() => {
-    const emailOk = formData.email.trim().length > 0;
-    const pwOk = formData.password.length >= 4;
-    return emailOk && pwOk && !loading;
-  }, [formData, loading]);
+    return (
+      emailValid &&
+      emailValue.length > 0 &&
+      formData.password.length > 0 &&
+      !loading
+    );
+  }, [emailValid, emailValue, formData.password, loading]);
 
   async function onLogin(e?: React.FormEvent) {
     e?.preventDefault();
     setErrorMsg(null);
+    setTouched({ email: true, password: true });
 
-    const email = formData.email.trim();
-    if (!email) return setErrorMsg("Please enter your email.");
-    if (formData.password.length < 4)
-      return setErrorMsg("Password is too short.");
+    if (!emailValue) return setErrorMsg("Please enter your email.");
+    if (!emailValid) return setErrorMsg("Please enter a valid email address.");
+    if (!formData.password) return setErrorMsg("Please enter your password.");
 
     setLoading(true);
 
     try {
-      // Call real backend API
-      const data = await loginApi(email, formData.password);
-
-      // Store JWT token
+      const data = await loginApi(emailValue, formData.password);
       setToken(data.token);
 
-      // Store user info (role will be lowercased by setAuthUser)
       const user: AuthUser = {
         id: data.user.id,
         name: data.user.name,
@@ -177,15 +180,11 @@ export default function LoginPage() {
       };
       setAuthUser(user);
 
-      // Redirect by role
-      if (user.role === "cashier") {
-        navigate("/billing");
-      } else {
-        navigate("/");
-      }
+      navigate(user.role === "cashier" ? "/billing" : "/");
     } catch (err: any) {
       const msg =
-        err.response?.data?.error || "Login failed. Please check your credentials.";
+        err.response?.data?.error ||
+        "Login failed. Please check your credentials.";
       setErrorMsg(msg);
     } finally {
       setLoading(false);
@@ -193,94 +192,147 @@ export default function LoginPage() {
   }
 
   return (
-    <div className="min-h-screen w-full bg-slate-50 flex items-center justify-center overflow-hidden font-sans">
-      <div className="w-full max-w-[420px] p-6 space-y-8">
-        {/* Brand Header */}
-        <div className="flex flex-col items-center gap-4">
-          <div className="w-[64px] h-[64px] rounded-[18px] bg-gradient-to-br from-orange-500 to-orange-600 flex items-center justify-center shadow-xl shadow-orange-500/20 font-extrabold text-white text-[22px]">
-            {navData.brand.logoText}
-          </div>
-          <div className="text-center space-y-1">
-            <h2 className="text-[28px] font-extrabold text-slate-900">
-              Welcome Back
-            </h2>
-            <p className="text-slate-500 text-[14px] font-medium">
-              Sign in to {navData.brand.name}
-            </p>
+    <div className="min-h-screen w-full overflow-hidden bg-[#EEF2F6] font-sans">
+      <div className="relative flex min-h-screen items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+        <div className="pointer-events-none absolute inset-0 overflow-hidden">
+          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.95),rgba(238,242,246,0.9)_34%,rgba(226,232,240,0.95)_100%)]" />
+          <div className="absolute left-[-8%] top-[-10%] h-[420px] w-[420px] rounded-full bg-white/70 blur-3xl" />
+          <div className="absolute bottom-[-18%] right-[-8%] h-[420px] w-[420px] rounded-full bg-slate-200/50 blur-3xl" />
+
+          {/* Faded background image behind all components */}
+          <div className="absolute inset-0 flex items-center justify-center opacity-5">
+            <img
+              src="/assets/images/Login.png"
+              alt=""
+              aria-hidden="true"
+              className="w-full max-w-[1500px] object-contain"
+            />
           </div>
         </div>
 
-        {errorMsg ? (
-          <div className="rounded-[14px] border-2 border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700">
-            {errorMsg}
-          </div>
-        ) : null}
+        <div className="relative z-10 w-full max-w-[1240px] overflow-hidden rounded-[28px] border border-[#D9DDE3] bg-white">
+          <div className="grid min-h-[720px] lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+            <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">
+              <div className="w-full max-w-[318px]">
+                <div className="mb-10 space-y-4">
+                  <div className="inline-flex items-center gap-2 rounded-full border border-[#CFCFD3] bg-white px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-[0.22em] text-[#8C8889]">
+                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#F3F4F6] text-[11px] font-extrabold text-[#000000]">
+                      {navData.brand.logoText}
+                    </span>
+                    {navData.brand.name}
+                  </div>
 
-        {/* Form */}
-        <form onSubmit={onLogin} className="space-y-5">
-          <Field label="Email">
-            <TextInput
-              value={formData.email}
-              onChange={(v) =>
-                setFormData((p) => ({ ...p, email: v }))
-              }
-              placeholder="e.g. admin@khatasathi.com"
-              type="email"
-              left={<Icon name="person" className="text-slate-400" />}
-              hasError={emailError}
-              onEnter={() => { setTouched({ email: true, password: true }); }}
-            />
-            {emailError && <div className="text-[11px] text-rose-500 mt-1 font-semibold">Please enter a valid email address.</div>}
-          </Field>
+                  <div className="space-y-2">
+                    <h2 className="text-[38px] font-extrabold leading-none text-[#111827] sm:text-[42px]">
+                      Login
+                    </h2>
+                    <p className="text-[15px] font-medium text-[#4B5563]">
+                      Welcome to {navData.brand.name}
+                    </p>
+                  </div>
+                </div>
 
-          <div className="space-y-2">
-            <Field label="Password">
-              <TextInput
-                value={formData.password}
-                onChange={(v) => setFormData((p) => ({ ...p, password: v }))}
-                placeholder="••••••••"
-                type={showPw ? "text" : "password"}
-                onEnter={() => { setTouched({ email: true, password: true }); if (canSubmit) onLogin(); }}
-                left={<Icon name="lock" className="text-slate-400" />}
-                hasError={pwError}
-                right={
-                  <button
-                    type="button"
-                    onClick={() => setShowPw((v) => !v)}
-                    className="text-slate-400 hover:text-slate-600 transition"
-                    title={showPw ? "Hide password" : "Show password"}
-                  >
-                    <Icon
-                      name={showPw ? "visibility" : "visibility_off"}
+                {errorMsg ? (
+                  <div className="mb-5 rounded-[14px] border-2 border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700">
+                    {errorMsg}
+                  </div>
+                ) : null}
+
+                <form onSubmit={onLogin} className="space-y-5">
+                  <Field label="Email">
+                    <TextInput
+                      value={formData.email}
+                      onChange={(value) =>
+                        setFormData((current) => ({ ...current, email: value }))
+                      }
+                      placeholder="Username or email"
+                      type="email"
+                      left={<Icon name="person" className="text-[#8C8889]" />}
+                      hasError={!!emailError}
+                      onEnter={() =>
+                        setTouched({ email: true, password: true })
+                      }
                     />
-                  </button>
-                }
-              />
-              {pwError && <div className="text-[11px] text-rose-500 mt-1 font-semibold">Password must be at least 4 characters.</div>}
-            </Field>
+                    {emailError ? (
+                      <div className="mt-1 text-[11px] font-semibold text-rose-500">
+                        {emailError}
+                      </div>
+                    ) : null}
+                  </Field>
 
+                  <div className="space-y-2">
+                    <Field label="Password">
+                      <TextInput
+                        value={formData.password}
+                        onChange={(value) =>
+                          setFormData((current) => ({
+                            ...current,
+                            password: value,
+                          }))
+                        }
+                        placeholder="password"
+                        type={showPw ? "text" : "password"}
+                        onEnter={() => {
+                          setTouched({ email: true, password: true });
+                          if (canSubmit) onLogin();
+                        }}
+                        left={<Icon name="lock" className="text-[#8C8889]" />}
+                        hasError={!!passwordError}
+                        right={
+                          <button
+                            type="button"
+                            onClick={() => setShowPw((value) => !value)}
+                            className="text-[#8C8889] transition hover:text-[#000000]"
+                            title={showPw ? "Hide password" : "Show password"}
+                          >
+                            <Icon
+                              name={showPw ? "visibility" : "visibility_off"}
+                            />
+                          </button>
+                        }
+                      />
+                      {passwordError ? (
+                        <div className="mt-1 text-[11px] font-semibold text-rose-500">
+                          {passwordError}
+                        </div>
+                      ) : null}
+                    </Field>
+                  </div>
+
+                  <Button
+                    variant="primary"
+                    className="mt-3 w-full text-[15px]"
+                    type="submit"
+                    disabled={!canSubmit}
+                  >
+                    {loading ? (
+                      <span className="animate-pulse">Processing...</span>
+                    ) : (
+                      <>
+                        <Icon name="login" className="text-white" />
+                        Sign up
+                      </>
+                    )}
+                  </Button>
+                </form>
+
+                <div className="pt-6 text-center text-[11px] font-bold text-[#9CA3AF]">
+                  © {new Date().getFullYear()} {navData.brand.name}
+                </div>
+              </div>
+            </div>
+
+            <div className="relative hidden min-h-[720px] items-center justify-end overflow-hidden bg-white lg:flex">
+              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(229,237,255,0.65),rgba(255,255,255,0)_68%)]" />
+              <div className="relative flex h-full w-full items-center justify-end">
+                <img
+                  src="/assets/images/Login.png"
+                  alt="Login visual"
+                  className="h-full w-full object-contain object-right"
+                />
+              </div>
+            </div>
           </div>
-
-          <Button
-            variant="primary"
-            className="w-full mt-2 h-[52px] text-[15px]"
-            type="submit"
-            disabled={!canSubmit}
-          >
-            {loading ? (
-              <span className="animate-pulse">Processing...</span>
-            ) : (
-              <>
-                <Icon name="login" className="text-white" />
-                Sign In
-              </>
-            )}
-          </Button>
-        </form>
-
-        {/* Footer */}
-        <div className="pt-4 text-[11px] font-bold text-slate-400 text-center">
-          © {new Date().getFullYear()} {navData.brand.name}
         </div>
       </div>
     </div>
