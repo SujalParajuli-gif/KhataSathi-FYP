@@ -1,107 +1,133 @@
-// frontend/app/components/blocks/dashboard/DashboardSalesOverview.tsx
-import React, { useMemo } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
+import {
+  Bar,
+  CartesianGrid,
+  ComposedChart,
+  Legend,
+  Line,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
 import CardShell from "~/components/ui/CardShell";
 import SectionTitle from "~/components/ui/SectionTitle";
+import { formatNpr } from "~/lib/invoices";
 
 export type RangeKey = "today" | "week" | "month";
 
-function toFiniteNumber(v: unknown) {
-  const n = typeof v === "number" ? v : Number(v);
-  return Number.isFinite(n) ? n : 0;
+export type DashboardActivityPoint = {
+  label: string;
+  invoices: number;
+  itemsSold: number;
+  revenue: number;
+};
+
+function compact(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: value >= 1000 ? 1 : 0,
+  }).format(value);
+}
+
+function SafeChartFrame({
+  className,
+  children,
+}: {
+  className: string;
+  children: React.ReactElement<{ width?: number; height?: number }>;
+}) {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
+
+    let frameId = 0;
+    const update = () => {
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(() => {
+        const rect = node.getBoundingClientRect();
+        const nextWidth = Math.floor(rect.width);
+        const nextHeight = Math.floor(rect.height);
+        setSize((current) =>
+          current.width === nextWidth && current.height === nextHeight
+            ? current
+            : { width: nextWidth, height: nextHeight },
+        );
+      });
+    };
+
+    update();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => update());
+      observer.observe(node);
+
+      return () => {
+        cancelAnimationFrame(frameId);
+        observer.disconnect();
+      };
+    }
+
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
+
+  return (
+    <div className={className}>
+      <div ref={containerRef} className="h-full w-full overflow-hidden">
+        {size.width > 0 && size.height > 0
+          ? React.cloneElement(children, {
+              width: size.width,
+              height: size.height,
+            })
+          : null}
+      </div>
+    </div>
+  );
 }
 
 export default function DashboardSalesOverview({
   range,
   onRangeChange,
-  salesBars,
+  data,
+  loading,
+  error,
 }: {
   range: RangeKey;
   onRangeChange: (r: RangeKey) => void;
-  salesBars: number[];
+  data: DashboardActivityPoint[];
+  loading?: boolean;
+  error?: string;
 }) {
-  const labels = useMemo(() => {
-    return range === "today"
-      ? ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12"]
-      : range === "week"
-        ? [
-            "Mon",
-            "Tue",
-            "Wed",
-            "Thu",
-            "Fri",
-            "Sat",
-            "Sun",
-            "W2",
-            "W3",
-            "W4",
-            "W5",
-            "W6",
-          ]
-        : [
-            "W1",
-            "W2",
-            "W3",
-            "W4",
-            "W5",
-            "W6",
-            "W7",
-            "W8",
-            "W9",
-            "W10",
-            "W11",
-            "W12",
-          ];
-  }, [range]);
-
-  const safeBars = useMemo(() => {
-    const cleaned = Array.isArray(salesBars)
-      ? salesBars.map(toFiniteNumber)
-      : [];
-    const targetLen = labels.length;
-
-    if (cleaned.length === targetLen) return cleaned;
-    if (cleaned.length > targetLen) return cleaned.slice(0, targetLen);
-
-    const padded = cleaned.slice();
-    while (padded.length < targetLen) padded.push(0);
-    return padded;
-  }, [salesBars, labels.length]);
-
-  const max = useMemo(() => {
-    const m = safeBars.length ? Math.max(...safeBars) : 0;
-    return Number.isFinite(m) ? m : 0;
-  }, [safeBars]);
-
-  const avg = useMemo(() => {
-    if (!safeBars.length) return 0;
-    const sum = safeBars.reduce((s, v) => s + v, 0);
-    const a = Math.round(sum / safeBars.length);
-    return Number.isFinite(a) ? a : 0;
-  }, [safeBars]);
-
-  const peakIndex = useMemo(() => {
-    if (!safeBars.length) return 0;
-    const idx = safeBars.findIndex((v) => v === max);
-    return idx >= 0 ? idx : 0;
-  }, [safeBars, max]);
-
-  const yMaxPx = 200;
+  const totals = useMemo(() => {
+    const totalInvoices = data.reduce((sum, point) => sum + point.invoices, 0);
+    const totalItems = data.reduce((sum, point) => sum + point.itemsSold, 0);
+    const totalRevenue = data.reduce((sum, point) => sum + point.revenue, 0);
+    return {
+      totalInvoices,
+      totalItems,
+      totalRevenue,
+      averageInvoices: data.length ? Math.round(totalInvoices / data.length) : 0,
+    };
+  }, [data]);
 
   return (
-    <CardShell>
+    <CardShell className="overflow-hidden">
       <div className="px-[20px] py-[18px] flex items-center justify-between">
         <div className="flex items-center gap-2">
-          <SectionTitle title="Sales Overview" />
+          <SectionTitle title="Invoice Activity" />
           <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
-            {range === "today"
-              ? "Hourly"
-              : range === "week"
-                ? "Daily"
-                : "Weekly"}
+            Operational
           </span>
         </div>
 
-        <div className="flex bg-slate-100 p-1 rounded-xl border border-slate-200/50">
+        <div className="flex rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1">
           {(["today", "week", "month"] as RangeKey[]).map((r) => (
             <button
               key={r}
@@ -109,8 +135,8 @@ export default function DashboardSalesOverview({
               onClick={() => onRangeChange(r)}
               className={`px-3 py-1.5 text-[11px] font-bold rounded-lg capitalize transition-all ${
                 range === r
-                  ? "bg-white text-slate-900 shadow-sm"
-                  : "text-slate-500 hover:text-slate-700"
+                  ? "bg-white text-[var(--app-text)] shadow-sm"
+                  : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
               }`}
               aria-pressed={range === r}
             >
@@ -122,66 +148,96 @@ export default function DashboardSalesOverview({
 
       <div className="px-[20px] -mt-2 pb-[10px] flex flex-wrap items-center gap-2 text-[11px] font-bold">
         <span className="text-slate-500">
-          Avg: <span className="text-slate-900">{avg}</span>
+          Avg invoices: <span className="text-slate-900">{totals.averageInvoices}</span>
         </span>
         <span className="text-slate-300">•</span>
         <span className="text-slate-500">
-          Peak: <span className="text-slate-900">{max}</span>{" "}
-          <span className="text-slate-400">
-            ({range === "today" ? "Slot" : range === "week" ? "Day" : "Week"}{" "}
-            {peakIndex + 1})
-          </span>
+          Items sold: <span className="text-slate-900">{totals.totalItems}</span>
         </span>
         <span className="text-slate-300">•</span>
-        <span className="text-slate-400">Hover a bar for value</span>
+        <span className="text-slate-500">
+          Revenue: <span className="text-slate-900">{formatNpr(totals.totalRevenue)}</span>
+        </span>
       </div>
 
       <div className="px-[20px] pb-[20px]">
-        <div className="h-[240px] rounded-[16px] bg-slate-50/50 border border-dashed border-slate-200 p-4">
-          <div className="relative h-[200px] flex items-end justify-between gap-2">
-            <div className="absolute inset-0 flex flex-col justify-between pointer-events-none">
-              {[0, 1, 2, 3].map((i) => (
-                <div key={i} className="border-t border-slate-200/60" />
-              ))}
-            </div>
-
-            {safeBars.map((h, idx) => {
-              const safeH = toFiniteNumber(h);
-              const pct = max <= 0 ? 0 : Math.round((safeH / max) * 100);
-              const heightPx =
-                max <= 0 ? 0 : Math.round((safeH / max) * yMaxPx);
-
-              return (
-                <div
-                  key={idx}
-                  className="relative flex-1 h-full flex flex-col justify-end"
-                >
-                  <div className="relative h-full flex items-end group">
-                    <div
-                      className={`w-full rounded-t-md transition-all duration-500 hover:opacity-90 ${
-                        idx % 3 === 1 ? "bg-orange-500" : "bg-orange-200"
-                      }`}
-                      style={{ height: `${heightPx}px` }}
-                      title={`${labels[idx]} • Value: ${safeH}`}
-                      aria-label={`${labels[idx]} value ${safeH}`}
-                    />
-
-                    <div className="pointer-events-none absolute -top-10 left-1/2 -translate-x-1/2 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <div className="rounded-xl bg-slate-900 text-white px-2.5 py-1.5 text-[11px] font-bold shadow-lg whitespace-nowrap">
-                        {labels[idx]}: {safeH}{" "}
-                        <span className="text-slate-300">({pct}%)</span>
-                      </div>
-                    </div>
-                  </div>
-
-                  <div className="mt-2 text-center text-[10px] font-bold text-slate-400 select-none">
-                    {labels[idx]}
-                  </div>
-                </div>
-              );
-            })}
+        {loading ? (
+          <div className="h-[240px] animate-pulse rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/70" />
+        ) : error ? (
+          <div className="h-[240px] rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-6 text-[13px] font-semibold text-rose-700">
+            {error}
           </div>
-        </div>
+        ) : data.length === 0 ? (
+          <div className="h-[240px] rounded-[16px] border border-dashed border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 px-4 py-6 text-[13px] font-semibold text-[var(--app-text-muted)]">
+            No invoice activity was recorded for this range.
+          </div>
+        ) : (
+          <SafeChartFrame className="h-[240px] rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/55 p-3">
+            <ResponsiveContainer width="100%" height="100%">
+              <ComposedChart data={data} margin={{ top: 8, right: 18, left: 0, bottom: 8 }}>
+                <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
+                <XAxis
+                  dataKey="label"
+                  tick={{ fill: "#64748b", fontSize: 11, fontWeight: 700 }}
+                  axisLine={{ stroke: "#cbd5e1" }}
+                  tickLine={{ stroke: "#cbd5e1" }}
+                />
+                <YAxis
+                  yAxisId="count"
+                  tick={{ fill: "#64748b", fontSize: 11, fontWeight: 700 }}
+                  axisLine={{ stroke: "#cbd5e1" }}
+                  tickLine={{ stroke: "#cbd5e1" }}
+                />
+                <YAxis
+                  yAxisId="items"
+                  orientation="right"
+                  tickFormatter={(value) => compact(value)}
+                  tick={{ fill: "#64748b", fontSize: 11, fontWeight: 700 }}
+                  axisLine={{ stroke: "#cbd5e1" }}
+                  tickLine={{ stroke: "#cbd5e1" }}
+                />
+                <Tooltip
+                  content={({ active, payload, label }) =>
+                    active && payload?.[0]?.payload ? (
+                      <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 shadow-lg">
+                        <div className="text-[12px] font-extrabold text-slate-900">{label}</div>
+                        <div className="mt-1 text-[12px] font-semibold text-slate-600">
+                          Invoices: {payload[0].payload.invoices}
+                        </div>
+                        <div className="text-[12px] font-semibold text-slate-600">
+                          Items sold: {payload[0].payload.itemsSold}
+                        </div>
+                        <div className="text-[12px] font-semibold text-slate-600">
+                          Revenue: {formatNpr(payload[0].payload.revenue)}
+                        </div>
+                      </div>
+                    ) : null
+                  }
+                />
+                <Legend
+                  wrapperStyle={{ fontSize: 11, fontWeight: 700, color: "#475569" }}
+                />
+                <Bar
+                  yAxisId="count"
+                  dataKey="invoices"
+                  name="Invoices"
+                  fill="#11120d"
+                  radius={[6, 6, 0, 0]}
+                  maxBarSize={26}
+                />
+                <Line
+                  yAxisId="items"
+                  type="monotone"
+                  dataKey="itemsSold"
+                  name="Items sold"
+                  stroke="#179b4d"
+                  strokeWidth={3}
+                  dot={{ r: 3, fill: "#179b4d" }}
+                />
+              </ComposedChart>
+            </ResponsiveContainer>
+          </SafeChartFrame>
+        )}
       </div>
     </CardShell>
   );

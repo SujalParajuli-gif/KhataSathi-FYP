@@ -1,16 +1,20 @@
-import React, { useMemo, useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
+import { useNavigate } from "react-router";
 import CardShell from "~/components/ui/CardShell";
 import GIcon from "~/components/ui/GIcon";
 import SectionTitle from "~/components/ui/SectionTitle";
 import DashboardSalesOverview, {
+  type DashboardActivityPoint,
   type RangeKey,
 } from "~/components/blocks/dashboard/DashboardSalesOverview";
 import {
+  getAnalyticsReportApi,
   salesSummaryApi,
   listInvoicesApi,
   getLowStockApi,
   listProductsApi,
 } from "~/lib/api/endpoints";
+import { getRangeFromPreset } from "~/lib/reports";
 
 type Kpi = {
   iconName: string;
@@ -82,6 +86,17 @@ function AlertsPill({
   );
 }
 
+function alertIconTone(label: "CRITICAL" | "LOW" | "INFO" | "SYSTEM") {
+  const map = {
+    CRITICAL: "text-rose-600",
+    LOW: "text-orange-500",
+    INFO: "text-sky-600",
+    SYSTEM: "text-slate-500",
+  } as const;
+
+  return map[label];
+}
+
 function GhostButton({
   icon,
   text,
@@ -95,7 +110,7 @@ function GhostButton({
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px] text-[13px] font-bold text-slate-700 hover:bg-slate-50 hover:border-slate-300 flex items-center justify-center gap-[8px] transition-all active:scale-[0.98]"
+      className="flex w-full items-center justify-center gap-[8px] rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px] text-[13px] font-bold text-[var(--app-text-soft)] transition-all active:scale-[0.98] hover:bg-[var(--app-surface-muted)]"
     >
       <GIcon name={icon} sizePx={18} className="text-slate-500" />
       <span>{text}</span>
@@ -104,9 +119,11 @@ function GhostButton({
 }
 
 function PrimaryButton({
+  icon = "add",
   text,
   onClick,
 }: {
+  icon?: string;
   text: string;
   onClick?: () => void;
 }) {
@@ -114,9 +131,9 @@ function PrimaryButton({
     <button
       type="button"
       onClick={onClick}
-      className="w-full rounded-[12px] bg-orange-600 px-[12px] py-[11px] text-[13px] font-bold text-white hover:bg-orange-700 flex items-center justify-center gap-[8px] shadow-sm shadow-orange-200 transition-all active:scale-[0.98]"
+      className="flex w-full items-center justify-center gap-[8px] rounded-[12px] bg-[#11120d] px-[12px] py-[11px] text-[13px] font-bold text-white transition-all active:scale-[0.98] hover:bg-[#2a2c27]"
     >
-      <GIcon name="add" sizePx={18} className="text-white" />
+      <GIcon name={icon} sizePx={18} className="text-white" />
       <span>{text}</span>
     </button>
   );
@@ -139,11 +156,14 @@ function daysAgoIso(days: number) {
 }
 
 export default function Dashboard() {
+  const navigate = useNavigate();
   const [kpis, setKpis] = useState<Kpi[]>([]);
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]);
   const [alerts, setAlerts] = useState<AlertRow[]>([]);
-  const [salesBars] = useState<number[]>([]);
+  const [activityData, setActivityData] = useState<DashboardActivityPoint[]>([]);
+  const [chartLoading, setChartLoading] = useState(true);
+  const [chartError, setChartError] = useState("");
 
   const [range, setRange] = useState<RangeKey>("today");
 
@@ -152,12 +172,12 @@ export default function Dashboard() {
 
     async function load() {
       try {
-        const today = todayIso();
-        const weekAgo = daysAgoIso(7);
+        const weeklyRange = getRangeFromPreset("week");
 
-        const [salesData, invoiceData, lowStockData, productData] =
+        const [salesData, analyticsData, invoiceData, lowStockData, productData] =
           await Promise.allSettled([
-            salesSummaryApi(weekAgo, today),
+            salesSummaryApi(weeklyRange.from, weeklyRange.to),
+            getAnalyticsReportApi(weeklyRange),
             listInvoicesApi({ page: 1, pageSize: 5 }),
             getLowStockApi(),
             listProductsApi({ page: 1, pageSize: 1 }),
@@ -171,13 +191,12 @@ export default function Dashboard() {
           const s = salesData.value;
           builtKpis.push({
             iconName: "payments",
-            iconBgClass: "bg-orange-50 text-orange-700",
+            iconBgClass: "bg-[var(--app-surface-muted)] text-[var(--app-text)]",
             value: formatNpr(s.totalRevenue || s.totalSales || 0),
             label: "Total Sales (7d)",
             badgeText: `${s.invoiceCount || 0} invoices`,
             badgeIconName: "receipt_long",
-            badgeClass:
-              "bg-orange-50 text-orange-700 border-orange-100",
+            badgeClass: "bg-[var(--app-surface-muted)] text-[var(--app-text)] border-[var(--app-border)]",
           });
           builtKpis.push({
             iconName: "receipt_long",
@@ -197,7 +216,9 @@ export default function Dashboard() {
         }
 
         if (lowStockData.status === "fulfilled" && lowStockData.value) {
-          const lowItems = Array.isArray(lowStockData.value) ? lowStockData.value : [];
+          const lowItems = Array.isArray(lowStockData.value)
+            ? lowStockData.value
+            : [];
           builtKpis.push({
             iconName: "warning",
             iconBgClass: "bg-rose-50 text-rose-700",
@@ -211,14 +232,14 @@ export default function Dashboard() {
                 : undefined,
           });
 
-          const builtAlerts: AlertRow[] = lowItems.slice(0, 5).map(
-            (item: any) => ({
+          const builtAlerts: AlertRow[] = lowItems
+            .slice(0, 5)
+            .map((item: any) => ({
               title: `Low stock: ${item.name || "Unknown product"}`,
               time: `${item.stock ?? 0} left (threshold: ${item.lowStockThreshold ?? 0})`,
-              icon: "inventory_2",
+              icon: (item.stock ?? 0) <= 0 ? "error" : "warning",
               tag: (item.stock ?? 0) <= 0 ? "CRITICAL" : "LOW",
-            }),
-          );
+            }));
           setAlerts(builtAlerts);
         }
 
@@ -235,7 +256,8 @@ export default function Dashboard() {
             status:
               inv.paymentStatus === "PAID" || inv.status === "PAID"
                 ? "Paid"
-                : inv.paymentStatus === "PARTIALLY_PAID" || inv.status === "PARTIAL"
+                : inv.paymentStatus === "PARTIALLY_PAID" ||
+                    inv.status === "PARTIAL"
                   ? "Partial"
                   : "Unpaid",
           }));
@@ -243,7 +265,27 @@ export default function Dashboard() {
         }
 
         const builtPayment: PaymentSummaryRow[] = [];
-        if (salesData.status === "fulfilled" && salesData.value) {
+        if (analyticsData.status === "fulfilled" && analyticsData.value?.summary) {
+          const summary = analyticsData.value.summary;
+          builtPayment.push({
+            label: "Total Revenue",
+            value: formatNpr(summary.netSales || 0),
+            icon: "account_balance",
+            iconBg: "bg-emerald-100 text-emerald-700",
+          });
+          builtPayment.push({
+            label: "Total Paid",
+            value: formatNpr(summary.collectedTotal || 0),
+            icon: "check_circle",
+            iconBg: "bg-sky-100 text-sky-700",
+          });
+          builtPayment.push({
+            label: "Outstanding",
+            value: formatNpr(summary.dueTotal || 0),
+            icon: "pending",
+            iconBg: "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]",
+          });
+        } else if (salesData.status === "fulfilled" && salesData.value) {
           const s = salesData.value;
           builtPayment.push({
             label: "Total Revenue",
@@ -259,9 +301,9 @@ export default function Dashboard() {
           });
           builtPayment.push({
             label: "Outstanding",
-            value: formatNpr((s.totalRevenue || 0) - (s.totalPaid || 0)),
+            value: formatNpr(Math.max(0, (s.totalRevenue || s.totalSales || 0) - (s.totalPaid || s.totalCollected || 0))),
             icon: "pending",
-            iconBg: "bg-orange-100 text-orange-700",
+            iconBg: "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]",
           });
         }
         setPaymentSummary(builtPayment);
@@ -276,11 +318,55 @@ export default function Dashboard() {
     };
   }, []);
 
+  useEffect(() => {
+    let cancelled = false;
+
+    async function loadChart() {
+      setChartLoading(true);
+      setChartError("");
+
+      try {
+        const preset =
+          range === "today" ? "today" : range === "week" ? "week" : "month";
+        const analytics = await getAnalyticsReportApi(getRangeFromPreset(preset));
+
+        if (cancelled) return;
+
+        const nextData: DashboardActivityPoint[] = Array.isArray(analytics?.salesOverTime)
+          ? analytics.salesOverTime.map((point: any) => ({
+              label: point.label || "",
+              invoices: Number(point.invoices || 0),
+              itemsSold: Number(point.itemsSold || 0),
+              revenue: Number(point.revenue || 0),
+            }))
+          : [];
+
+        setActivityData(nextData);
+      } catch (error: any) {
+        if (!cancelled) {
+          setActivityData([]);
+          setChartError(
+            error?.response?.data?.error || "Could not load dashboard activity.",
+          );
+        }
+      } finally {
+        if (!cancelled) {
+          setChartLoading(false);
+        }
+      }
+    }
+
+    loadChart();
+    return () => {
+      cancelled = true;
+    };
+  }, [range]);
+
   return (
-    <div className="space-y-[20px] font-sans antialiased text-slate-900 pb-10">
-      <div className="grid grid-cols-1 lg:grid-cols-[1fr_340px] gap-[20px]">
-        <div className="space-y-[20px]">
-          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-3 gap-[16px]">
+    <div className="min-w-0 space-y-[20px] overflow-x-hidden font-sans antialiased text-slate-900 pb-10">
+      <div className="grid min-w-0 grid-cols-1 gap-[20px] lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-w-0 space-y-[20px]">
+          <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-[16px]">
             {kpis.map((k) => (
               <CardShell key={k.label}>
                 <div className="p-[18px]">
@@ -320,15 +406,15 @@ export default function Dashboard() {
             ))}
           </div>
 
-          <CardShell>
-            <div className="px-[20px] py-[18px] flex items-center justify-between border-b border-slate-50">
+          <CardShell className="min-w-0">
+            <div className="px-[20px] py-[18px] flex items-center justify-between border-b border-[var(--app-border)]/60">
               <SectionTitle title="Recent Invoices" />
               <div className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
                 Last 7 days
               </div>
             </div>
 
-            <div className="overflow-x-auto px-[10px] pb-[10px]">
+            <div className="min-w-0 overflow-x-auto px-[10px] pb-[10px]">
               <table className="w-full min-w-[680px] text-left">
                 <thead>
                   <tr className="text-[11px] text-slate-400 font-bold uppercase tracking-wider">
@@ -343,10 +429,7 @@ export default function Dashboard() {
 
                 <tbody className="divide-y divide-slate-50">
                   {invoices.map((row) => (
-                    <tr
-                      key={row.invoiceNo}
-                      className="group hover:bg-slate-50/80 transition-colors"
-                    >
+                    <tr key={row.invoiceNo} className="group transition-colors hover:bg-[var(--app-surface-muted)]/70">
                       <td className="px-[10px] py-[14px] text-[13px] font-bold text-slate-900">
                         {row.invoiceNo}
                       </td>
@@ -375,24 +458,43 @@ export default function Dashboard() {
           <DashboardSalesOverview
             range={range}
             onRangeChange={setRange}
-            salesBars={salesBars}
+            data={activityData}
+            loading={chartLoading}
+            error={chartError}
           />
         </div>
 
-        <div className="space-y-[20px]">
+        <div className="min-w-0 space-y-[20px]">
           <CardShell>
             <div className="p-[20px]">
               <SectionTitle title="Quick Actions" />
               <div className="mt-4 space-y-3">
-                <PrimaryButton text="New Bill" />
-                <GhostButton icon="inventory_2" text="Add Product" />
-                <GhostButton icon="bar_chart" text="View Reports" />
+                <PrimaryButton
+                  icon="percent"
+                  text="Manage Discounts"
+                  onClick={() => navigate("/discounts")}
+                />
+                <GhostButton
+                  icon="inventory_2"
+                  text="Add Product"
+                  onClick={() => navigate("/products")}
+                />
+                <GhostButton
+                  icon="bar_chart"
+                  text="View Reports"
+                  onClick={() => navigate("/analytics")}
+                />
+                <GhostButton
+                  icon="notifications"
+                  text="Review Alerts"
+                  onClick={() => navigate("/alerts")}
+                />
               </div>
             </div>
           </CardShell>
 
           <CardShell>
-            <div className="px-[20px] py-[18px] border-b border-slate-50">
+            <div className="px-[20px] py-[18px] border-b border-[var(--app-border)]/60">
               <SectionTitle title="Payment Summary" />
             </div>
 
@@ -402,18 +504,18 @@ export default function Dashboard() {
                   key={p.label}
                   className="flex items-center justify-between rounded-xl border border-slate-100 bg-white p-3 hover:border-slate-200 transition-colors"
                 >
-                  <div className="flex items-center gap-3">
+                  <div className="flex min-w-0 items-center gap-3">
                     <div
-                      className={`h-8 w-8 rounded-lg flex items-center justify-center ${p.iconBg}`}
+                      className={`h-8 w-8 shrink-0 rounded-lg flex items-center justify-center ${p.iconBg}`}
                       aria-hidden="true"
                     >
                       <GIcon name={p.icon} sizePx={18} />
                     </div>
-                    <span className="text-[13px] font-bold text-slate-700">
+                    <span className="truncate text-[13px] font-bold text-slate-700">
                       {p.label}
                     </span>
                   </div>
-                  <span className="text-[14px] font-extrabold text-slate-900">
+                  <span className="shrink-0 pl-3 text-[14px] font-extrabold text-slate-900">
                     {p.value}
                   </span>
                 </div>
@@ -422,7 +524,7 @@ export default function Dashboard() {
           </CardShell>
 
           <CardShell>
-            <div className="px-[20px] py-[18px] border-b border-slate-50 flex justify-between items-center">
+            <div className="flex items-center justify-between border-b border-[var(--app-border)]/60 px-[20px] py-[18px]">
               <SectionTitle title="Alerts" />
               {alerts.length > 0 && (
                 <div className="h-2 w-2 rounded-full bg-rose-500 shadow-[0_0_8px_rgba(244,63,94,0.4)]" />
@@ -436,26 +538,25 @@ export default function Dashboard() {
                 </div>
               ) : (
                 alerts.map((a, idx) => (
-                  <div
-                    key={idx}
-                    className="group relative flex items-start gap-3 p-2.5 -mx-2 rounded-xl cursor-pointer transition-all duration-200 hover:bg-slate-50 hover:shadow-[inset_3px_0_0_0_#f97316]"
-                  >
-                    <div className="h-9 w-9 rounded-xl bg-slate-50 border border-slate-100 flex items-center justify-center shrink-0 group-hover:bg-white group-hover:border-slate-200 transition-colors">
+                  <div key={idx} className="group relative -mx-2 flex cursor-pointer items-start gap-3 rounded-xl p-2.5 transition-all duration-200 hover:bg-[var(--app-surface-muted)] hover:shadow-[inset_3px_0_0_0_#11120d]">
+                    <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] transition-colors group-hover:bg-white">
                       <GIcon
                         name={a.icon}
                         sizePx={18}
-                        className="text-slate-400 group-hover:text-slate-600 transition-colors"
+                        className={`${alertIconTone(a.tag)} transition-colors`}
                       />
                     </div>
 
                     <div className="flex-1 min-w-0">
-                      <div className="flex justify-between items-start mb-0.5">
-                        <p className="text-[12px] font-bold text-slate-800 leading-tight pr-2 truncate group-hover:text-slate-900">
+                      <div className="mb-0.5 flex min-w-0 items-start justify-between gap-2">
+                        <p className="truncate text-[12px] font-bold leading-tight text-slate-800 group-hover:text-slate-900">
                           {a.title}
                         </p>
-                        <AlertsPill label={a.tag} />
+                        <div className="shrink-0">
+                          <AlertsPill label={a.tag} />
+                        </div>
                       </div>
-                      <p className="text-[10px] font-bold text-slate-400 uppercase tracking-tight group-hover:text-slate-500">
+                      <p className="truncate text-[10px] font-bold uppercase tracking-tight text-slate-400 group-hover:text-slate-500">
                         {a.time}
                       </p>
                     </div>
