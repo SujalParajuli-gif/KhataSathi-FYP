@@ -1,22 +1,32 @@
+# macOS / Windows
 .DS_Store
+Thumbs.db
+
+# env
 .env
 .env.*
 !.env.example
 
-/node_modules/
+# dependencies
+node_modules/
 **/node_modules/
 
-# build / bundler
-/build/
-/dist/
-**/dist/
-.vite/
-**/.vite/
+# package manager cache
 .pnpm-store/
 **/.pnpm-store/
 
-# React Router
-/.react-router/
+# build outputs
+build/
+dist/
+**/build/
+**/dist/
+frontend/build/
+.vite/
+**/.vite/
+
+# React Router generated files
+.react-router/
+**/.react-router/
 
 # logs
 npm-debug.log*
@@ -24,27 +34,33 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 *.log
+dev-server.log
 
-# editor / OS
+# editor
 .vscode/
 .idea/
-Thumbs.db
 
 # testing / coverage
 coverage/
 *.lcov
 
-# cache
+# caches
 .cache/
 .parcel-cache/
 .eslintcache
 
-# local db / temp files
+# local db / temp
 *.sqlite
 *.sqlite3
 *.db
 tmp/
 temp/
 
-# backend uploads if generated at runtime
+# runtime-generated backend files
+backend/uploads/
 uploads/
+backend/backups/
+
+# optional generated assets if not source-controlled
+frontend/build/client/
+frontend/build/server/

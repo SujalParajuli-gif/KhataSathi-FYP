@@ -1,1 +1,0 @@
-function m(n,o){if(typeof document>"u")return;const e=document.createElement("form");e.method="POST",e.action=n,e.style.display="none",Object.entries(o).forEach(([d,i])=>{const t=document.createElement("input");t.type="hidden",t.name=d,t.value=i,e.appendChild(t)}),document.body.appendChild(e),e.submit()}export{m as s};
