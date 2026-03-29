@@ -1,7 +1,6 @@
-// frontend/app/routes/_app.products.tsx
 import React, { useMemo, useState } from "react";
 import type { Product, ToastKind } from "~/lib/domain/products/products.types";
-import { cn, getStockFlag } from "~/lib/domain/products/products.helpers";
+import { importCsvApi } from "~/lib/api/endpoints";
 import {
   bulkSetStatus,
   createProduct,
@@ -9,12 +8,79 @@ import {
   fetchProductsMeta,
   setProductStatus,
   updateProduct,
+  uploadProductImage,
 } from "~/lib/domain/products/products.api";
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
 import ProductsModals from "~/components/blocks/products/ProductsModals";
+import {
+  LOCAL_SETTINGS_KEYS,
+  readStoredNumber,
+} from "~/lib/settings/localSettings";
+
+type ProductFormErrors = Partial<
+  Record<
+    "name" | "sku" | "retailPrice" | "wholesalePrice" | "stock" | "lowStockThreshold" | "image",
+    string
+  >
+>;
+
+type CsvImportError = {
+  rowNumber: number;
+  sku?: string;
+  name?: string;
+  message: string;
+};
+
+type CsvImportResult = {
+  totalRows: number;
+  createdCount: number;
+  errorCount: number;
+  errors: CsvImportError[];
+};
+
+type BulkActionState =
+  | null
+  | {
+      title: string;
+      message: string;
+      confirmLabel: string;
+      successKind: ToastKind;
+      successMessage: string;
+    };
 
 export default function ProductsPage() {
+  function buildDefaultProductForm(brandOptions: string[], categoryOptions: string[]): Product {
+    const defaultThresholdQty = Math.max(
+      1,
+      Math.floor(
+        readStoredNumber(LOCAL_SETTINGS_KEYS.wholesaleQtyThreshold, 1),
+      ),
+    );
+    const defaultLowStockThreshold = Math.max(
+      0,
+      Math.floor(
+        readStoredNumber(LOCAL_SETTINGS_KEYS.defaultLowStockThreshold, 5),
+      ),
+    );
+
+    return {
+      id: "new",
+      name: "",
+      sku: "",
+      barcode: "",
+      imageUrl: "",
+      brand: brandOptions[1] ?? "CG Foods",
+      category: categoryOptions[1] ?? "Groceries",
+      retailPrice: 0,
+      wholesalePrice: 0,
+      thresholdQty: defaultThresholdQty,
+      stock: 0,
+      lowStockThreshold: defaultLowStockThreshold,
+      status: "Active",
+    };
+  }
+
   const [brands, setBrands] = useState<string[]>(["All Brands"]);
   const [categories, setCategories] = useState<string[]>(["All Categories"]);
 
@@ -36,15 +102,22 @@ export default function ProductsPage() {
     [selected],
   );
 
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(6);
+  const pageSize = 200;
 
   const [openAddEdit, setOpenAddEdit] = useState(false);
   const [openImport, setOpenImport] = useState(false);
   const [openView, setOpenView] = useState(false);
   const [openConfirmDelete, setOpenConfirmDelete] = useState(false);
+  const [bulkAction, setBulkAction] = useState<BulkActionState>(null);
 
   const [activeProductId, setActiveProductId] = useState<string | null>(null);
+  const [formErrors, setFormErrors] = useState<ProductFormErrors>({});
+  const [productImageFile, setProductImageFile] = useState<File | null>(null);
+  const [productImagePreview, setProductImagePreview] = useState("");
+  const [importFile, setImportFile] = useState<File | null>(null);
+  const [importBusy, setImportBusy] = useState(false);
+  const [importError, setImportError] = useState("");
+  const [importResult, setImportResult] = useState<CsvImportResult | null>(null);
 
   const [toast, setToast] = useState<{
     open: boolean;
@@ -53,28 +126,41 @@ export default function ProductsPage() {
   }>({ open: false, kind: "info", message: "" });
 
   const activeProduct = useMemo(
-    () => products.find((p) => p.id === activeProductId) || null,
+    () => products.find((product) => product.id === activeProductId) || null,
     [products, activeProductId],
   );
 
-  const [form, setForm] = useState<Product>(() => ({
-    id: "new",
-    name: "",
-    sku: "",
-    barcode: "",
-    imageUrl: "",
-    brand: "CG Foods",
-    category: "Groceries",
-    retailPrice: 0,
-    wholesalePrice: 0,
-    thresholdQty: 1,
-    stock: 0,
-    lowStockThreshold: 5,
-    status: "Active",
-  }));
+  const [form, setForm] = useState<Product>(() =>
+    buildDefaultProductForm(["All Brands", "CG Foods"], ["All Categories", "Groceries"]),
+  );
 
   function toastMsg(kind: ToastKind, message: string) {
     setToast({ open: true, kind, message });
+  }
+
+  function clearFormValidation() {
+    setFormErrors({});
+  }
+
+  function revokePreview(url: string) {
+    if (url.startsWith("blob:")) {
+      URL.revokeObjectURL(url);
+    }
+  }
+
+  function resetImageState(nextPreview = "") {
+    setProductImageFile(null);
+    setProductImagePreview((current) => {
+      revokePreview(current);
+      return nextPreview;
+    });
+  }
+
+  function resetImportState() {
+    setImportFile(null);
+    setImportBusy(false);
+    setImportError("");
+    setImportResult(null);
   }
 
   async function loadMeta() {
@@ -83,29 +169,45 @@ export default function ProductsPage() {
     setCategories(["All Categories", ...meta.categories]);
   }
 
-  async function loadProducts(nextPage = page, nextPageSize = pageSize) {
-    const res = await fetchProducts({
-      q: q.trim() || undefined,
-      brand: brand === "All Brands" ? undefined : brand,
-      category: category === "All Categories" ? undefined : category,
-      stockStatus,
-      status,
-      lowOnly,
-      page: nextPage,
-      pageSize: nextPageSize,
-    });
-    setProducts(res.items);
-    setTotal(res.total);
+  async function loadProducts() {
+    let nextPage = 1;
+    let nextTotal = 0;
+    const collected: Product[] = [];
+
+    do {
+      const res = await fetchProducts({
+        q: q.trim() || undefined,
+        brand: brand === "All Brands" ? undefined : brand,
+        category: category === "All Categories" ? undefined : category,
+        stockStatus,
+        status,
+        lowOnly,
+        page: nextPage,
+        pageSize,
+      });
+
+      collected.push(...res.items);
+      nextTotal = res.total;
+      nextPage += 1;
+
+      if (res.items.length === 0) break;
+    } while (collected.length < nextTotal);
+
+    setProducts(collected);
+    setTotal(nextTotal);
   }
+
+  React.useEffect(() => {
+    return () => revokePreview(productImagePreview);
+  }, [productImagePreview]);
 
   React.useEffect(() => {
     (async () => {
       try {
         await loadMeta();
-        await loadProducts(1, pageSize);
-        setPage(1);
-      } catch (e: any) {
-        toastMsg("danger", e?.message || "Failed to load products.");
+        await loadProducts();
+      } catch (error: any) {
+        toastMsg("danger", error?.message || "Failed to load products.");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -114,17 +216,13 @@ export default function ProductsPage() {
   React.useEffect(() => {
     (async () => {
       try {
-        await loadProducts(1, pageSize);
-        setPage(1);
-      } catch (e: any) {
-        toastMsg("danger", e?.message || "Failed to load products.");
+        await loadProducts();
+      } catch (error: any) {
+        toastMsg("danger", error?.message || "Failed to load products.");
       }
     })();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, brand, category, stockStatus, status, lowOnly, pageSize]);
-
-  const totalPages = Math.max(1, Math.ceil(total / pageSize));
-  const safePage = Math.min(page, totalPages);
 
   function clearFilters() {
     setQ("");
@@ -137,8 +235,8 @@ export default function ProductsPage() {
 
   function toggleAllOnPage(checked: boolean) {
     const next = { ...selected };
-    products.forEach((p) => {
-      next[p.id] = checked;
+    products.forEach((product) => {
+      next[product.id] = checked;
     });
     setSelected(next);
   }
@@ -149,65 +247,135 @@ export default function ProductsPage() {
 
   function openAdd() {
     setActiveProductId(null);
-    setForm({
-      id: "new",
-      name: "",
-      sku: "",
-      barcode: "",
-      imageUrl: "",
-      brand: brands[1] ?? "CG Foods",
-      category: categories[1] ?? "Groceries",
-      retailPrice: 0,
-      wholesalePrice: 0,
-      thresholdQty: 1,
-      stock: 0,
-      lowStockThreshold: 5,
-      status: "Active",
-    });
+    setForm(buildDefaultProductForm(brands, categories));
+    clearFormValidation();
+    resetImageState("");
     setOpenAddEdit(true);
   }
 
-  function openEdit(p: Product) {
-    setActiveProductId(p.id);
-    setForm({ ...p });
+  function openEdit(product: Product) {
+    setActiveProductId(product.id);
+    setForm({ ...product });
+    clearFormValidation();
+    resetImageState(product.imageUrl || "");
     setOpenAddEdit(true);
   }
 
-  function openViewProduct(p: Product) {
-    setActiveProductId(p.id);
+  function openEditFromView() {
+    if (!activeProduct) return;
+    setOpenView(false);
+    openEdit(activeProduct);
+  }
+
+  function openViewProduct(product: Product) {
+    setActiveProductId(product.id);
     setOpenView(true);
   }
 
-  function requestDelete(p: Product) {
-    setActiveProductId(p.id);
+  function requestDelete(product: Product) {
+    setActiveProductId(product.id);
     setOpenConfirmDelete(true);
   }
 
-  async function saveProduct() {
-    if (!form.name.trim() || !form.sku.trim()) {
-      toastMsg("danger", "Name and SKU are required.");
+  function handleProductImageChange(file: File | null) {
+    if (!file) {
+      resetImageState(form.imageUrl || "");
+      setFormErrors((prev) => ({ ...prev, image: undefined }));
       return;
     }
 
+    if (!file.type.startsWith("image/")) {
+      setFormErrors((prev) => ({
+        ...prev,
+        image: "Select a valid image file.",
+      }));
+      return;
+    }
+
+    const nextPreview = URL.createObjectURL(file);
+    setProductImageFile(file);
+    setProductImagePreview((current) => {
+      revokePreview(current);
+      return nextPreview;
+    });
+    setFormErrors((prev) => ({ ...prev, image: undefined }));
+  }
+
+  function validateForm() {
+    const errors: ProductFormErrors = {};
+
+    if (!form.name.trim()) {
+      errors.name = "Product name is required.";
+    }
+    if (!form.sku.trim()) {
+      errors.sku = "SKU is required.";
+    }
+    if (!Number.isFinite(form.retailPrice) || form.retailPrice <= 0) {
+      errors.retailPrice = "Retail price must be greater than 0.";
+    }
+    if (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0) {
+      errors.wholesalePrice = "Wholesale price must be greater than 0.";
+    }
+    if (!Number.isFinite(form.stock) || form.stock < 0) {
+      errors.stock = "Stock cannot be negative.";
+    }
+    if (!Number.isFinite(form.lowStockThreshold) || form.lowStockThreshold < 0) {
+      errors.lowStockThreshold = "Stock alert threshold cannot be negative.";
+    }
+
+    setFormErrors(errors);
+    return Object.keys(errors).length === 0;
+  }
+
+  async function saveProduct() {
+    if (!validateForm()) return;
+
     try {
-      const payload = { ...form };
+      const payload = {
+        ...form,
+        name: form.name.trim(),
+        sku: form.sku.trim(),
+        barcode: form.barcode?.trim() || "",
+        category: form.category?.trim() || "",
+        thresholdQty: Math.max(1, Number(form.thresholdQty || 1)),
+        stock: Math.max(0, Number(form.stock || 0)),
+        lowStockThreshold: Math.max(0, Number(form.lowStockThreshold || 0)),
+      };
       delete (payload as any).id;
 
-      if (activeProductId) {
-        await updateProduct(activeProductId, payload as any);
-        toastMsg("success", "Product updated.");
-      } else {
-        await createProduct(payload as any);
-        toastMsg("success", "Product added.");
+      const savedProduct = activeProductId
+        ? await updateProduct(activeProductId, payload as any)
+        : await createProduct(payload as any);
+
+      let imageUploadFailed = false;
+      if (productImageFile) {
+        try {
+          await uploadProductImage(savedProduct.id, productImageFile);
+        } catch {
+          imageUploadFailed = true;
+        }
       }
 
       setOpenAddEdit(false);
       setActiveProductId(null);
-      await loadProducts(1, pageSize);
-      setPage(1);
+      clearFormValidation();
+      resetImageState("");
+      await loadProducts();
       setSelected({});
-    } catch (e: any) {
-      toastMsg("danger", e?.message || "Failed to save product.");
+
+      if (imageUploadFailed) {
+        toastMsg(
+          "danger",
+          activeProductId
+            ? "Product saved, but image upload failed."
+            : "Product added, but image upload failed.",
+        );
+        return;
+      }
+
+      toastMsg("success", activeProductId ? "Product updated." : "Product added.");
+    } catch (error: any) {
+      toastMsg("danger", error?.message || "Failed to save product.");
     }
   }
 
@@ -217,33 +385,57 @@ export default function ProductsPage() {
       await bulkSetStatus(selectedIds, "Active");
       toastMsg("success", "Selected products activated.");
       setSelected({});
-      await loadProducts(safePage, pageSize);
-    } catch (e: any) {
-      toastMsg("danger", e?.message || "Failed to activate selected.");
+      await loadProducts();
+    } catch (error: any) {
+      toastMsg("danger", error?.message || "Failed to activate selected.");
     }
   }
 
-  async function deactivateSelected() {
+  function requestDeactivateSelected() {
     if (selectedIds.length === 0) return;
-    try {
-      await bulkSetStatus(selectedIds, "Inactive");
-      toastMsg("success", "Selected products deactivated.");
-      setSelected({});
-      await loadProducts(safePage, pageSize);
-    } catch (e: any) {
-      toastMsg("danger", e?.message || "Failed to deactivate selected.");
-    }
+    setBulkAction({
+      title: "Confirm bulk deactivate",
+      message:
+        selectedIds.length === 1
+          ? "This product will be marked inactive and removed from active selling flows."
+          : `${selectedIds.length} selected products will be marked inactive and removed from active selling flows.`,
+      confirmLabel: "Deactivate selected",
+      successKind: "success",
+      successMessage:
+        selectedIds.length === 1
+          ? "Selected product deactivated."
+          : "Selected products deactivated.",
+    });
   }
 
-  async function deleteSelectedSoft() {
+  function requestSoftDeleteSelected() {
+    if (selectedIds.length === 0) return;
+    setBulkAction({
+      title: "Confirm bulk soft delete",
+      message:
+        selectedIds.length === 1
+          ? "This product will be set inactive as a soft delete. Invoice history and audit logs are preserved."
+          : `${selectedIds.length} selected products will be set inactive as a soft delete. Invoice history and audit logs are preserved.`,
+      confirmLabel: "Soft delete selected",
+      successKind: "info",
+      successMessage:
+        selectedIds.length === 1
+          ? "Selected product set to Inactive."
+          : "Selected products set to Inactive.",
+    });
+  }
+
+  async function confirmBulkAction() {
+    if (!bulkAction || selectedIds.length === 0) return;
     if (selectedIds.length === 0) return;
     try {
       await bulkSetStatus(selectedIds, "Inactive");
-      toastMsg("info", "Selected products set to Inactive.");
+      toastMsg(bulkAction.successKind, bulkAction.successMessage);
       setSelected({});
-      await loadProducts(safePage, pageSize);
-    } catch (e: any) {
-      toastMsg("danger", e?.message || "Failed to update selected.");
+      setBulkAction(null);
+      await loadProducts();
+    } catch (error: any) {
+      toastMsg("danger", error?.message || "Failed to update selected.");
     }
   }
 
@@ -254,30 +446,47 @@ export default function ProductsPage() {
       toastMsg("info", "Product set to Inactive.");
       setOpenConfirmDelete(false);
       setActiveProductId(null);
-      await loadProducts(safePage, pageSize);
-    } catch (e: any) {
-      toastMsg("danger", e?.message || "Failed to update product.");
+      await loadProducts();
+    } catch (error: any) {
+      toastMsg("danger", error?.message || "Failed to update product.");
     }
   }
 
-  async function exportCsv() {
-    toastMsg("info", "Export started.");
-  }
+  async function handleImportCsv() {
+    if (!importFile) {
+      setImportError("Choose a CSV file before uploading.");
+      return;
+    }
 
-  function prevPage() {
-    const next = Math.max(1, safePage - 1);
-    setPage(next);
-    loadProducts(next, pageSize).catch((e: any) =>
-      toastMsg("danger", e?.message || "Failed to load products."),
-    );
-  }
+    try {
+      setImportBusy(true);
+      setImportError("");
+      const result = (await importCsvApi(importFile)) as CsvImportResult;
+      setImportResult(result);
+      await loadMeta();
+      await loadProducts();
+      setSelected({});
 
-  function nextPage() {
-    const next = Math.min(totalPages, safePage + 1);
-    setPage(next);
-    loadProducts(next, pageSize).catch((e: any) =>
-      toastMsg("danger", e?.message || "Failed to load products."),
-    );
+      if (result.createdCount > 0 && result.errorCount === 0) {
+        toastMsg("success", `${result.createdCount} product${result.createdCount === 1 ? "" : "s"} imported.`);
+      } else if (result.createdCount > 0) {
+        toastMsg(
+          "info",
+          `${result.createdCount} product${result.createdCount === 1 ? "" : "s"} imported with ${result.errorCount} issue${result.errorCount === 1 ? "" : "s"}.`,
+        );
+      } else {
+        toastMsg("danger", "No products were imported. Review the row errors.");
+      }
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.error ||
+        error?.message ||
+        "Failed to import products.";
+      setImportError(message);
+      toastMsg("danger", message);
+    } finally {
+      setImportBusy(false);
+    }
   }
 
   return (
@@ -300,11 +509,13 @@ export default function ProductsPage() {
         onClear={clearFilters}
         selectedCount={selectedIds.length}
         onAdd={openAdd}
-        onImport={() => setOpenImport(true)}
-        onExport={exportCsv}
+        onImport={() => {
+          resetImportState();
+          setOpenImport(true);
+        }}
         onActivate={activateSelected}
-        onDeactivate={deactivateSelected}
-        onSoftDelete={deleteSelectedSoft}
+        onDeactivate={requestDeactivateSelected}
+        onSoftDelete={requestSoftDeleteSelected}
       />
 
       <ProductsTableCard
@@ -316,14 +527,8 @@ export default function ProductsPage() {
         onEdit={openEdit}
         onDelete={requestDelete}
         total={total}
-        start={total === 0 ? 0 : (safePage - 1) * pageSize}
-        end={Math.min(total, (safePage - 1) * pageSize + products.length)}
-        page={safePage}
-        totalPages={totalPages}
-        pageSize={pageSize}
-        setPageSize={(n) => setPageSize(n)}
-        prevPage={prevPage}
-        nextPage={nextPage}
+        start={total === 0 ? 0 : 0}
+        end={products.length}
       />
 
       <ProductsModals
@@ -341,12 +546,31 @@ export default function ProductsPage() {
         activeProductId={activeProductId}
         form={form}
         setForm={setForm}
+        formErrors={formErrors}
+        productImagePreview={productImagePreview}
+        productImageName={productImageFile?.name || ""}
+        onProductImageChange={handleProductImageChange}
+        onClearProductImage={() => handleProductImageChange(null)}
         onSave={saveProduct}
         onConfirmDelete={confirmDeleteOne}
-        onUploadCsvClick={() => {
-          setOpenImport(false);
-          toastMsg("info", "Import started.");
+        bulkAction={bulkAction}
+        onCloseBulkAction={() => setBulkAction(null)}
+        onConfirmBulkAction={confirmBulkAction}
+        onEditActiveProduct={openEditFromView}
+        importFile={importFile}
+        setImportFile={(file) => {
+          setImportFile(file);
+          setImportError("");
+          setImportResult(null);
         }}
+        importBusy={importBusy}
+        importError={importError}
+        importResult={importResult}
+        onCloseImport={() => {
+          setOpenImport(false);
+          resetImportState();
+        }}
+        onUploadCsvClick={handleImportCsv}
         toast={toast}
         setToast={setToast}
       />

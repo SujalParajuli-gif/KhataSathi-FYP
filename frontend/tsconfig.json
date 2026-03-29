@@ -4,8 +4,9 @@
     "**/.server/**/*",
     "**/.client/**/*",
     ".react-router/types/**/*"
-  ],
+, "app/routes/payments.esewa.result.tsx"  ],
   "compilerOptions": {
+    "ignoreDeprecations": "6.0",
     "lib": ["DOM", "DOM.Iterable", "ES2022"],
     "types": ["node", "vite/client"],
     "target": "ES2022",

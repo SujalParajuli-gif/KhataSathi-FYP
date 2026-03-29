@@ -19,3 +19,24 @@ export async function list(req: Request, res: Response) {
         res.status(500).json({ error: "Internal server error" });
     }
 }
+
+export async function listLoginAttempts(req: Request, res: Response) {
+    try {
+        const filters = {
+            email: req.query.email as string | undefined,
+            success:
+                req.query.success === "true"
+                    ? true
+                    : req.query.success === "false"
+                        ? false
+                        : undefined,
+            page: req.query.page ? Number(req.query.page) : 1,
+            pageSize: req.query.pageSize ? Number(req.query.pageSize) : 20,
+        };
+        const result = await auditService.listLoginAttempts(filters);
+        res.json(result);
+    } catch (err) {
+        console.error("Login attempts list error:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+}

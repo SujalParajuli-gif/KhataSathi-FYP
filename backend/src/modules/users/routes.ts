@@ -25,7 +25,7 @@ router.post("/:id/photo", upload.single("photo"), async (req, res) => {
   try {
     if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
     const photoUrl = `/uploads/${req.file.filename}`;
-    const user = await uploadUserPhoto(req.params.id, photoUrl);
+    const user = await uploadUserPhoto(String(req.params.id), photoUrl);
     res.json(user);
   } catch (err: any) {
     res.status(500).json({ error: err.message });

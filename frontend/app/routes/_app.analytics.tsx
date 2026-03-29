@@ -1,1101 +1,645 @@
-import React, { useEffect, useMemo, useState } from "react";
-import Icon from "~/components/ui/Icon";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
-  salesSummaryApi,
-  bestSellersApi,
-  cashierSalesApi,
-  listAuditLogsApi,
-} from "~/lib/api/endpoints";
+  Area,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  ComposedChart,
+  Pie,
+  PieChart,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts";
+import Icon from "~/components/ui/Icon";
+import { downloadAnalyticsCsvApi, getAnalyticsReportApi } from "~/lib/api/endpoints";
+import { downloadCsvBlob, exportAnalyticsWorkbook } from "~/lib/analyticsExport";
+import { formatNpr } from "~/lib/invoices";
+import {
+  getRangeFromPreset,
+  paymentMethodLabel,
+  paymentStatusLabel,
+  type AnalyticsFilters,
+  type AnalyticsPaymentMethod,
+  type AnalyticsPaymentStatus,
+  type AnalyticsRangePreset,
+  type AnalyticsReport,
+} from "~/lib/reports";
 
-type RangeKey = "today" | "week" | "month";
-type PaymentMethod = "Cash" | "eSewa" | "Khalti";
-type InvoiceStatus = "Paid" | "Partial" | "Unpaid";
+type RangeSelection = AnalyticsRangePreset | "custom";
 
-type SalePoint = {
-  label: string; // "Mon" / "Tue" or "10AM"
-  revenue: number;
-  orders: number;
-  discountNpr: number; // subtotal-level discount
+const PAYMENT_COLORS: Record<AnalyticsPaymentMethod, string> = {
+  CASH: "#11120d",
+  ESEWA: "#179b4d",
+  KHALTI: "#7c3aed",
 };
 
-type TopProduct = {
-  id: string;
-  name: string;
-  sku: string;
-  brand: string;
-  qty: number;
-  revenue: number;
-};
-
-type CashierRow = {
-  id: string;
-  name: string;
-  orders: number;
-  revenue: number;
-};
-
-type BrandSlice = {
-  brand: string;
-  value: number; // count or revenue
-};
-
-type AuditItem = {
-  id: string;
-  title: string;
-  desc?: string;
-  timeLabel: string;
-};
-
-type PaymentSlice = {
-  method: PaymentMethod;
-  value: number; // NPR amount
-};
-
-function cn(...xs: Array<string | false | null | undefined>) {
-  return xs.filter(Boolean).join(" ");
+function cn(...values: Array<string | false | null | undefined>) {
+  return values.filter(Boolean).join(" ");
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+function compact(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    notation: "compact",
+    maximumFractionDigits: value >= 1000 ? 1 : 0,
+  }).format(value);
+}
+
+function pct(value: number) {
+  return `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
+}
+
+function shorten(value: string, max = 18) {
+  return value.length <= max ? value : `${value.slice(0, max - 1)}…`;
+}
+
+function errorMessage(error: any) {
+  return error?.response?.data?.error || error?.message || "Unable to load analytics right now.";
+}
+
+function Panel({
+  title,
+  subtitle,
+  actions,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
   return (
-    <div className="rounded-[14px] bg-white border border-slate-200/70 shadow-sm">
+    <section className="overflow-hidden rounded-[24px] border border-[var(--app-border)] bg-white shadow-[0_20px_44px_-36px_rgba(17,18,13,0.45)]">
+      <div className="flex flex-col gap-3 border-b border-[var(--app-border)] px-5 py-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="text-[15px] font-extrabold text-[var(--app-text)]">{title}</div>
+          {subtitle ? (
+            <div className="mt-1 text-[12px] font-medium text-[var(--app-text-muted)]">{subtitle}</div>
+          ) : null}
+        </div>
+        {actions}
+      </div>
       {children}
+    </section>
+  );
+}
+
+function MetricCard({
+  title,
+  value,
+  subtitle,
+  icon,
+  tone,
+}: {
+  title: string;
+  value: string;
+  subtitle: string;
+  icon: string;
+  tone: string;
+}) {
+  return (
+    <div className="rounded-[20px] border border-[var(--app-border)] bg-white p-4">
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">{title}</div>
+          <div className="mt-2 text-[26px] font-extrabold tracking-tight text-[var(--app-text)]">{value}</div>
+          <div className="mt-2 text-[12px] font-semibold text-[var(--app-text-muted)]">{subtitle}</div>
+        </div>
+        <div className={cn("flex h-[44px] w-[44px] items-center justify-center rounded-[14px] border text-[20px]", tone)}>
+          <Icon name={icon} className="text-[20px]" />
+        </div>
+      </div>
     </div>
   );
 }
 
-function Pill({
-  children,
-  tone = "neutral",
+function ActionButton({
+  icon,
+  label,
+  onClick,
+  disabled,
+  primary = false,
 }: {
-  children: React.ReactNode;
-  tone?: "neutral" | "green" | "orange" | "sky" | "rose";
+  icon: string;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  primary?: boolean;
 }) {
-  const map: Record<typeof tone, string> = {
-    neutral: "bg-slate-50 text-slate-700 border-slate-200",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    orange: "bg-orange-50 text-orange-700 border-orange-100",
-    sky: "bg-sky-50 text-sky-700 border-sky-100",
-    rose: "bg-rose-50 text-rose-700 border-rose-100",
-  };
-
   return (
-    <span
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
       className={cn(
-        "inline-flex items-center rounded-full px-[10px] py-[4px] text-[12px] font-semibold border",
-        map[tone],
+        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
+        primary
+          ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
+          : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
       )}
     >
-      {children}
-    </span>
-  );
-}
-
-function Select({
-  value,
-  onChange,
-  options,
-  leftIcon,
-}: {
-  value: string;
-  onChange: (v: string) => void;
-  options: Array<{ value: string; label: string }>;
-  leftIcon?: string;
-}) {
-  return (
-    <div className="flex items-center gap-[8px] rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px]">
-      {leftIcon ? (
-        <Icon name={leftIcon} className="text-slate-500" />
-      ) : null}
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        className="text-[14px] outline-none bg-transparent w-full"
-      >
-        {options.map((o) => (
-          <option key={o.value} value={o.value}>
-            {o.label}
-          </option>
-        ))}
-      </select>
-    </div>
-  );
-}
-
-function Button({
-  children,
-  variant = "secondary",
-  onClick,
-  icon,
-}: {
-  children: React.ReactNode;
-  variant?: "primary" | "secondary";
-  onClick?: () => void;
-  icon?: string;
-}) {
-  const base =
-    "inline-flex items-center justify-center gap-[8px] rounded-[12px] px-[14px] py-[10px] text-[13px] font-semibold border active:scale-[0.98] transition";
-  const styles =
-    variant === "primary"
-      ? "bg-orange-600 text-white border-orange-600 hover:bg-orange-700"
-      : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50";
-
-  return (
-    <button type="button" onClick={onClick} className={cn(base, styles)}>
-      {icon ? <Icon name={icon} className="text-inherit" /> : null}
-      {children}
+      <Icon name={icon} className="text-[18px]" />
+      {label}
     </button>
   );
 }
 
-function Kpi({
-  title,
-  value,
-  hint,
-  icon,
-  tone = "neutral",
-}: {
-  title: string;
-  value: string;
-  hint?: string;
-  icon: string;
-  tone?: "neutral" | "green" | "orange" | "sky" | "rose";
-}) {
-  const toneMap: Record<typeof tone, string> = {
-    neutral: "bg-slate-50 text-slate-700 border-slate-200",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    orange: "bg-orange-50 text-orange-700 border-orange-100",
-    sky: "bg-sky-50 text-sky-700 border-sky-100",
-    rose: "bg-rose-50 text-rose-700 border-rose-100",
-  };
-
+function EmptyChart({ message }: { message: string }) {
   return (
-    <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-      <div className="flex items-start justify-between gap-[10px]">
-        <div>
-          <div className="text-[12px] text-slate-600 font-semibold">
-            {title}
-          </div>
-          <div className="text-[18px] font-bold text-slate-900 mt-[4px]">
-            {value}
-          </div>
-          {hint ? (
-            <div className="text-[12px] text-slate-500 mt-[2px]">{hint}</div>
-          ) : null}
-        </div>
-
-        <div
-          className={cn(
-            "h-[36px] w-[36px] rounded-[12px] border flex items-center justify-center",
-            toneMap[tone],
-          )}
-          aria-hidden="true"
-        >
-          <Icon name={icon} className="text-inherit" />
-        </div>
-      </div>
+    <div className="flex h-full min-h-[280px] items-center justify-center rounded-[18px] border border-dashed border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 px-4 py-6 text-center text-[13px] font-semibold text-[var(--app-text-muted)]">
+      {message}
     </div>
   );
 }
 
-function formatNpr(n: number) {
-  const s = Math.round(n).toString();
-  const withComma = s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `NPR ${withComma}`;
-}
-
-function formatPct(n: number) {
-  return `${Math.round(n * 10) / 10}%`;
-}
-
-/* Pie (brand) - your version, kept */
-function PieChart({
-  title,
-  subtitle,
-  data,
+function SafeChartFrame({
+  className,
+  children,
 }: {
-  title: string;
-  subtitle?: string;
-  data: BrandSlice[];
+  className: string;
+  children: React.ReactElement<{ width?: number; height?: number }>;
 }) {
-  const total = useMemo(
-    () =>
-      data.reduce(
-        (acc, x) => acc + (Number.isFinite(x.value) ? x.value : 0),
-        0,
-      ),
-    [data],
-  );
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [size, setSize] = useState({ width: 0, height: 0 });
 
-  const slices = useMemo(() => {
-    if (total <= 0) return [];
+  useEffect(() => {
+    const node = containerRef.current;
+    if (!node) return;
 
-    let start = -Math.PI / 2;
-    return data
-      .filter((d) => d.value > 0)
-      .map((d, idx) => {
-        const frac = d.value / total;
-        const angle = frac * Math.PI * 2;
-        const end = start + angle;
-
-        const largeArc = angle > Math.PI ? 1 : 0;
-
-        const r = 56;
-        const cx = 70;
-        const cy = 70;
-
-        const x1 = cx + r * Math.cos(start);
-        const y1 = cy + r * Math.sin(start);
-        const x2 = cx + r * Math.cos(end);
-        const y2 = cy + r * Math.sin(end);
-
-        const opacity = 0.25 + (idx % 6) * 0.12;
-
-        const dPath = [
-          `M ${cx} ${cy}`,
-          `L ${x1} ${y1}`,
-          `A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`,
-          "Z",
-        ].join(" ");
-
-        start = end;
-
-        return {
-          key: d.brand,
-          brand: d.brand,
-          value: d.value,
-          frac,
-          opacity,
-          path: dPath,
-        };
+    let frameId = 0;
+    const update = () => {
+      cancelAnimationFrame(frameId);
+      frameId = requestAnimationFrame(() => {
+        const rect = node.getBoundingClientRect();
+        const nextWidth = Math.floor(rect.width);
+        const nextHeight = Math.floor(rect.height);
+        setSize((current) =>
+          current.width === nextWidth && current.height === nextHeight
+            ? current
+            : { width: nextWidth, height: nextHeight },
+        );
       });
-  }, [data, total]);
+    };
+
+    update();
+
+    if (typeof ResizeObserver !== "undefined") {
+      const observer = new ResizeObserver(() => update());
+      observer.observe(node);
+
+      return () => {
+        cancelAnimationFrame(frameId);
+        observer.disconnect();
+      };
+    }
+
+    window.addEventListener("resize", update);
+    return () => {
+      cancelAnimationFrame(frameId);
+      window.removeEventListener("resize", update);
+    };
+  }, []);
 
   return (
-    <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-      <div className="flex items-start justify-between gap-[10px]">
-        <div>
-          <div className="text-[14px] font-semibold text-slate-900">
-            {title}
-          </div>
-          {subtitle ? (
-            <div className="text-[12px] text-slate-600 mt-[2px]">
-              {subtitle}
-            </div>
-          ) : null}
-        </div>
-        <Pill tone="orange">Pie</Pill>
-      </div>
-
-      <div className="mt-[12px] grid grid-cols-1 md:grid-cols-[160px_1fr] gap-[12px] items-center">
-        <div className="flex justify-center md:justify-start">
-          <svg width="140" height="140" viewBox="0 0 140 140" role="img">
-            <title>Brand distribution</title>
-
-            <circle cx="70" cy="70" r="56" fill="rgba(241,245,249,0.6)" />
-
-            {slices.map((s) => (
-              <path
-                key={s.key}
-                d={s.path}
-                fill="rgb(249 115 22)"
-                opacity={s.opacity}
-                stroke="rgba(15,23,42,0.06)"
-                strokeWidth="1"
-              />
-            ))}
-
-            <circle cx="70" cy="70" r="30" fill="white" />
-
-            <text
-              x="70"
-              y="68"
-              textAnchor="middle"
-              className="fill-slate-900"
-              style={{ fontSize: 12, fontWeight: 700 }}
-            >
-              Total
-            </text>
-            <text
-              x="70"
-              y="86"
-              textAnchor="middle"
-              className="fill-slate-600"
-              style={{ fontSize: 12, fontWeight: 600 }}
-            >
-              {total.toString().replace(/\B(?=(\d{3})+(?!\d))/g, ",")}
-            </text>
-          </svg>
-        </div>
-
-        <div className="space-y-[8px]">
-          {data.length === 0 || total <= 0 ? (
-            <div className="text-[13px] text-slate-600">No data yet.</div>
-          ) : (
-            slices.map((s) => (
-              <div
-                key={s.key}
-                className="flex items-center justify-between gap-[10px] rounded-[12px] border border-slate-100 p-[10px]"
-              >
-                <div className="flex items-center gap-[10px] min-w-0">
-                  <span
-                    className="h-[10px] w-[10px] rounded-full bg-orange-500"
-                    style={{ opacity: s.opacity }}
-                    aria-hidden="true"
-                  />
-                  <div className="text-[13px] font-semibold text-slate-800 truncate">
-                    {s.brand}
-                  </div>
-                </div>
-                <div className="text-[12px] font-semibold text-slate-700">
-                  {formatPct(s.frac * 100)} •{" "}
-                  <span className="text-slate-900">{s.value}</span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-/* Payment donut (new) */
-function PaymentDonut({
-  title,
-  subtitle,
-  data,
-}: {
-  title: string;
-  subtitle?: string;
-  data: PaymentSlice[];
-}) {
-  const total = useMemo(
-    () =>
-      data.reduce((a, x) => a + (Number.isFinite(x.value) ? x.value : 0), 0),
-    [data],
-  );
-
-  const slices = useMemo(() => {
-    if (total <= 0) return [];
-
-    let start = -Math.PI / 2;
-    const cx = 70;
-    const cy = 70;
-    const r = 56;
-
-    return data
-      .filter((d) => d.value > 0)
-      .map((d, idx) => {
-        const frac = d.value / total;
-        const angle = frac * Math.PI * 2;
-        const end = start + angle;
-
-        const largeArc = angle > Math.PI ? 1 : 0;
-
-        const x1 = cx + r * Math.cos(start);
-        const y1 = cy + r * Math.sin(start);
-        const x2 = cx + r * Math.cos(end);
-        const y2 = cy + r * Math.sin(end);
-
-        const opacity = 0.25 + (idx % 6) * 0.12;
-
-        const path = [
-          `M ${cx} ${cy}`,
-          `L ${x1} ${y1}`,
-          `A ${r} ${r} 0 ${largeArc} 1 ${x2} ${y2}`,
-          "Z",
-        ].join(" ");
-
-        start = end;
-
-        return { ...d, frac, opacity, path };
-      });
-  }, [data, total]);
-
-  return (
-    <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-      <div className="flex items-start justify-between gap-[10px]">
-        <div>
-          <div className="text-[14px] font-semibold text-slate-900">
-            {title}
-          </div>
-          {subtitle ? (
-            <div className="text-[12px] text-slate-600 mt-[2px]">
-              {subtitle}
-            </div>
-          ) : null}
-        </div>
-        <Pill tone="sky">Payments</Pill>
-      </div>
-
-      <div className="mt-[12px] grid grid-cols-1 md:grid-cols-[160px_1fr] gap-[12px] items-center">
-        <div className="flex justify-center md:justify-start">
-          <svg width="140" height="140" viewBox="0 0 140 140" role="img">
-            <title>Payment distribution</title>
-
-            <circle cx="70" cy="70" r="56" fill="rgba(241,245,249,0.6)" />
-
-            {slices.map((s) => (
-              <path
-                key={s.method}
-                d={s.path}
-                fill="rgb(14 165 233)"
-                opacity={s.opacity}
-                stroke="rgba(15,23,42,0.06)"
-                strokeWidth="1"
-              />
-            ))}
-
-            <circle cx="70" cy="70" r="30" fill="white" />
-
-            <text
-              x="70"
-              y="68"
-              textAnchor="middle"
-              className="fill-slate-900"
-              style={{ fontSize: 12, fontWeight: 700 }}
-            >
-              Total
-            </text>
-            <text
-              x="70"
-              y="86"
-              textAnchor="middle"
-              className="fill-slate-600"
-              style={{ fontSize: 11, fontWeight: 700 }}
-            >
-              {formatNpr(total).replace("NPR ", "NPR ")}
-            </text>
-          </svg>
-        </div>
-
-        <div className="space-y-[8px]">
-          {total <= 0 ? (
-            <div className="text-[13px] text-slate-600">No payments yet.</div>
-          ) : (
-            slices.map((s) => (
-              <div
-                key={s.method}
-                className="flex items-center justify-between gap-[10px] rounded-[12px] border border-slate-100 p-[10px]"
-              >
-                <div className="flex items-center gap-[10px] min-w-0">
-                  <span
-                    className="h-[10px] w-[10px] rounded-full bg-sky-500"
-                    style={{ opacity: s.opacity }}
-                    aria-hidden="true"
-                  />
-                  <div className="text-[13px] font-semibold text-slate-800 truncate">
-                    {s.method}
-                  </div>
-                </div>
-                <div className="text-[12px] font-semibold text-slate-700">
-                  {formatPct(s.frac * 100)} •{" "}
-                  <span className="text-slate-900">{formatNpr(s.value)}</span>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
+    <div className={cn("min-w-0", className)}>
+      <div ref={containerRef} className="h-full w-full overflow-hidden">
+        {size.width > 0 && size.height > 0
+          ? React.cloneElement(children, {
+              width: size.width,
+              height: size.height,
+            })
+          : null}
       </div>
     </div>
   );
 }
 
 export default function AnalyticsPage() {
-  const [range, setRange] = useState<RangeKey>("week");
-  const [cashier, setCashier] = useState<"all" | string>("all");
-  const [payment, setPayment] = useState<"all" | PaymentMethod>("all");
-  const [status, setStatus] = useState<"all" | InvoiceStatus>("all");
-
-  const [topProducts, setTopProducts] = useState<TopProduct[]>([]);
-  const [cashiers, setCashiers] = useState<CashierRow[]>([]);
-  const [audit, setAudit] = useState<AuditItem[]>([]);
-  const [salesData, setSalesData] = useState<SalePoint[]>([]);
-
-  function daysAgoIso(days: number) {
-    const d = new Date();
-    d.setDate(d.getDate() - days);
-    return d.toISOString().slice(0, 10);
-  }
-  function todayIso() {
-    return new Date().toISOString().slice(0, 10);
-  }
+  const initialPreset: AnalyticsRangePreset = "month";
+  const [rangeSelection, setRangeSelection] = useState<RangeSelection>(initialPreset);
+  const [draftFilters, setDraftFilters] = useState<AnalyticsFilters>({ ...getRangeFromPreset(initialPreset) });
+  const [filters, setFilters] = useState<AnalyticsFilters>({ ...getRangeFromPreset(initialPreset) });
+  const [report, setReport] = useState<AnalyticsReport | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState("");
+  const [filterError, setFilterError] = useState("");
+  const [exportBusy, setExportBusy] = useState<"" | "excel" | "csv">("");
 
   useEffect(() => {
-    const days = range === "today" ? 1 : range === "week" ? 7 : 30;
-    const from = daysAgoIso(days);
-    const to = todayIso();
+    let cancelled = false;
 
     async function load() {
-      const [bestData, cashierData, auditData, summaryData] =
-        await Promise.allSettled([
-          bestSellersApi(from, to, 10),
-          cashierSalesApi(from, to),
-          listAuditLogsApi({ pageSize: 5 }),
-          salesSummaryApi(from, to),
-        ]);
-
-      if (bestData.status === "fulfilled" && bestData.value) {
-        const items = Array.isArray(bestData.value) ? bestData.value : [];
-        setTopProducts(
-          items.map((p: any, idx: number) => ({
-            id: p.product?.id || p.productId || `p${idx}`,
-            name: p.product?.name || p.productName || p.name || "Unknown",
-            sku: p.product?.sku || p.sku || "",
-            brand: p.product?.brand || p.brand || "",
-            qty: p.totalQty || 0,
-            revenue: p.totalRevenue || 0,
-          })),
-        );
-      }
-
-      if (cashierData.status === "fulfilled" && cashierData.value) {
-        const items = Array.isArray(cashierData.value)
-          ? cashierData.value
-          : [];
-        setCashiers(
-          items.map((c: any, idx: number) => ({
-            id: c.cashier?.id || c.userId || `c${idx}`,
-            name: c.cashier?.name || c.userName || c.name || "Unknown",
-            orders: c.invoiceCount || 0,
-            revenue: c.totalSales || c.totalRevenue || 0,
-          })),
-        );
-      }
-
-      if (auditData.status === "fulfilled" && auditData.value) {
-        const logs = auditData.value.logs || [];
-        setAudit(
-          logs.map((l: any, idx: number) => ({
-            id: l.id || `a${idx}`,
-            title: l.action || "Activity",
-            desc:
-              l.details && typeof l.details === "string"
-                ? l.details
-                : undefined,
-            timeLabel: new Date(l.createdAt).toLocaleDateString(),
-          })),
-        );
-      }
-
-      if (summaryData.status === "fulfilled" && summaryData.value) {
-        const s = summaryData.value;
-        setSalesData([
-          {
-            label: range === "today" ? "Today" : `${days}d`,
-            revenue: s.totalRevenue || 0,
-            orders: s.invoiceCount || 0,
-            discountNpr: 0,
-          },
-        ]);
+      setLoading(true);
+      setError("");
+      try {
+        const analyticsResponse = await getAnalyticsReportApi(filters);
+        if (!cancelled) setReport(analyticsResponse as AnalyticsReport);
+      } catch (err) {
+        if (!cancelled) {
+          setReport(null);
+          setError(errorMessage(err));
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
       }
     }
+
     load();
-  }, [range]);
-
-  const trend = useMemo(() => {
-    if (salesData.length > 0) return salesData;
-    return [];
-  }, [salesData]);
-
-  const [hover, setHover] = useState<SalePoint | null>(null);
-
-  // discount usage (no backend source yet)
-  const discountUsage = useMemo(() => {
-    return {
-      customerWholesaleCount: 0,
-      loyaltyCount: 0,
-      noneCount: 0,
-      customerWholesaleNpr: 0,
-      loyaltyNpr: 0,
-      totalDiscountNpr: 0,
+    return () => {
+      cancelled = true;
     };
-  }, []);
+  }, [filters]);
 
-  // brand distribution from top products (qty share)
-  const brandPie = useMemo(() => {
-    const map = new Map<string, number>();
-    topProducts.forEach((p) => {
-      map.set(p.brand, (map.get(p.brand) || 0) + p.qty);
-    });
-    return Array.from(map.entries())
-      .map(([brand, value]) => ({ brand, value }))
-      .sort((a, b) => b.value - a.value);
-  }, [topProducts]);
+  const salesData = useMemo(() => report?.salesOverTime || [], [report]);
+  const paymentData = useMemo(() => (report?.paymentDistribution || []).filter((item) => item.amount > 0), [report]);
+  const brandData = useMemo(() => (report?.brandPerformance || []).slice(0, 6).map((item) => ({ ...item, label: shorten(item.brandName || "Unbranded", 14) })), [report]);
+  const topProductsData = useMemo(() => (report?.topProducts || []).slice(0, 8).map((item) => ({ ...item, label: shorten(item.name, 18) })), [report]);
+  const topCustomersData = useMemo(() => (report?.topCustomers || []).slice(0, 8).map((item) => ({ ...item, label: shorten(item.name, 18) })), [report]);
+  const cashierChartData = useMemo(() => (report?.cashierPerformance || []).slice(0, 8).map((item) => ({ ...item, label: shorten(item.name, 18) })), [report]);
+  const hasData = !!report && report.summary.invoiceCount > 0;
 
-  // payment distribution
-  const paymentPie = useMemo<PaymentSlice[]>(() => {
-    // Coming soon: compute from invoices table where payment_method is saved
-    return [];
-  }, [payment]);
+  function setDraft(next: Partial<AnalyticsFilters>, nextRange?: RangeSelection) {
+    setDraftFilters((current) => ({ ...current, ...next }));
+    if (nextRange) setRangeSelection(nextRange);
+    setFilterError("");
+  }
 
-  // KPI from trend
-  const kpis = useMemo(() => {
-    const totalRevenue = trend.reduce((a, x) => a + x.revenue, 0);
-    const totalOrders = trend.reduce((a, x) => a + x.orders, 0);
-    const totalDiscount = trend.reduce((a, x) => a + x.discountNpr, 0);
-    const aov = totalOrders > 0 ? totalRevenue / totalOrders : 0;
-    return { totalRevenue, totalOrders, totalDiscount, aov };
-  }, [trend]);
+  function apply(next: AnalyticsFilters) {
+    if (!next.from || !next.to) return setFilterError("Select both a start and end date.");
+    if (next.from > next.to) return setFilterError("The start date must be on or before the end date.");
+    setFilterError("");
+    setFilters({ from: next.from, to: next.to, cashierId: next.cashierId || undefined, paymentStatus: next.paymentStatus || undefined });
+  }
 
-  // scale for bars
-  const maxRevenue = useMemo(() => {
-    const m = Math.max(...trend.map((x) => x.revenue));
-    return Number.isFinite(m) && m > 0 ? m : 1;
-  }, [trend]);
+  function pickPreset(preset: AnalyticsRangePreset) {
+    const next = { ...draftFilters, ...getRangeFromPreset(preset) };
+    setRangeSelection(preset);
+    setDraftFilters(next);
+    apply(next);
+  }
 
-  // small y-axis tick values (more descriptive)
-  const yTicks = useMemo(() => {
-    const t0 = 0;
-    const t1 = Math.round(maxRevenue * 0.25);
-    const t2 = Math.round(maxRevenue * 0.5);
-    const t3 = Math.round(maxRevenue * 0.75);
-    const t4 = Math.round(maxRevenue * 1.0);
-    return [t4, t3, t2, t1, t0];
-  }, [maxRevenue]);
+  async function exportExcel() {
+    if (!report) return;
+    try {
+      setExportBusy("excel");
+      await exportAnalyticsWorkbook(report);
+    } finally {
+      setExportBusy("");
+    }
+  }
+
+  async function exportCsv() {
+    if (!report) return;
+    try {
+      setExportBusy("csv");
+      const blob = await downloadAnalyticsCsvApi(filters);
+      downloadCsvBlob(report, blob);
+    } catch (err) {
+      setError(errorMessage(err));
+    } finally {
+      setExportBusy("");
+    }
+  }
 
   return (
-    <div className="space-y-[14px]">
-      {/* Header + filters */}
-      <Card>
-        <div className="p-[16px] space-y-[12px]">
-          <div className="flex items-start justify-between gap-[12px] flex-wrap">
-            <div>
-              <div className="text-[15px] font-semibold text-slate-900">
-                Analytics
-              </div>
-              <div className="text-[12px] text-slate-600 mt-[2px]">
-                Reports for sales, discounts, payments, and cashier performance.
-              </div>
-            </div>
-
-            <div className="flex items-center gap-[10px] flex-wrap justify-end">
-              <Button icon="download">Export CSV</Button>
-              <Button variant="primary" icon="bar_chart">
-                Generate report
-              </Button>
-            </div>
-          </div>
-
-          {/* Filters */}
-          <div className="grid grid-cols-1 lg:grid-cols-4 gap-[12px]">
-            <Select
-              value={range}
-              onChange={(v) => setRange(v as RangeKey)}
-              leftIcon="date_range"
-              options={[
-                { value: "today", label: "Today" },
-                { value: "week", label: "Last 7 days" },
-                { value: "month", label: "Last 30 days" },
-              ]}
+    <div className="space-y-6 pb-8 text-slate-900">
+      <Panel
+        title="Analytics"
+        subtitle="Real revenue, collections, discounts, customer, brand, and cashier performance from finalized invoices."
+        actions={
+          <div className="flex flex-wrap gap-2">
+            <ActionButton
+              icon="table_view"
+              label={exportBusy === "excel" ? "Preparing Excel..." : "Export Excel"}
+              onClick={exportExcel}
+              disabled={!report || loading || exportBusy !== ""}
             />
-
-            <Select
-              value={cashier}
-              onChange={(v) => setCashier(v as any)}
-              leftIcon="person"
-              options={[
-                { value: "all", label: "All cashiers" },
-                ...cashiers.map((c) => ({ value: c.id, label: c.name })),
-              ]}
-            />
-
-            <Select
-              value={payment}
-              onChange={(v) => setPayment(v as any)}
-              leftIcon="payments"
-              options={[
-                { value: "all", label: "All payments" },
-                { value: "Cash", label: "Cash" },
-                { value: "eSewa", label: "eSewa" },
-                { value: "Khalti", label: "Khalti" },
-              ]}
-            />
-
-            <Select
-              value={status}
-              onChange={(v) => setStatus(v as any)}
-              leftIcon="receipt_long"
-              options={[
-                { value: "all", label: "All invoice status" },
-                { value: "Paid", label: "Paid" },
-                { value: "Partial", label: "Partial" },
-                { value: "Unpaid", label: "Unpaid" },
-              ]}
+            <ActionButton
+              icon="download"
+              label={exportBusy === "csv" ? "Preparing CSV..." : "Export CSV"}
+              onClick={exportCsv}
+              disabled={!report || loading || exportBusy !== ""}
+              primary
             />
           </div>
-
-          {/* KPIs */}
-          <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-[10px]">
-            <Kpi
-              title="Total sales"
-              value={formatNpr(kpis.totalRevenue)}
-              hint={`Range: ${range}`}
-              icon="payments"
-              tone="orange"
-            />
-            <Kpi
-              title="Total invoices"
-              value={kpis.totalOrders.toString()}
-              hint="Orders/invoices count"
-              icon="receipt_long"
-              tone="sky"
-            />
-            <Kpi
-              title="Discount given"
-              value={formatNpr(kpis.totalDiscount)}
-              hint="Subtotal-level discounts"
-              icon="percent"
-              tone="green"
-            />
-            <Kpi
-              title="Avg order value"
-              value={formatNpr(kpis.aov)}
-              hint="Sales / invoices"
-              icon="calculate"
-              tone="neutral"
-            />
-          </div>
-        </div>
-      </Card>
-
-      {/* Charts area */}
-      <div className="grid grid-cols-1 xl:grid-cols-[1fr_420px] gap-[14px]">
-        {/* Trend bar chart */}
-        <Card>
-          <div className="p-[16px] space-y-[12px]">
-            <div className="flex items-start justify-between gap-[10px] flex-wrap">
-              <div>
-                <div className="text-[15px] font-semibold text-slate-900">
-                  Sales trend
-                </div>
-                <div className="text-[12px] text-slate-600 mt-[2px]">
-                  Hover a bar to see revenue, orders, and discount.
-                </div>
-              </div>
-              <Pill tone="orange">Revenue</Pill>
-            </div>
-
-            {/* Hover details box (makes hover meaningful) */}
-            <div className="rounded-[14px] border border-slate-200 bg-white p-[12px]">
-              <div className="text-[12px] font-semibold text-slate-600">
-                Hover details
-              </div>
-              <div className="mt-[6px] text-[13px] text-slate-800">
-                {hover ? (
-                  <>
-                    <span className="font-semibold text-slate-900">
-                      {hover.label}
-                    </span>{" "}
-                    • {formatNpr(hover.revenue)} • Orders:{" "}
-                    <span className="font-semibold">{hover.orders}</span> •
-                    Discount:{" "}
-                    <span className="font-semibold">
-                      {formatNpr(hover.discountNpr)}
-                    </span>
-                  </>
-                ) : (
-                  <span className="text-slate-600">
-                    Move your mouse over a bar.
-                  </span>
+        }
+      >
+        <div className="space-y-4 px-5 py-5">
+          <div className="flex flex-wrap gap-2">
+            {(["today", "week", "month", "quarter"] as AnalyticsRangePreset[]).map((preset) => (
+              <button
+                key={preset}
+                type="button"
+                onClick={() => pickPreset(preset)}
+                className={cn(
+                  "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                  rangeSelection === preset
+                    ? "border-[#11120d] bg-[#11120d] text-white"
+                    : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
                 )}
-              </div>
-            </div>
-
-            {/* Bars with y-axis tick labels (more descriptive) */}
-            <div className="rounded-[14px] border border-slate-200 bg-slate-50/40 p-[12px]">
-              <div className="relative h-[240px]">
-                {/* Y-axis tick labels */}
-                <div className="absolute left-0 top-0 bottom-0 w-[86px] pr-[10px] flex flex-col justify-between">
-                  {yTicks.map((t, idx) => (
-                    <div
-                      key={`${t}_${idx}`}
-                      className="text-[11px] text-slate-500 font-semibold"
-                    >
-                      {formatNpr(t)}
-                    </div>
-                  ))}
-                </div>
-
-                {/* Chart area */}
-                <div className="absolute left-[86px] right-0 top-0 bottom-0">
-                  <div className="h-full flex items-end gap-[10px]">
-                    {trend.map((p) => {
-                      const h = Math.max(
-                        6,
-                        Math.round((p.revenue / maxRevenue) * 190),
-                      );
-
-                      return (
-                        <div key={p.label} className="flex-1 min-w-0">
-                          <div
-                            className="rounded-t-[10px] bg-orange-500/60 hover:bg-orange-500 transition cursor-pointer"
-                            style={{ height: h }}
-                            title={`${p.label}: ${formatNpr(p.revenue)} • Orders: ${p.orders} • Discount: ${formatNpr(
-                              p.discountNpr,
-                            )}`}
-                            onMouseEnter={() => setHover(p)}
-                            onMouseLeave={() => setHover(null)}
-                          />
-
-                          {/* X label */}
-                          <div className="mt-[8px] text-[11px] font-semibold text-slate-600 text-center truncate">
-                            {p.label}
-                          </div>
-                        </div>
-                      );
-                    })}
-                  </div>
-                </div>
-              </div>
-            </div>
-
-            {/* Quick mini-stats */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-[10px]">
-              <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-                <div className="text-[12px] font-semibold text-slate-600">
-                  Discount split (MVP)
-                </div>
-                <div className="mt-[8px] flex flex-wrap gap-[8px]">
-                  <Pill tone="orange">
-                    Customer %: {formatNpr(discountUsage.customerWholesaleNpr)}
-                  </Pill>
-                  <Pill tone="green">
-                    Loyalty: {formatNpr(discountUsage.loyaltyNpr)}
-                  </Pill>
-                </div>
-              </div>
-
-              <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-                <div className="text-[12px] font-semibold text-slate-600">
-                  Discount usage (count)
-                </div>
-                <div className="mt-[8px] flex flex-wrap gap-[8px]">
-                  <Pill tone="orange">
-                    {discountUsage.customerWholesaleCount} customer %
-                  </Pill>
-                  <Pill tone="green">{discountUsage.loyaltyCount} loyalty</Pill>
-                  <Pill>{discountUsage.noneCount} none</Pill>
-                </div>
-              </div>
-
-              <div className="rounded-[14px] border border-slate-200 p-[12px] bg-white">
-                <div className="text-[12px] font-semibold text-slate-600">
-                  Notes
-                </div>
-                <div className="text-[12px] text-slate-600 mt-[6px]">
-                  Discount insights and payment distributions coming soon. No fabricated metrics are displayed.
-                </div>
-              </div>
-            </div>
-          </div>
-        </Card>
-
-        {/* Right side charts */}
-        <Card>
-          <div className="p-[16px] space-y-[12px]">
-            <PaymentDonut
-              title="Payment distribution"
-              subtitle="Cash vs eSewa recorded (sandbox) and others."
-              data={paymentPie}
-            />
-
-            <PieChart
-              title="Brand distribution"
-              subtitle="Based on top products (qty share)."
-              data={brandPie}
-            />
-
-            <div className="rounded-[14px] border border-slate-200 p-[12px] bg-slate-50/40">
-              <div className="text-[13px] font-semibold text-slate-900">
-                Why this helps
-              </div>
-              <div className="text-[12px] text-slate-700 mt-[6px]">
-                Payments chart shows how much money is recorded digitally vs
-                cash-in-hand. Brand chart shows which brands move the most.
-              </div>
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Tables row */}
-      <div className="grid grid-cols-1 xl:grid-cols-2 gap-[14px]">
-        {/* Top products */}
-        <Card>
-          <div className="p-[16px] space-y-[12px]">
-            <div className="flex items-center justify-between gap-[10px] flex-wrap">
-              <div>
-                <div className="text-[15px] font-semibold text-slate-900">
-                  Top products
-                </div>
-                <div className="text-[12px] text-slate-600 mt-[2px]">
-                  Best performing products in selected range.
-                </div>
-              </div>
-              <Pill tone="sky">Table</Pill>
-            </div>
-
-            <div className="overflow-x-auto rounded-[14px] border border-slate-200">
-              <table className="w-full min-w-[720px] text-left">
-                <thead>
-                  <tr className="text-[12px] font-semibold text-slate-500 border-b border-slate-100 bg-slate-50/60">
-                    <th className="px-[12px] py-[12px]">Product</th>
-                    <th className="px-[12px] py-[12px]">SKU</th>
-                    <th className="px-[12px] py-[12px]">Brand</th>
-                    <th className="px-[12px] py-[12px]">Qty</th>
-                    <th className="px-[12px] py-[12px]">Revenue</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {topProducts.map((p) => (
-                    <tr key={p.id} className="text-[14px] hover:bg-slate-50/60">
-                      <td className="px-[12px] py-[14px] font-semibold text-slate-900">
-                        {p.name}
-                      </td>
-                      <td className="px-[12px] py-[14px] text-slate-700">
-                        {p.sku}
-                      </td>
-                      <td className="px-[12px] py-[14px]">
-                        <Pill tone="neutral">{p.brand}</Pill>
-                      </td>
-                      <td className="px-[12px] py-[14px] text-slate-900 font-semibold">
-                        {p.qty}
-                      </td>
-                      <td className="px-[12px] py-[14px] text-slate-900 font-semibold">
-                        {formatNpr(p.revenue)}
-                      </td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="text-[12px] text-slate-500">
-              Later: add category breakdown and low-stock impact.
-            </div>
-          </div>
-        </Card>
-
-        {/* Cashier performance (kept) */}
-        <Card>
-          <div className="p-[16px] space-y-[12px]">
-            <div className="flex items-center justify-between gap-[10px] flex-wrap">
-              <div>
-                <div className="text-[15px] font-semibold text-slate-900">
-                  Cashier performance
-                </div>
-                <div className="text-[12px] text-slate-600 mt-[2px]">
-                  Sales and orders by cashier.
-                </div>
-              </div>
-              <Pill tone="orange">RBAC</Pill>
-            </div>
-
-            <div className="overflow-x-auto rounded-[14px] border border-slate-200">
-              <table className="w-full min-w-[560px] text-left">
-                <thead>
-                  <tr className="text-[12px] font-semibold text-slate-500 border-b border-slate-100 bg-slate-50/60">
-                    <th className="px-[12px] py-[12px]">Cashier</th>
-                    <th className="px-[12px] py-[12px]">Orders</th>
-                    <th className="px-[12px] py-[12px]">Revenue</th>
-                    <th className="px-[12px] py-[12px]">Share</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-slate-100">
-                  {cashiers.map((c) => {
-                    const totalRev =
-                      cashiers.reduce((a, x) => a + x.revenue, 0) || 1;
-                    const share = (c.revenue / totalRev) * 100;
-
-                    return (
-                      <tr
-                        key={c.id}
-                        className="text-[14px] hover:bg-slate-50/60"
-                      >
-                        <td className="px-[12px] py-[14px] font-semibold text-slate-900">
-                          {c.name}
-                        </td>
-                        <td className="px-[12px] py-[14px] text-slate-700 font-semibold">
-                          {c.orders}
-                        </td>
-                        <td className="px-[12px] py-[14px] text-slate-900 font-semibold">
-                          {formatNpr(c.revenue)}
-                        </td>
-                        <td className="px-[12px] py-[14px]">
-                          <div className="flex items-center gap-[10px]">
-                            <div className="h-[8px] flex-1 rounded-full bg-slate-100 overflow-hidden border border-slate-200">
-                              <div
-                                className="h-full bg-orange-500/70"
-                                style={{
-                                  width: `${Math.min(100, Math.max(0, share))}%`,
-                                }}
-                              />
-                            </div>
-                            <div className="text-[12px] font-semibold text-slate-700 w-[60px] text-right">
-                              {formatPct(share)}
-                            </div>
-                          </div>
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-
-            <div className="text-[12px] text-slate-500">
-              Later: show void/override counts (Phase 2 audit analytics).
-            </div>
-          </div>
-        </Card>
-      </div>
-
-      {/* Recent activity (kept) */}
-      <Card>
-        <div className="p-[16px] space-y-[10px]">
-          <div className="flex items-center justify-between gap-[10px] flex-wrap">
-            <div>
-              <div className="text-[15px] font-semibold text-slate-900">
-                Recent activity
-              </div>
-              <div className="text-[12px] text-slate-600 mt-[2px]">
-                This will come from audit logs later.
-              </div>
-            </div>
-            <Button icon="history">View all</Button>
-          </div>
-
-          <div className="space-y-[8px]">
-            {audit.map((a) => (
-              <div
-                key={a.id}
-                className="rounded-[14px] border border-slate-200 p-[12px] hover:bg-slate-50/60 transition"
               >
-                <div className="flex items-start justify-between gap-[10px]">
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-semibold text-slate-900">
-                      {a.title}
-                    </div>
-                    {a.desc ? (
-                      <div className="text-[12px] text-slate-600 mt-[2px]">
-                        {a.desc}
+                {preset === "today"
+                  ? "Today"
+                  : preset === "week"
+                    ? "Last 7 days"
+                    : preset === "month"
+                      ? "Last 30 days"
+                      : "Last 90 days"}
+              </button>
+            ))}
+          </div>
+
+          <div className="grid grid-cols-1 gap-4 xl:grid-cols-[1fr_1fr_1fr_1fr_auto]">
+            <input
+              type="date"
+              value={draftFilters.from}
+              onChange={(e) => setDraft({ from: e.target.value }, "custom")}
+              className="h-[44px] rounded-[14px] border border-[var(--app-border)] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+            />
+            <input
+              type="date"
+              value={draftFilters.to}
+              onChange={(e) => setDraft({ to: e.target.value }, "custom")}
+              className="h-[44px] rounded-[14px] border border-[var(--app-border)] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+            />
+            <select
+              value={draftFilters.cashierId || ""}
+              onChange={(e) => setDraft({ cashierId: e.target.value || undefined })}
+              className="h-[44px] rounded-[14px] border border-[var(--app-border)] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+            >
+              <option value="">All cashiers</option>
+              {(report?.cashiers || []).map((cashier) => (
+                <option key={cashier.id} value={cashier.id}>
+                  {cashier.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={draftFilters.paymentStatus || ""}
+              onChange={(e) =>
+                setDraft({ paymentStatus: (e.target.value as AnalyticsPaymentStatus) || undefined })
+              }
+              className="h-[44px] rounded-[14px] border border-[var(--app-border)] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+            >
+              <option value="">All payment statuses</option>
+              {(["PAID", "PARTIALLY_PAID", "UNPAID", "CANCELLED"] as AnalyticsPaymentStatus[]).map((status) => (
+                <option key={status} value={status}>
+                  {paymentStatusLabel(status)}
+                </option>
+              ))}
+            </select>
+            <div className="flex gap-2">
+              <ActionButton icon="sync" label="Apply" onClick={() => apply(draftFilters)} />
+              <ActionButton
+                icon="restart_alt"
+                label="Reset"
+                onClick={() => {
+                  const next = { ...getRangeFromPreset(initialPreset) };
+                  setRangeSelection(initialPreset);
+                  setDraftFilters(next);
+                  apply(next);
+                }}
+              />
+            </div>
+          </div>
+
+          {filterError ? (
+            <div className="rounded-[16px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-[13px] font-semibold text-[var(--app-danger-text)]">
+              {filterError}
+            </div>
+          ) : null}
+        </div>
+      </Panel>
+
+      {loading && !report ? (
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+          {Array.from({ length: 6 }).map((_, index) => (
+            <div key={index} className="h-[132px] animate-pulse rounded-[20px] border border-[var(--app-border)] bg-white/70" />
+          ))}
+        </div>
+      ) : error ? (
+        <Panel title="Analytics unavailable">
+          <div className="px-5 py-10 text-[14px] font-semibold text-[var(--app-danger-text)]">{error}</div>
+        </Panel>
+      ) : !report || !hasData ? (
+        <Panel title={report?.summary.cancelledInvoiceCount ? "Only cancelled invoices matched" : "No analytics data"}>
+          <div className="px-5 py-10 text-[14px] font-semibold text-[var(--app-text-muted)]">
+            {report?.summary.cancelledInvoiceCount
+              ? "Cancelled invoices matched the current filters, but cancelled invoices are excluded from sales analytics totals."
+              : "No finalized invoice data was found for this range."}
+          </div>
+        </Panel>
+      ) : (
+        <>
+          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+            <MetricCard title="Net Sales" value={formatNpr(report.summary.netSales)} subtitle={`${report.summary.invoiceCount} sales invoices`} icon="payments" tone="border-[#11120d] bg-[#11120d] text-white" />
+            <MetricCard title="Collected" value={formatNpr(report.summary.collectedTotal)} subtitle={`${pct(report.summary.collectionRate)} collected`} icon="task_alt" tone="border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success-text)]" />
+            <MetricCard title="Outstanding Due" value={formatNpr(report.summary.dueTotal)} subtitle={`${report.summary.unpaidInvoiceCount + report.summary.partiallyPaidInvoiceCount} invoices still open`} icon="hourglass_top" tone="border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)]" />
+            <MetricCard title="Discount Given" value={formatNpr(report.summary.discountTotal)} subtitle={`${pct(report.summary.discountRate)} of gross sales`} icon="percent" tone="border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] text-[var(--app-warning-text)]" />
+            <MetricCard title="Avg Basket" value={formatNpr(report.summary.averageBasketSize)} subtitle={`${report.summary.itemsSold} items sold`} icon="shopping_bag" tone="border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-soft)]" />
+            <MetricCard title="Customers" value={String(report.summary.customerCount)} subtitle={`${report.summary.walkInInvoiceCount} walk-in invoices`} icon="groups" tone="border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-soft)]" />
+          </div>
+
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-[1.7fr_1fr]">
+            <Panel title="Revenue vs collection" subtitle="Revenue and collected cash across the selected range, with invoice volume for context.">
+              <SafeChartFrame className="h-[380px] px-3 py-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <ComposedChart data={salesData} margin={{ top: 12, right: 20, left: 4, bottom: 4 }}>
+                    <CartesianGrid stroke="#e3e5e8" strokeDasharray="3 3" />
+                    <XAxis dataKey="label" tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                    <YAxis yAxisId="money" tickFormatter={(value) => compact(value)} tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                    <YAxis yAxisId="count" orientation="right" tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                    <Tooltip
+                      content={({ active, payload, label }) =>
+                        active && payload?.[0]?.payload ? (
+                          <div className="rounded-[16px] border border-[var(--app-border)] bg-white px-4 py-3 shadow-xl">
+                            <div className="text-[12px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">{label}</div>
+                            <div className="mt-2 space-y-1 text-[13px] font-semibold text-[var(--app-text-soft)]">
+                              <div>Revenue: {formatNpr(payload[0].payload.revenue)}</div>
+                              <div>Collected: {formatNpr(payload[0].payload.collected)}</div>
+                              <div>Due: {formatNpr(payload[0].payload.due)}</div>
+                              <div>Invoices: {payload[0].payload.invoices}</div>
+                            </div>
+                          </div>
+                        ) : null
+                      }
+                    />
+                    <Area yAxisId="money" type="monotone" dataKey="revenue" stroke="#11120d" fill="#11120d" fillOpacity={0.12} strokeWidth={3} />
+                    <Area yAxisId="money" type="monotone" dataKey="collected" stroke="#179b4d" fill="#eaf8ef" fillOpacity={0.95} strokeWidth={3} />
+                    <Bar yAxisId="count" dataKey="invoices" fill="#cfcfd3" radius={[6, 6, 0, 0]} maxBarSize={28} />
+                  </ComposedChart>
+                </ResponsiveContainer>
+              </SafeChartFrame>
+            </Panel>
+
+            <div className="space-y-5">
+              <Panel title="Payment mix" subtitle="Successful payments recorded against invoices in the selected range.">
+                <div className="grid grid-cols-1 gap-4 px-4 py-5 md:grid-cols-[200px_1fr]">
+                  <SafeChartFrame className="h-[210px]">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <PieChart>
+                        <Pie data={paymentData} dataKey="amount" nameKey="method" innerRadius={52} outerRadius={78} paddingAngle={3}>
+                          {paymentData.map((slice) => <Cell key={slice.method} fill={PAYMENT_COLORS[slice.method]} />)}
+                        </Pie>
+                        <Tooltip formatter={(value: any, _name, item: any) => [formatNpr(Number(value || 0)), paymentMethodLabel(item.payload.method)]} />
+                      </PieChart>
+                    </ResponsiveContainer>
+                  </SafeChartFrame>
+                  <div className="space-y-3">
+                    {paymentData.length === 0 ? (
+                      <div className="rounded-[16px] border border-dashed border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 px-4 py-6 text-[13px] font-semibold text-[var(--app-text-muted)]">
+                        No successful payments were recorded in this range.
                       </div>
-                    ) : null}
-                  </div>
-                  <div className="text-[12px] text-slate-500 shrink-0">
-                    {a.timeLabel}
+                    ) : (
+                      paymentData.map((slice) => (
+                        <div key={slice.method} className="rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/60 px-4 py-3">
+                          <div className="flex items-center justify-between gap-3">
+                            <div className="flex items-center gap-3">
+                              <span className="h-3 w-3 rounded-full" style={{ backgroundColor: PAYMENT_COLORS[slice.method] }} />
+                              <div className="text-[13px] font-extrabold text-[var(--app-text)]">{paymentMethodLabel(slice.method)}</div>
+                            </div>
+                            <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">{slice.count} payments</div>
+                          </div>
+                          <div className="mt-2 text-[16px] font-extrabold text-[var(--app-text)]">{formatNpr(slice.amount)}</div>
+                        </div>
+                      ))
+                    )}
                   </div>
                 </div>
-              </div>
-            ))}
+              </Panel>
 
-            {audit.length === 0 ? (
-              <div className="text-[14px] text-slate-600">No activity yet.</div>
-            ) : null}
+              <Panel title="Brand performance" subtitle="Revenue by brand from sold invoice items.">
+                {brandData.length === 0 ? (
+                  <div className="h-[280px] px-3 py-4">
+                    <EmptyChart message="No brand-linked sales were recorded in this range." />
+                  </div>
+                ) : (
+                  <SafeChartFrame className="h-[280px] px-3 py-4">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <BarChart data={brandData} layout="vertical" margin={{ top: 8, right: 20, left: 10, bottom: 8 }}>
+                        <CartesianGrid stroke="#e3e5e8" strokeDasharray="3 3" />
+                        <XAxis type="number" tickFormatter={(value) => compact(value)} tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                        <YAxis type="category" dataKey="label" width={96} tick={{ fill: "#565449", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                        <Tooltip formatter={(value: any) => formatNpr(Number(value || 0))} labelFormatter={(_, payload) => payload?.[0]?.payload?.brandName || "Brand"} />
+                        <Bar dataKey="revenue" fill="#11120d" radius={[0, 8, 8, 0]} />
+                      </BarChart>
+                    </ResponsiveContainer>
+                  </SafeChartFrame>
+                )}
+              </Panel>
+            </div>
           </div>
-        </div>
-      </Card>
+
+          <Panel title="Top products" subtitle="Best-selling products by revenue in the selected range.">
+            {topProductsData.length === 0 ? (
+              <div className="h-[360px] px-3 py-4">
+                <EmptyChart message="No product sales were recorded for this range." />
+              </div>
+            ) : (
+              <SafeChartFrame className="h-[360px] px-3 py-4">
+                <ResponsiveContainer width="100%" height="100%">
+                  <BarChart data={topProductsData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                    <CartesianGrid stroke="#e3e5e8" strokeDasharray="3 3" />
+                    <XAxis type="number" tickFormatter={(value) => compact(value)} tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                    <YAxis type="category" dataKey="label" width={124} tick={{ fill: "#565449", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                    <Tooltip
+                      content={({ active, payload }) =>
+                        active && payload?.[0]?.payload ? (
+                          <div className="rounded-[16px] border border-[var(--app-border)] bg-white px-4 py-3 shadow-xl">
+                            <div className="text-[13px] font-extrabold text-[var(--app-text)]">{payload[0].payload.name}</div>
+                            <div className="mt-1 text-[12px] font-medium text-[var(--app-text-muted)]">{payload[0].payload.brandName || "Unbranded"} • SKU {payload[0].payload.sku || "N/A"}</div>
+                            <div className="mt-2 space-y-1 text-[12px] font-semibold text-[var(--app-text-soft)]">
+                              <div>Revenue: {formatNpr(payload[0].payload.revenue)}</div>
+                              <div>Qty sold: {payload[0].payload.qty}</div>
+                              <div>Invoices: {payload[0].payload.invoiceCount}</div>
+                            </div>
+                          </div>
+                        ) : null
+                      }
+                    />
+                    <Bar dataKey="revenue" fill="#11120d" radius={[0, 9, 9, 0]} />
+                  </BarChart>
+                </ResponsiveContainer>
+              </SafeChartFrame>
+            )}
+          </Panel>
+
+          <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
+            <Panel title="Top customers" subtitle="Customers generating the most revenue in this range.">
+              {topCustomersData.length === 0 ? (
+                <div className="h-[340px] px-3 py-4">
+                  <EmptyChart message="No customer-linked sales were recorded in this range." />
+                </div>
+              ) : (
+                <SafeChartFrame className="h-[340px] px-3 py-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={topCustomersData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                      <CartesianGrid stroke="#e3e5e8" strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={(value) => compact(value)} tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                      <YAxis type="category" dataKey="label" width={124} tick={{ fill: "#565449", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                      <Tooltip
+                        content={({ active, payload }) =>
+                          active && payload?.[0]?.payload ? (
+                            <div className="rounded-[16px] border border-[var(--app-border)] bg-white px-4 py-3 shadow-xl">
+                              <div className="text-[13px] font-extrabold text-[var(--app-text)]">{payload[0].payload.name}</div>
+                              <div className="mt-1 text-[12px] font-medium text-[var(--app-text-muted)]">{payload[0].payload.phone || "No phone recorded"}</div>
+                              <div className="mt-2 space-y-1 text-[12px] font-semibold text-[var(--app-text-soft)]">
+                                <div>Revenue: {formatNpr(payload[0].payload.revenue)}</div>
+                                <div>Collected: {formatNpr(payload[0].payload.collected)}</div>
+                                <div>Due: {formatNpr(payload[0].payload.due)}</div>
+                                <div>Invoices: {payload[0].payload.invoiceCount}</div>
+                              </div>
+                            </div>
+                          ) : null
+                        }
+                      />
+                      <Bar dataKey="revenue" fill="#179b4d" radius={[0, 9, 9, 0]} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </SafeChartFrame>
+              )}
+            </Panel>
+
+            <Panel title="Cashier performance" subtitle="Revenue and discounts by cashier, with collections and basket quality in the tooltip.">
+              {cashierChartData.length === 0 ? (
+                <div className="h-[340px] px-3 py-4">
+                  <EmptyChart message="No cashier activity was recorded in this range." />
+                </div>
+              ) : (
+                <SafeChartFrame className="h-[340px] px-3 py-4">
+                  <ResponsiveContainer width="100%" height="100%">
+                    <BarChart data={cashierChartData} layout="vertical" margin={{ top: 8, right: 24, left: 8, bottom: 8 }}>
+                      <CartesianGrid stroke="#e3e5e8" strokeDasharray="3 3" />
+                      <XAxis type="number" tickFormatter={(value) => compact(value)} tick={{ fill: "#8c8889", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                      <YAxis type="category" dataKey="label" width={124} tick={{ fill: "#565449", fontSize: 12, fontWeight: 700 }} axisLine={{ stroke: "#cfcfd3" }} tickLine={{ stroke: "#cfcfd3" }} />
+                      <Tooltip
+                        content={({ active, payload }) =>
+                          active && payload?.[0]?.payload ? (
+                            <div className="rounded-[16px] border border-[var(--app-border)] bg-white px-4 py-3 shadow-xl">
+                              <div className="text-[13px] font-extrabold text-[var(--app-text)]">{payload[0].payload.name}</div>
+                              <div className="mt-2 space-y-1 text-[12px] font-semibold text-[var(--app-text-soft)]">
+                                <div>Revenue: {formatNpr(payload[0].payload.revenue)}</div>
+                                <div>Collected: {formatNpr(payload[0].payload.collected)}</div>
+                                <div>Discount: {formatNpr(payload[0].payload.discount)}</div>
+                                <div>Invoices: {payload[0].payload.invoiceCount}</div>
+                                <div>Avg basket: {formatNpr(payload[0].payload.averageBasket)}</div>
+                              </div>
+                            </div>
+                          ) : null
+                        }
+                      />
+                      <Bar dataKey="revenue" fill="#11120d" radius={[0, 9, 9, 0]} />
+                      <Bar dataKey="discount" fill="#b7791f" radius={[0, 9, 9, 0]} barSize={10} />
+                    </BarChart>
+                  </ResponsiveContainer>
+                </SafeChartFrame>
+              )}
+            </Panel>
+          </div>
+        </>
+      )}
     </div>
   );
 }

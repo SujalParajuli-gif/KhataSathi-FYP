@@ -1,5 +1,6 @@
 import type { CSSProperties } from "react";
 import { NavLink } from "react-router";
+import BrandLogo from "~/components/ui/BrandLogo";
 import GIcon from "~/components/ui/GIcon";
 import navData from "~/config/ui.nav.json";
 import type { UserRole } from "~/lib/auth";
@@ -45,28 +46,27 @@ export default function Sidebar({
         }
         className={[
           "fixed left-0 top-0 z-50 h-full bg-white",
-          "border-r border-slate-200/60 shadow-xl lg:shadow-none",
+          "border-r border-[var(--app-border)] shadow-[0_24px_70px_-42px_rgba(17,18,13,0.55)] lg:shadow-none",
           "w-[var(--sidebar-w)]",
           "transition-[width,transform] duration-300 ease-in-out",
           isMobileOpen ? "translate-x-0" : "-translate-x-full",
           "lg:translate-x-0",
         ].join(" ")}
       >
-        <div className="flex items-center gap-3 overflow-hidden px-4 py-6">
-          <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-xl bg-gradient-to-br from-orange-400 to-orange-600 font-bold text-white shadow-lg shadow-orange-200/50">
-            {navData.brand.logoText}
-          </div>
-
-          {!isCollapsed && (
-            <div className="truncate text-lg font-bold tracking-tight text-slate-900">
-              {navData.brand.name}
-            </div>
+        <div className="flex items-center gap-3 overflow-hidden border-b border-[var(--app-border)] px-4 py-6">
+          {isCollapsed ? (
+            <BrandLogo
+              variant="icon"
+              className="h-10 w-10 border border-[var(--app-border)] bg-white p-1 shadow-[0_16px_34px_-24px_rgba(17,18,13,0.28)]"
+            />
+          ) : (
+            <BrandLogo className="h-10 w-[174px]" />
           )}
         </div>
 
         {!isCollapsed && (
-          <div className="mb-2 px-6">
-            <div className="text-[10px] font-extrabold uppercase tracking-[0.15em] text-slate-400/80">
+          <div className="mb-2 px-6 pt-4">
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
               {navData.sidebar.mainLabel}
             </div>
           </div>
@@ -82,30 +82,26 @@ export default function Sidebar({
               title={isCollapsed ? item.label : undefined}
               className={({ isActive }) =>
                 [
-                  "group relative flex items-center rounded-xl transition-all duration-200",
+                  "group relative flex items-center rounded-[16px] border transition-all duration-200",
                   isCollapsed
                     ? "justify-center px-0 py-2.5"
                     : "gap-3 px-3 py-2.5",
                   "text-[14px] font-semibold",
                   isActive
-                    ? "bg-orange-50 text-orange-600 shadow-sm shadow-orange-100/50"
-                    : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                    ? "border-[#11120d] bg-[#11120d] text-white shadow-[0_18px_36px_-26px_rgba(17,18,13,0.78)]"
+                    : "border-transparent text-[var(--app-text-soft)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
                 ].join(" ")
               }
             >
               {({ isActive }) => (
                 <>
-                  {isActive && (
-                    <div className="absolute left-0 h-5 w-1 rounded-r-full bg-orange-600" />
-                  )}
-
                   <GIcon
                     name={item.icon}
                     className={[
-                      "transition-transform duration-200 group-hover:scale-110",
+                      "transition-colors duration-200",
                       isActive
-                        ? "text-orange-600"
-                        : "text-slate-400 group-hover:text-slate-600",
+                        ? "text-white"
+                        : "text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]",
                     ].join(" ")}
                   />
 
@@ -119,7 +115,7 @@ export default function Sidebar({
         </nav>
 
         <div className="absolute bottom-0 left-0 w-full px-3 pb-6">
-          <div className="mx-3 mb-4 h-px bg-slate-100" />
+          <div className="mx-3 mb-4 h-px bg-[var(--app-border)]" />
 
           <div className="flex flex-col gap-1">
             {bottomItems.map((item) => (
@@ -131,30 +127,36 @@ export default function Sidebar({
                 title={isCollapsed ? item.label : undefined}
                 className={({ isActive }) =>
                   [
-                    "group flex items-center rounded-xl transition-all duration-200",
+                    "group flex items-center rounded-[16px] border transition-all duration-200",
                     isCollapsed
                       ? "justify-center px-0 py-2.5"
                       : "gap-3 px-3 py-2.5",
                     "text-[14px] font-semibold",
                     item.danger
-                      ? "text-rose-500 hover:bg-rose-50 hover:text-rose-600"
+                      ? "border-transparent text-rose-600 hover:border-rose-200 hover:bg-rose-50"
                       : isActive
-                        ? "bg-orange-50 text-orange-600"
-                        : "text-slate-600 hover:bg-slate-50 hover:text-slate-900",
+                        ? "border-[#11120d] bg-[#11120d] text-white"
+                        : "border-transparent text-[var(--app-text-soft)] hover:border-[var(--app-border)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
                   ].join(" ")
                 }
               >
-                <GIcon
-                  name={item.icon}
-                  className={
-                    item.danger
-                      ? "text-inherit"
-                      : "text-slate-400 group-hover:text-slate-600"
-                  }
-                />
+                {({ isActive }) => (
+                  <>
+                    <GIcon
+                      name={item.icon}
+                      className={
+                        item.danger
+                          ? "text-inherit"
+                          : isActive
+                            ? "text-white"
+                            : "text-[var(--app-text-muted)] group-hover:text-[var(--app-text)]"
+                      }
+                    />
 
-                {!isCollapsed && (
-                  <span className="whitespace-nowrap">{item.label}</span>
+                    {!isCollapsed && (
+                      <span className="whitespace-nowrap">{item.label}</span>
+                    )}
+                  </>
                 )}
               </NavLink>
             ))}

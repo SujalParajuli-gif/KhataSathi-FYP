@@ -1,4 +1,3 @@
-// frontend/app/components/blocks/products/ProductsTable.tsx
 import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import type { Product } from "~/lib/domain/products/products.types";
@@ -8,12 +7,20 @@ import {
   getStockFlag,
 } from "~/lib/domain/products/products.helpers";
 
+const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
+
 type ProductStatus = "Active" | "Inactive";
 type StockFlag = "In Stock" | "Low Stock" | "Out of Stock";
 
+function resolveImageUrl(imageUrl?: string) {
+  if (!imageUrl) return "";
+  if (imageUrl.startsWith("http")) return imageUrl;
+  return `${API_URL}${imageUrl}`;
+}
+
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[14px] bg-white border border-slate-200/70 shadow-sm">
+    <div className="rounded-[14px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
       {children}
     </div>
   );
@@ -22,8 +29,8 @@ function Card({ children }: { children: React.ReactNode }) {
 function StatusPill({ status }: { status: ProductStatus }) {
   const cls =
     status === "Active"
-      ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-      : "bg-slate-50 text-slate-600 border-slate-200";
+      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
+      : "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]";
   return (
     <span
       className={cn(
@@ -39,10 +46,10 @@ function StatusPill({ status }: { status: ProductStatus }) {
 function StockPill({ flag }: { flag: StockFlag }) {
   const cls =
     flag === "In Stock"
-      ? "bg-emerald-50 text-emerald-700 border-emerald-100"
+      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
       : flag === "Low Stock"
-        ? "bg-orange-50 text-orange-700 border-orange-100"
-        : "bg-rose-50 text-rose-700 border-rose-100";
+        ? "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)] border-[var(--app-warning-border)]"
+        : "bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] border-[var(--app-danger-border)]";
   return (
     <span
       className={cn(
@@ -69,9 +76,9 @@ function IconButton({
       type="button"
       aria-label={label}
       onClick={onClick}
-      className="inline-flex items-center justify-center h-[40px] w-[40px] rounded-[12px] border border-slate-200 bg-white hover:bg-slate-50 active:scale-[0.98]"
+      className="inline-flex h-[40px] w-[40px] items-center justify-center rounded-[12px] border border-[var(--app-border)] bg-white hover:bg-[var(--app-surface-muted)] active:scale-[0.98]"
     >
-      <GoogleIcon name={icon} className="text-slate-700" />
+      <GoogleIcon name={icon} className="text-[var(--app-text-soft)]" />
     </button>
   );
 }
@@ -84,38 +91,20 @@ export default function ProductsTableCard({
   onView,
   onEdit,
   onDelete,
-
   total,
   start,
   end,
-  page,
-  totalPages,
-  pageSize,
-  setPageSize,
-  prevPage,
-  nextPage,
 }: {
   rows: Product[];
   selected: Record<string, boolean>;
   toggleAllOnPage: (checked: boolean) => void;
   toggleOne: (id: string, checked: boolean) => void;
-
   onView: (p: Product) => void;
   onEdit: (p: Product) => void;
   onDelete: (p: Product) => void;
-
   total: number;
   start: number;
   end: number;
-
-  page: number;
-  totalPages: number;
-
-  pageSize: number;
-  setPageSize: (n: number) => void;
-
-  prevPage: () => void;
-  nextPage: () => void;
 }) {
   return (
     <Card>
@@ -123,14 +112,12 @@ export default function ProductsTableCard({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1040px] text-left">
             <thead>
-              <tr className="text-[12px] font-semibold text-slate-500 border-b border-slate-100">
-                <th className="px-[10px] py-[12px] w-[44px]">
+              <tr className="border-b border-[var(--app-border)] text-[12px] font-semibold text-[var(--app-text-muted)]">
+                <th className="w-[44px] px-[10px] py-[12px]">
                   <input
                     type="checkbox"
-                    checked={
-                      rows.length > 0 && rows.every((p) => selected[p.id])
-                    }
-                    onChange={(e) => toggleAllOnPage(e.target.checked)}
+                    checked={rows.length > 0 && rows.every((product) => selected[product.id])}
+                    onChange={(event) => toggleAllOnPage(event.target.checked)}
                     aria-label="Select all rows on this page"
                     className="h-[16px] w-[16px]"
                   />
@@ -143,74 +130,73 @@ export default function ProductsTableCard({
                 <th className="px-[10px] py-[12px]">Threshold</th>
                 <th className="px-[10px] py-[12px]">Stock</th>
                 <th className="px-[10px] py-[12px]">Status</th>
-                <th className="px-[10px] py-[12px] w-[120px] text-right">
-                  Action
-                </th>
+                <th className="w-[120px] px-[10px] py-[12px] text-right">Action</th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-slate-100">
-              {rows.map((p) => {
-                const flag = getStockFlag(p);
-                const isSelected = !!selected[p.id];
+            <tbody className="divide-y divide-[var(--app-border)]">
+              {rows.map((product) => {
+                const flag = getStockFlag(product);
+                const isSelected = !!selected[product.id];
 
                 return (
                   <tr
-                    key={p.id}
+                    key={product.id}
                     className={cn(
                       "text-[14px]",
-                      isSelected && "bg-orange-50/40",
+                      isSelected && "bg-[var(--app-surface-muted)]/80",
                     )}
                   >
                     <td className="px-[10px] py-[14px]">
                       <input
                         type="checkbox"
                         checked={isSelected}
-                        onChange={(e) => toggleOne(p.id, e.target.checked)}
-                        aria-label={`Select ${p.name}`}
+                        onChange={(event) => toggleOne(product.id, event.target.checked)}
+                        aria-label={`Select ${product.name}`}
                         className="h-[16px] w-[16px]"
                       />
                     </td>
 
                     <td className="px-[10px] py-[14px]">
                       <div className="flex items-center gap-[12px]">
-                        <div className="h-[40px] w-[40px] rounded-[10px] bg-slate-100 border border-slate-200 overflow-hidden flex items-center justify-center">
-                          <GoogleIcon name="image" className="text-slate-400" />
+                        <div className="flex h-[48px] w-[48px] items-center justify-center overflow-hidden rounded-[12px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
+                          {product.imageUrl ? (
+                            <img
+                              src={resolveImageUrl(product.imageUrl)}
+                              alt={product.name}
+                              className="h-full w-full object-cover"
+                            />
+                          ) : (
+                            <GoogleIcon
+                              name="inventory_2"
+                              className="text-[var(--app-text-muted)]"
+                            />
+                          )}
                         </div>
 
                         <div className="min-w-0">
-                          <div className="font-semibold text-slate-900 truncate max-w-[340px]">
-                            {p.name}
+                          <div className="max-w-[340px] truncate font-semibold text-[var(--app-text)]">
+                            {product.name}
                           </div>
-                          <div className="text-[12px] text-slate-500">
-                            SKU: {p.sku}
-                            {p.barcode ? (
-                              <span className="ml-[10px]">
-                                Barcode: {p.barcode}
-                              </span>
+                          <div className="text-[12px] text-[var(--app-text-muted)]">
+                            SKU: {product.sku}
+                            {product.barcode ? (
+                              <span className="ml-[10px]">Barcode: {product.barcode}</span>
                             ) : null}
                           </div>
                         </div>
                       </div>
                     </td>
 
-                    <td className="px-[10px] py-[14px] text-slate-800">
-                      {p.brand}
+                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.brand}</td>
+                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.category}</td>
+                    <td className="px-[10px] py-[14px] font-semibold text-[var(--app-text)]">
+                      {formatNpr(product.retailPrice)}
                     </td>
-                    <td className="px-[10px] py-[14px] text-slate-800">
-                      {p.category}
+                    <td className="px-[10px] py-[14px] font-semibold text-[var(--app-text)]">
+                      {formatNpr(product.wholesalePrice)}
                     </td>
-
-                    <td className="px-[10px] py-[14px] font-semibold text-slate-900">
-                      {formatNpr(p.retailPrice)}
-                    </td>
-                    <td className="px-[10px] py-[14px] font-semibold text-slate-900">
-                      {formatNpr(p.wholesalePrice)}
-                    </td>
-
-                    <td className="px-[10px] py-[14px] text-slate-800">
-                      {p.thresholdQty}
-                    </td>
+                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.thresholdQty}</td>
 
                     <td className="px-[10px] py-[14px]">
                       <div className="flex items-center gap-[10px]">
@@ -223,17 +209,17 @@ export default function ProductsTableCard({
                                 ? "bg-orange-500"
                                 : "bg-rose-500",
                           )}
-                          title={`Low stock threshold: ${p.lowStockThreshold}`}
+                          title={`Low stock threshold: ${product.lowStockThreshold}`}
                         />
-                        <div className="font-semibold text-slate-900">
-                          {p.stock.toLocaleString()}
+                        <div className="font-semibold text-[var(--app-text)]">
+                          {product.stock.toLocaleString()}
                         </div>
                         <StockPill flag={flag} />
                       </div>
                     </td>
 
                     <td className="px-[10px] py-[14px]">
-                      <StatusPill status={p.status} />
+                      <StatusPill status={product.status} />
                     </td>
 
                     <td className="px-[10px] py-[14px]">
@@ -241,17 +227,17 @@ export default function ProductsTableCard({
                         <IconButton
                           icon="visibility"
                           label="View product"
-                          onClick={() => onView(p)}
+                          onClick={() => onView(product)}
                         />
                         <IconButton
                           icon="edit"
                           label="Edit product"
-                          onClick={() => onEdit(p)}
+                          onClick={() => onEdit(product)}
                         />
                         <IconButton
                           icon="delete"
                           label="Delete product"
-                          onClick={() => onDelete(p)}
+                          onClick={() => onDelete(product)}
                         />
                       </div>
                     </td>
@@ -261,10 +247,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 ? (
                 <tr>
-                  <td
-                    colSpan={10}
-                    className="px-[14px] py-[22px] text-[14px] text-slate-600"
-                  >
+                  <td colSpan={10} className="px-[14px] py-[22px] text-[14px] text-[var(--app-text-muted)]">
                     No products match your filters.
                   </td>
                 </tr>
@@ -273,56 +256,11 @@ export default function ProductsTableCard({
           </table>
         </div>
 
-        <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-[10px] px-[10px] py-[12px] text-[13px] text-slate-600">
+        <div className="flex flex-col gap-[10px] px-[10px] py-[12px] text-[13px] text-[var(--app-text-soft)] md:flex-row md:items-center md:justify-between">
           <div>
-            Showing{" "}
-            <span className="font-semibold text-slate-900">
-              {total === 0 ? 0 : start + 1}
-            </span>
-            –<span className="font-semibold text-slate-900">{end}</span> of{" "}
-            <span className="font-semibold text-slate-900">{total}</span>{" "}
-            products
-          </div>
-
-          <div className="flex items-center gap-[10px] justify-end">
-            <div className="flex items-center gap-[8px]">
-              <span className="text-slate-500 font-semibold">Rows:</span>
-              <select
-                value={pageSize}
-                onChange={(e) => setPageSize(Number(e.target.value))}
-                className="rounded-[10px] border border-slate-200 bg-white px-[10px] py-[8px] outline-none"
-              >
-                {[6, 10, 25, 50].map((n) => (
-                  <option key={n} value={n}>
-                    {n}
-                  </option>
-                ))}
-              </select>
-            </div>
-
-            <div className="flex items-center gap-[6px]">
-              <button
-                type="button"
-                onClick={prevPage}
-                className="h-[36px] w-[36px] rounded-[10px] border border-slate-200 bg-white hover:bg-slate-50 inline-flex items-center justify-center"
-                aria-label="Previous page"
-              >
-                <GoogleIcon name="chevron_left" className="text-slate-700" />
-              </button>
-
-              <div className="px-[10px] py-[8px] rounded-[10px] border border-slate-200 bg-white text-slate-700 font-semibold">
-                {page} / {totalPages}
-              </div>
-
-              <button
-                type="button"
-                onClick={nextPage}
-                className="h-[36px] w-[36px] rounded-[10px] border border-slate-200 bg-white hover:bg-slate-50 inline-flex items-center justify-center"
-                aria-label="Next page"
-              >
-                <GoogleIcon name="chevron_right" className="text-slate-700" />
-              </button>
-            </div>
+            Showing <span className="font-semibold text-[var(--app-text)]">{total === 0 ? 0 : start + 1}</span>
+            -<span className="font-semibold text-[var(--app-text)]">{end}</span> of{" "}
+            <span className="font-semibold text-[var(--app-text)]">{total}</span> products
           </div>
         </div>
       </div>

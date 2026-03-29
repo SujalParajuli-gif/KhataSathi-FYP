@@ -1,1 +1,0 @@
-import{p as t}from"./chunk-WWGJGFF6-Cf0zlrZF.js";function a({name:n,sizePx:e=20,className:r=""}){return t.jsx("span",{className:`material-symbols-rounded ${r}`,style:{fontSize:`${e}px`,lineHeight:`${e}px`},"aria-hidden":"true",children:n})}export{a as I};

@@ -1,48 +1,206 @@
-import React, { useMemo, useState, useEffect } from "react";
+import { useEffect, useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
+import { ConfirmDialog } from "~/components/ui/Modal";
 import {
-  listCustomersApi,
   createCustomerApi,
+  deactivateCustomerApi,
+  listCustomersApi,
+  listInvoicesApi,
   updateCustomerApi,
-  listAuditLogsApi,
 } from "~/lib/api/endpoints";
+import { formatDateLabel, formatNpr } from "~/lib/invoices";
 
 type DiscountMode = "ADMIN_WHOLESALE" | "LOYALTY" | "NONE";
+type PurchaseHistoryState = "history" | "cancelled_only" | "empty";
 
 type Customer = {
   id: string;
   name: string;
   phone: string;
   email?: string;
-
-  // loyalty eligibility badge (effective only if adminWholesaleDiscountPercent is NOT set)
+  isActive: boolean;
   isLoyalty: boolean;
-
-  // if set, applied on subtotal (retail-based) during billing
   adminWholesaleDiscountPercent?: number;
-
   lastPurchaseLabel: string;
+  purchaseCount: number;
+  purchaseHistoryState: PurchaseHistoryState;
 };
 
-type AuditItem = {
-  id: string;
-  title: string;
-  desc?: string;
-  timeLabel: string;
+type DiscountFormErrors = Partial<Record<"name" | "phone" | "email", string>>;
+
+type PurchaseSummary = {
+  lastPurchaseLabel: string;
+  purchaseCount: number;
+  purchaseHistoryState: PurchaseHistoryState;
 };
 
 const LS_KEYS = {
-  wholesaleQtyThreshold: "ks_wholesaleQtyThreshold",
   loyaltyDiscountPercent: "ks_loyaltyDiscountPercent",
+};
+
+const DEFAULT_PURCHASE_SUMMARY: PurchaseSummary = {
+  lastPurchaseLabel: "No purchase history yet",
+  purchaseCount: 0,
+  purchaseHistoryState: "empty",
 };
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-function Card({ children }: { children: React.ReactNode }) {
+function readInt(key: string, fallback: number) {
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return fallback;
+    const n = Number(raw);
+    return Number.isFinite(n) ? n : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function clampPercent(v: number) {
+  if (v < 0) return 0;
+  if (v > 100) return 100;
+  return v;
+}
+
+function formatPct(v: number) {
+  return `${Math.round(v)}%`;
+}
+
+function hasWholesale(c: Customer) {
+  return typeof c.adminWholesaleDiscountPercent === "number";
+}
+
+function isEffectiveLoyalty(c: Customer) {
+  return c.isLoyalty && !hasWholesale(c);
+}
+
+function getDiscountMode(c: Customer): DiscountMode {
+  if (hasWholesale(c)) return "ADMIN_WHOLESALE";
+  if (c.isLoyalty) return "LOYALTY";
+  return "NONE";
+}
+
+function getInitials(name: string) {
   return (
-    <div className="rounded-[14px] bg-white border border-slate-200/70 shadow-sm">
+    name
+      .split(" ")
+      .filter(Boolean)
+      .slice(0, 2)
+      .map((part) => part[0]?.toUpperCase() || "")
+      .join("") || "CU"
+  );
+}
+
+function normalizeCustomerList(data: any) {
+  if (Array.isArray(data)) return data;
+  if (Array.isArray(data?.customers)) return data.customers;
+  return [];
+}
+
+function isInvoiceCancelled(raw: any) {
+  const status = String(raw?.paymentStatus || raw?.status || "").toUpperCase();
+  return status === "CANCELLED" || status === "CANCELED";
+}
+
+function isFinalizedInvoice(raw: any) {
+  return String(raw?.status || "").toUpperCase() === "FINALIZED";
+}
+
+async function loadAllInvoices() {
+  const all: any[] = [];
+  const pageSize = 100;
+  let page = 1;
+
+  while (true) {
+    const data = await listInvoicesApi({ page, pageSize });
+    const batch = Array.isArray(data?.invoices) ? data.invoices : [];
+    const total = Number(data?.total || 0);
+    all.push(...batch);
+
+    if (batch.length === 0) break;
+    if (total > 0 && all.length >= total) break;
+    if (batch.length < pageSize) break;
+
+    page += 1;
+  }
+
+  return all;
+}
+
+function buildPurchaseLookup(rawInvoices: any[]) {
+  const grouped = new Map<string, any[]>();
+
+  rawInvoices.forEach((invoice) => {
+    const customerId = invoice?.customer?.id || invoice?.customerId;
+    if (!customerId) return;
+
+    const bucket = grouped.get(customerId) || [];
+    bucket.push(invoice);
+    grouped.set(customerId, bucket);
+  });
+
+  const lookup = new Map<string, PurchaseSummary>();
+
+  grouped.forEach((items, customerId) => {
+    const sorted = [...items].sort(
+      (a, b) =>
+        new Date(b?.createdAt || 0).getTime() -
+        new Date(a?.createdAt || 0).getTime(),
+    );
+    const finalized = sorted.filter(isFinalizedInvoice);
+    const validPurchases = finalized.filter(
+      (invoice) => !isInvoiceCancelled(invoice),
+    );
+    const latest = validPurchases[0];
+
+    if (latest) {
+      const purchaseCount = validPurchases.length;
+      const createdAt = String(latest.createdAt || new Date().toISOString());
+      const amount = Number(latest.netTotal || latest.total || 0);
+      lookup.set(customerId, {
+        purchaseCount,
+        purchaseHistoryState: "history",
+        lastPurchaseLabel: `${purchaseCount} purchase${
+          purchaseCount === 1 ? "" : "s"
+        } • ${formatNpr(amount)} on ${formatDateLabel(createdAt)}`,
+      });
+      return;
+    }
+
+    if (finalized.length > 0) {
+      lookup.set(customerId, {
+        purchaseCount: 0,
+        purchaseHistoryState: "cancelled_only",
+        lastPurchaseLabel:
+          "No completed purchase yet. Latest invoice was cancelled.",
+      });
+      return;
+    }
+
+    lookup.set(customerId, DEFAULT_PURCHASE_SUMMARY);
+  });
+
+  return lookup;
+}
+
+function Surface({
+  children,
+  className,
+}: {
+  children: ReactNode;
+  className?: string;
+}) {
+  return (
+    <div
+      className={cn(
+        "rounded-[28px] border border-slate-200/80 bg-white shadow-[0_18px_60px_-36px_rgba(15,23,42,0.35)]",
+        className,
+      )}
+    >
       {children}
     </div>
   );
@@ -54,31 +212,62 @@ function Button({
   onClick,
   disabled,
   icon,
+  className,
 }: {
-  children: React.ReactNode;
+  children: ReactNode;
   variant?: "primary" | "secondary" | "danger";
   onClick?: () => void;
   disabled?: boolean;
   icon?: string;
+  className?: string;
 }) {
   const base =
-    "inline-flex items-center justify-center gap-[8px] rounded-[12px] px-[14px] py-[10px] text-[13px] font-semibold border active:scale-[0.98] transition";
+    "inline-flex items-center justify-center gap-2 rounded-[12px] px-4 py-3 text-[13px] font-extrabold transition active:scale-[0.99]";
   const styles =
     variant === "primary"
-      ? "bg-orange-600 text-white border-orange-600 hover:bg-orange-700"
+      ? "border border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27] hover:border-[#2a2c27]"
       : variant === "danger"
-        ? "bg-white text-rose-600 border-rose-200 hover:bg-rose-50"
-        : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50";
+        ? "border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:opacity-90"
+        : "border border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]";
+
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={cn(base, styles, disabled && "opacity-50 pointer-events-none")}
+      className={cn(
+        base,
+        styles,
+        className,
+        disabled && "pointer-events-none opacity-50",
+      )}
     >
       {icon ? <Icon name={icon} className="text-inherit" /> : null}
       {children}
     </button>
+  );
+}
+
+function SearchInput({
+  value,
+  onChange,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+}) {
+  return (
+    <div className="relative group w-full md:w-[320px]">
+      <Icon
+        name="search"
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)] transition-colors group-focus-within:text-[var(--app-text)]"
+      />
+      <input
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Search by customer, phone, or email"
+        className="h-[44px] w-full rounded-[12px] border border-[var(--app-border)] bg-white pl-10 pr-4 text-[13px] font-semibold text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-muted)] focus:border-[#11120d]"
+      />
+    </div>
   );
 }
 
@@ -87,23 +276,44 @@ function Input({
   onChange,
   placeholder,
   leftIcon,
+  invalid,
+  helperText,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   leftIcon?: string;
+  invalid?: boolean;
+  helperText?: string;
 }) {
   return (
-    <div className="flex items-center gap-[8px] rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px]">
-      {leftIcon ? (
-        <Icon name={leftIcon} className="text-slate-500" />
+    <div>
+      <div
+        className={cn(
+          "flex items-center gap-3 rounded-[16px] border bg-white px-4 py-3 transition",
+          invalid
+            ? "border-rose-300 ring-4 ring-rose-500/10"
+            : "border-slate-200 focus-within:border-orange-300 focus-within:ring-4 focus-within:ring-orange-500/10",
+        )}
+      >
+        {leftIcon ? <Icon name={leftIcon} className="text-slate-400" /> : null}
+        <input
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className="w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:text-slate-400"
+        />
+      </div>
+      {helperText ? (
+        <div
+          className={cn(
+            "mt-2 text-[12px] font-bold",
+            invalid ? "text-rose-600" : "text-slate-500",
+          )}
+        >
+          {helperText}
+        </div>
       ) : null}
-      <input
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        placeholder={placeholder}
-        className="w-full text-[14px] outline-none placeholder:text-slate-400"
-      />
     </div>
   );
 }
@@ -130,14 +340,24 @@ function NumberInput({
       placeholder={placeholder}
       onChange={(e) => {
         const raw = e.target.value;
-        if (raw === "") return onChange("");
-        const n = Number(raw);
-        if (!Number.isFinite(n)) return;
-        if (typeof min === "number" && n < min) return onChange(min);
-        if (typeof max === "number" && n > max) return onChange(max);
-        onChange(n);
+        if (raw === "") {
+          onChange("");
+          return;
+        }
+
+        const next = Number(raw);
+        if (!Number.isFinite(next)) return;
+        if (typeof min === "number" && next < min) {
+          onChange(min);
+          return;
+        }
+        if (typeof max === "number" && next > max) {
+          onChange(max);
+          return;
+        }
+        onChange(next);
       }}
-      className="w-full rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px] text-[14px] outline-none placeholder:text-slate-400"
+      className="h-[52px] w-full rounded-[16px] border border-slate-200 bg-white px-4 text-[14px] font-semibold text-slate-900 outline-none transition placeholder:text-slate-400 focus:border-orange-300 focus:ring-4 focus:ring-orange-500/10"
     />
   );
 }
@@ -151,8 +371,8 @@ function ModalShell({
 }: {
   open: boolean;
   title: string;
-  children: React.ReactNode;
-  footer?: React.ReactNode;
+  children: ReactNode;
+  footer?: ReactNode;
   onClose: () => void;
 }) {
   if (!open) return null;
@@ -162,29 +382,34 @@ function ModalShell({
       <button
         type="button"
         onClick={onClose}
-        className="absolute inset-0 bg-black/40"
+        className="absolute inset-0 bg-slate-950/50 backdrop-blur-sm"
         aria-label="Close overlay"
       />
-      <div className="absolute inset-0 flex items-center justify-center p-[14px]">
-        <div className="w-full max-w-[920px] rounded-[16px] bg-white border border-slate-200 shadow-xl overflow-hidden">
-          <div className="flex items-center justify-between px-[18px] py-[14px] border-b border-slate-100">
-            <div className="text-[15px] font-semibold text-slate-900">
-              {title}
+      <div className="absolute inset-0 flex items-center justify-center p-4">
+        <div className="w-full max-w-[860px] overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+          <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
+            <div>
+              <div className="text-[11px] font-extrabold uppercase tracking-[0.22em] text-slate-400">
+                Discount Profile
+              </div>
+              <div className="mt-1 text-[20px] font-extrabold text-slate-900">
+                {title}
+              </div>
             </div>
             <button
               type="button"
               onClick={onClose}
-              className="h-[36px] w-[36px] rounded-[12px] border border-slate-200 hover:bg-slate-50 inline-flex items-center justify-center"
+              className="inline-flex h-11 w-11 items-center justify-center rounded-[16px] border border-slate-200 text-slate-600 transition hover:bg-slate-50"
               aria-label="Close modal"
             >
-              <Icon name="close" className="text-slate-700" />
+              <Icon name="close" />
             </button>
           </div>
 
-          <div className="px-[18px] py-[16px]">{children}</div>
+          <div className="px-6 py-6">{children}</div>
 
           {footer ? (
-            <div className="px-[18px] py-[14px] border-t border-slate-100 bg-slate-50/40">
+            <div className="border-t border-slate-100 bg-slate-50/70 px-6 py-4">
               {footer}
             </div>
           ) : null}
@@ -198,20 +423,21 @@ function Pill({
   children,
   tone = "neutral",
 }: {
-  children: React.ReactNode;
-  tone?: "neutral" | "green" | "orange" | "sky";
+  children: ReactNode;
+  tone?: "neutral" | "green" | "orange" | "sky" | "rose";
 }) {
-  const map: Record<typeof tone, string> = {
-    neutral: "bg-slate-50 text-slate-700 border-slate-200",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-100",
-    orange: "bg-orange-50 text-orange-700 border-orange-100",
-    sky: "bg-sky-50 text-sky-700 border-sky-100",
+  const map: Record<NonNullable<typeof tone>, string> = {
+    neutral: "border-slate-200 bg-slate-50 text-slate-700",
+    green: "border-emerald-100 bg-emerald-50 text-emerald-700",
+    orange: "border-orange-100 bg-orange-50 text-orange-700",
+    sky: "border-sky-100 bg-sky-50 text-sky-700",
+    rose: "border-rose-100 bg-rose-50 text-rose-700",
   };
 
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full px-[10px] py-[4px] text-[12px] font-semibold border",
+        "inline-flex items-center gap-1 rounded-full px-3 py-1 text-[11px] font-extrabold",
         map[tone],
       )}
     >
@@ -220,176 +446,507 @@ function Pill({
   );
 }
 
-function hasWholesale(c: Customer) {
-  return typeof c.adminWholesaleDiscountPercent === "number";
-}
+function ModeBadge({ customer }: { customer: Customer }) {
+  const mode = getDiscountMode(customer);
 
-function isEffectiveLoyalty(c: Customer) {
-  return c.isLoyalty && !hasWholesale(c);
-}
-
-function getDiscountMode(c: Customer): DiscountMode {
-  if (hasWholesale(c)) return "ADMIN_WHOLESALE";
-  if (c.isLoyalty) return "LOYALTY"; // effective (because no wholesale)
-  return "NONE";
-}
-
-function DiscountModeLabel({ mode }: { mode: DiscountMode }) {
-  if (mode === "ADMIN_WHOLESALE")
-    return <Pill tone="orange">Wholesale % (Customer)</Pill>;
-  if (mode === "LOYALTY") return <Pill tone="green">Loyalty</Pill>;
-  return <Pill>None</Pill>;
-}
-
-function formatPct(v?: number) {
-  if (typeof v !== "number") return "-";
-  return `${v}%`;
-}
-
-function clampPercent(v: number) {
-  if (v < 0) return 0;
-  if (v > 100) return 100;
-  return v;
-}
-
-function readInt(key: string, fallback: number) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : fallback;
-  } catch {
-    return fallback;
+  if (mode === "ADMIN_WHOLESALE") {
+    return <Pill tone="orange">Wholesale override</Pill>;
   }
+  if (mode === "LOYALTY") {
+    return <Pill tone="green">Loyalty active</Pill>;
+  }
+  return <Pill>Standard billing</Pill>;
+}
+
+function FilterChip({
+  active,
+  onClick,
+  label,
+  count,
+}: {
+  active: boolean;
+  onClick: () => void;
+  label: string;
+  count?: number;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+        active
+          ? "border-slate-900 bg-slate-900 text-white shadow-[0_16px_28px_-24px_rgba(15,23,42,0.9)]"
+          : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+      )}
+    >
+      <span>{label}</span>
+      {typeof count === "number" ? (
+        <span
+          className={cn(
+            "rounded-full px-2 py-0.5 text-[10px]",
+            active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-500",
+          )}
+        >
+          {count}
+        </span>
+      ) : null}
+    </button>
+  );
+}
+
+function MetricCard({
+  label,
+  value,
+  hint,
+  icon,
+  tone = "neutral",
+}: {
+  label: string;
+  value: number | string;
+  hint: string;
+  icon: string;
+  tone?: "neutral" | "orange" | "green" | "slate";
+}) {
+  const tones = {
+    neutral:
+      "border-slate-200 bg-white text-slate-900 icon-bg-slate-100 icon-text-slate-600",
+    orange:
+      "border-orange-100 bg-orange-50/70 text-orange-900 icon-bg-orange-100 icon-text-orange-600",
+    green:
+      "border-emerald-100 bg-emerald-50/70 text-emerald-900 icon-bg-emerald-100 icon-text-emerald-600",
+    slate:
+      "border-slate-800 bg-slate-900 text-white icon-bg-white/10 icon-text-white",
+  };
+  const palette = tones[tone].split(" ");
+  const labelTone = tone === "slate" ? "text-white/65" : "text-current/60";
+  const hintTone = tone === "slate" ? "text-white/70" : "text-current/65";
+
+  return (
+    <div className={cn("rounded-[24px] border p-5 ", palette[2], palette[1])}>
+      <div className="flex items-start justify-between gap-3">
+        <div>
+          <div
+            className={cn(
+              "text-[11px] font-extrabold uppercase tracking-[0.22em]",
+              labelTone,
+            )}
+          >
+            {label}
+          </div>
+          <div className="mt-3 text-[28px] font-extrabold text-current">
+            {value}
+          </div>
+        </div>
+        <div
+          className={cn(
+            "inline-flex h-12 w-12 items-center justify-center rounded-[18px]",
+            palette[2],
+          )}
+        >
+          <Icon name={icon} className={palette[3]} />
+        </div>
+      </div>
+      <div className={cn("mt-3 text-[12px] font-bold", hintTone)}>{hint}</div>
+    </div>
+  );
+}
+
+function StatusBadge({ active }: { active: boolean }) {
+  return active ? (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2.5 py-1 text-[11px] font-extrabold text-[var(--app-success-text)]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-success-text)]" />
+      Active
+    </span>
+  ) : (
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-text-muted)]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-text-muted)]" />
+      Inactive
+    </span>
+  );
+}
+
+function DiscountBadge({ customer }: { customer: Customer }) {
+  const mode = getDiscountMode(customer);
+
+  if (mode === "ADMIN_WHOLESALE") {
+    return (
+      <span className="inline-flex rounded-[8px] border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-warning-text)]">
+        Wholesale %
+      </span>
+    );
+  }
+
+  if (mode === "LOYALTY") {
+    return (
+      <span className="inline-flex rounded-[8px] border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-success-text)]">
+        Loyalty %
+      </span>
+    );
+  }
+
+  return (
+    <span className="inline-flex rounded-[8px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-text-muted)]">
+      No discount
+    </span>
+  );
+}
+
+function TableActionButton({
+  icon,
+  label,
+  onClick,
+  tone = "neutral",
+  disabled = false,
+}: {
+  icon: string;
+  label: string;
+  onClick?: () => void;
+  tone?: "neutral" | "danger";
+  disabled?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "inline-flex h-[34px] items-center justify-center gap-1.5 rounded-[10px] border px-3 text-[11px] font-bold transition",
+        tone === "danger"
+          ? "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:opacity-90"
+          : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+        disabled && "cursor-not-allowed opacity-50",
+      )}
+    >
+      <Icon name={icon} sizePx={15} className="text-inherit" />
+      <span>{label}</span>
+    </button>
+  );
+}
+
+function PurchaseBadge({ customer }: { customer: Customer }) {
+  if (customer.purchaseHistoryState === "history") {
+    return <Pill tone="sky">{customer.purchaseCount} completed invoices</Pill>;
+  }
+  if (customer.purchaseHistoryState === "cancelled_only") {
+    return <Pill tone="rose">Cancelled history only</Pill>;
+  }
+  return <Pill>No invoice history</Pill>;
+}
+
+function CustomerCard({
+  customer,
+  onEdit,
+  onClearWholesale,
+}: {
+  customer: Customer;
+  onEdit: () => void;
+  onClearWholesale: () => void;
+}) {
+  const wholesale = hasWholesale(customer);
+  const loyalty = isEffectiveLoyalty(customer);
+
+  return (
+    <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_18px_44px_-36px_rgba(15,23,42,0.45)] transition hover:border-slate-300 hover:shadow-[0_22px_60px_-40px_rgba(15,23,42,0.45)]">
+      <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
+        <div className="min-w-0">
+          <div className="flex items-start gap-4">
+            <div className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] bg-slate-900 text-[15px] font-extrabold text-white shadow-[0_18px_28px_-24px_rgba(15,23,42,0.9)]">
+              {getInitials(customer.name)}
+            </div>
+            <div className="min-w-0">
+              <div className="flex flex-wrap items-center gap-2">
+                <div className="truncate text-[18px] font-extrabold text-slate-900">
+                  {customer.name}
+                </div>
+                <ModeBadge customer={customer} />
+                <PurchaseBadge customer={customer} />
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-2 text-[13px] font-semibold text-slate-500">
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon name="call" sizePx={16} className="text-slate-400" />
+                  {customer.phone || "No phone on file"}
+                </span>
+                <span className="inline-flex items-center gap-1.5">
+                  <Icon name="mail" sizePx={16} className="text-slate-400" />
+                  {customer.email || "No email on file"}
+                </span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-2 xl:justify-end">
+          <Button icon="edit" onClick={onEdit}>
+            Edit profile
+          </Button>
+          <Button
+            icon="delete"
+            variant="danger"
+            onClick={onClearWholesale}
+            disabled={!wholesale}
+          >
+            Clear wholesale
+          </Button>
+        </div>
+      </div>
+
+      <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+        <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+            Active Rule
+          </div>
+          <div className="mt-3">
+            <ModeBadge customer={customer} />
+          </div>
+          <div className="mt-3 text-[12px] font-semibold text-slate-600">
+            Wholesale overrides loyalty whenever a customer-specific percent is
+            set.
+          </div>
+        </div>
+
+        <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+            Wholesale Discount
+          </div>
+          <div className="mt-3 text-[24px] font-extrabold text-slate-900">
+            {typeof customer.adminWholesaleDiscountPercent === "number"
+              ? `${customer.adminWholesaleDiscountPercent}%`
+              : "None"}
+          </div>
+          <div className="mt-2 text-[12px] font-semibold text-slate-600">
+            Applied on subtotal during billing when this profile is active.
+          </div>
+        </div>
+
+        <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+            Loyalty Status
+          </div>
+          <div className="mt-3">
+            {loyalty ? (
+              <Pill tone="green">Eligible and active</Pill>
+            ) : customer.isLoyalty && wholesale ? (
+              <Pill tone="orange">Saved but overridden</Pill>
+            ) : (
+              <Pill>Not enabled</Pill>
+            )}
+          </div>
+          <div className="mt-3 text-[12px] font-semibold text-slate-600">
+            {loyalty
+              ? "This customer receives the loyalty subtotal discount."
+              : customer.isLoyalty && wholesale
+                ? "Loyalty is saved, but the wholesale rule takes priority."
+                : "Customer follows standard pricing unless you assign a rule."}
+          </div>
+        </div>
+
+        <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
+          <div className="flex items-center justify-between gap-3">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+              Last Purchase
+            </div>
+            {customer.purchaseCount > 0 ? (
+              <span className="rounded-full bg-white px-2.5 py-1 text-[10px] font-extrabold text-slate-500 ring-1 ring-slate-200">
+                {customer.purchaseCount}
+              </span>
+            ) : null}
+          </div>
+          <div
+            className={cn(
+              "mt-3 text-[13px] font-bold leading-6",
+              customer.purchaseHistoryState === "history"
+                ? "text-slate-900"
+                : customer.purchaseHistoryState === "cancelled_only"
+                  ? "text-rose-700"
+                  : "text-slate-500",
+            )}
+          >
+            {customer.lastPurchaseLabel}
+          </div>
+          <div className="mt-3 text-[12px] font-semibold text-slate-600">
+            Cancelled invoices are skipped when we determine the latest
+            completed purchase.
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function RuleCallout({
+  icon,
+  title,
+  text,
+  tone = "neutral",
+}: {
+  icon: string;
+  title: string;
+  text: string;
+  tone?: "neutral" | "orange" | "green";
+}) {
+  const tones = {
+    neutral: "border-slate-200 bg-slate-50/70 text-slate-700 icon-slate-100",
+    orange: "border-orange-100 bg-orange-50/70 text-orange-800 icon-orange-100",
+    green:
+      "border-emerald-100 bg-emerald-50/70 text-emerald-800 icon-emerald-100",
+  };
+  const palette = tones[tone].split(" ");
+
+  return (
+    <div className={cn("rounded-[22px] border p-4", palette[0], palette[1])}>
+      <div className="flex items-start gap-3">
+        <div
+          className={cn(
+            "inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[16px]",
+            palette[3],
+          )}
+        >
+          <Icon name={icon} className="text-current" />
+        </div>
+        <div>
+          <div className="text-[13px] font-extrabold text-current">{title}</div>
+          <div className="mt-1 text-[12px] font-semibold leading-6 text-current/80">
+            {text}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 export default function DiscountsPage() {
-  const [wholesaleQtyThreshold, setWholesaleQtyThreshold] = useState(10);
   const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(2);
-  const [loading, setLoading] = useState(true);
-
-  useEffect(() => {
-    setWholesaleQtyThreshold(readInt(LS_KEYS.wholesaleQtyThreshold, 10));
-    setLoyaltyDiscountPercent(readInt(LS_KEYS.loyaltyDiscountPercent, 2));
-  }, []);
-
   const [customers, setCustomers] = useState<Customer[]>([]);
-  const [audit, setAudit] = useState<AuditItem[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [loadError, setLoadError] = useState("");
+  const [actionError, setActionError] = useState("");
 
-  useEffect(() => {
-    async function load() {
-      try {
-        const [custData, auditData] = await Promise.allSettled([
-          listCustomersApi(),
-          listAuditLogsApi({ pageSize: 5 }),
-        ]);
-
-        if (custData.status === "fulfilled" && custData.value) {
-          const raw = Array.isArray(custData.value) ? custData.value : [];
-          setCustomers(
-            raw.map((c: any) => ({
-              id: c.id,
-              name: c.name || "Unknown",
-              phone: c.phone || "",
-              email: c.email,
-              isLoyalty: !!c.loyaltyPercent,
-              adminWholesaleDiscountPercent: c.wholesalePercent || undefined,
-              lastPurchaseLabel: "—",
-            })),
-          );
-        }
-
-        if (auditData.status === "fulfilled" && auditData.value) {
-          const logs = auditData.value.logs || [];
-          setAudit(
-            logs.map((l: any, idx: number) => ({
-              id: l.id || `a${idx}`,
-              title: l.action || "Activity",
-              desc:
-                l.details && typeof l.details === "string"
-                  ? l.details
-                  : undefined,
-              timeLabel: new Date(l.createdAt).toLocaleDateString(),
-            })),
-          );
-        }
-      } catch {} finally {
-        setLoading(false);
-      }
-    }
-    load();
-  }, []);
-
-  // filters
-  const [q, setQ] = useState("");
+  const [query, setQuery] = useState("");
   const [mode, setMode] = useState<"all" | DiscountMode>("all");
-  const [onlyLoyalty, setOnlyLoyalty] = useState(false); // effective loyalty
 
-  // modal state
-  // modal state
   const [openEdit, setOpenEdit] = useState(false);
   const [editingId, setEditingId] = useState<string | null>(null);
+  const [pendingDeactivateCustomer, setPendingDeactivateCustomer] =
+    useState<Customer | null>(null);
+  const [deactivateBusy, setDeactivateBusy] = useState(false);
 
-  const [searchPhone, setSearchPhone] = useState("");
-  const [searchEmail, setSearchEmail] = useState("");
-
-  const [applyCustId, setApplyCustId] = useState<string | null>(null);
-
-  // form fields
   const [fName, setFName] = useState("");
   const [fPhone, setFPhone] = useState("");
   const [fEmail, setFEmail] = useState("");
   const [fIsLoyalty, setFIsLoyalty] = useState(false);
   const [fWholesaleDiscount, setFWholesaleDiscount] = useState<number | "">("");
+  const [formErrors, setFormErrors] = useState<DiscountFormErrors>({});
+  const [formSubmitError, setFormSubmitError] = useState("");
 
   const formHasWholesale = typeof fWholesaleDiscount === "number";
 
-  const filtered = useMemo(() => {
-    const s = q.trim().toLowerCase();
+  useEffect(() => {
+    setLoyaltyDiscountPercent(readInt(LS_KEYS.loyaltyDiscountPercent, 2));
+  }, []);
 
-    return customers.filter((c) => {
-      if (s) {
-        const blob = `${c.name} ${c.phone} ${c.email || ""}`.toLowerCase();
-        if (!blob.includes(s)) return false;
+  useEffect(() => {
+    let active = true;
+
+    async function load() {
+      setLoading(true);
+      setLoadError("");
+
+      try {
+        const [customerData, invoices] = await Promise.all([
+          listCustomersApi(),
+          loadAllInvoices(),
+        ]);
+
+        if (!active) return;
+
+        const purchaseLookup = buildPurchaseLookup(invoices);
+        const rawCustomers = normalizeCustomerList(customerData);
+
+        setCustomers(
+          rawCustomers.map((customer: any) => {
+            const purchaseSummary =
+              purchaseLookup.get(customer.id) || DEFAULT_PURCHASE_SUMMARY;
+
+            return {
+              id: customer.id,
+              name: customer.name || "Unknown customer",
+              phone: customer.phone || "",
+              email: customer.email || undefined,
+              isActive: customer.isActive !== false,
+              isLoyalty: Number(customer.loyaltyPercent || 0) > 0,
+              adminWholesaleDiscountPercent:
+                Number(customer.wholesalePercent || 0) > 0
+                  ? Number(customer.wholesalePercent)
+                  : undefined,
+              ...purchaseSummary,
+            } satisfies Customer;
+          }),
+        );
+      } catch {
+        if (!active) return;
+        setCustomers([]);
+        setLoadError("We could not load discount records right now.");
+      } finally {
+        if (active) {
+          setLoading(false);
+        }
+      }
+    }
+
+    load();
+
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  const filtered = useMemo(() => {
+    const loweredQuery = query.trim().toLowerCase();
+
+    return customers.filter((customer) => {
+      if (loweredQuery) {
+        const haystack = `${customer.name} ${customer.phone} ${
+          customer.email || ""
+        } ${customer.lastPurchaseLabel}`.toLowerCase();
+        if (!haystack.includes(loweredQuery)) return false;
       }
 
-      const m = getDiscountMode(c);
-      if (mode !== "all" && m !== mode) return false;
-
-      // IMPORTANT: "Loyalty only" = effective loyalty (loyal badge AND no wholesale)
-      if (onlyLoyalty && !isEffectiveLoyalty(c)) return false;
+      const customerMode = getDiscountMode(customer);
+      if (mode !== "all" && customerMode !== mode) return false;
 
       return true;
     });
-  }, [customers, q, mode, onlyLoyalty]);
+  }, [customers, mode, query]);
 
   const stats = useMemo(() => {
     const total = customers.length;
     const adminWholesale = customers.filter(
-      (c) => getDiscountMode(c) === "ADMIN_WHOLESALE",
+      (customer) => getDiscountMode(customer) === "ADMIN_WHOLESALE",
     ).length;
     const loyalty = customers.filter(
-      (c) => getDiscountMode(c) === "LOYALTY",
-    ).length; // effective loyalty only
-    const none = customers.filter((c) => getDiscountMode(c) === "NONE").length;
+      (customer) => getDiscountMode(customer) === "LOYALTY",
+    ).length;
+    const none = customers.filter(
+      (customer) => getDiscountMode(customer) === "NONE",
+    ).length;
+
     return { total, adminWholesale, loyalty, none };
   }, [customers]);
 
-  function openEditCustomer(c: Customer) {
-    setEditingId(c.id);
-    setFName(c.name);
-    setFPhone(c.phone);
-    setFEmail(c.email || "");
-
+  function openEditCustomer(customer: Customer) {
+    setEditingId(customer.id);
+    setFName(customer.name);
+    setFPhone(customer.phone);
+    setFEmail(customer.email || "");
     setFWholesaleDiscount(
-      typeof c.adminWholesaleDiscountPercent === "number"
-        ? c.adminWholesaleDiscountPercent
+      typeof customer.adminWholesaleDiscountPercent === "number"
+        ? customer.adminWholesaleDiscountPercent
         : "",
     );
-
-    // If wholesale exists, loyalty is not effective. Keep badge value, but UI will disable it anyway.
-    setFIsLoyalty(c.isLoyalty && !hasWholesale(c));
-
+    setFIsLoyalty(customer.isLoyalty && !hasWholesale(customer));
+    setFormErrors({});
+    setFormSubmitError("");
     setOpenEdit(true);
   }
 
@@ -400,42 +957,40 @@ export default function DiscountsPage() {
     setFEmail("");
     setFIsLoyalty(false);
     setFWholesaleDiscount("");
+    setFormErrors({});
+    setFormSubmitError("");
     setOpenEdit(true);
   }
 
   function closeEdit() {
     setOpenEdit(false);
+    setFormErrors({});
+    setFormSubmitError("");
   }
 
   async function saveCustomer() {
     const name = fName.trim();
     const phone = fPhone.trim();
     const email = fEmail.trim();
-    if (!name || !phone) return;
+    const nextErrors: DiscountFormErrors = {};
+
+    if (!name) nextErrors.name = "Customer name is required.";
+    if (!phone) nextErrors.phone = "Phone is required.";
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+      nextErrors.email = "Enter a valid email address.";
+    }
+
+    setFormErrors(nextErrors);
+    setFormSubmitError("");
+    setActionError("");
+
+    if (Object.keys(nextErrors).length > 0) return;
 
     const discount =
       typeof fWholesaleDiscount === "number"
         ? clampPercent(fWholesaleDiscount)
         : undefined;
-
-    // ENFORCEMENT:
-    // - If wholesale% is set -> loyalty must be false (loyalty is not applicable)
-    // - If loyalty is true -> wholesale% must be undefined (handled in UI too)
     const nextIsLoyalty = typeof discount === "number" ? false : fIsLoyalty;
-
-    const modeAfter: DiscountMode =
-      typeof discount === "number"
-        ? "ADMIN_WHOLESALE"
-        : nextIsLoyalty
-          ? "LOYALTY"
-          : "NONE";
-
-    const desc =
-      modeAfter === "ADMIN_WHOLESALE"
-        ? `Wholesale discount set to ${discount}% (subtotal-level, retail-based when customer discount is used). Loyalty is disabled when wholesale % exists.`
-        : modeAfter === "LOYALTY"
-          ? `Customer is loyalty eligible. Loyalty discount applies only if no customer wholesale % is set.`
-          : `Customer has no discount rule set.`;
 
     try {
       if (editingId) {
@@ -448,35 +1003,25 @@ export default function DiscountsPage() {
         });
 
         setCustomers((prev) =>
-          prev.map((c) =>
-            c.id === editingId
+          prev.map((customer) =>
+            customer.id === editingId
               ? {
-                  ...c,
+                  ...customer,
                   name,
                   phone,
                   email: email || undefined,
                   isLoyalty: nextIsLoyalty,
                   adminWholesaleDiscountPercent: discount,
                 }
-              : c,
+              : customer,
           ),
         );
 
-        setAudit((prev) => [
-          {
-            id: `aud_${Date.now()}`,
-            title: `Updated discount profile: ${name}`,
-            desc,
-            timeLabel: "Just now",
-          },
-          ...prev,
-        ]);
-
-        setOpenEdit(false);
+        closeEdit();
         return;
       }
 
-      const newCust = await createCustomerApi({
+      const created = await createCustomerApi({
         name,
         phone,
         email: email || undefined,
@@ -486,535 +1031,501 @@ export default function DiscountsPage() {
 
       setCustomers((prev) => [
         {
-          id: newCust.id,
+          id: created.id,
           name,
           phone,
           email: email || undefined,
+          isActive: created.isActive !== false,
           isLoyalty: nextIsLoyalty,
           adminWholesaleDiscountPercent: discount,
-          lastPurchaseLabel: "—",
+          ...DEFAULT_PURCHASE_SUMMARY,
         },
         ...prev,
       ]);
 
-      setAudit((prev) => [
-        {
-          id: `aud_${Date.now()}`,
-          title: `Added customer: ${name}`,
-          desc,
-          timeLabel: "Just now",
-        },
-        ...prev,
-      ]);
-
-      setOpenEdit(false);
+      closeEdit();
     } catch {
-      // Intentionally swallow errors so UI flow isn't interrupted in MVP
+      setFormSubmitError("Failed to save customer discount.");
+    }
+  }
+
+  function requestDeactivateCustomer(customer: Customer) {
+    if (!customer.isActive) return;
+    setActionError("");
+    setPendingDeactivateCustomer(customer);
+  }
+
+  async function confirmDeactivateCustomer() {
+    const customer = pendingDeactivateCustomer;
+    if (!customer) return;
+    setDeactivateBusy(true);
+
+    try {
+      await deactivateCustomerApi(customer.id);
+      setCustomers((prev) =>
+        prev.map((item) =>
+          item.id === customer.id ? { ...item, isActive: false } : item,
+        ),
+      );
+      setPendingDeactivateCustomer(null);
+    } catch {
+      setActionError(`Failed to deactivate ${customer.name}.`);
+    } finally {
+      setDeactivateBusy(false);
     }
   }
 
   async function clearCustomerDiscount(id: string) {
-    const c = customers.find((x) => x.id === id);
-    if (!c) return;
+    const customer = customers.find((item) => item.id === id);
+    if (!customer) return;
 
     try {
       await updateCustomerApi(id, { wholesalePercent: 0 });
       setCustomers((prev) =>
-        prev.map((x) =>
-          x.id === id ? { ...x, adminWholesaleDiscountPercent: undefined } : x,
+        prev.map((item) =>
+          item.id === id
+            ? { ...item, adminWholesaleDiscountPercent: undefined }
+            : item,
         ),
       );
-
-      setAudit((prev) => [
-        {
-          id: `aud_${Date.now()}`,
-          title: `Removed customer wholesale discount: ${c.name}`,
-          desc: "Customer wholesale % cleared. Loyalty will apply only if loyalty is enabled for this customer.",
-          timeLabel: "Just now",
-        },
-        ...prev,
-      ]);
-    } catch {}
+    } catch {
+      setFormSubmitError(
+        `Failed to clear wholesale discount for ${customer.name}.`,
+      );
+    }
   }
 
-  // UI enforcement handlers
-  function onWholesaleChange(v: number | "") {
-    setFWholesaleDiscount(v);
-
-    // If admin types a wholesale %, automatically turn off loyalty.
-    if (typeof v === "number") {
+  function onWholesaleChange(value: number | "") {
+    setFWholesaleDiscount(value);
+    if (typeof value === "number") {
       setFIsLoyalty(false);
     }
   }
 
   function onToggleLoyalty(next: boolean) {
-    // If admin turns on loyalty, automatically clear wholesale %.
     if (next) setFWholesaleDiscount("");
     setFIsLoyalty(next);
   }
 
   return (
-    <div className="space-y-[14px]">
-      {/* Summary + rule explanation */}
-      <Card>
-        <div className="p-[16px] space-y-[12px]">
-          <div className="flex items-start justify-between gap-[12px] flex-wrap">
-            <div className="min-w-0">
-              <div className="text-[15px] font-semibold text-slate-900">
-                Discounts
-              </div>
-              <div className="text-[12px] text-slate-600 mt-[2px]">
-                Discounts are applied on the{" "}
-                <span className="font-semibold">subtotal</span> during billing
-                (cashier screen).
-              </div>
+    <div className="min-h-full rounded-[28px] bg-[var(--app-page-bg)] p-6 text-[var(--app-text)]">
+      <div className="mx-auto max-w-6xl space-y-9">
+        <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
+          <div>
+            <h1 className="text-[24px] font-extrabold tracking-tight text-[var(--app-text)]">
+              Customer Discounts
+            </h1>
+            <p className="mt-1 text-[13px] font-medium text-[var(--app-text-muted)]">
+              Add, edit, and manage customer discount rules for billing.
+            </p>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
+            <div className="flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-white px-4 py-2 text-[11px] font-bold text-[var(--app-text-muted)] shadow-sm">
+              <Icon
+                name="info"
+                className="text-[14px] text-[var(--app-warning-text)]"
+              />
+              <span>Wholesale overrides loyalty</span>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+          <MetricCard
+            label="Total Customers"
+            value={stats.total}
+            hint="Registered in discount system"
+            icon="groups"
+            tone="slate"
+          />
+          <MetricCard
+            label="Wholesale Accounts"
+            value={stats.adminWholesale}
+            hint="Customer-specific wholesale rates"
+            icon="storefront"
+            tone="orange"
+          />
+          <MetricCard
+            label="Loyalty Members"
+            value={stats.loyalty}
+            hint="Using loyalty discount"
+            icon="loyalty"
+            tone="green"
+          />
+          <MetricCard
+            label="Standard Billing"
+            value={stats.none}
+            hint="No custom discount assigned"
+            icon="rule"
+            tone="neutral"
+          />
+        </div>
+
+        <div className="overflow-hidden rounded-[24px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
+          <div className="flex flex-col gap-4 border-b border-[var(--app-border)] bg-white p-5 xl:flex-row xl:items-center xl:justify-between">
+            <div className="hide-scrollbar flex w-full items-center gap-2 overflow-x-auto pb-2 xl:w-auto xl:pb-0">
+              <FilterChip
+                label="All Discounts"
+                count={stats.total}
+                active={mode === "all"}
+                onClick={() => setMode("all")}
+              />
+              <FilterChip
+                label="Wholesale"
+                count={stats.adminWholesale}
+                active={mode === "ADMIN_WHOLESALE"}
+                onClick={() => setMode("ADMIN_WHOLESALE")}
+              />
+              <FilterChip
+                label="Loyalty"
+                count={stats.loyalty}
+                active={mode === "LOYALTY"}
+                onClick={() => setMode("LOYALTY")}
+              />
+              <FilterChip
+                label="No discount"
+                count={stats.none}
+                active={mode === "NONE"}
+                onClick={() => setMode("NONE")}
+              />
             </div>
 
-            <div className="flex items-center gap-[10px] flex-wrap justify-end">
+            <div className="flex w-full flex-col gap-3 md:flex-row md:items-center xl:w-auto">
+              <SearchInput value={query} onChange={setQuery} />
               <Button
-                icon="person_add"
                 variant="primary"
+                icon="person_add"
                 onClick={openAddCustomer}
+                className="h-[44px] whitespace-nowrap px-4 py-0"
               >
-                Add Customer
+                Add customer
               </Button>
             </div>
           </div>
 
-          {/* small stats row */}
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-[10px]">
-            <div className="rounded-[14px] border border-slate-200 p-[12px]">
-              <div className="text-[12px] text-slate-600 font-semibold">
-                Total
+          <div className="px-5 py-5">
+            {loadError ? (
+              <div className="mb-4 rounded-[16px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-[13px] font-semibold text-[var(--app-danger-text)]">
+                {loadError}
               </div>
-              <div className="text-[16px] font-bold text-slate-900 mt-[2px]">
-                {stats.total}
-              </div>
-            </div>
+            ) : null}
 
-            <div className="rounded-[14px] border border-slate-200 p-[12px]">
-              <div className="text-[12px] text-slate-600 font-semibold">
-                Wholesale %
+            {actionError ? (
+              <div className="mb-4 rounded-[16px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-[13px] font-semibold text-[var(--app-danger-text)]">
+                {actionError}
               </div>
-              <div className="text-[16px] font-bold text-slate-900 mt-[2px]">
-                {stats.adminWholesale}
-              </div>
-            </div>
-
-            <div className="rounded-[14px] border border-slate-200 p-[12px]">
-              <div className="text-[12px] text-slate-600 font-semibold">
-                Loyalty
-              </div>
-              <div className="text-[16px] font-bold text-slate-900 mt-[2px]">
-                {stats.loyalty}
-              </div>
-            </div>
-
-            <div className="rounded-[14px] border border-slate-200 p-[12px]">
-              <div className="text-[12px] text-slate-600 font-semibold">
-                No Discount
-              </div>
-              <div className="text-[16px] font-bold text-slate-900 mt-[2px]">
-                {stats.none}
-              </div>
-            </div>
+            ) : null}
           </div>
 
-          {/* rules preview */}
-          <div className="rounded-[14px] border border-slate-200 p-[12px] bg-slate-50/40">
-            <div className="text-[13px] font-semibold text-slate-900">
-              Billing rules (your MVP)
-            </div>
-            <ul className="mt-[8px] space-y-[6px] text-[12px] text-slate-700">
-              <li className="flex items-start gap-[8px]">
-                <span className="mt-[2px] h-[6px] w-[6px] rounded-full bg-orange-500 shrink-0" />
-                If a customer has{" "}
-                <span className="font-semibold">Wholesale %</span> set, we keep
-                base prices as <span className="font-semibold">retail</span> and
-                apply the customer percent on subtotal.
-              </li>
-              <li className="flex items-start gap-[8px]">
-                <span className="mt-[2px] h-[6px] w-[6px] rounded-full bg-orange-500 shrink-0" />
-                For new/normal customers, item price becomes wholesale only when
-                quantity reaches{" "}
-                <span className="font-semibold">{wholesaleQtyThreshold}</span>{" "}
-                (threshold set in Settings).
-              </li>
-              <li className="flex items-start gap-[8px]">
-                <span className="mt-[2px] h-[6px] w-[6px] rounded-full bg-orange-500 shrink-0" />
-                Loyalty discount is{" "}
-                <span className="font-semibold">{loyaltyDiscountPercent}%</span>{" "}
-                on subtotal and applies only if customer has{" "}
-                <span className="font-semibold">no</span> Wholesale % set.
-              </li>
-            </ul>
-          </div>
-        </div>
-      </Card>
-
-      {/* Filters + list */}
-      <Card>
-        <div className="p-[16px] space-y-[12px]">
-          <div className="flex flex-col lg:flex-row lg:items-center gap-[12px]">
-            <div className="flex-1">
-              <Input
-                value={q}
-                onChange={setQ}
-                placeholder="Search customer (name / phone / email)..."
-                leftIcon="search"
-              />
-            </div>
-
-            <div className="flex items-center gap-[10px] flex-wrap justify-end">
-              <div className="flex items-center gap-[8px] rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px]">
-                <Icon name="tune" className="text-slate-500" />
-                <select
-                  value={mode}
-                  onChange={(e) => setMode(e.target.value as any)}
-                  className="text-[14px] outline-none bg-transparent"
-                >
-                  <option value="all">All</option>
-                  <option value="ADMIN_WHOLESALE">
-                    Wholesale % (Customer)
-                  </option>
-                  <option value="LOYALTY">Loyalty</option>
-                  <option value="NONE">No Discount</option>
-                </select>
-              </div>
-
-              <label className="inline-flex items-center gap-[8px] text-[13px] font-semibold text-slate-700 select-none">
-                <input
-                  type="checkbox"
-                  checked={onlyLoyalty}
-                  onChange={(e) => setOnlyLoyalty(e.target.checked)}
-                  className="h-[16px] w-[16px]"
-                />
-                Loyalty only (effective)
-              </label>
-            </div>
-          </div>
-
-          <div className="overflow-x-auto rounded-[14px] border border-slate-200">
-            <table className="w-full min-w-[920px] text-left">
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-left">
               <thead>
-                <tr className="text-[12px] font-semibold text-slate-500 border-b border-slate-100 bg-slate-50/60">
-                  <th className="px-[12px] py-[12px]">Customer</th>
-                  <th className="px-[12px] py-[12px]">Phone</th>
-                  <th className="px-[12px] py-[12px]">Discount Rule</th>
-                  <th className="px-[12px] py-[12px]">Wholesale %</th>
-                  <th className="px-[12px] py-[12px]">Loyalty</th>
-                  <th className="px-[12px] py-[12px]">Last Purchase</th>
-                  <th className="px-[12px] py-[12px] text-right">Action</th>
+                <tr className="border-b border-[var(--app-border)] bg-[var(--app-surface-muted)]/70">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Customer Details
+                  </th>
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Discount Type
+                  </th>
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Rate
+                  </th>
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Last Purchase
+                  </th>
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Status
+                  </th>
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                    Action
+                  </th>
                 </tr>
               </thead>
-
-              <tbody className="divide-y divide-slate-100">
-                {filtered.map((c) => {
-                  const m = getDiscountMode(c);
-                  const w = hasWholesale(c);
-                  const effLoyal = isEffectiveLoyalty(c);
-
-                  return (
-                    <tr key={c.id} className="text-[14px] hover:bg-slate-50/60">
-                      <td className="px-[12px] py-[14px]">
-                        <div className="font-semibold text-slate-900">
-                          {c.name}
-                        </div>
-                        <div className="text-[12px] text-slate-500">
-                          {c.email || "—"}
-                        </div>
-                      </td>
-
-                      <td className="px-[12px] py-[14px] text-slate-700">
-                        {c.phone}
-                      </td>
-
-                      <td className="px-[12px] py-[14px]">
-                        <DiscountModeLabel mode={m} />
-                      </td>
-
-                      <td className="px-[12px] py-[14px] text-slate-900 font-semibold">
-                        {formatPct(c.adminWholesaleDiscountPercent)}
-                      </td>
-
-                      <td className="px-[12px] py-[14px]">
-                        <span
-                          className={cn(
-                            "inline-flex items-center rounded-full px-[10px] py-[4px] text-[12px] font-semibold border",
-                            effLoyal
-                              ? "bg-emerald-50 text-emerald-700 border-emerald-100"
-                              : c.isLoyalty && w
-                                ? "bg-orange-50 text-orange-700 border-orange-100"
-                                : "bg-slate-50 text-slate-600 border-slate-200",
-                          )}
-                          title={
-                            c.isLoyalty && w
-                              ? "Loyalty badge exists but wholesale % overrides it. Loyalty will not apply."
-                              : effLoyal
-                                ? "Loyalty will apply (no customer wholesale % set)."
-                                : "Not loyalty."
-                          }
-                        >
-                          {effLoyal
-                            ? "Yes"
-                            : c.isLoyalty && w
-                              ? "Overridden"
-                              : "No"}
-                        </span>
-                      </td>
-
-                      <td className="px-[12px] py-[14px] text-slate-700">
-                        {c.lastPurchaseLabel}
-                      </td>
-
-                      <td className="px-[12px] py-[14px]">
-                        <div className="flex items-center justify-end gap-[8px]">
-                          <button
-                            type="button"
-                            onClick={() => openEditCustomer(c)}
-                            className="h-[36px] w-[36px] rounded-[10px] border border-slate-200 bg-white hover:bg-slate-50 inline-flex items-center justify-center"
-                            aria-label="Edit customer discount"
-                          >
-                            <Icon
-                              name="edit"
-                              className="text-slate-700"
-                            />
-                          </button>
-
-                          <button
-                            type="button"
-                            onClick={() => clearCustomerDiscount(c.id)}
-                            disabled={!w}
-                            className={cn(
-                              "h-[36px] w-[36px] rounded-[10px] border bg-white inline-flex items-center justify-center",
-                              w
-                                ? "border-rose-200 hover:bg-rose-50"
-                                : "border-slate-200 opacity-40 pointer-events-none",
-                            )}
-                            aria-label="Clear customer wholesale discount"
-                            title={
-                              w ? "Clear wholesale %" : "No wholesale % set"
-                            }
-                          >
-                            <Icon
-                              name="delete"
-                              className="text-rose-600"
-                            />
-                          </button>
-                        </div>
+              <tbody className="divide-y divide-[var(--app-border)]/60">
+                {loading ? (
+                  Array.from({ length: 5 }).map((_, index) => (
+                    <tr key={index}>
+                      <td colSpan={6} className="px-6 py-4">
+                        <div className="h-12 animate-pulse rounded-[12px] bg-[var(--app-surface-muted)]" />
                       </td>
                     </tr>
-                  );
-                })}
-
-                {filtered.length === 0 ? (
+                  ))
+                ) : filtered.length === 0 ? (
                   <tr>
-                    <td
-                      colSpan={7}
-                      className="px-[12px] py-[22px] text-[14px] text-slate-600"
-                    >
-                      No customers match your filters.
+                    <td colSpan={6} className="py-12 text-center">
+                      <div className="flex flex-col items-center justify-center text-[var(--app-text-muted)]">
+                        <Icon
+                          name="search_off"
+                          className="mb-2 text-[32px] opacity-50"
+                        />
+                        <span className="text-[13px] font-semibold">
+                          No customers match these filters.
+                        </span>
+                      </div>
                     </td>
                   </tr>
-                ) : null}
+                ) : (
+                  filtered.map((customer) => {
+                    const discountMode = getDiscountMode(customer);
+                    const rate =
+                      discountMode === "ADMIN_WHOLESALE"
+                        ? formatPct(customer.adminWholesaleDiscountPercent || 0)
+                        : discountMode === "LOYALTY"
+                          ? formatPct(loyaltyDiscountPercent)
+                          : "—";
+
+                    return (
+                      <tr
+                        key={customer.id}
+                        className="group transition-colors hover:bg-[var(--app-surface-muted)]/70"
+                      >
+                        <td className="px-6 py-4">
+                          <div className="flex items-center gap-3">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[12px] font-extrabold text-[var(--app-text-soft)]">
+                              {getInitials(customer.name).charAt(0)}
+                            </div>
+                            <div className="min-w-0">
+                              <div className="truncate text-[13px] font-bold text-[var(--app-text)] transition-colors group-hover:text-[var(--app-text-soft)]">
+                                {customer.name}
+                              </div>
+                              <div className="truncate text-[11px] font-semibold text-[var(--app-text-muted)]">
+                                {customer.phone || "No phone on file"}
+                              </div>
+                              <div className="truncate text-[11px] font-medium text-[var(--app-text-muted)]/80">
+                                {customer.email || "No email on file"}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <DiscountBadge customer={customer} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-col">
+                            <span className="text-[14px] font-extrabold text-[var(--app-text)]">
+                              {rate}
+                            </span>
+                            <span className="text-[10px] font-semibold text-[var(--app-text-muted)]">
+                              {discountMode === "NONE"
+                                ? "standard"
+                                : "on subtotal"}
+                            </span>
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <div
+                            className={cn(
+                              "max-w-[240px] text-[12px] font-semibold leading-6",
+                              customer.purchaseHistoryState === "history"
+                                ? "text-[var(--app-text-soft)]"
+                                : customer.purchaseHistoryState ===
+                                    "cancelled_only"
+                                  ? "text-[var(--app-danger-text)]"
+                                  : "text-[var(--app-text-muted)]",
+                            )}
+                          >
+                            {customer.lastPurchaseLabel}
+                          </div>
+                        </td>
+                        <td className="px-6 py-4">
+                          <StatusBadge active={customer.isActive} />
+                        </td>
+                        <td className="px-6 py-4">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <TableActionButton
+                              icon="edit"
+                              label="Edit"
+                              onClick={() => openEditCustomer(customer)}
+                            />
+                            <TableActionButton
+                              icon="block"
+                              label={
+                                customer.isActive ? "Deactivate" : "Inactive"
+                              }
+                              tone="danger"
+                              disabled={!customer.isActive}
+                              onClick={() =>
+                                requestDeactivateCustomer(customer)
+                              }
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })
+                )}
               </tbody>
             </table>
           </div>
-        </div>
-      </Card>
 
-      {/* Activity panel */}
-      <Card>
-        <div className="p-[16px] space-y-[10px]">
-          <div className="flex items-center justify-between gap-[10px] flex-wrap">
-            <div>
-              <div className="text-[15px] font-semibold text-slate-900">
-                Discount activity
+          <div className="flex items-center justify-between border-t border-[var(--app-border)] bg-[var(--app-surface-muted)]/40 px-6 py-4">
+            <div className="text-[11px] font-bold text-[var(--app-text-muted)]">
+              Showing {filtered.length} records
+            </div>
+          </div>
+        </div>
+
+        <ModalShell
+          open={openEdit}
+          title={editingId ? "Edit customer discount" : "Add customer"}
+          onClose={closeEdit}
+          footer={
+            <div className="flex flex-col-reverse gap-3 sm:flex-row sm:items-center sm:justify-end">
+              <Button onClick={closeEdit}>Cancel</Button>
+              <Button variant="primary" icon="save" onClick={saveCustomer}>
+                Save profile
+              </Button>
+            </div>
+          }
+        >
+          <div className="space-y-6">
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="space-y-2">
+                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                  Customer name
+                </div>
+                <Input
+                  value={fName}
+                  onChange={setFName}
+                  placeholder="e.g. Ram Bahadur"
+                  invalid={!!formErrors.name}
+                  helperText={formErrors.name}
+                  leftIcon="person"
+                />
               </div>
-              <div className="text-[12px] text-slate-600 mt-[2px]">
-                These entries will later come from audit logs.
+
+              <div className="space-y-2">
+                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                  Phone
+                </div>
+                <Input
+                  value={fPhone}
+                  onChange={setFPhone}
+                  placeholder="+977 98XXXXXXXX"
+                  invalid={!!formErrors.phone}
+                  helperText={formErrors.phone}
+                  leftIcon="call"
+                />
+              </div>
+
+              <div className="space-y-2 lg:col-span-2">
+                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                  Email
+                </div>
+                <Input
+                  value={fEmail}
+                  onChange={setFEmail}
+                  placeholder="name@email.com"
+                  invalid={!!formErrors.email}
+                  helperText={formErrors.email}
+                  leftIcon="mail"
+                />
               </div>
             </div>
 
-            <Button
-              icon="add_alert"
-              onClick={() =>
-                setAudit((prev) => [
-                  {
-                    id: `aud_${Date.now()}`,
-                    title: "Sample entry",
-                    desc: "This is a placeholder until backend audit logs are connected.",
-                    timeLabel: "Just now",
-                  },
-                  ...prev,
-                ])
-              }
-            >
-              Add sample
-            </Button>
-          </div>
+            <div className="grid gap-4 lg:grid-cols-2">
+              <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                    Wholesale Discount
+                  </div>
+                  {formHasWholesale ? (
+                    <Pill tone="orange">Priority</Pill>
+                  ) : null}
+                </div>
 
-          <div className="space-y-[8px]">
-            {audit.slice(0, 8).map((a) => (
-              <div
-                key={a.id}
-                className="rounded-[14px] border border-slate-200 p-[12px] hover:bg-slate-50/60 transition"
-              >
-                <div className="flex items-start justify-between gap-[10px]">
-                  <div className="min-w-0">
-                    <div className="text-[13px] font-semibold text-slate-900">
-                      {a.title}
-                    </div>
-                    {a.desc ? (
-                      <div className="text-[12px] text-slate-600 mt-[2px]">
-                        {a.desc}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="text-[12px] text-slate-500 shrink-0">
-                    {a.timeLabel}
-                  </div>
+                <div className="mt-4 max-w-[220px]">
+                  <NumberInput
+                    value={fWholesaleDiscount}
+                    onChange={onWholesaleChange}
+                    min={0}
+                    max={100}
+                    placeholder="e.g. 5"
+                  />
+                </div>
+
+                <div className="mt-3 text-[12px] font-semibold text-slate-500">
+                  Leave blank for loyalty or standard billing.
                 </div>
               </div>
-            ))}
 
-            {audit.length === 0 ? (
-              <div className="text-[14px] text-slate-600">No activity yet.</div>
+              <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-5">
+                <div className="flex items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                      Loyalty Access
+                    </div>
+                    <div className="mt-1 text-[16px] font-extrabold text-slate-900">
+                      Enable loyalty
+                    </div>
+                  </div>
+                  <label
+                    className={cn(
+                      "inline-flex items-center gap-3 rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                      formHasWholesale
+                        ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400"
+                        : "cursor-pointer border-emerald-200 bg-emerald-50 text-emerald-700",
+                    )}
+                    title={
+                      formHasWholesale
+                        ? "Disabled because wholesale discount is set"
+                        : ""
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={fIsLoyalty}
+                      disabled={formHasWholesale}
+                      onChange={(e) => onToggleLoyalty(e.target.checked)}
+                      className="h-4 w-4"
+                    />
+                    Enable
+                  </label>
+                </div>
+
+                <div className="mt-4 text-[12px] font-semibold leading-6 text-slate-500">
+                  Applies {loyaltyDiscountPercent}% on subtotal when no
+                  wholesale rate is set.
+                </div>
+              </div>
+            </div>
+
+            {formSubmitError ? (
+              <div className="rounded-[18px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700">
+                {formSubmitError}
+              </div>
             ) : null}
           </div>
-        </div>
-      </Card>
+        </ModalShell>
 
-      {/* Add/Edit modal */}
-      <ModalShell
-        open={openEdit}
-        title={editingId ? "Edit Customer Discount" : "Add Customer"}
-        onClose={closeEdit}
-        footer={
-          <div className="flex items-center justify-end gap-[10px]">
-            <Button onClick={closeEdit}>Cancel</Button>
-            <Button variant="primary" icon="save" onClick={saveCustomer}>
-              Save
-            </Button>
-          </div>
-        }
-      >
-        <div className="space-y-[12px]">
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-[12px]">
-            <div className="space-y-[6px]">
-              <div className="text-[12px] font-semibold text-slate-600">
-                Customer name
-              </div>
-              <Input
-                value={fName}
-                onChange={setFName}
-                placeholder="e.g. Ram Bahadur"
-              />
-            </div>
-
-            <div className="space-y-[6px]">
-              <div className="text-[12px] font-semibold text-slate-600">
-                Phone
-              </div>
-              <Input
-                value={fPhone}
-                onChange={setFPhone}
-                placeholder="+977 98XXXXXXXX"
-              />
-            </div>
-
-            <div className="space-y-[6px] lg:col-span-2">
-              <div className="text-[12px] font-semibold text-slate-600">
-                Email (optional)
-              </div>
-              <Input
-                value={fEmail}
-                onChange={setFEmail}
-                placeholder="name@email.com"
-              />
-            </div>
-          </div>
-
-          <div className="rounded-[14px] border border-slate-200 p-[12px]">
-            <div className="text-[14px] font-semibold text-slate-900">
-              Customer wholesale discount %
-            </div>
-            <div className="text-[12px] text-slate-600 mt-[2px]">
-              If set, this percent is applied on the subtotal (retail-based)
-              during billing.
-            </div>
-
-            <div className="mt-[10px] max-w-[260px]">
-              <NumberInput
-                value={fWholesaleDiscount}
-                onChange={onWholesaleChange}
-                min={0}
-                max={100}
-                placeholder="e.g. 5"
-              />
-            </div>
-
-            <div className="mt-[10px] text-[12px] text-slate-600">
-              If this is set, loyalty discount will not be used for this
-              customer (loyalty will be turned off).
-            </div>
-          </div>
-
-          <div className="rounded-[14px] border border-slate-200 p-[12px]">
-            <div className="flex items-start justify-between gap-[12px]">
-              <div>
-                <div className="text-[14px] font-semibold text-slate-900">
-                  Loyalty eligible
+        <ConfirmDialog
+          open={!!pendingDeactivateCustomer}
+          title="Deactivate customer?"
+          message="This customer will no longer be available for active discount use until the profile is reactivated."
+          confirmLabel="Deactivate Customer"
+          onConfirm={confirmDeactivateCustomer}
+          onClose={() => {
+            if (!deactivateBusy) setPendingDeactivateCustomer(null);
+          }}
+          busy={deactivateBusy}
+          details={
+            pendingDeactivateCustomer ? (
+              <div className="space-y-1">
+                <div className="font-semibold text-slate-700">
+                  {pendingDeactivateCustomer.name}
                 </div>
-                <div className="text-[12px] text-slate-600 mt-[2px]">
-                  Loyalty discount ({loyaltyDiscountPercent}%) applies on
-                  subtotal only when customer has no wholesale % set.
+                <div>
+                  {pendingDeactivateCustomer.phone || "No phone on file"}
+                </div>
+                <div>
+                  {pendingDeactivateCustomer.email || "No email on file"}
                 </div>
               </div>
-
-              <label
-                className={cn(
-                  "inline-flex items-center gap-[8px] text-[13px] font-semibold select-none",
-                  formHasWholesale ? "text-slate-400" : "text-slate-700",
-                )}
-                title={
-                  formHasWholesale ? "Disabled because Wholesale % is set" : ""
-                }
-              >
-                <input
-                  type="checkbox"
-                  checked={fIsLoyalty}
-                  disabled={formHasWholesale}
-                  onChange={(e) => onToggleLoyalty(e.target.checked)}
-                  className="h-[16px] w-[16px]"
-                />
-                Enable
-              </label>
-            </div>
-
-            <div className="mt-[10px] rounded-[12px] border border-slate-200 bg-slate-50/40 p-[10px]">
-              <div className="text-[12px] text-slate-700">
-                Current rule preview:
-              </div>
-              <div className="mt-[4px] text-[12px] text-slate-700">
-                • If customer wholesale % is set → apply that % on subtotal
-                (retail-based).
-              </div>
-              <div className="text-[12px] text-slate-700">
-                • Else if loyalty enabled → apply {loyaltyDiscountPercent}% on
-                subtotal.
-              </div>
-              <div className="text-[12px] text-slate-700">
-                • Else → no subtotal discount.
-              </div>
-              <div className="mt-[6px] text-[12px] text-slate-500">
-                Wholesale item pricing still depends on qty threshold (
-                {wholesaleQtyThreshold}) for normal customers.
-              </div>
-            </div>
-          </div>
-        </div>
-      </ModalShell>
+            ) : null
+          }
+        />
+      </div>
     </div>
   );
 }

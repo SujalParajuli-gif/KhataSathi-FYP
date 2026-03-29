@@ -4,20 +4,23 @@ type CreateUserInput = {
   name: string;
   email: string;
   phone?: string;
+  gender?: string | null;
+  address?: string | null;
   role?: "ADMIN" | "CASHIER";
   passwordHash: string;
   isActive?: boolean;
-  nagariktaNo?: string;
 };
 
 type UpdateUserInput = {
   name?: string;
   email?: string;
   phone?: string | null;
+  gender?: string | null;
+  address?: string | null;
   role?: "ADMIN" | "CASHIER";
   passwordHash?: string;
   isActive?: boolean;
-  nagariktaNo?: string | null;
+  profileImage?: string | null;
 };
 
 export async function listUsers(query?: { role?: "ADMIN" | "CASHIER" }) {
@@ -32,11 +35,12 @@ export async function listUsers(query?: { role?: "ADMIN" | "CASHIER" }) {
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       isActive: true,
       lastLogin: true,
       profileImage: true,
-      nagariktaNo: true,
       createdAt: true,
     },
   });
@@ -48,21 +52,23 @@ export async function createUser(data: CreateUserInput) {
       name: data.name,
       email: data.email,
       phone: data.phone || null,
+      gender: data.gender || null,
+      address: data.address || null,
       role: data.role || "CASHIER",
       passwordHash: data.passwordHash,
       isActive: data.isActive ?? true,
-      nagariktaNo: data.nagariktaNo || null,
     },
     select: {
       id: true,
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       isActive: true,
       lastLogin: true,
       profileImage: true,
-      nagariktaNo: true,
       createdAt: true,
     },
   });
@@ -74,17 +80,20 @@ export async function updateUser(id: string, data: UpdateUserInput) {
     data: {
       ...data,
       phone: data.phone === undefined ? undefined : data.phone,
+      gender: data.gender === undefined ? undefined : data.gender,
+      address: data.address === undefined ? undefined : data.address,
     },
     select: {
       id: true,
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       isActive: true,
       lastLogin: true,
       profileImage: true,
-      nagariktaNo: true,
       createdAt: true,
     },
   });
@@ -99,10 +108,23 @@ export async function uploadUserPhoto(id: string, photoUrl: string) {
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       isActive: true,
+      lastLogin: true,
       profileImage: true,
-      nagariktaNo: true,
+      createdAt: true,
+    },
+  });
+}
+
+export async function getUserAuthById(id: string) {
+  return prisma.user.findUnique({
+    where: { id },
+    select: {
+      id: true,
+      passwordHash: true,
     },
   });
 }

@@ -3,6 +3,7 @@ import { useLocation } from "react-router";
 import Sidebar from "~/components/layout/Sidebar";
 import Topbar from "~/components/layout/Topbar";
 import navData from "~/config/ui.nav.json";
+import { AlertsProvider } from "~/lib/alerts/alerts-context";
 import { getAuthUser } from "~/lib/auth";
 
 type Props = {
@@ -43,36 +44,42 @@ export default function AppShell({ children }: Props) {
   }, [visibleItems, location.pathname]);
 
   const roleLabel = role === "cashier" ? "Cashier" : "Admin";
+  const profileHref = role === "cashier" ? "/cashier-profile" : "/profile";
   const contentVars = {
     "--sidebar-offset": isCollapsed ? "80px" : "260px",
   } as CSSProperties;
 
   return (
-    <div className="min-h-screen bg-slate-50 text-slate-900">
-      <Sidebar
-        role={role}
-        isMobileOpen={isMobileOpen}
-        isCollapsed={isCollapsed}
-        onCloseMobile={() => setIsMobileOpen(false)}
-      />
-
-      <div
-        className="min-h-screen transition-[margin] duration-300 lg:ml-[var(--sidebar-offset)]"
-        style={contentVars}
-      >
-        <Topbar
-          pageTitle={pageTitle}
-          onOpenMobileSidebar={() => setIsMobileOpen(true)}
-          onToggleCollapse={() => setIsCollapsed((value) => !value)}
+    <AlertsProvider>
+      <div className="min-h-screen bg-[var(--app-page-bg)] text-slate-900">
+        <Sidebar
+          role={role}
+          isMobileOpen={isMobileOpen}
           isCollapsed={isCollapsed}
-          userName={user?.name ?? "User"}
-          roleLabel={roleLabel}
-          profileImage={user?.profileImage}
-          greetingText={`Welcome back, ${user?.name?.split(" ")[0] ?? roleLabel}`}
+          onCloseMobile={() => setIsMobileOpen(false)}
         />
 
-        <main className="p-5 lg:p-6">{children}</main>
+        <div
+          className="min-h-screen transition-[margin] duration-300 lg:ml-[var(--sidebar-offset)]"
+          style={contentVars}
+        >
+          <Topbar
+            pageTitle={pageTitle}
+            onOpenMobileSidebar={() => setIsMobileOpen(true)}
+            onToggleCollapse={() => setIsCollapsed((value) => !value)}
+            isCollapsed={isCollapsed}
+            userName={user?.name ?? "User"}
+            roleLabel={roleLabel}
+            profileImage={user?.profileImage}
+            profileHref={profileHref}
+            greetingText={`Welcome back, ${user?.name?.split(" ")[0] ?? roleLabel}`}
+          />
+
+          <main className="min-h-[calc(100vh-77px)] bg-[var(--app-page-bg)] p-5 lg:p-6">
+            {children}
+          </main>
+        </div>
       </div>
-    </div>
+    </AlertsProvider>
   );
 }

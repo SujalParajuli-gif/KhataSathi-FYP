@@ -13,18 +13,23 @@ export async function getMeApi() {
     return res.data; // { user }
 }
 
-export async function updateProfileApi(data: { name?: string; phone?: string; password?: string; profileImage?: string | null }) {
+export async function updateProfileApi(data: { name?: string; phone?: string; gender?: string | null; address?: string | null; password?: string; profileImage?: string | null }) {
     const res = await api.patch("/api/auth/profile", data);
     return res.data;
+}
+
+function getBearerHeaders() {
+    if (typeof window === "undefined") return {} as Record<string, string>;
+    const token = localStorage.getItem("khatasathi_token");
+    return token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>);
 }
 
 export async function uploadProfilePhotoApi(file: File) {
     const formData = new FormData();
     formData.append("photo", file);
-    const token = typeof window !== "undefined" ? localStorage.getItem("khatasathi_token") : null;
     const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + "/api/auth/profile/photo", {
         method: "POST",
-        headers: token ? { "Authorization": `Bearer ${token}` } : {},
+        headers: getBearerHeaders(),
         body: formData
     });
     if (!res.ok) {
@@ -102,8 +107,16 @@ export async function getCategoriesApi() {
 export async function importCsvApi(file: File) {
     const formData = new FormData();
     formData.append("file", file);
-    const res = await api.post("/api/products/import-csv", formData);
-    return res.data;
+    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + "/api/products/import-csv", {
+        method: "POST",
+        headers: getBearerHeaders(),
+        body: formData,
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to import products.");
+    }
+    return res.json();
 }
 
 // ─── Customers ───────────────────────────────────────
@@ -146,8 +159,8 @@ export async function getInvoiceApi(id: string) {
     return res.data;
 }
 
-export async function addInvoiceItemApi(invoiceId: string, productId: string, qty: number, unitPrice?: number) {
-    const res = await api.post(`/api/invoices/${invoiceId}/items`, { productId, qty, unitPrice });
+export async function addInvoiceItemApi(invoiceId: string, productId: string, qty: number) {
+    const res = await api.post(`/api/invoices/${invoiceId}/items`, { productId, qty });
     return res.data;
 }
 
@@ -166,6 +179,11 @@ export async function finalizeInvoiceApi(invoiceId: string, discountAmount?: num
     return res.data;
 }
 
+export async function cancelInvoiceApi(invoiceId: string) {
+    const res = await api.patch(`/api/invoices/${invoiceId}/cancel`);
+    return res.data;
+}
+
 // ─── Payments ────────────────────────────────────────
 
 export async function addPaymentApi(
@@ -173,6 +191,11 @@ export async function addPaymentApi(
     data: { method: string; amount: number; status?: string; reference?: string }
 ) {
     const res = await api.post(`/api/invoices/${invoiceId}/payments`, data);
+    return res.data;
+}
+
+export async function initiateEsewaPaymentApi(invoiceId: string, amount: number) {
+    const res = await api.post("/api/payments/esewa/initiate", { invoiceId, amount });
     return res.data;
 }
 
@@ -221,11 +244,39 @@ export async function cashierSalesApi(from: string, to: string) {
     return res.data;
 }
 
+export async function getAnalyticsReportApi(filters: {
+    from: string;
+    to: string;
+    cashierId?: string;
+    paymentStatus?: string;
+}) {
+    const res = await api.get("/api/reports/analytics", { params: filters });
+    return res.data;
+}
+
+export async function downloadAnalyticsCsvApi(filters: {
+    from: string;
+    to: string;
+    cashierId?: string;
+    paymentStatus?: string;
+}) {
+    const res = await api.get("/api/reports/analytics/export/csv", {
+        params: filters,
+        responseType: "blob",
+    });
+    return res.data;
+}
+
 // ─── Audit ───────────────────────────────────────────
 
 export async function listAuditLogsApi(filters?: any) {
     const res = await api.get("/api/audit", { params: filters });
     return res.data; // { logs, total, page, pageSize }
+}
+
+export async function listLoginAttemptsApi(filters?: any) {
+    const res = await api.get("/api/audit/login-attempts", { params: filters });
+    return res.data; // { attempts, total, page, pageSize }
 }
 
 // ─── Admin ───────────────────────────────────────────
@@ -259,6 +310,11 @@ export async function getReadAlertsApi() {
     return res.data;
 }
 
+export async function listAlertsApi(limit?: number) {
+    const res = await api.get("/api/alerts", { params: limit ? { limit } : undefined });
+    return res.data;
+}
+
 export async function markAlertReadApi(alertKey: string) {
     const res = await api.post("/api/alerts/read", { alertKey });
     return res.data;
@@ -279,8 +335,16 @@ export async function markAlertUnreadApi(alertKey: string) {
 export async function uploadUserPhotoApi(userId: string, file: File) {
     const fd = new FormData();
     fd.append("photo", file);
-    const res = await api.post(`/api/users/${userId}/photo`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-    return res.data;
+    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + `/api/users/${userId}/photo`, {
+        method: "POST",
+        headers: getBearerHeaders(),
+        body: fd,
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Upload failed");
+    }
+    return res.json();
 }
 
 // ─── Product Image ───────────────────────────────────
@@ -288,6 +352,14 @@ export async function uploadUserPhotoApi(userId: string, file: File) {
 export async function uploadProductImageApi(productId: string, file: File) {
     const fd = new FormData();
     fd.append("image", file);
-    const res = await api.post(`/api/products/${productId}/image`, fd, { headers: { "Content-Type": "multipart/form-data" } });
-    return res.data;
+    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + `/api/products/${productId}/image`, {
+        method: "POST",
+        headers: getBearerHeaders(),
+        body: fd,
+    });
+    if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Upload failed");
+    }
+    return res.json();
 }

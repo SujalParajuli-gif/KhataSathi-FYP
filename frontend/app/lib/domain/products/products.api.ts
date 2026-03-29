@@ -4,6 +4,7 @@ import {
   getCategoriesApi,
   listBrandsApi,
   listProductsApi,
+  uploadProductImageApi,
   updateProductApi,
 } from "~/lib/api/endpoints";
 import type { Product, ProductsQuery, ProductStatus } from "./products.types";
@@ -22,6 +23,7 @@ type BackendProduct = {
   wholesaleQtyThreshold?: number;
   stock: number;
   lowStockThreshold: number;
+  imageUrl?: string | null;
   isActive: boolean;
 };
 
@@ -33,7 +35,7 @@ function toFrontendProduct(product: BackendProduct): Product {
     name: product.name,
     sku: product.sku,
     barcode: product.barcode ?? "",
-    imageUrl: "",
+    imageUrl: product.imageUrl ?? "",
     brand: product.brand?.name ?? "Unknown",
     category: product.category ?? "Uncategorized",
     retailPrice: Number(product.retailPrice ?? 0),
@@ -139,6 +141,11 @@ export async function createProduct(product: Omit<Product, "id">) {
 
 export async function updateProduct(id: string, product: Omit<Product, "id">) {
   const updated = await updateProductApi(id, toBackendPayload(product));
+  return toFrontendProduct(updated);
+}
+
+export async function uploadProductImage(id: string, file: File) {
+  const updated = await uploadProductImageApi(id, file);
   return toFrontendProduct(updated);
 }
 

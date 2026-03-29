@@ -14,7 +14,7 @@ export async function list(req: Request, res: Response) {
 
 export async function getOne(req: Request, res: Response) {
     try {
-        const brand = await brandService.getBrand(req.params.id);
+        const brand = await brandService.getBrand(String(req.params.id));
         if (!brand) {
             res.status(404).json({ error: "Brand not found" });
             return;
@@ -48,7 +48,11 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request, res: Response) {
     try {
         const { name, isActive } = req.body;
-        const brand = await brandService.updateBrand(req.params.id, { name, isActive });
+        const brand = await brandService.updateBrand(
+            String(req.params.id),
+            { name, isActive },
+            req.user?.id,
+        );
         res.json(brand);
     } catch (err: any) {
         if (err.code === "P2025") {
@@ -66,7 +70,7 @@ export async function update(req: Request, res: Response) {
 
 export async function deactivate(req: Request, res: Response) {
     try {
-        const brand = await brandService.deactivateBrand(req.params.id);
+        const brand = await brandService.deactivateBrand(String(req.params.id), req.user?.id);
         res.json(brand);
     } catch (err: any) {
         if (err.code === "P2025") {

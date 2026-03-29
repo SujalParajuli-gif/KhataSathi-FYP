@@ -1,0 +1,1 @@
+import{p as t}from"./chunk-WWGJGFF6-BB3Yx7HB.js";function r({name:e,sizePx:s=24,className:n}){return t.jsx("span",{className:`material-symbols-rounded ${n??""}`,style:{fontSize:`${s}px`,lineHeight:1},children:e})}export{r as G};

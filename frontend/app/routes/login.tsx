@@ -1,5 +1,6 @@
 import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
+import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
 import navData from "~/config/ui.nav.json";
 import type { AuthUser, UserRole } from "~/lib/auth";
@@ -205,7 +206,7 @@ export default function LoginPage() {
               src="/assets/images/Login.png"
               alt=""
               aria-hidden="true"
-              className="w-full max-w-[1500px] object-contain"
+              className="w-full max-w-[2000px] object-contain"
             />
           </div>
         </div>
@@ -215,15 +216,12 @@ export default function LoginPage() {
             <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">
               <div className="w-full max-w-[318px]">
                 <div className="mb-10 space-y-4">
-                  <div className="inline-flex items-center gap-2 rounded-full border border-[#CFCFD3] bg-white px-3 py-1.5 text-[11px] font-extrabold uppercase tracking-[0.22em] text-[#8C8889]">
-                    <span className="inline-flex h-6 w-6 items-center justify-center rounded-full bg-[#F3F4F6] text-[11px] font-extrabold text-[#000000]">
-                      {navData.brand.logoText}
-                    </span>
-                    {navData.brand.name}
+                  <div className="inline-flex py-1.5 text-[11px] ">
+                    <BrandLogo className="h-12 w-[252px]" />
                   </div>
 
                   <div className="space-y-2">
-                    <h2 className="text-[38px] font-extrabold leading-none text-[#111827] sm:text-[42px]">
+                    <h2 className="text-[38px] font-extrabold leading-none text-[#2B5563] sm:text-[32px]">
                       Login
                     </h2>
                     <p className="text-[15px] font-medium text-[#4B5563]">
@@ -322,13 +320,12 @@ export default function LoginPage() {
               </div>
             </div>
 
-            <div className="relative hidden min-h-[720px] items-center justify-end overflow-hidden bg-white lg:flex">
-              <div className="absolute inset-0 bg-[radial-gradient(circle_at_center,rgba(229,237,255,0.65),rgba(255,255,255,0)_68%)]" />
-              <div className="relative flex h-full w-full items-center justify-end">
+            <div className="relative hidden min-h-[720px] items-center justify-end overflow-hidden lg:flex">
+              <div className="relative  flex h-full w-full items-center justify-end">
                 <img
                   src="/assets/images/Login.png"
                   alt="Login visual"
-                  className="h-full w-full object-contain object-right"
+                  className="h-full w-full object-cover object-center"
                 />
               </div>
             </div>

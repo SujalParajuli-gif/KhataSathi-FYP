@@ -1,4 +1,5 @@
 import { Router } from "express";
+import fs from "fs";
 import multer from "multer";
 import path from "path";
 import prisma from "../../db/prisma";
@@ -8,9 +9,14 @@ import { requireRole } from "../../middleware/rbac";
 
 const router: ReturnType<typeof Router> = Router();
 const csvUpload = multer({ storage: multer.memoryStorage() });
+const productUploadsDir = path.join(__dirname, "../../../../uploads/products");
+
+if (!fs.existsSync(productUploadsDir)) {
+  fs.mkdirSync(productUploadsDir, { recursive: true });
+}
 
 const imgStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(__dirname, "../../../../uploads/products")),
+  destination: (_req, _file, cb) => cb(null, productUploadsDir),
   filename: (_req, file, cb) => cb(null, `prod_${Date.now()}${path.extname(file.originalname)}`),
 });
 const imgUpload = multer({ storage: imgStorage, limits: { fileSize: 5 * 1024 * 1024 } });
@@ -32,6 +38,9 @@ router.post("/:id/image", requireRole("ADMIN"), imgUpload.single("image"), async
     const product = await prisma.product.update({
       where: { id: req.params.id },
       data: { imageUrl },
+      include: {
+        brand: { select: { id: true, name: true } },
+      },
     });
     res.json(product);
   } catch (err: any) {

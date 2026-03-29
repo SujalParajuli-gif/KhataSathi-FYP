@@ -12,6 +12,52 @@ async function generateInvoiceNo(): Promise<string> {
   return `${prefix}${String(count + 1).padStart(4, "0")}`;
 }
 
+function clampPercent(value?: number | null) {
+  const normalized = Number(value || 0);
+  if (!Number.isFinite(normalized)) return 0;
+  if (normalized < 0) return 0;
+  if (normalized > 100) return 100;
+  return normalized;
+}
+
+function resolveSubtotalDiscountPercent(customer?: {
+  loyaltyPercent?: number | null;
+  wholesalePercent?: number | null;
+} | null) {
+  const wholesalePercent = clampPercent(customer?.wholesalePercent);
+  if (wholesalePercent > 0) {
+    return {
+      percent: wholesalePercent,
+      source: "CUSTOMER_WHOLESALE" as const,
+    };
+  }
+
+  const loyaltyPercent = clampPercent(customer?.loyaltyPercent);
+  if (loyaltyPercent > 0) {
+    return {
+      percent: loyaltyPercent,
+      source: "LOYALTY" as const,
+    };
+  }
+
+  return {
+    percent: 0,
+    source: "NONE" as const,
+  };
+}
+
+function shouldUseQuantityWholesalePrice(
+  customer: { wholesalePercent?: number | null } | null | undefined,
+  qty: number,
+  threshold?: number | null,
+) {
+  if (clampPercent(customer?.wholesalePercent) > 0) {
+    return false;
+  }
+
+  return qty >= Math.max(1, Number(threshold || 1));
+}
+
 export async function createDraft(cashierId: string, customerId?: string) {
   const invoiceNo = await generateInvoiceNo();
   return prisma.invoice.create({
@@ -108,7 +154,14 @@ export async function getInvoice(id: string) {
 }
 
 export async function addItem(invoiceId: string, productId: string, qty: number) {
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      customer: {
+        select: { id: true, loyaltyPercent: true, wholesalePercent: true },
+      },
+    },
+  });
   if (!invoice) throw new Error("Invoice not found");
   if (invoice.status !== "DRAFT") throw new Error("Cannot modify a finalized invoice");
 
@@ -117,7 +170,13 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
   if (!product.isActive) throw new Error("Product is inactive");
   if (product.stock <= 0) throw new Error("Product is out of stock");
 
-  const computedUnitPrice = qty >= product.wholesaleQtyThreshold ? product.wholesalePrice : product.retailPrice;
+  const computedUnitPrice = shouldUseQuantityWholesalePrice(
+    invoice.customer,
+    qty,
+    product.wholesaleQtyThreshold,
+  )
+    ? product.wholesalePrice
+    : product.retailPrice;
   const appliedUnitPrice = computedUnitPrice;
   const lineTotal = appliedUnitPrice * qty;
 
@@ -128,7 +187,11 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
     if (newQty > product.stock) {
       throw new Error(`Insufficient stock for "${product.name}". Available: ${product.stock}, Requested: ${newQty}`);
     }
-    const recalculatedUnitPrice = newQty >= product.wholesaleQtyThreshold
+    const recalculatedUnitPrice = shouldUseQuantityWholesalePrice(
+      invoice.customer,
+      newQty,
+      product.wholesaleQtyThreshold,
+    )
       ? product.wholesalePrice
       : product.retailPrice;
     const newLineTotal = recalculatedUnitPrice * newQty;
@@ -153,7 +216,14 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
 }
 
 export async function updateItem(invoiceId: string, itemId: string, qty: number) {
-  const invoice = await prisma.invoice.findUnique({ where: { id: invoiceId } });
+  const invoice = await prisma.invoice.findUnique({
+    where: { id: invoiceId },
+    include: {
+      customer: {
+        select: { id: true, loyaltyPercent: true, wholesalePercent: true },
+      },
+    },
+  });
   if (!invoice) throw new Error("Invoice not found");
   if (invoice.status !== "DRAFT") throw new Error("Cannot modify a finalized invoice");
 
@@ -164,7 +234,13 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
     throw new Error(`Insufficient stock for "${item.product.name}". Available: ${item.product.stock}, Requested: ${qty}`);
   }
 
-  const appliedUnitPrice = qty >= item.product.wholesaleQtyThreshold ? item.product.wholesalePrice : item.product.retailPrice;
+  const appliedUnitPrice = shouldUseQuantityWholesalePrice(
+    invoice.customer,
+    qty,
+    item.product.wholesaleQtyThreshold,
+  )
+    ? item.product.wholesalePrice
+    : item.product.retailPrice;
   const lineTotal = appliedUnitPrice * qty;
 
   const updated = await prisma.invoiceItem.update({
@@ -210,8 +286,9 @@ export async function finalizeInvoice(invoiceId: string, userId: string, discoun
   if (invoice.items.length === 0) throw new Error("Cannot finalize an empty invoice");
 
   const subTotal = invoice.items.reduce((sum, item) => sum + item.lineTotal, 0);
-  const computedLoyaltyPercent = invoice.customer?.loyaltyPercent || 0;
-  const computedDiscount = Math.round((subTotal * computedLoyaltyPercent) / 100 * 100) / 100;
+  const resolvedDiscount = resolveSubtotalDiscountPercent(invoice.customer);
+  const computedDiscount =
+    Math.round((subTotal * resolvedDiscount.percent) / 100 * 100) / 100;
   const normalizedDiscount = typeof discountAmount === "number"
     ? Math.max(0, Math.min(subTotal, Math.round(discountAmount * 100) / 100))
     : computedDiscount;
@@ -262,6 +339,7 @@ export async function finalizeInvoice(invoiceId: string, userId: string, discoun
           subTotal,
           discountAmount: normalizedDiscount,
           discountPercent: appliedDiscountPercent,
+          discountSource: resolvedDiscount.source,
           netTotal,
           itemCount: invoice.items.length,
         },

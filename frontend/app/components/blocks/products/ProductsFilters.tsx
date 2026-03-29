@@ -5,7 +5,7 @@ import { cn } from "~/lib/domain/products/products.helpers";
 
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[14px] bg-white border border-slate-200/70 shadow-sm">
+    <div className="rounded-[14px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
       {children}
     </div>
   );
@@ -28,10 +28,10 @@ function Button({
     "inline-flex items-center justify-center gap-[8px] rounded-[12px] px-[14px] py-[10px] text-[13px] font-semibold border active:scale-[0.98] transition";
   const styles =
     variant === "primary"
-      ? "bg-orange-600 text-white border-orange-600 hover:bg-orange-700"
+      ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
       : variant === "danger"
-        ? "bg-white text-rose-600 border-rose-200 hover:bg-rose-50"
-        : "bg-white text-slate-700 border-slate-200 hover:bg-slate-50";
+        ? "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:bg-rose-100"
+        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]";
   return (
     <button
       type="button"
@@ -57,15 +57,15 @@ function Input({
   leftIcon?: string;
 }) {
   return (
-    <div className="flex items-center gap-[8px] rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px]">
+    <div className="flex items-center gap-[8px] rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px]">
       {leftIcon ? (
-        <GoogleIcon name={leftIcon} className="text-slate-500" />
+        <GoogleIcon name={leftIcon} className="text-[var(--app-text-muted)]" />
       ) : null}
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
-        className="w-full text-[14px] outline-none placeholder:text-slate-400"
+        className="w-full bg-transparent text-[14px] font-medium text-[var(--app-text)] outline-none placeholder:text-[var(--app-text-muted)]"
       />
     </div>
   );
@@ -84,7 +84,7 @@ function Select({
     <select
       value={value}
       onChange={(e) => onChange(e.target.value)}
-      className="w-full rounded-[12px] border border-slate-200 bg-white px-[12px] py-[10px] text-[14px] outline-none"
+      className="w-full rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px] text-[14px] text-[var(--app-text)] outline-none"
     >
       {options.map((o) => (
         <option key={o.value} value={o.value}>
@@ -115,7 +115,6 @@ export default function ProductsFiltersCard({
 
   onAdd,
   onImport,
-  onExport,
   onActivate,
   onDeactivate,
   onSoftDelete,
@@ -146,7 +145,6 @@ export default function ProductsFiltersCard({
 
   onAdd: () => void;
   onImport: () => void;
-  onExport: () => void;
   onActivate: () => void;
   onDeactivate: () => void;
   onSoftDelete: () => void;
@@ -171,10 +169,6 @@ export default function ProductsFiltersCard({
 
             <Button icon="upload_file" onClick={onImport}>
               Import CSV
-            </Button>
-
-            <Button icon="download" onClick={onExport}>
-              Export
             </Button>
 
             <div className="flex items-center gap-[8px]">
@@ -205,8 +199,8 @@ export default function ProductsFiltersCard({
         </div>
 
         <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-[12px]">
-          <div className="space-y-[6px]">
-            <div className="text-[12px] font-semibold text-slate-500">
+            <div className="space-y-[6px]">
+            <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
               Brand
             </div>
             <Select
@@ -217,7 +211,7 @@ export default function ProductsFiltersCard({
           </div>
 
           <div className="space-y-[6px]">
-            <div className="text-[12px] font-semibold text-slate-500">
+            <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
               Category
             </div>
             <Select
@@ -228,7 +222,7 @@ export default function ProductsFiltersCard({
           </div>
 
           <div className="space-y-[6px]">
-            <div className="text-[12px] font-semibold text-slate-500">
+            <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
               Stock Status
             </div>
             <Select
@@ -244,7 +238,7 @@ export default function ProductsFiltersCard({
           </div>
 
           <div className="space-y-[6px]">
-            <div className="text-[12px] font-semibold text-slate-500">
+            <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
               Status
             </div>
             <Select
@@ -259,12 +253,12 @@ export default function ProductsFiltersCard({
           </div>
 
           <div className="flex items-end justify-between gap-[10px]">
-            <label className="inline-flex items-center gap-[8px] text-[13px] font-semibold text-slate-700 select-none">
+            <label className="inline-flex items-center gap-[8px] text-[13px] font-semibold text-[var(--app-text-soft)] select-none">
               <input
                 type="checkbox"
                 checked={lowOnly}
                 onChange={(e) => setLowOnly(e.target.checked)}
-                className="h-[16px] w-[16px]"
+                className="h-[16px] w-[16px] accent-[#11120d]"
               />
               Low stock only
             </label>
@@ -272,9 +266,9 @@ export default function ProductsFiltersCard({
             <button
               type="button"
               onClick={onClear}
-              className="inline-flex items-center gap-[6px] text-[13px] font-semibold text-slate-600 hover:text-slate-900"
+              className="inline-flex items-center gap-[6px] text-[13px] font-semibold text-[var(--app-text-soft)] hover:text-[var(--app-text)]"
             >
-              <GoogleIcon name="close" className="text-slate-500" />
+              <GoogleIcon name="close" className="text-[var(--app-text-muted)]" />
               Clear filters
             </button>
           </div>

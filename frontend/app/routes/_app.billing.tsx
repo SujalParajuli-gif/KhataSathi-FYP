@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "~/components/ui/Icon";
+import { DialogButton, ModalFrame, SuccessDialog } from "~/components/ui/Modal";
 import {
   listProductsApi,
   listCustomersApi,
@@ -7,7 +8,10 @@ import {
   addInvoiceItemApi,
   finalizeInvoiceApi,
   addPaymentApi,
+  initiateEsewaPaymentApi,
 } from "~/lib/api/endpoints";
+import { submitEsewaForm } from "~/lib/esewa";
+import { openInvoicePrint } from "~/lib/invoices";
 
 type PaymentMethod = "Cash" | "eSewa";
 type PaymentStatus = "Paid" | "Partial" | "Unpaid";
@@ -17,22 +21,28 @@ type Customer = {
   name: string;
   phone: string;
   email?: string;
-  adminWholesaleDiscountPercent?: number;
   isLoyalty: boolean;
   loyaltyPercent?: number;
+  wholesalePercent?: number;
 };
 
 type Product = {
   id: string;
   name: string;
   sku: string;
+  barcode?: string;
   brand: string;
   retailPrice: number;
   wholesalePrice: number;
+  wholesaleQtyThreshold?: number;
   stock: number;
+  lowStockThreshold?: number;
   active: boolean;
+  imageUrl?: string;
   imageColor?: string;
 };
+
+const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 type CartLine = {
   productId: string;
@@ -60,12 +70,59 @@ function clampNumber(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
 }
 
+function resolveProductImageUrl(path?: string) {
+  if (!path) return "";
+  if (path.startsWith("http")) return path;
+  return `${API_URL}${path}`;
+}
+
 function getCustomerDiscountMode(c: Customer | null) {
   if (!c) return "NONE" as const;
-  if (typeof c.adminWholesaleDiscountPercent === "number")
-    return "CUSTOMER_WHOLESALE" as const;
-  if (c.isLoyalty) return "LOYALTY" as const;
+  if ((c.wholesalePercent || 0) > 0) return "ADMIN_WHOLESALE" as const;
+  if ((c.loyaltyPercent || 0) > 0) return "LOYALTY" as const;
   return "NONE" as const;
+}
+
+function shouldUseQuantityWholesalePrice(
+  customer: Customer | null,
+  product: Product,
+  qty: number,
+) {
+  const hasCustomerWholesale =
+    clampPercent(customer?.wholesalePercent || 0) > 0;
+  if (hasCustomerWholesale) return false;
+  return qty >= Math.max(1, product.wholesaleQtyThreshold || 1);
+}
+
+function getSubtotalDiscountMeta(customer: Customer | null) {
+  const wholesalePercent = clampPercent(customer?.wholesalePercent || 0);
+  if (wholesalePercent > 0) {
+    return {
+      mode: "ADMIN_WHOLESALE" as const,
+      percent: wholesalePercent,
+      label: `Customer Wholesale (${wholesalePercent}%)`,
+      helper:
+        "Customer wholesale discount is applied on subtotal and disables quantity-based wholesale pricing.",
+    };
+  }
+
+  const loyaltyPercent = clampPercent(customer?.loyaltyPercent || 0);
+  if (loyaltyPercent > 0) {
+    return {
+      mode: "LOYALTY" as const,
+      percent: loyaltyPercent,
+      label: `Loyalty Discount (${loyaltyPercent}%)`,
+      helper:
+        "Quantity-based wholesale pricing can still apply on items before loyalty is deducted from subtotal.",
+    };
+  }
+
+  return {
+    mode: "NONE" as const,
+    percent: 0,
+    label: "Discount",
+    helper: "No customer-specific subtotal discount is active.",
+  };
 }
 
 function Button({
@@ -90,7 +147,7 @@ function Button({
   fullWidth?: boolean;
 }) {
   const base =
-    "inline-flex items-center justify-center gap-[8px] rounded-[14px] font-bold transition-all duration-200 active:scale-[0.96] border focus:outline-none focus:ring-2 focus:ring-offset-2 backdrop-blur-sm";
+    "inline-flex items-center justify-center gap-[8px] rounded-[14px] border font-bold transition active:scale-[0.98] focus:outline-none focus:ring-2 focus:ring-offset-2";
   const sizes = {
     sm: "px-[12px] py-[8px] text-[12px]",
     md: "px-[16px] py-[11px] text-[13px]",
@@ -99,15 +156,15 @@ function Button({
   };
   const styles = {
     primary:
-      "bg-gradient-to-br from-slate-900 via-slate-800 to-slate-900 text-white border-slate-700 hover:from-slate-800 hover:via-slate-700 hover:to-slate-800 shadow-lg shadow-slate-900/20 hover:shadow-xl hover:shadow-slate-900/30 focus:ring-slate-400",
+      "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27] focus:ring-slate-300",
     secondary:
-      "bg-white text-slate-700 border-slate-200 hover:bg-slate-50 hover:border-slate-300 hover:shadow-md shadow-sm focus:ring-slate-300",
+      "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)] focus:ring-slate-200",
     success:
-      "bg-gradient-to-br from-emerald-600 to-emerald-700 text-white border-emerald-600 hover:from-emerald-700 hover:to-emerald-800 shadow-lg shadow-emerald-600/25 hover:shadow-xl hover:shadow-emerald-600/35 focus:ring-emerald-300",
+      "border-[var(--app-success-border)] bg-[var(--app-success-text)] text-white hover:bg-[#138441] focus:ring-emerald-200",
     danger:
-      "bg-rose-50 text-rose-700 border-rose-200 hover:bg-rose-100 hover:border-rose-300 shadow-sm hover:shadow-md focus:ring-rose-200",
+      "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:bg-rose-100 focus:ring-rose-200",
     ghost:
-      "bg-transparent text-slate-600 border-transparent hover:bg-slate-100 hover:text-slate-900",
+      "border-transparent bg-transparent text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
   };
 
   return (
@@ -144,6 +201,8 @@ function Input({
   label,
   inputMode,
   inputRef,
+  invalid,
+  helperText,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -155,6 +214,8 @@ function Input({
   label?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
   inputRef?: React.RefObject<HTMLInputElement | null>;
+  invalid?: boolean;
+  helperText?: string;
 }) {
   return (
     <div className={className}>
@@ -163,12 +224,16 @@ function Input({
           {label}
         </label>
       ) : null}
-      <div className="flex items-center gap-[10px] rounded-[14px] border-2 border-slate-200 bg-white px-[14px] py-[12px] focus-within:ring-2 focus-within:ring-slate-900/10 focus-within:border-slate-400 transition-all duration-200 shadow-sm hover:shadow-md hover:border-slate-300">
+      <div
+        className={cn(
+          "flex items-center gap-[10px] rounded-[14px] border bg-white px-[14px] py-[12px] transition",
+          invalid
+            ? "border-rose-300 focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100"
+            : "border-[var(--app-border)] focus-within:border-[#11120d] focus-within:ring-2 focus-within:ring-black/5",
+        )}
+      >
         {leftIcon ? (
-          <Icon
-            name={leftIcon}
-            className="text-slate-400 transition-colors"
-          />
+          <Icon name={leftIcon} className="text-slate-400 transition-colors" />
         ) : null}
         <input
           ref={inputRef}
@@ -183,6 +248,16 @@ function Input({
           className="w-full text-[14px] outline-none placeholder:text-slate-400 bg-transparent text-slate-900 font-semibold"
         />
       </div>
+      {helperText ? (
+        <div
+          className={cn(
+            "mt-2 ml-1 text-[12px] font-semibold",
+            invalid ? "text-rose-600" : "text-slate-500",
+          )}
+        >
+          {helperText}
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -195,18 +270,21 @@ function Pill({
   tone?: "neutral" | "green" | "orange" | "sky" | "rose" | "purple";
 }) {
   const map = {
-    neutral: "bg-slate-100 text-slate-700 border-slate-200",
-    green: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    orange: "bg-orange-50 text-orange-700 border-orange-200",
-    sky: "bg-sky-50 text-sky-700 border-sky-200",
-    rose: "bg-rose-50 text-rose-700 border-rose-200",
-    purple: "bg-purple-50 text-purple-700 border-purple-200",
+    neutral:
+      "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]",
+    green:
+      "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]",
+    orange:
+      "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)] border-[var(--app-warning-border)]",
+    sky: "bg-slate-100 text-slate-700 border-slate-200",
+    rose: "bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] border-[var(--app-danger-border)]",
+    purple: "bg-slate-100 text-slate-700 border-slate-200",
   };
 
   return (
     <span
       className={cn(
-        "px-[10px] py-[4px] rounded-[10px] text-[11px] font-extrabold border shadow-sm",
+        "rounded-[10px] border px-[10px] py-[4px] text-[11px] font-extrabold whitespace-nowrap",
         map[tone],
       )}
     >
@@ -225,7 +303,7 @@ function Segmented({
   options: Array<{ value: string; label: string }>;
 }) {
   return (
-    <div className="flex gap-2 p-1.5 bg-slate-100 rounded-[14px] border-2 border-slate-200 shadow-inner">
+    <div className="flex gap-2 rounded-[14px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1.5">
       {options.map((o) => {
         const active = o.value === value;
         return (
@@ -234,10 +312,10 @@ function Segmented({
             type="button"
             onClick={() => onChange(o.value)}
             className={cn(
-              "flex-1 py-2.5 text-[12px] rounded-[11px] font-extrabold transition-all duration-200",
+              "flex-1 rounded-[11px] py-2.5 text-[12px] font-extrabold transition",
               active
-                ? "bg-white text-slate-900 shadow-md scale-[1.02]"
-                : "text-slate-500 hover:text-slate-700 hover:bg-slate-50",
+                ? "bg-white text-[var(--app-text)] shadow-sm"
+                : "text-[var(--app-text-muted)] hover:bg-white/80 hover:text-[var(--app-text)]",
             )}
           >
             {o.label}
@@ -248,47 +326,65 @@ function Segmented({
   );
 }
 
-const GRADIENT_COLORS = [
-  "bg-gradient-to-br from-orange-100 to-orange-200 text-orange-700",
-  "bg-gradient-to-br from-yellow-100 to-yellow-200 text-yellow-700",
-  "bg-gradient-to-br from-slate-200 to-slate-300 text-slate-700",
-  "bg-gradient-to-br from-emerald-100 to-emerald-200 text-emerald-700",
-  "bg-gradient-to-br from-rose-100 to-rose-200 text-rose-700",
-  "bg-gradient-to-br from-amber-100 to-amber-200 text-amber-800",
-  "bg-gradient-to-br from-sky-100 to-sky-200 text-sky-700",
-  "bg-gradient-to-br from-purple-100 to-purple-200 text-purple-700",
-];
-
 export default function BillingPage() {
-  const [wholesaleQtyThreshold] = useState(10);
-  const [loyaltyDiscountPercent] = useState(2);
   const [customers, setCustomers] = useState<Customer[]>([]);
   const [products, setProducts] = useState<Product[]>([]);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [showSuccess, setShowSuccess] = useState(false);
+  const [lastCreatedInvoiceId, setLastCreatedInvoiceId] = useState<
+    string | null
+  >(null);
 
   useEffect(() => {
     async function load() {
       try {
+        async function fetchAllActiveProducts() {
+          const pageSize = 300;
+          let page = 1;
+          let total = 0;
+          const collected: any[] = [];
+
+          do {
+            const response = await listProductsApi({
+              page,
+              pageSize,
+              active: "true",
+            });
+            const items = Array.isArray(response?.products)
+              ? response.products
+              : [];
+            collected.push(...items);
+            total = Number(response?.total ?? collected.length);
+            page += 1;
+
+            if (items.length === 0) break;
+          } while (collected.length < total);
+
+          return collected;
+        }
+
         const [prodData, custData] = await Promise.allSettled([
-          listProductsApi({ pageSize: 200, active: "true" }),
-          listCustomersApi(),
+          fetchAllActiveProducts(),
+          listCustomersApi(true),
         ]);
 
         if (prodData.status === "fulfilled" && prodData.value) {
-          const raw = prodData.value.products || [];
+          const raw = prodData.value;
           setProducts(
-            raw.map((p: any, idx: number) => ({
+            raw.map((p: any) => ({
               id: p.id,
               name: p.name,
               sku: p.sku || "",
+              barcode: p.barcode || "",
               brand: p.brand?.name || "",
               retailPrice: p.retailPrice || 0,
               wholesalePrice: p.wholesalePrice || 0,
+              wholesaleQtyThreshold: p.wholesaleQtyThreshold || 1,
               stock: p.stock || 0,
+              lowStockThreshold: p.lowStockThreshold || 0,
               active: p.isActive !== false,
-              imageColor: GRADIENT_COLORS[idx % GRADIENT_COLORS.length],
+              imageUrl: p.imageUrl || "",
             })),
           );
         }
@@ -303,12 +399,9 @@ export default function BillingPage() {
               name: c.name,
               phone: c.phone || "",
               email: c.email,
-              adminWholesaleDiscountPercent:
-                typeof c.wholesalePercent === "number" && c.wholesalePercent > 0
-                  ? c.wholesalePercent
-                  : undefined,
               isLoyalty: (c.loyaltyPercent || 0) > 0,
               loyaltyPercent: c.loyaltyPercent,
+              wholesalePercent: c.wholesalePercent,
             })),
           );
         }
@@ -321,11 +414,6 @@ export default function BillingPage() {
     load();
   }, []);
 
-  const quickGrid = useMemo(
-    () => products.filter((p) => p.active).slice(0, 12),
-    [products],
-  );
-
   const [skuInput, setSkuInput] = useState("");
   const [productQuery, setProductQuery] = useState("");
   const [isCustomerSearchOpen, setCustomerSearchOpen] = useState(false);
@@ -337,17 +425,13 @@ export default function BillingPage() {
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash");
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid");
   const [paidAmount, setPaidAmount] = useState<string>("");
-  const [digitalRef, setDigitalRef] = useState("");
+  const [paymentError, setPaymentError] = useState("");
+  const [billingError, setBillingError] = useState("");
+  const [showPaymentModal, setShowPaymentModal] = useState(false);
+  const [showEsewaQr, setShowEsewaQr] = useState(true);
 
-  const cartEndRef = useRef<HTMLDivElement>(null);
   const skuRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
-
-  useEffect(() => {
-    if (cart.length > 0) {
-      cartEndRef.current?.scrollIntoView({ behavior: "smooth", block: "end" });
-    }
-  }, [cart.length]);
 
   const selectedCustomer = useMemo(
     () => customers.find((c) => c.id === selectedCustomerId) || null,
@@ -355,12 +439,10 @@ export default function BillingPage() {
   );
 
   const customerMode = getCustomerDiscountMode(selectedCustomer);
-
-  const customerWholesalePct = useMemo(() => {
-    if (typeof selectedCustomer?.adminWholesaleDiscountPercent !== "number")
-      return undefined;
-    return clampPercent(selectedCustomer.adminWholesaleDiscountPercent);
-  }, [selectedCustomer]);
+  const subtotalDiscountMeta = useMemo(
+    () => getSubtotalDiscountMeta(selectedCustomer),
+    [selectedCustomer],
+  );
 
   const customerListFiltered = useMemo(() => {
     const s = customerQuery.trim().toLowerCase();
@@ -374,19 +456,34 @@ export default function BillingPage() {
     const s = productQuery.trim().toLowerCase();
     if (!s) return products.filter((p) => p.active);
     return products.filter(
-      (p) => p.active && (p.name + p.sku + p.brand).toLowerCase().includes(s),
+      (p) =>
+        p.active &&
+        `${p.name} ${p.sku} ${p.barcode || ""} ${p.brand}`
+          .toLowerCase()
+          .includes(s),
     );
   }, [products, productQuery]);
 
+  const manualResults = useMemo(
+    () => productListFiltered.slice(0, productQuery.trim() ? 40 : 24),
+    [productListFiltered, productQuery],
+  );
+
+  const productsById = useMemo(
+    () => new Map(products.map((product) => [product.id, product])),
+    [products],
+  );
+
   const cartRows = useMemo(() => {
-    const byId = new Map(products.map((p) => [p.id, p]));
     return cart
       .map((line) => {
-        const p = byId.get(line.productId);
+        const p = productsById.get(line.productId);
         if (!p) return null;
-        const useWholesalePrice =
-          typeof customerWholesalePct !== "number" &&
-          line.qty >= wholesaleQtyThreshold;
+        const useWholesalePrice = shouldUseQuantityWholesalePrice(
+          selectedCustomer,
+          p,
+          line.qty,
+        );
         const unit = useWholesalePrice ? p.wholesalePrice : p.retailPrice;
         return {
           ...line,
@@ -404,17 +501,16 @@ export default function BillingPage() {
       priceType: "Wholesale" | "Retail";
       lineTotal: number;
     }>;
-  }, [cart, products, customerWholesalePct, wholesaleQtyThreshold]);
+  }, [cart, productsById, selectedCustomer]);
 
   const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0);
 
   const subtotalDiscount = useMemo(() => {
-    if (typeof customerWholesalePct === "number")
-      return Math.round((subTotal * customerWholesalePct) / 100);
-    if (selectedCustomer?.isLoyalty)
-      return Math.round((subTotal * loyaltyDiscountPercent) / 100);
+    if (subtotalDiscountMeta.percent > 0) {
+      return Math.round((subTotal * subtotalDiscountMeta.percent) / 100);
+    }
     return 0;
-  }, [subTotal, customerWholesalePct, selectedCustomer, loyaltyDiscountPercent]);
+  }, [subTotal, subtotalDiscountMeta.percent]);
 
   const grandTotal = Math.max(0, subTotal - subtotalDiscount);
 
@@ -437,25 +533,68 @@ export default function BillingPage() {
     paymentMethod === "eSewa" && paymentStatus !== "Unpaid";
 
   const canConfirm = cartRows.length > 0 && !submitting;
+  const hasBillDraft =
+    cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
+
+  function showCartIssue(message: string) {
+    setBillingError(message);
+  }
+
+  function getCurrentQty(productId: string) {
+    return cart.find((line) => line.productId === productId)?.qty || 0;
+  }
 
   function addToCart(productId: string, qty = 1) {
+    const product = productsById.get(productId);
+    if (!product || !product.active) {
+      showCartIssue("That product is not available for billing.");
+      return;
+    }
+    if (product.stock <= 0) {
+      showCartIssue(`"${product.name}" is out of stock.`);
+      return;
+    }
+
+    const currentQty = getCurrentQty(productId);
+    if (currentQty >= product.stock) {
+      showCartIssue(
+        `"${product.name}" has only ${product.stock} item(s) in stock.`,
+      );
+      return;
+    }
+
     setCart((prev) => {
       const idx = prev.findIndex((x) => x.productId === productId);
       if (idx >= 0) {
         const copy = [...prev];
-        copy[idx] = { ...copy[idx], qty: copy[idx].qty + qty };
+        copy[idx] = {
+          ...copy[idx],
+          qty: Math.min(product.stock, copy[idx].qty + qty),
+        };
         return copy;
       }
-      return [...prev, { productId, qty }];
+      return [...prev, { productId, qty: Math.min(product.stock, qty) }];
     });
     setProductQuery("");
+    setBillingError("");
     skuRef.current?.focus();
   }
 
   function changeQty(productId: string, val: number) {
+    const product = productsById.get(productId);
+    const maxQty = Math.max(1, product?.stock || 1);
+    if (product && val > product.stock) {
+      showCartIssue(
+        `"${product.name}" has only ${product.stock} item(s) in stock.`,
+      );
+    } else {
+      setBillingError("");
+    }
     setCart((prev) =>
       prev.map((x) =>
-        x.productId === productId ? { ...x, qty: Math.max(1, val) } : x,
+        x.productId === productId
+          ? { ...x, qty: clampNumber(val, 1, maxQty) }
+          : x,
       ),
     );
   }
@@ -467,10 +606,18 @@ export default function BillingPage() {
   function addBySku() {
     const s = skuInput.trim();
     if (!s) return;
-    const p = products.find((x) => x.active && x.sku === s);
+    const normalized = s.toLowerCase();
+    const p = products.find(
+      (x) =>
+        x.active &&
+        (x.sku.toLowerCase() === normalized ||
+          (x.barcode || "").toLowerCase() === normalized),
+    );
     if (p) {
       addToCart(p.id, 1);
       setSkuInput("");
+    } else {
+      showCartIssue(`No active product found for "${s}".`);
     }
   }
 
@@ -482,14 +629,66 @@ export default function BillingPage() {
     setPaidAmount("");
     setSkuInput("");
     setProductQuery("");
-    setDigitalRef("");
+    setPaymentError("");
+    setBillingError("");
     setCustomerSearchOpen(false);
     setCustomerQuery("");
+    setShowPaymentModal(false);
+    setShowEsewaQr(true);
     skuRef.current?.focus();
+  }
+
+  function openPaymentFlow(nextMethod?: PaymentMethod) {
+    if (cartRows.length === 0) {
+      setBillingError("Add at least one product before opening payment.");
+      return;
+    }
+    if (nextMethod) {
+      setPaymentMethod(nextMethod);
+      if (nextMethod === "eSewa") setShowEsewaQr(true);
+    }
+    setBillingError("");
+    setPaymentError("");
+    setShowPaymentModal(true);
+  }
+
+  function closePaymentFlow() {
+    setShowPaymentModal(false);
+    setPaymentError("");
+  }
+
+  function validatePaymentBeforeConfirm() {
+    setPaymentError("");
+    setBillingError("");
+
+    if (paymentStatus !== "Partial") {
+      return true;
+    }
+
+    const amount = Number(paidAmount);
+    if (!paidAmount.trim()) {
+      setPaymentError("Enter the amount received for a partial payment.");
+      return false;
+    }
+    if (!Number.isFinite(amount)) {
+      setPaymentError("Enter a valid payment amount.");
+      return false;
+    }
+    if (amount <= 0) {
+      setPaymentError("Payment amount must be greater than 0.");
+      return false;
+    }
+    if (amount >= grandTotal) {
+      setPaymentError("Use Paid when the full invoice amount is received.");
+      return false;
+    }
+
+    return true;
   }
 
   async function confirm() {
     if (!canConfirm) return;
+    if (!validatePaymentBeforeConfirm()) return;
     setSubmitting(true);
 
     try {
@@ -503,27 +702,49 @@ export default function BillingPage() {
         return;
       }
 
+      let shouldRedirectToEsewa = false;
+      let esewaFormAction = "";
+      let esewaFormFields: Record<string, string> = {};
+
       for (const line of cartRows) {
-        await addInvoiceItemApi(invoiceId, line.productId, line.qty, line.unitPrice);
+        await addInvoiceItemApi(invoiceId, line.productId, line.qty);
       }
 
       await finalizeInvoiceApi(invoiceId, subtotalDiscount);
 
       if (paymentStatus !== "Unpaid") {
-        const method =
-          paymentMethod === "eSewa" ? "ESEWA" : "CASH";
-        await addPaymentApi(invoiceId, {
-          method,
-          amount: effectivePaidAmount,
-          reference: digitalRef || undefined,
-        });
+        const method = paymentMethod === "eSewa" ? "ESEWA" : "CASH";
+        if (method === "CASH") {
+          await addPaymentApi(invoiceId, {
+            method,
+            amount: effectivePaidAmount,
+            status: "SUCCESS",
+          });
+        } else {
+          const initiated = await initiateEsewaPaymentApi(
+            invoiceId,
+            effectivePaidAmount,
+          );
+          shouldRedirectToEsewa = true;
+          esewaFormAction = initiated.formAction;
+          esewaFormFields = initiated.fields || {};
+        }
       }
 
+      setShowPaymentModal(false);
       resetBill();
+      if (shouldRedirectToEsewa) {
+        submitEsewaForm(esewaFormAction, esewaFormFields);
+        return;
+      }
+
+      setLastCreatedInvoiceId(invoiceId);
       setShowSuccess(true);
-      setTimeout(() => setShowSuccess(false), 3000);
-    } catch (err) {
+    } catch (err: any) {
       console.error("Billing confirm error:", err);
+      setBillingError(
+        err?.response?.data?.error || "Failed to create invoice.",
+      );
     } finally {
       setSubmitting(false);
     }
@@ -551,12 +772,12 @@ export default function BillingPage() {
       }
       if (e.key === "F4") {
         e.preventDefault();
-        setPaymentMethod("Cash");
+        openPaymentFlow("Cash");
         return;
       }
       if (e.key === "F5") {
         e.preventDefault();
-        setPaymentMethod("eSewa");
+        openPaymentFlow("eSewa");
         return;
       }
       if (e.key === "F9") {
@@ -567,7 +788,11 @@ export default function BillingPage() {
       if (e.key === "Enter") {
         if (!canConfirm) return;
         e.preventDefault();
-        confirm();
+        if (showPaymentModal) {
+          confirm();
+        } else {
+          openPaymentFlow();
+        }
       }
     }
 
@@ -578,591 +803,738 @@ export default function BillingPage() {
     grandTotal,
     paymentMethod,
     paymentStatus,
-    digitalRef,
     balanceDue,
     effectivePaidAmount,
     showEsewaDetails,
+    showPaymentModal,
   ]);
 
   if (loading) {
     return (
       <div className="flex items-center justify-center h-[90vh]">
-        <div className="text-slate-400 font-semibold">Loading billing data...</div>
+        <div className="text-slate-400 font-semibold">
+          Loading billing data...
+        </div>
       </div>
     );
   }
 
   return (
     <>
-    <div className="w-full h-[90vh] bg-gradient-to-br from-slate-100 via-slate-50 to-slate-100 flex flex-col md:flex-row overflow-hidden font-sans text-slate-800 rounded-[24px] shadow-2xl border-2 border-slate-200 relative">
-      <div className="flex-1 flex flex-col min-w-0 bg-gradient-to-br from-white to-slate-50 border-r-2 border-slate-200">
-        <div className="p-5 bg-white/80 backdrop-blur-md border-b-2 border-slate-200 shadow-lg shadow-slate-900/5">
-          <div className="grid grid-cols-12 gap-4 items-end">
-            <div className="col-span-4">
-              <Input
-                label="Scan SKU"
-                value={skuInput}
-                onChange={setSkuInput}
-                placeholder="Barcode / SKU"
-                leftIcon="qr_code_scanner"
-                onEnter={addBySku}
-                className="font-mono"
-                inputRef={skuRef}
-                autoFocus
-              />
+      <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[var(--app-border)] bg-white font-sans text-slate-800 shadow-[0_24px_64px_-40px_rgba(17,18,13,0.55)] md:flex-row">
+        <div className="flex min-w-0 flex-1 flex-col border-r border-[var(--app-border)] bg-white">
+          <div className="border-b border-[var(--app-border)] bg-white px-5 py-5">
+            {/* Top Bar Layout Fix */}
+            <div className="flex flex-col">
+              <div className="grid grid-cols-12 gap-4 items-start">
+                <div className="col-span-5">
+                  <Input
+                    label="Scan SKU / Barcode"
+                    value={skuInput}
+                    onChange={setSkuInput}
+                    placeholder="Barcode / SKU"
+                    leftIcon="qr_code_scanner"
+                    onEnter={addBySku}
+                    className="font-mono"
+                    inputRef={skuRef}
+                    autoFocus
+                  />
+                </div>
+                <div className="col-span-7">
+                  <Input
+                    label="Manual Search"
+                    value={productQuery}
+                    onChange={setProductQuery}
+                    placeholder="Search product name, SKU, barcode, brand..."
+                    leftIcon="search"
+                    inputRef={searchRef}
+                  />
+                </div>
+              </div>
+              <div className="mt-2 flex justify-end"></div>
             </div>
 
-            <div className="col-span-8 relative">
-              <Input
-                label="Search"
-                value={productQuery}
-                onChange={setProductQuery}
-                placeholder="Search product name, brand..."
-                leftIcon="search"
-                inputRef={searchRef}
-              />
+            <div className="mt-4 flex items-center justify-between gap-4 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                {selectedCustomer ? (
+                  <Pill tone="purple">
+                    Customer: {selectedCustomer.name.split(" ")[0]}
+                  </Pill>
+                ) : (
+                  <Pill tone="neutral">Guest</Pill>
+                )}
 
-              {productQuery ? (
-                <div className="absolute top-full left-0 right-0 mt-2 bg-white/95 backdrop-blur-md rounded-2xl shadow-2xl border-2 border-slate-200 max-h-[420px] overflow-y-auto z-50">
-                  {productListFiltered.length === 0 ? (
-                    <div className="p-8 text-center text-slate-500 font-medium">
-                      No products found
+                {customerMode === "ADMIN_WHOLESALE" ? (
+                  <>
+                    <Pill tone="orange">
+                      Wholesale{" "}
+                      {clampPercent(selectedCustomer?.wholesalePercent || 0)}%
+                    </Pill>
+                    <Pill tone="neutral">Qty wholesale disabled</Pill>
+                  </>
+                ) : customerMode === "LOYALTY" ? (
+                  <>
+                    <Pill tone="green">
+                      Loyalty{" "}
+                      {clampPercent(selectedCustomer?.loyaltyPercent || 0)}%
+                    </Pill>
+                    <Pill tone="neutral">Qty wholesale can combine</Pill>
+                  </>
+                ) : (
+                  <Pill tone="neutral">Per-product wholesale pricing</Pill>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <div className="flex-1 overflow-y-auto p-5 bg-[var(--app-surface-muted)]/55">
+            <div className="mb-5 flex items-center justify-between">
+              <h3 className="text-sm font-extrabold text-[var(--app-text-soft)] uppercase tracking-wide">
+                Manual Add List
+              </h3>
+              <div className="rounded-full border border-[var(--app-border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--app-text-muted)]">
+                Showing {manualResults.length} items
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
+              {manualResults.map((p) => {
+                const low =
+                  p.stock > 0 &&
+                  p.stock <= Math.max(0, p.lowStockThreshold || 0);
+                const outOfStock = p.stock <= 0;
+                return (
+                  <button
+                    key={p.id}
+                    type="button"
+                    disabled={outOfStock}
+                    onClick={() => addToCart(p.id)}
+                    className={cn(
+                      "flex items-center gap-3 text-left rounded-[16px] border border-[var(--app-border)] bg-white p-3 transition",
+                      outOfStock
+                        ? "opacity-60 cursor-not-allowed grayscale"
+                        : "hover:bg-[var(--app-surface-muted)]/80 hover:border-slate-300",
+                    )}
+                  >
+                    <div className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
+                      {p.imageUrl ? (
+                        <img
+                          src={resolveProductImageUrl(p.imageUrl)}
+                          alt={p.name}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : (
+                        <Icon
+                          name="inventory_2"
+                          className="text-[var(--app-text-soft)]"
+                        />
+                      )}
+                      <div
+                        className={cn(
+                          "absolute -top-1 -right-1 h-3 w-3 rounded-full border-2 border-white",
+                          outOfStock
+                            ? "bg-slate-400"
+                            : low
+                              ? "bg-rose-500"
+                              : "bg-emerald-500",
+                        )}
+                      />
+                    </div>
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center justify-between gap-2 mb-0.5">
+                        <div className="font-extrabold text-slate-800 truncate text-[13px]">
+                          {p.name}
+                        </div>
+                        {low && !outOfStock && <Pill tone="rose">LOW</Pill>}
+                        {outOfStock && <Pill tone="neutral">OUT</Pill>}
+                      </div>
+                      <div className="text-[11px] text-slate-500 truncate font-medium">
+                        {p.brand} • SKU: {p.sku}
+                      </div>
+                      <div className="flex items-center justify-between mt-1.5">
+                        <div className="flex items-center gap-2 text-[10px] text-slate-500 font-semibold">
+                          <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">
+                            Stock {p.stock}
+                          </span>
+                          <span>
+                            Wholesale @{" "}
+                            {Math.max(1, p.wholesaleQtyThreshold || 1)}+
+                          </span>
+                        </div>
+                        <div className="font-mono font-extrabold text-slate-800 text-[13px]">
+                          {formatNpr(p.retailPrice)}
+                        </div>
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+            </div>
+
+            {manualResults.length === 0 ? (
+              <div className="h-[160px] flex items-center justify-center text-slate-400 text-sm font-medium">
+                No items available
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="relative z-20 flex w-full flex-col border-l border-[var(--app-border)] bg-white md:w-[420px]">
+          <div className="flex-shrink-0 border-b border-[var(--app-border)] bg-white p-4">
+            {!isCustomerSearchOpen ? (
+              <div className="flex items-center justify-between rounded-[20px] border border-[var(--app-border)] bg-white p-3 transition">
+                <div className="flex items-center gap-3 overflow-hidden">
+                  <div
+                    className={cn(
+                      "w-11 h-11 rounded-xl flex items-center justify-center text-xl shrink-0 border",
+                      selectedCustomer
+                        ? "bg-[var(--app-surface-muted)] text-[var(--app-text)] border-[var(--app-border)]"
+                        : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)] border-[var(--app-border)]",
+                    )}
+                  >
+                    <Icon name={selectedCustomer ? "person" : "person_off"} />
+                  </div>
+                  <div className="min-w-0">
+                    <div className="font-extrabold text-slate-900 truncate text-[15px]">
+                      {selectedCustomer
+                        ? selectedCustomer.name
+                        : "Walk-in Customer"}
+                    </div>
+                    <div className="text-xs text-slate-500 truncate flex items-center gap-2 mt-0.5">
+                      {selectedCustomer
+                        ? selectedCustomer.phone
+                        : "No customer selected"}
+                      {selectedCustomer?.isLoyalty ||
+                      clampPercent(selectedCustomer?.wholesalePercent || 0) >
+                        0 ? (
+                        <Icon
+                          name="verified"
+                          className="text-[13px] text-emerald-500"
+                        />
+                      ) : null}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-1.5">
+                      {clampPercent(selectedCustomer?.wholesalePercent || 0) >
+                      0 ? (
+                        <Pill tone="orange">
+                          Wholesale{" "}
+                          {clampPercent(
+                            selectedCustomer?.wholesalePercent || 0,
+                          )}
+                          %
+                        </Pill>
+                      ) : null}
+                      {customerMode === "LOYALTY" ? (
+                        <Pill tone="green">
+                          Loyalty{" "}
+                          {clampPercent(selectedCustomer?.loyaltyPercent || 0)}%
+                        </Pill>
+                      ) : null}
+                      {selectedCustomer?.isLoyalty &&
+                      customerMode === "ADMIN_WHOLESALE" ? (
+                        <Pill tone="neutral">Loyalty overridden</Pill>
+                      ) : null}
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-2 shrink-0">
+                  {selectedCustomer ? (
+                    <Button
+                      size="sm"
+                      variant="ghost"
+                      icon="close"
+                      title="Clear customer"
+                      onClick={() => setSelectedCustomerId(null)}
+                    />
+                  ) : null}
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    icon="edit"
+                    title="Select customer"
+                    onClick={() => setCustomerSearchOpen(true)}
+                  />
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-[20px] border border-[var(--app-border)] bg-white p-3">
+                <div className="flex items-center gap-2 mb-3">
+                  <Input
+                    value={customerQuery}
+                    onChange={setCustomerQuery}
+                    placeholder="Find customer..."
+                    autoFocus
+                    leftIcon="search"
+                    className="flex-1"
+                  />
+                  <Button
+                    size="sm"
+                    icon="close"
+                    onClick={() => setCustomerSearchOpen(false)}
+                    title="Close"
+                  />
+                </div>
+                <div className="max-h-[160px] overflow-y-auto space-y-1.5">
+                  {customerListFiltered.map((c) => (
+                    <button
+                      key={c.id}
+                      type="button"
+                      onClick={() => {
+                        setSelectedCustomerId(c.id);
+                        setCustomerSearchOpen(false);
+                      }}
+                      className="flex w-full items-center justify-between rounded-xl border border-transparent px-3 py-2.5 text-left text-sm transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-muted)]"
+                    >
+                      <span className="font-semibold text-slate-800">
+                        {c.name}
+                      </span>
+                      <span className="text-slate-400 font-medium">
+                        {c.phone}
+                      </span>
+                    </button>
+                  ))}
+                  {customerListFiltered.length === 0 ? (
+                    <div className="p-4 text-xs text-slate-400 text-center font-medium">
+                      No results
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+            )}
+          </div>
+
+          <div className="flex-1 overflow-y-auto bg-[var(--app-surface-muted)]/35 p-3 space-y-2 relative">
+            {cartRows.length === 0 ? (
+              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 select-none">
+                <Icon
+                  name="receipt_long"
+                  className="text-7xl mb-3 opacity-20"
+                />
+                <p className="font-bold text-[15px]">Ticket Empty</p>
+                <p className="text-xs mt-1">Add items to start billing</p>
+              </div>
+            ) : (
+              cartRows.map((row) => (
+                <div
+                  key={row.productId}
+                  className="flex flex-col gap-2 rounded-[16px] border border-[var(--app-border)] bg-white p-3 transition hover:border-slate-300 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex-1 min-w-0">
+                      <div className="font-extrabold text-slate-800 leading-tight truncate text-[13px]">
+                        {row.product.name}
+                      </div>
+                      <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-500 font-medium mt-1">
+                        <span className="rounded border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-1.5 py-0.5">
+                          {formatNpr(row.unitPrice)}/u
+                        </span>
+                        {row.priceType === "Wholesale" ? (
+                          <span className="font-extrabold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
+                            WHL
+                          </span>
+                        ) : null}
+                        <span>SKU {row.product.sku}</span>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => removeLine(row.productId)}
+                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-400 transition hover:bg-rose-100 hover:text-rose-600"
+                      title="Remove"
+                      aria-label="Remove item"
+                    >
+                      <Icon name="close" className="text-[14px]" />
+                    </button>
+                  </div>
+
+                  <div className="flex items-center justify-between mt-1 border-t border-slate-100 pt-2">
+                    <div className="flex items-center gap-1 rounded-[10px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1">
+                      <button
+                        type="button"
+                        onClick={() => changeQty(row.productId, row.qty - 1)}
+                        disabled={row.qty <= 1}
+                        className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-white border border-[var(--app-border)] text-lg font-medium leading-none shadow-sm transition hover:text-rose-600 disabled:opacity-40"
+                        aria-label="Decrease quantity"
+                      >
+                        -
+                      </button>
+                      <input
+                        type="number"
+                        min={1}
+                        max={Math.max(1, row.product.stock)}
+                        value={row.qty}
+                        onChange={(e) =>
+                          changeQty(row.productId, Number(e.target.value || 1))
+                        }
+                        className="w-8 bg-transparent text-center text-[13px] font-extrabold text-slate-800 outline-none"
+                        aria-label={`Quantity for ${row.product.name}`}
+                      />
+                      <button
+                        type="button"
+                        onClick={() => changeQty(row.productId, row.qty + 1)}
+                        disabled={row.qty >= row.product.stock}
+                        className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-white border border-[var(--app-border)] text-lg font-medium leading-none shadow-sm transition hover:text-emerald-600 disabled:opacity-40"
+                        aria-label="Increase quantity"
+                      >
+                        +
+                      </button>
+                    </div>
+                    <div className="font-mono font-extrabold text-slate-900 text-[14px]">
+                      {formatNpr(row.lineTotal)}
+                    </div>
+                  </div>
+                </div>
+              ))
+            )}
+          </div>
+
+          <div className="flex-shrink-0 bg-white border-t border-slate-200 shadow-[0_-6px_22px_rgba(0,0,0,0.06)]">
+            <div className="px-5 pt-4 pb-3 space-y-2 text-sm">
+              <div className="flex justify-between text-slate-500">
+                <span>Subtotal</span>
+                <span className="font-mono font-bold">
+                  {formatNpr(subTotal)}
+                </span>
+              </div>
+              {subtotalDiscount > 0 ? (
+                <div className="flex justify-between text-rose-600">
+                  <span className="flex items-center gap-1 font-bold">
+                    <Icon name="local_offer" className="text-[14px]" />
+                    {subtotalDiscountMeta.label}
+                  </span>
+                  <span className="font-mono font-extrabold">
+                    -{formatNpr(subtotalDiscount)}
+                  </span>
+                </div>
+              ) : null}
+              <div className="border-t border-dashed border-slate-300 my-2" />
+              <div className="flex justify-between items-end">
+                <span className="text-slate-900 font-extrabold text-lg">
+                  Total
+                </span>
+                <span className="font-mono font-extrabold text-3xl text-slate-900 tracking-tight">
+                  {formatNpr(grandTotal)}
+                </span>
+              </div>
+              {customerMode !== "NONE" ? (
+                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
+                  {subtotalDiscountMeta.helper}
+                </div>
+              ) : null}
+            </div>
+
+            <div className="space-y-3 border-t border-[var(--app-border)] bg-[var(--app-surface-muted)]/85 p-4">
+              {billingError ? (
+                <div className="rounded-[14px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-[12px] font-semibold text-[var(--app-danger-text)]">
+                  {billingError}
+                </div>
+              ) : null}
+
+              <div className="flex gap-2">
+                <Button
+                  variant="ghost"
+                  className="flex-1 border border-[var(--app-border)]"
+                  onClick={resetBill}
+                  disabled={!hasBillDraft}
+                  icon="restart_alt"
+                >
+                  Clear Cart
+                </Button>
+                <Button
+                  variant={paymentMethod === "eSewa" ? "success" : "primary"}
+                  className="flex-[2]"
+                  size="lg"
+                  icon={paymentMethod === "eSewa" ? "qr_code_2" : "payments"}
+                  disabled={!canConfirm}
+                  onClick={() => openPaymentFlow()}
+                >
+                  {paymentMethod === "eSewa"
+                    ? "Open eSewa"
+                    : `Pay ${formatNpr(grandTotal)}`}
+                </Button>
+              </div>
+
+              <div className="rounded-[14px] border border-[var(--app-border)] bg-white px-3 py-3 text-[12px] font-semibold text-[var(--app-text-soft)]">
+                Payment details open in a centered modal so the billing screen
+                stays stable while you scan, search, and review the cart.
+              </div>
+
+              <div className="pt-1 text-[11px] text-[var(--app-text-muted)] flex flex-wrap gap-x-3 gap-y-1">
+                <span className="font-semibold">Shortcuts:</span>
+                <span>F2 Search</span>
+                <span>F3 SKU</span>
+                <span>F4 Cash</span>
+                <span>F5 eSewa</span>
+                <span>F9 Reset</span>
+                <span>Enter Pay</span>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <ModalFrame
+        open={showPaymentModal}
+        onClose={closePaymentFlow}
+        title="Confirm payment"
+        description="Choose how this bill is being settled without disturbing the main billing screen."
+        maxWidthClass="max-w-[720px]"
+      >
+        <div className="space-y-5">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
+              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                Items
+              </div>
+              <div className="mt-2 text-[24px] font-extrabold text-[var(--app-text)]">
+                {cartRows.length}
+              </div>
+              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+                {cart.reduce((sum, line) => sum + line.qty, 0)} units in cart
+              </div>
+            </div>
+            <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
+              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                Customer
+              </div>
+              <div className="mt-2 text-[16px] font-extrabold text-[var(--app-text)]">
+                {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+              </div>
+              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+                {selectedCustomer
+                  ? selectedCustomer.phone || "No phone on file"
+                  : "No customer selected"}
+              </div>
+            </div>
+            <div className="rounded-[18px] border border-[var(--app-border)] bg-white p-4">
+              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                Total
+              </div>
+              <div className="mt-2 font-mono text-[24px] font-extrabold text-[var(--app-text)]">
+                {formatNpr(grandTotal)}
+              </div>
+              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+                Subtotal {formatNpr(subTotal)}
+              </div>
+            </div>
+          </div>
+
+          <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
+            <div className="space-y-4">
+              <div>
+                <div className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                  Payment method
+                </div>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    onClick={() => setPaymentMethod("Cash")}
+                    className={cn(
+                      "rounded-[18px] border px-4 py-4 text-left transition",
+                      paymentMethod === "Cash"
+                        ? "border-[#11120d] bg-[#11120d] text-white"
+                        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+                    )}
+                  >
+                    <Icon name="payments" />
+                    <div className="mt-3 text-[13px] font-extrabold">Cash</div>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod("eSewa");
+                      setShowEsewaQr(true);
+                    }}
+                    className={cn(
+                      "rounded-[18px] border px-4 py-4 text-left transition",
+                      paymentMethod === "eSewa"
+                        ? "border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success-text)]"
+                        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+                    )}
+                  >
+                    <Icon name="qr_code_2" />
+                    <div className="mt-3 text-[13px] font-extrabold">eSewa</div>
+                  </button>
+                </div>
+              </div>
+
+              <div>
+                <div className="mb-2 flex items-center justify-between">
+                  <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                    Payment status
+                  </div>
+                  {paymentMethod === "eSewa" ? (
+                    <div className="text-[11px] font-bold text-[var(--app-text-muted)]">
+                      Official redirect after confirm
+                    </div>
+                  ) : null}
+                </div>
+                <Segmented
+                  value={paymentStatus}
+                  onChange={(v) => {
+                    setPaymentStatus(v as PaymentStatus);
+                    setBillingError("");
+                    if (v !== "Partial") {
+                      setPaidAmount("");
+                      setPaymentError("");
+                    }
+                  }}
+                  options={[
+                    { value: "Paid", label: "Paid" },
+                    { value: "Partial", label: "Partial" },
+                    { value: "Unpaid", label: "Unpaid" },
+                  ]}
+                />
+              </div>
+
+              {paymentStatus === "Partial" ? (
+                <Input
+                  label="Amount paid"
+                  value={paidAmount}
+                  onChange={(v) => {
+                    setPaidAmount(v.replace(/[^\d.]/g, ""));
+                    setPaymentError("");
+                    setBillingError("");
+                  }}
+                  placeholder="e.g. 500"
+                  leftIcon="currency_rupee"
+                  inputMode="numeric"
+                  invalid={!!paymentError}
+                  helperText={
+                    paymentError ||
+                    `Enter an amount greater than 0 and less than ${formatNpr(grandTotal)}.`
+                  }
+                />
+              ) : null}
+
+              <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4 text-[12px] font-semibold text-[var(--app-text-soft)]">
+                {paymentStatus === "Unpaid"
+                  ? "This will create the invoice without adding a payment yet."
+                  : paymentMethod === "eSewa"
+                    ? "Confirm to create the invoice and continue through the official eSewa payment step."
+                    : "Confirm to finalize the invoice and record the payment immediately."}
+              </div>
+            </div>
+
+            <div className="space-y-4">
+              {showEsewaDetails ? (
+                <div className="rounded-[22px] border border-[var(--app-success-border)] bg-[var(--app-success-bg)]/80 p-4">
+                  <div className="text-center text-[11px] font-extrabold uppercase tracking-[0.22em] text-[var(--app-success-text)]">
+                    Scan To Pay
+                  </div>
+                  {showEsewaQr ? (
+                    <div className="mt-3 overflow-hidden rounded-[18px] border border-[var(--app-border)] bg-white p-4">
+                      <img
+                        src="/assets/images/esewa/qr.png"
+                        alt="eSewa QR code"
+                        className="mx-auto h-[280px] w-[280px] max-w-full object-contain"
+                        onError={() => setShowEsewaQr(false)}
+                      />
                     </div>
                   ) : (
-                    <div className="p-3 space-y-2">
-                      {productListFiltered.map((p) => (
-                        <button
-                          key={p.id}
-                          type="button"
-                          onClick={() => addToCart(p.id)}
-                          className="w-full text-left p-4 hover:bg-gradient-to-r hover:from-slate-50 hover:to-slate-100 rounded-xl flex items-center justify-between gap-4 group transition-all duration-200 border border-transparent hover:border-slate-200 hover:shadow-md"
-                        >
-                          <div className="min-w-0">
-                            <div className="font-extrabold text-slate-800 truncate text-[15px]">
-                              {p.name}
-                            </div>
-                            <div className="text-xs text-slate-500 truncate mt-1">
-                              {p.brand} • SKU: {p.sku} • Stock: {p.stock}
-                            </div>
-                          </div>
-                          <div className="flex items-center gap-4 shrink-0">
-                            <span className="font-mono font-bold text-slate-700 text-[14px]">
-                              {formatNpr(p.retailPrice)}
-                            </span>
-                            <div className="bg-slate-100 text-slate-700 px-3 py-2 rounded-xl text-xs font-bold group-hover:bg-slate-900 group-hover:text-white transition-all duration-200 shadow-sm">
-                              Add
-                            </div>
-                          </div>
-                        </button>
-                      ))}
+                    <div className="mt-3 rounded-[18px] border border-[var(--app-border)] bg-white px-4 py-10 text-center text-[13px] font-semibold text-[var(--app-text-muted)]">
+                      eSewa QR is unavailable right now, but the official
+                      redirect will still open after confirmation.
                     </div>
                   )}
+                  <div className="mt-4 rounded-[18px] border border-[var(--app-border)] bg-white px-4 py-3 text-center">
+                    <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                      Billing amount
+                    </div>
+                    <div className="mt-2 font-mono text-[24px] font-extrabold text-[var(--app-text)]">
+                      {formatNpr(
+                        paymentStatus === "Partial"
+                          ? effectivePaidAmount
+                          : grandTotal,
+                      )}
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="rounded-[22px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
+                  <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                    Settlement summary
+                  </div>
+                  <div className="mt-4 space-y-3 text-[13px] font-semibold text-[var(--app-text-soft)]">
+                    <div className="flex items-center justify-between">
+                      <span>Subtotal</span>
+                      <span className="font-mono text-[var(--app-text)]">
+                        {formatNpr(subTotal)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Discount</span>
+                      <span className="font-mono text-[var(--app-text)]">
+                        -{formatNpr(subtotalDiscount)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Collected now</span>
+                      <span className="font-mono text-[var(--app-text)]">
+                        {formatNpr(effectivePaidAmount)}
+                      </span>
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <span>Due after bill</span>
+                      <span className="font-mono text-[var(--app-text)]">
+                        {formatNpr(balanceDue)}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {billingError ? (
+                <div className="rounded-[14px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-[12px] font-semibold text-[var(--app-danger-text)]">
+                  {billingError}
                 </div>
               ) : null}
             </div>
           </div>
 
-          <div className="mt-4 flex items-center justify-between gap-4 flex-wrap">
-            <div className="flex items-center gap-3">
-              <Pill tone="sky">Quick Select</Pill>
-              <div className="text-xs text-slate-500 font-medium">
-                Tap tiles to add faster than typing.
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2 flex-wrap">
-              {selectedCustomer ? (
-                <Pill tone="purple">
-                  Customer: {selectedCustomer.name.split(" ")[0]}
-                </Pill>
-              ) : (
-                <Pill tone="neutral">Guest</Pill>
-              )}
-
-              {customerMode === "CUSTOMER_WHOLESALE" ? (
-                <Pill tone="orange">Subtotal wholesale %</Pill>
-              ) : selectedCustomer?.isLoyalty ? (
-                <Pill tone="green">Loyalty {loyaltyDiscountPercent}%</Pill>
-              ) : (
-                <Pill tone="neutral">
-                  Wholesale qty ≥ {wholesaleQtyThreshold}
-                </Pill>
-              )}
-            </div>
+          <div className="flex items-center justify-end gap-3">
+            <DialogButton onClick={closePaymentFlow}>Back</DialogButton>
+            <DialogButton
+              onClick={confirm}
+              variant={paymentMethod === "eSewa" ? "primary" : "primary"}
+              icon={
+                paymentStatus === "Unpaid"
+                  ? "receipt_long"
+                  : paymentMethod === "eSewa"
+                    ? "qr_code_2"
+                    : "check_circle"
+              }
+              disabled={!canConfirm || submitting}
+            >
+              {submitting
+                ? "Creating..."
+                : paymentStatus === "Paid"
+                  ? `Pay ${formatNpr(grandTotal)}`
+                  : paymentStatus === "Partial"
+                    ? `Confirm ${formatNpr(effectivePaidAmount)}`
+                    : "Create Unpaid Invoice"}
+            </DialogButton>
           </div>
         </div>
+      </ModalFrame>
 
-        <div className="flex-1 overflow-y-auto p-5 bg-gradient-to-br from-slate-50/70 to-white/70">
-          <div className="mb-5 flex items-center justify-between">
-            <h3 className="text-sm font-extrabold text-slate-600 uppercase tracking-wide">
-              Quick Select
-            </h3>
-            <div className="text-xs text-slate-500 bg-slate-100 px-3 py-1.5 rounded-full font-bold border border-slate-200">
-              Showing {quickGrid.length} items
-            </div>
-          </div>
-
-          <div className="grid grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-            {quickGrid.map((p) => {
-              const low = p.stock <= 10;
-              return (
-                <button
-                  key={p.id}
-                  type="button"
-                  onClick={() => addToCart(p.id)}
-                  className="relative flex flex-col items-start text-left p-5 rounded-2xl border-2 border-slate-200 bg-white shadow-md hover:shadow-xl hover:border-slate-300 hover:-translate-y-1 transition-all duration-200 active:scale-[0.97] h-[122px] group overflow-hidden"
-                >
-                  <div className="absolute inset-0 bg-gradient-to-br from-transparent to-slate-50/50 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none" />
-                  <div className="flex items-start justify-between w-full gap-2 relative z-10">
-                    <div className="min-w-0">
-                      <div className="font-extrabold text-slate-800 leading-tight line-clamp-2 text-[14px]">
-                        {p.name}
-                      </div>
-                      <div className="text-[11px] text-slate-500 mt-1.5 truncate font-medium">
-                        {p.brand} • {p.sku}
-                      </div>
-                    </div>
-                    <div className="flex flex-col items-end gap-2 shrink-0">
-                      <div
-                        className={cn(
-                          "h-10 w-10 rounded-xl border-2 flex items-center justify-center shadow-sm group-hover:scale-110 transition-transform duration-200",
-                          p.imageColor ||
-                            "bg-gradient-to-br from-slate-100 to-slate-200 text-slate-700",
-                          "border-white",
-                        )}
-                        aria-hidden="true"
-                      >
-                        <Icon name="inventory_2" />
-                      </div>
-                      <div
-                        className={cn(
-                          "h-2.5 w-2.5 rounded-full shadow-sm",
-                          low ? "bg-rose-500 animate-pulse" : "bg-emerald-500",
-                        )}
-                        title={low ? "Low stock" : "In stock"}
-                      />
-                    </div>
-                  </div>
-                  <div className="w-full flex items-end justify-between mt-auto relative z-10">
-                    <div className="text-[10px] text-slate-600 font-bold bg-slate-100 px-2.5 py-1.5 rounded-lg border border-slate-200 shadow-sm">
-                      Stock {p.stock}
-                    </div>
-                    <div className="font-mono font-extrabold text-slate-800 text-[14px]">
-                      {formatNpr(p.retailPrice)}
-                    </div>
-                  </div>
-                  {low ? (
-                    <div className="absolute top-4 left-4 z-10">
-                      <Pill tone="rose">LOW</Pill>
-                    </div>
-                  ) : null}
-                </button>
-              );
-            })}
-          </div>
-
-          {quickGrid.length === 0 ? (
-            <div className="h-[160px] flex items-center justify-center text-slate-400 text-sm font-medium">
-              No items available
-            </div>
-          ) : null}
-        </div>
-      </div>
-
-      <div className="w-full md:w-[420px] flex flex-col bg-white shadow-2xl relative z-20 border-l border-slate-100">
-        <div className="flex-shrink-0 p-4 border-b-2 border-slate-100 bg-gradient-to-br from-slate-50/50 to-white">
-          {!isCustomerSearchOpen ? (
-            <div className="flex items-center justify-between bg-white border-2 border-slate-200 rounded-2xl p-3 shadow-md hover:shadow-lg transition-shadow duration-200">
-              <div className="flex items-center gap-3 overflow-hidden">
-                <div
-                  className={cn(
-                    "w-11 h-11 rounded-xl flex items-center justify-center text-xl shrink-0 border-2 shadow-sm",
-                    selectedCustomer
-                      ? "bg-gradient-to-br from-indigo-50 to-indigo-100 text-indigo-700 border-indigo-200"
-                      : "bg-gradient-to-br from-slate-100 to-slate-200 text-slate-500 border-slate-300",
-                  )}
-                >
-                  <Icon
-                    name={selectedCustomer ? "person" : "person_off"}
-                  />
-                </div>
-                <div className="min-w-0">
-                  <div className="font-extrabold text-slate-900 truncate text-[15px]">
-                    {selectedCustomer
-                      ? selectedCustomer.name
-                      : "Walk-in Customer"}
-                  </div>
-                  <div className="text-xs text-slate-500 truncate flex items-center gap-2 mt-0.5">
-                    {selectedCustomer
-                      ? selectedCustomer.phone
-                      : "No customer selected"}
-                    {selectedCustomer?.isLoyalty ? (
-                      <Icon
-                        name="verified"
-                        className="text-[13px] text-emerald-500"
-                      />
-                    ) : null}
-                  </div>
-                  <div className="mt-2 flex flex-wrap gap-1.5">
-                    {customerMode === "CUSTOMER_WHOLESALE" ? (
-                      <Pill tone="orange">
-                        Wholesale {customerWholesalePct}%
-                      </Pill>
-                    ) : null}
-                    {selectedCustomer?.isLoyalty ? (
-                      <Pill tone="green">Loyalty</Pill>
-                    ) : null}
-                  </div>
-                </div>
-              </div>
-              <div className="flex items-center gap-2 shrink-0">
-                {selectedCustomer ? (
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon="close"
-                    title="Clear customer"
-                    onClick={() => setSelectedCustomerId(null)}
-                  />
-                ) : null}
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  icon="edit"
-                  title="Select customer"
-                  onClick={() => setCustomerSearchOpen(true)}
-                />
-              </div>
-            </div>
-          ) : (
-            <div className="bg-white border-2 border-indigo-300 rounded-2xl p-3 shadow-lg">
-              <div className="flex items-center gap-2 mb-3">
-                <Input
-                  value={customerQuery}
-                  onChange={setCustomerQuery}
-                  placeholder="Find customer..."
-                  autoFocus
-                  leftIcon="search"
-                  className="flex-1"
-                />
-                <Button
-                  size="sm"
-                  icon="close"
-                  onClick={() => setCustomerSearchOpen(false)}
-                  title="Close"
-                />
-              </div>
-              <div className="max-h-[160px] overflow-y-auto space-y-1.5">
-                {customerListFiltered.map((c) => (
-                  <button
-                    key={c.id}
-                    type="button"
-                    onClick={() => {
-                      setSelectedCustomerId(c.id);
-                      setCustomerSearchOpen(false);
-                    }}
-                    className="w-full text-left px-3 py-2.5 text-sm hover:bg-indigo-50 rounded-xl flex justify-between items-center transition-colors duration-150 border border-transparent hover:border-indigo-100"
-                  >
-                    <span className="font-semibold text-slate-800">
-                      {c.name}
-                    </span>
-                    <span className="text-slate-400 font-medium">
-                      {c.phone}
-                    </span>
-                  </button>
-                ))}
-                {customerListFiltered.length === 0 ? (
-                  <div className="p-4 text-xs text-slate-400 text-center font-medium">
-                    No results
-                  </div>
-                ) : null}
-              </div>
-            </div>
-          )}
-        </div>
-
-        <div className="flex-1 overflow-y-auto bg-gradient-to-b from-white to-slate-50/30 p-3 space-y-2 relative">
-          {cartRows.length === 0 ? (
-            <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 select-none">
-              <Icon
-                name="receipt_long"
-                className="text-7xl mb-3 opacity-20"
-              />
-              <p className="font-bold text-[15px]">Ticket Empty</p>
-              <p className="text-xs mt-1">Add items to start billing</p>
-            </div>
-          ) : (
-            cartRows.map((row) => (
-              <div
-                key={row.productId}
-                className="group relative flex items-center gap-2.5 p-2.5 rounded-xl border border-slate-200 hover:border-slate-300 hover:bg-white transition-all duration-200 bg-slate-50/50 shadow-sm hover:shadow-md"
-              >
-                <div className="flex flex-col items-center gap-1 shrink-0">
-                  <button
-                    type="button"
-                    onClick={() => changeQty(row.productId, row.qty + 1)}
-                    className="w-6 h-6 rounded-lg bg-white border border-slate-300 text-slate-600 flex items-center justify-center hover:bg-slate-900 hover:text-white hover:border-slate-900 transition-all duration-150 text-xs font-bold shadow-sm active:scale-90"
-                    aria-label="Increase quantity"
-                  >
-                    +
-                  </button>
-                  <span className="text-xs font-extrabold w-6 text-center text-slate-900">
-                    {row.qty}
-                  </span>
-                  <button
-                    type="button"
-                    onClick={() => changeQty(row.productId, row.qty - 1)}
-                    disabled={row.qty <= 1}
-                    className="w-6 h-6 rounded-lg bg-white border border-slate-300 text-slate-600 flex items-center justify-center hover:bg-rose-500 hover:text-white hover:border-rose-500 transition-all duration-150 disabled:opacity-30 text-xs font-bold shadow-sm active:scale-90"
-                    aria-label="Decrease quantity"
-                  >
-                    -
-                  </button>
-                </div>
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between gap-2 mb-1">
-                    <div className="font-bold text-slate-900 leading-tight truncate text-[13px]">
-                      {row.product.name}
-                    </div>
-                  </div>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-500 font-medium">
-                      <span className="bg-slate-100 px-1.5 py-0.5 rounded border border-slate-200">
-                        {formatNpr(row.unitPrice)}/u
-                      </span>
-                      {row.priceType === "Wholesale" ? (
-                        <span className="font-extrabold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
-                          WHL
-                        </span>
-                      ) : null}
-                      <span className="text-slate-400">
-                        SKU {row.product.sku}
-                      </span>
-                    </div>
-                    <div className="font-mono font-extrabold text-slate-900 text-[14px] shrink-0">
-                      {formatNpr(row.lineTotal)}
-                    </div>
-                  </div>
-                </div>
-                <button
-                  type="button"
-                  onClick={() => removeLine(row.productId)}
-                  className="opacity-0 group-hover:opacity-100 w-6 h-6 rounded-lg bg-rose-50 text-rose-600 hover:bg-rose-500 hover:text-white flex items-center justify-center transition-all duration-150 border border-rose-200 hover:border-rose-500 shadow-sm shrink-0 active:scale-90"
-                  title="Remove"
-                  aria-label="Remove item"
-                >
-                  <Icon name="close" className="text-[14px]" />
-                </button>
-              </div>
-            ))
-          )}
-          <div ref={cartEndRef} />
-        </div>
-
-        <div className="flex-shrink-0 bg-white border-t border-slate-200 shadow-[0_-6px_22px_rgba(0,0,0,0.06)]">
-          <div className="px-5 pt-4 pb-3 space-y-2 text-sm">
-            <div className="flex justify-between text-slate-500">
-              <span>Subtotal</span>
-              <span className="font-mono font-bold">{formatNpr(subTotal)}</span>
-            </div>
-            {subtotalDiscount > 0 ? (
-              <div className="flex justify-between text-rose-600">
-                <span className="flex items-center gap-1 font-bold">
-                  <Icon name="local_offer" className="text-[14px]" />
-                  Discount
-                </span>
-                <span className="font-mono font-extrabold">
-                  -{formatNpr(subtotalDiscount)}
-                </span>
-              </div>
-            ) : null}
-            <div className="border-t border-dashed border-slate-300 my-2" />
-            <div className="flex justify-between items-end">
-              <span className="text-slate-900 font-extrabold text-lg">
-                Total
-              </span>
-              <span className="font-mono font-extrabold text-3xl text-slate-900 tracking-tight">
-                {formatNpr(grandTotal)}
-              </span>
-            </div>
-            {paymentStatus === "Partial" ? (
-              <div className="flex justify-between text-xs px-3 py-2 bg-rose-50 border border-rose-100 rounded-xl text-rose-700">
-                <span>Balance Due</span>
-                <span className="font-extrabold font-mono">
-                  {formatNpr(balanceDue)}
-                </span>
-              </div>
-            ) : null}
-          </div>
-
-          <div className="p-4 bg-slate-50 border-t border-slate-200 space-y-3">
-            <div className="grid grid-cols-2 gap-3">
-              <button
-                type="button"
-                onClick={() => setPaymentMethod("Cash")}
-                className={cn(
-                  "flex flex-col items-center justify-center p-3 rounded-2xl border transition-all",
-                  paymentMethod === "Cash"
-                    ? "bg-slate-900 text-white border-slate-900 shadow-md ring-2 ring-slate-200"
-                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100",
-                )}
-              >
-                <Icon name="payments" />
-                <span className="text-xs font-extrabold mt-1">CASH</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => setPaymentMethod("eSewa")}
-                className={cn(
-                  "flex flex-col items-center justify-center p-3 rounded-2xl border transition-all",
-                  paymentMethod === "eSewa"
-                    ? "bg-emerald-600 text-white border-emerald-600 shadow-md ring-2 ring-emerald-100"
-                    : "bg-white text-slate-600 border-slate-200 hover:bg-slate-100",
-                )}
-              >
-                <Icon name="qr_code_2" />
-                <span className="text-xs font-extrabold mt-1">ESEWA</span>
-              </button>
-            </div>
-
-            <div>
-              <div className="flex items-center justify-between mb-2">
-                <div className="text-[11px] font-extrabold text-slate-500 uppercase tracking-wider">
-                  Payment Status
-                </div>
-                {paymentMethod === "eSewa" ? (
-                  <div className="text-[11px] font-bold text-slate-500">
-                    Sandbox record
-                  </div>
-                ) : null}
-              </div>
-              <Segmented
-                value={paymentStatus}
-                onChange={(v) => {
-                  setPaymentStatus(v as PaymentStatus);
-                  if (v !== "Partial") setPaidAmount("");
-                }}
-                options={[
-                  { value: "Paid", label: "Paid" },
-                  { value: "Partial", label: "Partial" },
-                  { value: "Unpaid", label: "Unpaid" },
-                ]}
-              />
-            </div>
-
-            {paymentStatus === "Partial" ? (
-              <Input
-                label="Amount paid"
-                value={paidAmount}
-                onChange={(v) => setPaidAmount(v.replace(/[^\d.]/g, ""))}
-                placeholder="e.g. 500"
-                leftIcon="currency_rupee"
-                inputMode="numeric"
-              />
-            ) : null}
-
-            {showEsewaDetails ? (
-              <div className="rounded-2xl border border-emerald-200 bg-emerald-50/50 p-3">
-                <div className="flex items-start justify-between gap-3">
-                  <div>
-                    <div className="text-[12px] font-extrabold text-emerald-900">
-                      eSewa Payment (Sandbox)
-                    </div>
-                    <div className="text-[11px] text-emerald-800/80 mt-1">
-                      Record the eSewa transaction reference below.
-                    </div>
-                  </div>
-                  <Pill tone="green">QR</Pill>
-                </div>
-                <div className="mt-3 grid grid-cols-[92px_1fr] gap-3 items-center">
-                  <div className="rounded-2xl bg-white border border-emerald-200 p-2 flex items-center justify-center">
-                    <img
-                      src={`https://api.qrserver.com/v1/create-qr-code/?size=170x170&data=KHATASATHI-ESEWA-SANDBOX|AMOUNT:${
-                        paymentStatus === "Partial"
-                          ? Math.round(effectivePaidAmount)
-                          : Math.round(grandTotal)
-                      }`}
-                      alt="eSewa QR"
-                      className="h-[86px] w-[86px]"
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <div className="text-[11px] text-emerald-900/80">
-                      Amount:{" "}
-                      <span className="font-extrabold">
-                        {formatNpr(
-                          paymentStatus === "Partial"
-                            ? effectivePaidAmount
-                            : grandTotal,
-                        )}
-                      </span>
-                    </div>
-                    <Input
-                      label="Transaction ref"
-                      value={digitalRef}
-                      onChange={setDigitalRef}
-                      placeholder="e.g. ESW-7X889..."
-                      leftIcon="receipt"
-                    />
-                  </div>
-                </div>
-              </div>
-            ) : null}
-
-            <div className="flex gap-2">
-              <Button
-                variant="ghost"
-                className="flex-1 border border-slate-300 text-slate-600"
-                onClick={resetBill}
-                disabled={
-                  !canConfirm && !selectedCustomer && !skuInput && !productQuery
-                }
-                icon="restart_alt"
-              >
-                Reset
-              </Button>
-              <Button
-                variant={paymentMethod === "eSewa" ? "success" : "primary"}
-                className="flex-[2]"
-                size="lg"
-                icon={
-                  paymentStatus === "Unpaid" ? "receipt_long" : "check_circle"
-                }
-                disabled={!canConfirm}
-                onClick={confirm}
-              >
-                {submitting
-                  ? "Creating..."
-                  : paymentStatus === "Paid"
-                    ? `Pay ${formatNpr(grandTotal)}`
-                    : paymentStatus === "Partial"
-                      ? `Confirm (${formatNpr(effectivePaidAmount)})`
-                      : "Create Unpaid Invoice"}
-              </Button>
-            </div>
-
-            <div className="pt-2 text-[11px] text-slate-500 flex flex-wrap gap-x-3 gap-y-1">
-              <span className="font-semibold">Shortcuts:</span>
-              <span>F2 Search</span>
-              <span>F3 SKU</span>
-              <span>F4 Cash</span>
-              <span>F5 eSewa</span>
-              <span>F9 Reset</span>
-              <span>Enter Confirm</span>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-      {showSuccess && (
-        <div className="fixed bottom-6 right-6 z-50">
-          <div className="flex items-center gap-3 rounded-2xl border border-emerald-200 bg-emerald-50 px-5 py-3 shadow-lg">
-            <span className="material-symbols-rounded text-emerald-600" style={{ fontSize: "22px" }}>check_circle</span>
-            <span className="text-[14px] font-semibold text-emerald-800">Invoice created successfully!</span>
-          </div>
-        </div>
-      )}
+      <SuccessDialog
+        open={showSuccess}
+        title="Invoice created successfully"
+        message="The invoice has been finalized and recorded in KhataSathi."
+        onClose={() => setShowSuccess(false)}
+        actionLabel="Continue Billing"
+        secondaryAction={
+          lastCreatedInvoiceId ? (
+            <DialogButton
+              onClick={() => openInvoicePrint(lastCreatedInvoiceId)}
+              icon="print"
+            >
+              Print Invoice
+            </DialogButton>
+          ) : null
+        }
+      />
     </>
   );
 }

@@ -14,7 +14,7 @@ export async function list(req: Request, res: Response) {
 
 export async function getOne(req: Request, res: Response) {
   try {
-    const customer = await custService.getCustomer(req.params.id);
+    const customer = await custService.getCustomer(String(req.params.id));
     if (!customer) {
       res.status(404).json({ error: "Customer not found" });
       return;
@@ -56,7 +56,7 @@ export async function update(req: Request, res: Response) {
     const body = { ...req.body };
     if (body.phone !== undefined) body.phone = body.phone ? String(body.phone).trim() : null;
     if (body.email !== undefined) body.email = body.email ? String(body.email).trim() : null;
-    const customer = await custService.updateCustomer(req.params.id, body);
+    const customer = await custService.updateCustomer(String(req.params.id), body);
     res.json(customer);
   } catch (err: any) {
     if (err.code === "P2025") {
@@ -70,7 +70,7 @@ export async function update(req: Request, res: Response) {
 
 export async function deactivate(req: Request, res: Response) {
   try {
-    const customer = await custService.deactivateCustomer(req.params.id);
+    const customer = await custService.deactivateCustomer(String(req.params.id));
     res.json(customer);
   } catch (err: any) {
     if (err.code === "P2025") {

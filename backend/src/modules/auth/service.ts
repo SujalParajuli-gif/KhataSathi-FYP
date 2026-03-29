@@ -5,15 +5,16 @@ import jwt from "jsonwebtoken";
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
 export async function loginUser(email: string, password: string, ip?: string) {
-  const user = await prisma.user.findUnique({ where: { email } });
+  const normalizedEmail = email.trim().toLowerCase();
+  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } });
 
   if (!user || !user.isActive) {
-    await prisma.loginAttempt.create({ data: { email, success: false, ip } });
+    await prisma.loginAttempt.create({ data: { email: normalizedEmail, success: false, ip } });
     return { success: false, error: "Invalid email or password" };
   }
 
   const valid = await bcrypt.compare(password, user.passwordHash);
-  await prisma.loginAttempt.create({ data: { email, success: valid, ip } });
+  await prisma.loginAttempt.create({ data: { email: normalizedEmail, success: valid, ip } });
 
   if (!valid) {
     return { success: false, error: "Invalid email or password" };
@@ -32,9 +33,10 @@ export async function loginUser(email: string, password: string, ip?: string) {
       name: user.name,
       email: user.email,
       phone: user.phone,
+      gender: user.gender,
+      address: user.address,
       role: user.role,
       profileImage: user.profileImage,
-      nagariktaNo: user.nagariktaNo,
       lastLogin: now,
     },
   };
@@ -48,9 +50,10 @@ export async function getMe(userId: string) {
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       profileImage: true,
-      nagariktaNo: true,
       isActive: true,
       lastLogin: true,
     },
@@ -60,10 +63,12 @@ export async function getMe(userId: string) {
   return user;
 }
 
-export async function updateProfile(userId: string, data: { name?: string; phone?: string; password?: string; profileImage?: string | null }) {
+export async function updateProfile(userId: string, data: { name?: string; phone?: string; gender?: string | null; address?: string | null; password?: string; profileImage?: string | null }) {
   const updateData: any = {};
-  if (data.name) updateData.name = data.name;
-  if (data.phone) updateData.phone = data.phone;
+  if (data.name !== undefined) updateData.name = data.name.trim();
+  if (data.phone !== undefined) updateData.phone = data.phone.trim() || null;
+  if (data.gender !== undefined) updateData.gender = data.gender?.trim() || null;
+  if (data.address !== undefined) updateData.address = data.address?.trim() || null;
   if (data.password) {
     updateData.passwordHash = await bcrypt.hash(data.password, 10);
   }
@@ -77,6 +82,8 @@ export async function updateProfile(userId: string, data: { name?: string; phone
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       profileImage: true,
       isActive: true,
@@ -95,6 +102,8 @@ export async function uploadProfilePhoto(userId: string, photoUrl: string) {
       name: true,
       email: true,
       phone: true,
+      gender: true,
+      address: true,
       role: true,
       profileImage: true,
       isActive: true,

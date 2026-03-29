@@ -48,8 +48,8 @@ export async function me(req: Request, res: Response) {
 
 export async function updateProfile(req: Request, res: Response) {
     try {
-        const { name, phone, password, profileImage } = req.body;
-        const user = await updateProfileService(req.user!.id, { name, phone, password, profileImage });
+        const { name, phone, gender, address, password, profileImage } = req.body;
+        const user = await updateProfileService(req.user!.id, { name, phone, gender, address, password, profileImage });
         res.json({ user });
     } catch (err: any) {
         console.error("Update profile error:", err);

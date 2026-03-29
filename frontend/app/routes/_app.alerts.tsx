@@ -1,254 +1,188 @@
-import React, { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
-import { getLowStockApi, listAuditLogsApi, getReadAlertsApi, markAlertReadApi, markAllAlertsReadApi, markAlertUnreadApi } from "~/lib/api/endpoints";
-
-type AlertLevel = "CRITICAL" | "LOW" | "INFO" | "SYSTEM";
-type AlertType = "Stock" | "Invoice" | "Security" | "Backup" | "User";
-
-type AlertItem = {
-  id: string;
-  title: string;
-  desc?: string;
-  level: AlertLevel;
-  type: AlertType;
-  timeLabel: string;
-  read: boolean;
-};
+import {
+  alertColor,
+  alertIcon,
+  type AppAlertType,
+} from "~/lib/alerts/alerts";
+import { useAlerts } from "~/lib/alerts/alerts-context";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-function Card({
-  children,
-  className,
+function FilterCard({
+  active,
+  title,
+  count,
+  onClick,
 }: {
-  children: React.ReactNode;
-  className?: string;
+  active: boolean;
+  title: string;
+  count?: number;
+  onClick: () => void;
 }) {
   return (
-    <div
-      className={cn(
-        "rounded-xl bg-white border border-slate-200/60 shadow-sm",
-        className,
-      )}
-    >
-      {children}
-    </div>
-  );
-}
-
-function AlertIcon({ type, level }: { type: AlertType; level: AlertLevel }) {
-  const iconMap: Record<AlertType, string> = {
-    Stock: "inventory_2",
-    Invoice: "receipt_long",
-    Security: "security",
-    Backup: "cloud_sync",
-    User: "person",
-  };
-  const colorMap = {
-    CRITICAL: "bg-rose-100 text-rose-600",
-    LOW: "bg-amber-100 text-amber-600",
-    INFO: "bg-blue-100 text-blue-600",
-    SYSTEM: "bg-slate-100 text-slate-600",
-  };
-
-  return (
-    <div
-      className={cn(
-        "h-10 w-10 rounded-xl flex items-center justify-center shrink-0",
-        colorMap[level],
-      )}
-    >
-      <Icon name={iconMap[type]} className="text-[20px]" />
-    </div>
+    <button
+      type="button"
+      onClick={onClick}
+        className={cn(
+          "w-full rounded-[16px] border px-4 py-3 text-left transition",
+          active
+            ? "border-[#11120d] bg-[#11120d] text-white shadow-lg shadow-slate-200"
+            : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+        )}
+      >
+      <div className="flex items-center justify-between gap-3">
+        <span className="text-[13px] font-extrabold">{title}</span>
+        {typeof count === "number" ? (
+          <span
+            className={cn(
+              "rounded-full px-2 py-0.5 text-[11px] font-extrabold",
+              active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600",
+            )}
+          >
+            {count}
+          </span>
+        ) : null}
+      </div>
+    </button>
   );
 }
 
 export default function AlertsPage() {
-  const [alerts, setAlerts] = useState<AlertItem[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [filterType, setFilterType] = useState<"all" | AlertType>("all");
+  const {
+    alerts,
+    loading,
+    unreadCount,
+    refreshAlerts,
+    markAlertRead,
+    markAlertUnread,
+    markAllAlertsRead,
+  } = useAlerts();
+  const [filterType, setFilterType] = useState<"all" | AppAlertType>("all");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
 
   useEffect(() => {
-    async function load() {
-      try {
-        const [lowStockData, auditData, readData] = await Promise.allSettled([
-          getLowStockApi(),
-          listAuditLogsApi({ pageSize: 10 }),
-          getReadAlertsApi(),
-        ]);
-
-        const readKeys = new Set<string>(
-          readData.status === "fulfilled" && readData.value ? readData.value.readKeys : []
-        );
-
-        const builtAlerts: AlertItem[] = [];
-
-        if (lowStockData.status === "fulfilled" && lowStockData.value) {
-          const items = Array.isArray(lowStockData.value)
-            ? lowStockData.value
-            : [];
-          items.forEach((item: any) => {
-            const stock = item.stock ?? 0;
-            const alertId = `stock-${item.id}`;
-            builtAlerts.push({
-              id: alertId,
-              title:
-                stock <= 0
-                  ? `Out of stock: ${item.name || "Unknown"}`
-                  : `Low stock: ${item.name || "Unknown"}`,
-              desc: `${stock} items remaining (Threshold: ${item.lowStockThreshold ?? 10}).`,
-              level: stock <= 0 ? "CRITICAL" : "LOW",
-              type: "Stock",
-              timeLabel: "Now",
-              read: readKeys.has(alertId),
-            });
-          });
-        }
-
-        if (auditData.status === "fulfilled" && auditData.value) {
-          const logs = auditData.value.logs || [];
-          logs.slice(0, 5).forEach((log: any) => {
-            const alertId = `audit-${log.id}`;
-            builtAlerts.push({
-              id: alertId,
-              title: log.action || "System activity",
-              desc: (function formatMeta(action: string, meta: any) {
-                if (!meta) return undefined;
-                if (typeof meta === "string") return meta;
-                if (action === "INVOICE_FINALIZED" && meta.invoiceNo) {
-                  return `Invoice ${meta.invoiceNo} finalized. ${meta.itemCount} items, Net: Rs ${meta.netTotal}.`;
-                }
-                // Fallback for other objects
-                return Object.entries(meta)
-                  .map(([k, v]) => `${k}: ${v}`)
-                  .join(", ");
-              })(log.action, log.meta),
-              level: "INFO",
-              type: (log.action || "").toUpperCase().includes("INVOICE") ? "Invoice" : "User",
-              timeLabel: new Date(log.createdAt).toLocaleDateString(),
-              read: readKeys.has(alertId),
-            });
-          });
-        }
-
-        setAlerts(builtAlerts);
-      } catch {
-        // silently fail
-      } finally {
-        setLoading(false);
-      }
-    }
-    load();
+    refreshAlerts(100);
   }, []);
 
-  const filtered = useMemo(() => {
-    return alerts.filter((a) => {
-      const typeMatch = filterType === "all" || a.type === filterType;
-      const readMatch = showUnreadOnly ? !a.read : true;
-      return typeMatch && readMatch;
+  const filteredAlerts = useMemo(() => {
+    return alerts.filter((alert) => {
+      const matchesType = filterType === "all" ? true : alert.type === filterType;
+      const matchesUnread = showUnreadOnly ? !alert.read : true;
+      return matchesType && matchesUnread;
     });
   }, [alerts, filterType, showUnreadOnly]);
 
-  const unreadCount = alerts.filter((a) => !a.read).length;
+  const invoiceCount = alerts.filter((alert) => alert.type === "Invoice").length;
+  const stockCount = alerts.filter((alert) => alert.type === "Stock").length;
 
-  const handleMarkRead = async (id: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, read: true } : a)),
-    );
+  async function handleMarkRead(alertKey: string) {
     try {
-      await markAlertReadApi(id);
-    } catch {}
-  };
+      await markAlertRead(alertKey);
+    } catch {
+      await refreshAlerts(100);
+    }
+  }
 
-  const markAllRead = async () => {
-    const unreadIds = alerts.filter((a) => !a.read).map((a) => a.id);
-    if (unreadIds.length === 0) return;
-    setAlerts((prev) => prev.map((a) => ({ ...a, read: true })));
+  async function handleMarkUnread(alertKey: string) {
     try {
-      await markAllAlertsReadApi(unreadIds);
-    } catch {}
-  };
+      await markAlertUnread(alertKey);
+    } catch {
+      await refreshAlerts(100);
+    }
+  }
 
-  const handleMarkUnread = async (id: string) => {
-    setAlerts((prev) =>
-      prev.map((a) => (a.id === id ? { ...a, read: false } : a)),
-    );
+  async function handleMarkAllRead() {
+    const unreadKeys = alerts.filter((alert) => !alert.read).map((alert) => alert.key);
+    if (unreadKeys.length === 0) return;
+
     try {
-      await markAlertUnreadApi(id);
-    } catch {}
-  };
+      await markAllAlertsRead(unreadKeys);
+    } catch {
+      await refreshAlerts(100);
+    }
+  }
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[60vh]">
-        <div className="text-slate-400 font-semibold">Loading alerts...</div>
+      <div className="flex h-[60vh] items-center justify-center">
+        <div className="font-semibold text-slate-400">Loading alerts...</div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-slate-50/50 p-6 space-y-6 font-sans text-slate-900">
-      <div className="flex flex-col md:flex-row md:items-end justify-between gap-4">
+    <div className="min-h-full rounded-[28px] bg-[var(--app-page-bg)] p-6 text-slate-900">
+      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-slate-900 flex items-center gap-3">
-            Notifications
-            {unreadCount > 0 && (
-              <span className="bg-rose-500 text-white text-[12px] font-bold px-2 py-0.5 rounded-full shadow-sm shadow-rose-200">
-                {unreadCount} new
+          <div className="flex items-center gap-3">
+            <h1 className="text-2xl font-extrabold tracking-tight">Alerts</h1>
+            {unreadCount > 0 ? (
+              <span className="rounded-full bg-rose-500 px-2.5 py-1 text-[11px] font-extrabold text-white">
+                {unreadCount} unread
               </span>
-            )}
-          </h1>
-          <p className="text-sm text-slate-500 mt-1">
-            System alerts and activity logs.
+            ) : null}
+          </div>
+          <p className="mt-1 text-sm text-slate-500">
+            Real stock and invoice activity alerts with persisted read state.
           </p>
         </div>
-        <div className="flex gap-2">
-          <button
-            onClick={markAllRead}
-            className="text-xs font-semibold text-slate-600 hover:text-blue-600 bg-white border border-slate-200 px-3 py-2 rounded-lg shadow-sm transition-colors"
-          >
-            Mark all as read
-          </button>
-        </div>
+
+        <button
+          type="button"
+          onClick={handleMarkAllRead}
+          disabled={unreadCount === 0}
+          className="h-[42px] rounded-[14px] border border-[var(--app-border)] bg-white px-4 text-[13px] font-extrabold text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] disabled:pointer-events-none disabled:opacity-50"
+        >
+          Mark all as read
+        </button>
       </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
-        <div className="lg:col-span-1 space-y-4">
-          <Card className="p-2 flex flex-col gap-1">
-            {["all", "Stock", "Invoice", "Security", "User"].map((type) => (
-              <button
-                key={type}
-                onClick={() => setFilterType(type as any)}
-                className={cn(
-                  "w-full text-left px-3 py-2 rounded-lg text-sm font-medium transition-all flex items-center justify-between group",
-                  filterType === type
-                    ? "bg-slate-800 text-white shadow-md shadow-slate-200"
-                    : "text-slate-600 hover:bg-slate-100",
-                )}
-              >
-                <span>{type === "all" ? "All Alerts" : type}</span>
-                {type === "all" && unreadCount > 0 && (
-                  <span className="h-2 w-2 rounded-full bg-rose-500" />
-                )}
-              </button>
-            ))}
-          </Card>
+      <div className="mt-6 grid grid-cols-12 gap-6">
+        <div className="col-span-12 space-y-4 lg:col-span-3">
+          <div className="space-y-2">
+            <FilterCard
+              active={filterType === "all"}
+              title="All alerts"
+              count={alerts.length}
+              onClick={() => setFilterType("all")}
+            />
+            <FilterCard
+              active={filterType === "Invoice"}
+              title="Invoice"
+              count={invoiceCount}
+              onClick={() => setFilterType("Invoice")}
+            />
+            <FilterCard
+              active={filterType === "Stock"}
+              title="Stock"
+              count={stockCount}
+              onClick={() => setFilterType("Stock")}
+            />
+          </div>
 
-          <Card className="p-4">
-            <label className="flex items-center gap-3 cursor-pointer group">
+          <div className="rounded-[18px] border border-[var(--app-border)] bg-white p-4 shadow-sm">
+            <label className="flex cursor-pointer items-center justify-between gap-3">
+              <div>
+                <div className="text-[13px] font-extrabold text-slate-900">Unread only</div>
+                <div className="mt-1 text-[12px] text-slate-500">
+                  Hide alerts that are already marked as read.
+                </div>
+              </div>
               <div
                 className={cn(
-                  "w-10 h-6 rounded-full p-1 transition-colors duration-200",
-                  showUnreadOnly ? "bg-blue-600" : "bg-slate-200",
+                  "flex h-7 w-12 items-center rounded-full border p-1 transition",
+                  showUnreadOnly
+                    ? "border-[#11120d] bg-[#11120d]"
+                    : "border-slate-300 bg-slate-200",
                 )}
               >
                 <div
                   className={cn(
-                    "bg-white w-4 h-4 rounded-full shadow-sm transform transition-transform duration-200",
-                    showUnreadOnly ? "translate-x-4" : "translate-x-0",
+                    "h-5 w-5 rounded-full bg-white shadow-sm transition",
+                    showUnreadOnly ? "translate-x-5" : "translate-x-0",
                   )}
                 />
               </div>
@@ -256,76 +190,81 @@ export default function AlertsPage() {
                 type="checkbox"
                 className="hidden"
                 checked={showUnreadOnly}
-                onChange={() => setShowUnreadOnly(!showUnreadOnly)}
+                onChange={() => setShowUnreadOnly((value) => !value)}
               />
-              <span className="text-sm font-medium text-slate-700 group-hover:text-slate-900">
-                Unread Only
-              </span>
             </label>
-          </Card>
+          </div>
         </div>
 
-        <div className="lg:col-span-3 space-y-3">
-          {filtered.length === 0 ? (
-            <div className="flex flex-col items-center justify-center py-20 text-slate-400">
-              <Icon
-                name="notifications_off"
-                className="text-4xl mb-2 opacity-50"
-              />
-              <p>No notifications found.</p>
+        <div className="col-span-12 space-y-3 lg:col-span-9">
+          {filteredAlerts.length === 0 ? (
+            <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-[var(--app-border)] bg-white text-slate-400">
+              <Icon name="notifications_off" className="text-[40px]" />
+              <div className="mt-3 text-[14px] font-semibold">No alerts found.</div>
             </div>
           ) : (
-            filtered.map((alert) => (
+            filteredAlerts.map((alert) => (
               <div
-                key={alert.id}
+                key={alert.key}
                 className={cn(
-                  "group relative flex items-start gap-4 p-4 rounded-xl border transition-all duration-200",
+                  "rounded-[18px] border-2 bg-white p-4 shadow-sm transition",
                   alert.read
-                    ? "bg-white border-slate-200/60"
-                    : "bg-white border-blue-200 shadow-sm shadow-blue-50 ring-1 ring-blue-100/50",
+                    ? "border-[var(--app-border)]"
+                    : "border-[var(--app-warning-border)] shadow-orange-100/50",
                 )}
               >
-                {!alert.read && (
-                  <span className="absolute top-4 right-4 h-2 w-2 rounded-full bg-blue-500 animate-pulse" />
-                )}
-                <AlertIcon type={alert.type} level={alert.level} />
-                <div className="flex-1 min-w-0">
-                  <div className="flex items-center justify-between pr-4">
-                    <h3
-                      className={cn(
-                        "text-sm font-semibold truncate",
-                        alert.read ? "text-slate-700" : "text-slate-900",
-                      )}
-                    >
-                      {alert.title}
-                    </h3>
-                    <span className="text-[11px] text-slate-400 shrink-0">
-                      {alert.timeLabel}
-                    </span>
+                <div className="flex items-start gap-4">
+                  <div
+                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] ${alertColor(
+                      alert,
+                    )}`}
+                  >
+                    <Icon name={alertIcon(alert)} className="text-[20px]" />
                   </div>
-                  <p className="text-[13px] text-slate-500 mt-0.5 leading-relaxed">
-                    {alert.desc}
-                  </p>
-                  {!alert.read && (
-                    <div className="mt-3 flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => handleMarkRead(alert.id)}
-                        className="text-[11px] font-medium text-blue-600 hover:text-blue-700 hover:underline"
-                      >
-                        Mark as read
-                      </button>
+
+                  <div className="min-w-0 flex-1">
+                    <div className="flex flex-wrap items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <h3 className="truncate text-[14px] font-extrabold text-slate-900">
+                            {alert.title}
+                          </h3>
+                          {!alert.read ? (
+                              <span className="rounded-full bg-[var(--app-warning-bg)] px-2 py-0.5 text-[10px] font-extrabold text-[var(--app-warning-text)]">
+                                New
+                              </span>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 text-[13px] leading-6 text-slate-600">
+                          {alert.message}
+                        </div>
+                      </div>
+
+                      <div className="shrink-0 text-[11px] font-semibold text-slate-400">
+                        {alert.timeLabel}
+                      </div>
                     </div>
-                  )}
-                  {alert.read && (
-                    <div className="mt-3 flex gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
-                      <button
-                        onClick={() => handleMarkUnread(alert.id)}
-                        className="text-[11px] font-medium text-slate-500 hover:text-slate-700 hover:underline"
-                      >
-                        Mark as unread
-                      </button>
+
+                    <div className="mt-4 flex items-center gap-3">
+                      {alert.read ? (
+                        <button
+                          type="button"
+                          onClick={() => handleMarkUnread(alert.key)}
+                          className="text-[12px] font-extrabold text-slate-500 hover:text-slate-700"
+                        >
+                          Mark as unread
+                        </button>
+                      ) : (
+                        <button
+                          type="button"
+                          onClick={() => handleMarkRead(alert.key)}
+                          className="text-[12px] font-extrabold text-[var(--app-text)] hover:text-[var(--app-text-soft)]"
+                        >
+                          Mark as read
+                        </button>
+                      )}
                     </div>
-                  )}
+                  </div>
                 </div>
               </div>
             ))

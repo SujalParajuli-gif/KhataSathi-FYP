@@ -20,4 +20,6 @@ export default [
 
   // Login page (outside the _app shell)
   route("login", "routes/login.tsx"),
+  route("invoices/:id/print", "routes/invoices.print.tsx"),
+  route("payments/esewa/result", "routes/payments.esewa.result.tsx"),
 ] satisfies RouteConfig;

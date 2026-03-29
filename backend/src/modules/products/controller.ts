@@ -25,7 +25,8 @@ export async function list(req: Request, res: Response) {
 
 export async function getOne(req: Request, res: Response) {
     try {
-        const product = await productService.getProduct(req.params.id);
+        const productId = String(req.params.id);
+        const product = await productService.getProduct(productId);
         if (!product) {
             res.status(404).json({ error: "Product not found" });
             return;
@@ -68,7 +69,8 @@ export async function create(req: Request, res: Response) {
 
 export async function update(req: Request, res: Response) {
     try {
-        const product = await productService.updateProduct(req.params.id, req.body);
+        const productId = String(req.params.id);
+        const product = await productService.updateProduct(productId, req.body);
         res.json(product);
     } catch (err: any) {
         if (err.code === "P2025") {
@@ -86,7 +88,8 @@ export async function update(req: Request, res: Response) {
 
 export async function deactivate(req: Request, res: Response) {
     try {
-        const product = await productService.deactivateProduct(req.params.id);
+        const productId = String(req.params.id);
+        const product = await productService.deactivateProduct(productId);
         res.json(product);
     } catch (err: any) {
         if (err.code === "P2025") {
@@ -124,6 +127,7 @@ export async function importCsv(req: Request, res: Response) {
                 columns: true,
                 skip_empty_lines: true,
                 trim: true,
+                bom: true,
             })
         );
 
@@ -131,30 +135,8 @@ export async function importCsv(req: Request, res: Response) {
             records.push(record);
         }
 
-        let created = 0;
-        let errors: string[] = [];
-
-        for (const row of records) {
-            try {
-                await productService.createProduct({
-                    name: row.name,
-                    sku: row.sku,
-                    barcode: row.barcode || undefined,
-                    brandId: row.brandId,
-                    category: row.category || undefined,
-                    retailPrice: Number(row.retailPrice),
-                    wholesalePrice: Number(row.wholesalePrice),
-                    wholesaleQtyThreshold: row.wholesaleQtyThreshold ? Number(row.wholesaleQtyThreshold) : undefined,
-                    stock: row.stock ? Number(row.stock) : undefined,
-                    lowStockThreshold: row.lowStockThreshold ? Number(row.lowStockThreshold) : undefined,
-                });
-                created++;
-            } catch (err: any) {
-                errors.push(`Row ${row.sku || "?"}: ${err.message}`);
-            }
-        }
-
-        res.json({ created, errors, total: records.length });
+        const result = await productService.importProductsFromCsv(records);
+        res.json(result);
     } catch (err) {
         console.error("Import CSV error:", err);
         res.status(500).json({ error: "Internal server error" });

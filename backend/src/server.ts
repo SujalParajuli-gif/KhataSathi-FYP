@@ -20,6 +20,7 @@ const PORT = Number(process.env.PORT) || 4000;
 
 app.use(cors());
 app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
 import path from "path";
 app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
 
@@ -32,7 +33,7 @@ app.use("/api/brands", brandRoutes);
 app.use("/api/products", productRoutes);
 app.use("/api/customers", customerRoutes);
 app.use("/api/invoices", invoiceRoutes);
-app.use("/api/invoices", paymentRoutes);
+app.use("/api", paymentRoutes);
 app.use("/api/inventory", inventoryRoutes);
 app.use("/api/reports", reportRoutes);
 app.use("/api/audit", auditRoutes);

@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useParams } from "react-router";
+import { Navigate, useNavigate, useParams } from "react-router";
+import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
 import { getInvoiceApi } from "~/lib/api/endpoints";
 import { getAuthUser, isLoggedIn } from "~/lib/auth";
@@ -15,6 +16,7 @@ function statusClass(status: AppInvoice["status"]) {
 
 export default function InvoicePrintPage() {
   const { id } = useParams();
+  const navigate = useNavigate();
   const printedRef = useRef(false);
   const [invoice, setInvoice] = useState<AppInvoice | null>(null);
   const [loading, setLoading] = useState(true);
@@ -79,7 +81,7 @@ export default function InvoicePrintPage() {
             </button>
             <button
               type="button"
-              onClick={() => window.history.back()}
+              onClick={() => navigate("/invoices", { replace: true })}
               className="flex h-[42px] items-center justify-center gap-2 rounded-[14px] border-2 border-slate-200 bg-white px-4 text-[13px] font-extrabold text-slate-700 hover:bg-slate-50"
             >
               <Icon name="arrow_back" />
@@ -102,8 +104,9 @@ export default function InvoicePrintPage() {
           <div className="px-6 py-6 print:px-8 print:py-8">
             <div className="flex items-start justify-between gap-6 border-b border-slate-200 pb-6">
               <div>
-                <div className="text-[24px] font-extrabold tracking-tight text-slate-900">
-                  KhataSathi Invoice
+                <BrandLogo className="h-12 w-[220px] max-w-full" />
+                <div className="mt-4 text-[22px] font-extrabold tracking-tight text-slate-900">
+                  Invoice
                 </div>
                 <div className="mt-2 text-[13px] leading-6 text-slate-500">
                   Invoice No: <span className="font-bold text-slate-700">{invoice.invoiceNo}</span>

@@ -53,12 +53,20 @@ type Pages = {
   "/login": {
     params: {};
   };
+  "/invoices/:id/print": {
+    params: {
+      "id": string;
+    };
+  };
+  "/payments/esewa/result": {
+    params: {};
+  };
 };
 
 type RouteFiles = {
   "root.tsx": {
     id: "root";
-    page: "/" | "/products" | "/billing" | "/invoices" | "/history" | "/analytics" | "/alerts" | "/profile" | "/settings" | "/discounts" | "/cashier-profile" | "/customer-discounts" | "/logout" | "/login";
+    page: "/" | "/products" | "/billing" | "/invoices" | "/history" | "/analytics" | "/alerts" | "/profile" | "/settings" | "/discounts" | "/cashier-profile" | "/customer-discounts" | "/logout" | "/login" | "/invoices/:id/print" | "/payments/esewa/result";
   };
   "routes/_app.tsx": {
     id: "routes/_app";
@@ -120,6 +128,14 @@ type RouteFiles = {
     id: "routes/login";
     page: "/login";
   };
+  "routes/invoices.print.tsx": {
+    id: "routes/invoices.print";
+    page: "/invoices/:id/print";
+  };
+  "routes/payments.esewa.result.tsx": {
+    id: "routes/payments.esewa.result";
+    page: "/payments/esewa/result";
+  };
 };
 
 type RouteModules = {
@@ -139,4 +155,6 @@ type RouteModules = {
   "routes/_app.customerDiscounts": typeof import("./app/routes/_app.customerDiscounts.tsx");
   "routes/_app.logout": typeof import("./app/routes/_app.logout.tsx");
   "routes/login": typeof import("./app/routes/login.tsx");
+  "routes/invoices.print": typeof import("./app/routes/invoices.print.tsx");
+  "routes/payments.esewa.result": typeof import("./app/routes/payments.esewa.result.tsx");
 };
