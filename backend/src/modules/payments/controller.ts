@@ -1,5 +1,9 @@
 import { Request, Response } from "express";
 import { buildEsewaResultUrl, getEsewaConfig } from "./esewa";
+import {
+  SUPPORTED_PAYMENT_METHODS,
+  type SupportedPaymentMethod,
+} from "./service";
 import * as paymentService from "./service";
 
 function buildGenericEsewaFailureRedirect(message: string) {
@@ -10,33 +14,44 @@ function buildGenericEsewaFailureRedirect(message: string) {
   });
 }
 
+function parsePositiveAmount(value: unknown) {
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized) || normalized <= 0) {
+    throw new Error("amount must be greater than 0");
+  }
+  return normalized;
+}
+
 export async function addPayment(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
     const { method, amount, status, reference } = req.body;
 
-    if (!method || !amount || amount <= 0) {
-      res.status(400).json({ error: "method and amount (> 0) are required" });
+    if (!method) {
+      res.status(400).json({ error: "method is required" });
       return;
     }
 
-    const validMethods = ["CASH", "ESEWA", "KHALTI"];
-    if (!validMethods.includes(method)) {
-      res.status(400).json({ error: `method must be one of: ${validMethods.join(", ")}` });
+    if (!SUPPORTED_PAYMENT_METHODS.includes(method as SupportedPaymentMethod)) {
+      res.status(400).json({
+        error: `method must be one of: ${SUPPORTED_PAYMENT_METHODS.join(", ")}`,
+      });
       return;
     }
 
     const validStatuses = ["PENDING", "SUCCESS", "FAILED"];
     const paymentStatus = status || "SUCCESS";
     if (!validStatuses.includes(paymentStatus)) {
-      res.status(400).json({ error: `status must be one of: ${validStatuses.join(", ")}` });
+      res.status(400).json({
+        error: `status must be one of: ${validStatuses.join(", ")}`,
+      });
       return;
     }
 
     const payment = await paymentService.addPayment(
       invoiceId,
-      method,
-      Number(amount),
+      method as SupportedPaymentMethod,
+      parsePositiveAmount(amount),
       paymentStatus,
       req.user!.id,
       reference,
@@ -45,12 +60,14 @@ export async function addPayment(req: Request, res: Response) {
     res.status(201).json(payment);
   } catch (err: any) {
     if (
+      err.message.includes("amount") ||
       err.message.includes("Overpayment") ||
       err.message.includes("not found") ||
       err.message.includes("fully paid") ||
       err.message.includes("cancelled") ||
       err.message.includes("draft") ||
-      err.message.includes("greater than zero")
+      err.message.includes("greater than zero") ||
+      err.message.includes("Zero-total")
     ) {
       res.status(400).json({ error: err.message });
       return;
@@ -63,25 +80,28 @@ export async function addPayment(req: Request, res: Response) {
 export async function initiateEsewaPayment(req: Request, res: Response) {
   try {
     const { invoiceId, amount } = req.body;
-    if (!invoiceId || !amount || Number(amount) <= 0) {
-      res.status(400).json({ error: "invoiceId and amount (> 0) are required" });
+    if (!invoiceId) {
+      res.status(400).json({ error: "invoiceId is required" });
       return;
     }
 
     const result = await paymentService.initiateEsewaPayment(
       String(invoiceId),
-      Number(amount),
+      parsePositiveAmount(amount),
       req.user!.id,
     );
     res.status(201).json(result);
   } catch (err: any) {
     if (
+      err.message.includes("invoiceId") ||
+      err.message.includes("amount") ||
       err.message.includes("not found") ||
       err.message.includes("draft") ||
       err.message.includes("cancelled") ||
       err.message.includes("fully paid") ||
       err.message.includes("greater than zero") ||
-      err.message.includes("remaining due")
+      err.message.includes("remaining due") ||
+      err.message.includes("Zero-total")
     ) {
       res.status(400).json({ error: err.message });
       return;

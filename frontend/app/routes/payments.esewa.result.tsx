@@ -1,4 +1,4 @@
-import { Link, useSearchParams } from "react-router";
+﻿import { Link, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { getAuthUser, isLoggedIn } from "~/lib/auth";
 import { formatNpr } from "~/lib/invoices";
@@ -24,7 +24,7 @@ export default function EsewaResultPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 px-4 py-10">
-      <div className="mx-auto max-w-[640px] rounded-[24px] border border-slate-200 bg-white p-8 shadow-xl">
+      <div className="mx-auto max-w-[640px] rounded-[24px] border border-slate-200 bg-white p-8 ">
         <div
           className={`mx-auto flex h-16 w-16 items-center justify-center rounded-full ${
             success ? "bg-emerald-50 text-emerald-600" : "bg-rose-50 text-rose-600"
@@ -34,7 +34,7 @@ export default function EsewaResultPage() {
         </div>
 
         <div className="mt-5 text-center">
-          <div className="text-[12px] font-extrabold uppercase tracking-[0.24em] text-slate-500">
+          <div className="text-[12px] font-extrabold uppercase  text-slate-500">
             eSewa Result
           </div>
           <h1 className="mt-2 text-[28px] font-extrabold text-slate-900">
@@ -88,3 +88,4 @@ export default function EsewaResultPage() {
     </div>
   );
 }
+

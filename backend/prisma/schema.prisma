@@ -22,7 +22,6 @@ enum InvoiceStatus {
 enum PaymentMethod {
   CASH
   ESEWA
-  KHALTI
 }
 
 enum PaymentStatus {

@@ -1,9 +1,19 @@
 import { Prisma, type PaymentMethod, type PaymentStatusInvoice } from "@prisma/client";
+import {
+  BUSINESS_TIME_ZONE,
+  addBusinessDays,
+  addBusinessHours,
+  parseBusinessDate,
+  startOfBusinessDay,
+  startOfBusinessWeek,
+  toBusinessClock,
+  toBusinessRangeEnd,
+  toBusinessRangeStart,
+} from "../../lib/businessDate";
 import prisma from "../../db/prisma";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-const HOUR_MS = 60 * 60 * 1000;
-const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA", "KHALTI"];
+const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA"];
 const INVOICE_PAYMENT_STATUSES: PaymentStatusInvoice[] = [
   "UNPAID",
   "PARTIALLY_PAID",
@@ -44,64 +54,11 @@ function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }
 
-function parseDateInput(value: string, label: string) {
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) {
-    throw new Error(`${label} must be in YYYY-MM-DD format.`);
-  }
-
-  const [year, month, day] = value.split("-").map(Number);
-  const parsed = new Date(Date.UTC(year, month - 1, day));
-
-  if (
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== day
-  ) {
-    throw new Error(`${label} is not a valid calendar date.`);
-  }
-
-  return parsed;
-}
-
-function toUtcDayStart(date: Date) {
-  return new Date(
-    Date.UTC(date.getUTCFullYear(), date.getUTCMonth(), date.getUTCDate()),
-  );
-}
-
-function toUtcDayEnd(date: Date) {
-  return new Date(
-    Date.UTC(
-      date.getUTCFullYear(),
-      date.getUTCMonth(),
-      date.getUTCDate(),
-      23,
-      59,
-      59,
-      999,
-    ),
-  );
-}
-
-function addUtcDays(date: Date, days: number) {
-  return new Date(date.getTime() + days * DAY_MS);
-}
-
-function addUtcHours(date: Date, hours: number) {
-  return new Date(date.getTime() + hours * HOUR_MS);
-}
-
-function startOfUtcWeek(date: Date) {
-  const day = date.getUTCDay();
-  const distanceFromMonday = (day + 6) % 7;
-  return addUtcDays(toUtcDayStart(date), -distanceFromMonday);
-}
-
 function formatMonthDay(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
-    timeZone: "UTC",
+    timeZone: BUSINESS_TIME_ZONE,
   }).format(date);
 }
 
@@ -109,13 +66,17 @@ function formatHourLabel(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
     hour12: true,
-    timeZone: "UTC",
+    timeZone: BUSINESS_TIME_ZONE,
   }).format(date);
 }
 
 function resolveBucketGranularity(fromDate: Date, toDate: Date): BucketGranularity {
   const spanDays =
-    Math.floor((toUtcDayStart(toDate).getTime() - toUtcDayStart(fromDate).getTime()) / DAY_MS) + 1;
+    Math.floor(
+      (startOfBusinessDay(toDate).getTime() -
+        startOfBusinessDay(fromDate).getTime()) /
+        DAY_MS,
+    ) + 1;
 
   if (spanDays <= 1) return "hour";
   if (spanDays <= 45) return "day";
@@ -131,9 +92,9 @@ function buildBucketSeed(
   const map = new Map<string, BucketMetrics>();
 
   if (granularity === "hour") {
-    const start = toUtcDayStart(fromDate);
+    const start = startOfBusinessDay(fromDate);
     for (let hour = 0; hour < 24; hour += 1) {
-      const bucketDate = addUtcHours(start, hour);
+      const bucketDate = addBusinessHours(start, hour);
       const key = bucketDate.toISOString().slice(0, 13);
       const bucket: BucketMetrics = {
         key,
@@ -156,9 +117,9 @@ function buildBucketSeed(
 
   if (granularity === "day") {
     for (
-      let bucketDate = toUtcDayStart(fromDate);
-      bucketDate <= toUtcDayStart(toDate);
-      bucketDate = addUtcDays(bucketDate, 1)
+      let bucketDate = startOfBusinessDay(fromDate);
+      bucketDate <= startOfBusinessDay(toDate);
+      bucketDate = addBusinessDays(bucketDate, 1)
     ) {
       const key = bucketDate.toISOString().slice(0, 10);
       const bucket: BucketMetrics = {
@@ -181,9 +142,9 @@ function buildBucketSeed(
   }
 
   for (
-    let bucketDate = startOfUtcWeek(fromDate);
-    bucketDate <= toUtcDayStart(toDate);
-    bucketDate = addUtcDays(bucketDate, 7)
+    let bucketDate = startOfBusinessWeek(fromDate);
+    bucketDate <= startOfBusinessDay(toDate);
+    bucketDate = addBusinessDays(bucketDate, 7)
   ) {
     const key = bucketDate.toISOString().slice(0, 10);
     const bucket: BucketMetrics = {
@@ -206,20 +167,22 @@ function buildBucketSeed(
 }
 
 function getBucketKey(date: Date, granularity: BucketGranularity) {
+  const businessDate = toBusinessClock(date);
+
   if (granularity === "hour") {
-    return date.toISOString().slice(0, 13);
+    return businessDate.toISOString().slice(0, 13);
   }
 
   if (granularity === "day") {
-    return date.toISOString().slice(0, 10);
+    return businessDate.toISOString().slice(0, 10);
   }
 
-  return startOfUtcWeek(date).toISOString().slice(0, 10);
+  return startOfBusinessWeek(businessDate).toISOString().slice(0, 10);
 }
 
 function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
-  const fromDate = parseDateInput(filters.from, "from");
-  const toDate = parseDateInput(filters.to, "to");
+  const fromDate = parseBusinessDate(filters.from, "from");
+  const toDate = parseBusinessDate(filters.to, "to");
 
   if (fromDate.getTime() > toDate.getTime()) {
     throw new Error("from must be before or equal to to.");
@@ -241,8 +204,8 @@ function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
     },
     fromDate,
     toDate,
-    startAt: toUtcDayStart(fromDate),
-    endAt: toUtcDayEnd(toDate),
+    startAt: toBusinessRangeStart(fromDate),
+    endAt: toBusinessRangeEnd(toDate),
   };
 }
 
@@ -656,8 +619,8 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       bucketGranularity: granularity,
       rangeDays:
         Math.floor(
-          (toUtcDayStart(normalized.toDate).getTime() -
-            toUtcDayStart(normalized.fromDate).getTime()) /
+          (startOfBusinessDay(normalized.toDate).getTime() -
+            startOfBusinessDay(normalized.fromDate).getTime()) /
             DAY_MS,
         ) + 1,
     },

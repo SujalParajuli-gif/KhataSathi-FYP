@@ -1,28 +1,23 @@
-export type EsewaInitiationResponse = {
-  paymentId: string;
-  invoiceId: string;
-  invoiceNo: string;
-  amount: number;
+type EsewaInitResponse = {
   formAction: string;
   fields: Record<string, string>;
 };
 
-export function submitEsewaForm(
-  formAction: string,
-  fields: Record<string, string>,
-) {
-  if (typeof document === "undefined") return;
+export function submitEsewaForm(payload: EsewaInitResponse) {
+  if (typeof document === "undefined") {
+    throw new Error("eSewa redirect is only available in the browser.");
+  }
 
   const form = document.createElement("form");
   form.method = "POST";
-  form.action = formAction;
+  form.action = payload.formAction;
   form.style.display = "none";
 
-  Object.entries(fields).forEach(([name, value]) => {
+  Object.entries(payload.fields || {}).forEach(([key, value]) => {
     const input = document.createElement("input");
     input.type = "hidden";
-    input.name = name;
-    input.value = value;
+    input.name = key;
+    input.value = String(value ?? "");
     form.appendChild(input);
   });
 

@@ -13,6 +13,9 @@ import {
   type EsewaStatusResponse,
 } from "./esewa";
 
+export const SUPPORTED_PAYMENT_METHODS = ["CASH", "ESEWA"] as const;
+export type SupportedPaymentMethod = (typeof SUPPORTED_PAYMENT_METHODS)[number];
+
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }
@@ -36,8 +39,13 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
       .reduce((sum: number, payment: any) => sum + payment.amount, 0),
   );
 
-  let paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" = "UNPAID";
-  if (paidTotal >= invoice.netTotal && invoice.netTotal > 0) {
+  let paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED" =
+    "UNPAID";
+  if (invoice.paymentStatus === "CANCELLED") {
+    paymentStatus = "CANCELLED";
+  } else if (invoice.netTotal <= 0) {
+    paymentStatus = "PAID";
+  } else if (paidTotal >= invoice.netTotal) {
     paymentStatus = "PAID";
   } else if (paidTotal > 0) {
     paymentStatus = "PARTIALLY_PAID";
@@ -78,6 +86,16 @@ function ensureInvoiceCanAcceptPayment(invoice: {
   if (invoice.paymentStatus === "PAID") {
     throw new Error("Invoice is already fully paid");
   }
+  if (invoice.netTotal <= 0) {
+    throw new Error("Zero-total invoice does not need a payment");
+  }
+}
+
+async function getActorSummaryTx(tx: any, userId: string) {
+  return tx.user.findUnique({
+    where: { id: userId },
+    select: { id: true, name: true, role: true },
+  });
 }
 
 function buildEsewaSuccessRedirect(params: {
@@ -166,7 +184,7 @@ async function fetchEsewaStatus(
 
 export async function addPayment(
   invoiceId: string,
-  method: "CASH" | "ESEWA" | "KHALTI",
+  method: SupportedPaymentMethod,
   amount: number,
   status: "PENDING" | "SUCCESS" | "FAILED",
   createdById: string,
@@ -181,7 +199,7 @@ export async function addPayment(
   ensureInvoiceCanAcceptPayment(invoice);
 
   const normalizedAmount = roundCurrency(amount);
-  if (normalizedAmount <= 0) {
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
@@ -196,6 +214,7 @@ export async function addPayment(
   }
 
   return prisma.$transaction(async (tx) => {
+    const actor = await getActorSummaryTx(tx, createdById);
     const payment = await tx.payment.create({
       data: {
         invoiceId,
@@ -216,11 +235,13 @@ export async function addPayment(
           action: "INVOICE_PAYMENT_UPDATED",
           entityType: "Invoice",
           entityId: invoiceId,
-          meta: {
-            invoiceNo: invoice.invoiceNo,
-            method,
-            reference: reference || null,
-            amountAdded: normalizedAmount,
+        meta: {
+          invoiceNo: invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
+          method,
+          reference: reference || null,
+          amountAdded: normalizedAmount,
             previousStatus: invoice.paymentStatus,
             nextStatus: next.paymentStatus,
             paidTotal: next.paidTotal,
@@ -250,7 +271,7 @@ export async function initiateEsewaPayment(
   ensureInvoiceCanAcceptPayment(invoice);
 
   const normalizedAmount = roundCurrency(amount);
-  if (normalizedAmount <= 0) {
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
@@ -322,10 +343,15 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
     if (payment.method !== "ESEWA") {
       throw new Error("Payment is not an eSewa payment");
     }
+    if (payment.invoice.paymentStatus === "CANCELLED") {
+      throw new Error("Cannot verify payment for a cancelled invoice");
+    }
 
     if (payment.status === "SUCCESS") {
       return payment;
     }
+
+    const actor = await getActorSummaryTx(tx, payment.createdById);
 
     const currentPaid = getSuccessfulPaidTotal(payment.invoice.payments, payment.id);
     if (currentPaid + payment.amount > payment.invoice.netTotal) {
@@ -350,6 +376,8 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
         entityId: payment.invoiceId,
         meta: {
           invoiceNo: payment.invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
           method: "ESEWA",
           reference: updatedPayment.reference || null,
           amountAdded: payment.amount,
@@ -385,6 +413,8 @@ async function markEsewaPaymentFailed(paymentId: string, reason: string) {
       throw new Error("Payment is not an eSewa payment");
     }
 
+    const actor = await getActorSummaryTx(tx, payment.createdById);
+
     if (payment.status !== "SUCCESS" && payment.status !== "FAILED") {
       await tx.payment.update({
         where: { id: paymentId },
@@ -402,6 +432,8 @@ async function markEsewaPaymentFailed(paymentId: string, reason: string) {
         entityId: payment.invoiceId,
         meta: {
           invoiceNo: payment.invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
           method: "ESEWA",
           amountAttempted: payment.amount,
           transactionUuid: payment.transactionUuid,
@@ -442,6 +474,22 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
         invoiceNo: payment.invoice.invoiceNo,
         amount: payment.amount,
         message: "This payment is not an eSewa transaction.",
+      }),
+    };
+  }
+
+  if (payment.invoice.paymentStatus === "CANCELLED") {
+    await markEsewaPaymentFailed(
+      paymentId,
+      "Cannot verify payment for a cancelled invoice.",
+    );
+    return {
+      redirectUrl: buildEsewaFailureRedirect({
+        paymentId: payment.id,
+        invoiceId: payment.invoiceId,
+        invoiceNo: payment.invoice.invoiceNo,
+        amount: payment.amount,
+        message: "Cannot verify payment for a cancelled invoice.",
       }),
     };
   }

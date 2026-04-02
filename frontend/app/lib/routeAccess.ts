@@ -1,4 +1,4 @@
-import type { UserRole } from "~/lib/auth";
+﻿import type { UserRole } from "~/lib/auth";
 
 export const DEFAULT_ROUTE_BY_ROLE: Record<UserRole, string> = {
   admin: "/",

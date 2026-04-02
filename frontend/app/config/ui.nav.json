@@ -36,6 +36,7 @@
                 "icon": "receipt_long",
                 "to": "/invoices",
                 "roles": [
+                    "admin",
                     "cashier"
                 ]
             },

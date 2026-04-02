@@ -1,10 +1,10 @@
-export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
+﻿export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
 export type AnalyticsPaymentStatus =
   | "UNPAID"
   | "PARTIALLY_PAID"
   | "PAID"
   | "CANCELLED";
-export type AnalyticsPaymentMethod = "CASH" | "ESEWA" | "KHALTI";
+export type AnalyticsPaymentMethod = "CASH" | "ESEWA";
 export type AnalyticsBucketGranularity = "hour" | "day" | "week";
 
 export type AnalyticsFilters = {
@@ -159,6 +159,6 @@ export function paymentStatusLabel(status: AnalyticsPaymentStatus) {
 
 export function paymentMethodLabel(method: AnalyticsPaymentMethod) {
   if (method === "ESEWA") return "eSewa";
-  if (method === "KHALTI") return "Khalti";
   return "Cash";
 }
+
