@@ -60,27 +60,10 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request, res: Response) {
   try {
     const userId = String(req.params.id);
-    const { password, currentPassword, newPassword, role, ...data } = req.body;
+    const { password, newPassword, role, ...data } = req.body;
     const updateData: any = { ...data };
     if (role !== undefined) updateData.role = normalizeRole(role);
-    if (newPassword || currentPassword) {
-      if (!currentPassword || !newPassword) {
-        res.status(400).json({ error: "Current password and new password are required" });
-        return;
-      }
-
-      const userAuth = await userService.getUserAuthById(userId);
-      if (!userAuth) {
-        res.status(404).json({ error: "User not found" });
-        return;
-      }
-
-      const validPassword = await bcrypt.compare(String(currentPassword), userAuth.passwordHash);
-      if (!validPassword) {
-        res.status(400).json({ error: "Current password is incorrect" });
-        return;
-      }
-
+    if (newPassword) {
       updateData.passwordHash = await bcrypt.hash(String(newPassword), 10);
     } else if (password) {
       updateData.passwordHash = await bcrypt.hash(password, 10);

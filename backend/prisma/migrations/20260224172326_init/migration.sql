@@ -111,7 +111,7 @@ CREATE TABLE `InvoiceItem` (
 CREATE TABLE `Payment` (
     `id` VARCHAR(191) NOT NULL,
     `invoiceId` VARCHAR(191) NOT NULL,
-    `method` ENUM('CASH', 'ESEWA', 'KHALTI') NOT NULL,
+    `method` ENUM('CASH', 'ESEWA') NOT NULL,
     `amount` DOUBLE NOT NULL,
     `status` ENUM('PENDING', 'SUCCESS', 'FAILED') NOT NULL DEFAULT 'PENDING',
     `reference` VARCHAR(191) NULL,

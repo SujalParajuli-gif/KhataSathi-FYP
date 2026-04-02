@@ -1,4 +1,4 @@
-type Props = {
+﻿type Props = {
   name: string;
   sizePx?: number;
   className?: string;
@@ -19,3 +19,4 @@ export default function Icon({
     </span>
   );
 }
+

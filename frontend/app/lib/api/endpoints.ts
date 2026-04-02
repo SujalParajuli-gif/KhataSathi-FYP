@@ -1,7 +1,8 @@
-// frontend/app/lib/api/endpoints.ts — All API endpoint functions
+﻿// frontend/app/lib/api/endpoints.ts â€” All API endpoint functions
+import { API_BASE_URL } from "./baseUrl";
 import api from "./client";
 
-// ─── Auth ────────────────────────────────────────────
+// â”€â”€â”€ Auth â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function loginApi(email: string, password: string) {
     const res = await api.post("/api/auth/login", { email, password });
@@ -27,7 +28,7 @@ function getBearerHeaders() {
 export async function uploadProfilePhotoApi(file: File) {
     const formData = new FormData();
     formData.append("photo", file);
-    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + "/api/auth/profile/photo", {
+    const res = await fetch(API_BASE_URL + "/api/auth/profile/photo", {
         method: "POST",
         headers: getBearerHeaders(),
         body: formData
@@ -39,7 +40,7 @@ export async function uploadProfilePhotoApi(file: File) {
     return res.json();
 }
 
-// ─── Brands ──────────────────────────────────────────
+// â”€â”€â”€ Brands â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function listBrandsApi(activeOnly?: boolean) {
     const params = activeOnly ? { active: "true" } : {};
@@ -62,7 +63,7 @@ export async function deactivateBrandApi(id: string) {
     return res.data;
 }
 
-// ─── Products ────────────────────────────────────────
+// â”€â”€â”€ Products â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 interface ProductFilters {
     search?: string;
@@ -107,7 +108,7 @@ export async function getCategoriesApi() {
 export async function importCsvApi(file: File) {
     const formData = new FormData();
     formData.append("file", file);
-    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + "/api/products/import-csv", {
+    const res = await fetch(API_BASE_URL + "/api/products/import-csv", {
         method: "POST",
         headers: getBearerHeaders(),
         body: formData,
@@ -119,7 +120,7 @@ export async function importCsvApi(file: File) {
     return res.json();
 }
 
-// ─── Customers ───────────────────────────────────────
+// â”€â”€â”€ Customers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function listCustomersApi(activeOnly?: boolean) {
     const params = activeOnly ? { active: "true" } : {};
@@ -142,7 +143,7 @@ export async function deactivateCustomerApi(id: string) {
     return res.data;
 }
 
-// ─── Invoices ────────────────────────────────────────
+// â”€â”€â”€ Invoices â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function createInvoiceApi(customerId?: string) {
     const res = await api.post("/api/invoices", { customerId });
@@ -184,7 +185,7 @@ export async function cancelInvoiceApi(invoiceId: string) {
     return res.data;
 }
 
-// ─── Payments ────────────────────────────────────────
+// â”€â”€â”€ Payments â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function addPaymentApi(
     invoiceId: string,
@@ -194,8 +195,11 @@ export async function addPaymentApi(
     return res.data;
 }
 
-export async function initiateEsewaPaymentApi(invoiceId: string, amount: number) {
-    const res = await api.post("/api/payments/esewa/initiate", { invoiceId, amount });
+export async function initiateEsewaPaymentApi(data: {
+    invoiceId: string;
+    amount: number;
+}) {
+    const res = await api.post("/api/payments/esewa/initiate", data);
     return res.data;
 }
 
@@ -204,7 +208,7 @@ export async function listPaymentsApi(invoiceId: string) {
     return res.data;
 }
 
-// ─── Inventory ───────────────────────────────────────
+// â”€â”€â”€ Inventory â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function restockApi(productId: string, qty: number, reason?: string) {
     const res = await api.post("/api/inventory/restock", { productId, qty, reason });
@@ -227,7 +231,7 @@ export async function getStockTransactionsApi(productId?: string) {
     return res.data;
 }
 
-// ─── Reports ─────────────────────────────────────────
+// â”€â”€â”€ Reports â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function salesSummaryApi(from: string, to: string) {
     const res = await api.get("/api/reports/sales", { params: { from, to } });
@@ -267,7 +271,7 @@ export async function downloadAnalyticsCsvApi(filters: {
     return res.data;
 }
 
-// ─── Audit ───────────────────────────────────────────
+// â”€â”€â”€ Audit â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function listAuditLogsApi(filters?: any) {
     const res = await api.get("/api/audit", { params: filters });
@@ -279,14 +283,14 @@ export async function listLoginAttemptsApi(filters?: any) {
     return res.data; // { attempts, total, page, pageSize }
 }
 
-// ─── Admin ───────────────────────────────────────────
+// â”€â”€â”€ Admin â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function triggerBackupApi() {
     const res = await api.post("/api/admin/backup");
     return res.data;
 }
 
-// ─── Users ───────────────────────────────────────────
+// â”€â”€â”€ Users â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function listUsersApi(params?: { role?: string }) {
     const res = await api.get("/api/users", { params });
@@ -303,7 +307,7 @@ export async function updateUserApi(id: string, data: any) {
     return res.data;
 }
 
-// ─── Alerts ──────────────────────────────────────────
+// â”€â”€â”€ Alerts â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function getReadAlertsApi() {
     const res = await api.get("/api/alerts/read");
@@ -330,12 +334,12 @@ export async function markAlertUnreadApi(alertKey: string) {
     return res.data;
 }
 
-// ─── Admin User Photo ────────────────────────────────
+// â”€â”€â”€ Admin User Photo â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function uploadUserPhotoApi(userId: string, file: File) {
     const fd = new FormData();
     fd.append("photo", file);
-    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + `/api/users/${userId}/photo`, {
+    const res = await fetch(API_BASE_URL + `/api/users/${userId}/photo`, {
         method: "POST",
         headers: getBearerHeaders(),
         body: fd,
@@ -347,12 +351,12 @@ export async function uploadUserPhotoApi(userId: string, file: File) {
     return res.json();
 }
 
-// ─── Product Image ───────────────────────────────────
+// â”€â”€â”€ Product Image â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
 
 export async function uploadProductImageApi(productId: string, file: File) {
     const fd = new FormData();
     fd.append("image", file);
-    const res = await fetch((import.meta.env.VITE_API_BASE_URL || "http://localhost:4000") + `/api/products/${productId}/image`, {
+    const res = await fetch(API_BASE_URL + `/api/products/${productId}/image`, {
         method: "POST",
         headers: getBearerHeaders(),
         body: fd,
@@ -363,3 +367,4 @@ export async function uploadProductImageApi(productId: string, file: File) {
     }
     return res.json();
 }
+

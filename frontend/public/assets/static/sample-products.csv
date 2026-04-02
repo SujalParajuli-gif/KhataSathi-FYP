@@ -1,4 +1,0 @@
-name,sku,barcode,brand,category,retailPrice,wholesalePrice,wholesaleQtyThreshold,stock,lowStockThreshold,status
-Wai Wai Chicken Noodles,CG-WAI-001,890123450001,CG Foods,Groceries,25,22,12,120,15,Active
-Himalayan Java Ground Coffee,HJ-COFFEE-001,890123450002,Himalayan Java,Beverages,480,450,6,24,5,Active
-Dhara Sunflower Oil 1L,DHARA-001,890123450003,Dhara,Essentials,340,325,8,42,6,Active

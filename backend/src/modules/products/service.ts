@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import prisma from "../../db/prisma";
+import { deleteReplacedUpload } from "../../lib/uploads";
 
 interface ProductFilters {
     search?: string;
@@ -97,6 +98,7 @@ interface CreateProductInput {
     stock?: number;
     lowStockThreshold?: number;
     isActive?: boolean;
+    imageUrl?: string | null;
 }
 
 export async function createProduct(data: CreateProductInput) {
@@ -113,17 +115,34 @@ export async function createProduct(data: CreateProductInput) {
             stock: data.stock ?? 0,
             lowStockThreshold: data.lowStockThreshold ?? 5,
             isActive: data.isActive ?? true,
+            imageUrl: data.imageUrl ?? null,
         },
         include: { brand: { select: { id: true, name: true } } },
     });
 }
 
 export async function updateProduct(id: string, data: Partial<CreateProductInput> & { isActive?: boolean }) {
-    return prisma.product.update({
+    let previousImageUrl: string | null = null;
+
+    if (data.imageUrl !== undefined) {
+        const existing = await prisma.product.findUnique({
+            where: { id },
+            select: { imageUrl: true },
+        });
+        previousImageUrl = existing?.imageUrl ?? null;
+    }
+
+    const product = await prisma.product.update({
         where: { id },
         data,
         include: { brand: { select: { id: true, name: true } } },
     });
+
+    if (data.imageUrl !== undefined) {
+        await deleteReplacedUpload(previousImageUrl, product.imageUrl);
+    }
+
+    return product;
 }
 
 export async function deactivateProduct(id: string) {

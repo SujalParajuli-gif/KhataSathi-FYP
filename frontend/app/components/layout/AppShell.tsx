@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type CSSProperties, type ReactNode } from "react";
+﻿import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
 import Sidebar from "~/components/layout/Sidebar";
 import Topbar from "~/components/layout/Topbar";
@@ -32,6 +32,7 @@ export default function AppShell({ children }: Props) {
     return () => window.removeEventListener("auth_change", handleReauth);
   }, []);
   const role = user?.role ?? "admin";
+  const contentOffsetClass = isCollapsed ? "lg:ml-[80px]" : "lg:ml-[260px]";
 
   const visibleItems = useMemo(
     () => navData.sidebar.items.filter((item) => item.roles.includes(role)),
@@ -45,13 +46,10 @@ export default function AppShell({ children }: Props) {
 
   const roleLabel = role === "cashier" ? "Cashier" : "Admin";
   const profileHref = role === "cashier" ? "/cashier-profile" : "/profile";
-  const contentVars = {
-    "--sidebar-offset": isCollapsed ? "80px" : "260px",
-  } as CSSProperties;
 
   return (
     <AlertsProvider>
-      <div className="min-h-screen bg-[var(--app-page-bg)] text-slate-900">
+      <div className="min-h-screen bg-[#F1F1F1] text-slate-900">
         <Sidebar
           role={role}
           isMobileOpen={isMobileOpen}
@@ -59,10 +57,7 @@ export default function AppShell({ children }: Props) {
           onCloseMobile={() => setIsMobileOpen(false)}
         />
 
-        <div
-          className="min-h-screen transition-[margin] duration-300 lg:ml-[var(--sidebar-offset)]"
-          style={contentVars}
-        >
+        <div className={`transition-[margin] duration-300 ${contentOffsetClass}`}>
           <Topbar
             pageTitle={pageTitle}
             onOpenMobileSidebar={() => setIsMobileOpen(true)}
@@ -75,7 +70,7 @@ export default function AppShell({ children }: Props) {
             greetingText={`Welcome back, ${user?.name?.split(" ")[0] ?? roleLabel}`}
           />
 
-          <main className="min-h-[calc(100vh-77px)] bg-[var(--app-page-bg)] p-5 lg:p-6">
+          <main className="bg-[#F1F1F1] p-[20px] lg:p-[24px]">
             {children}
           </main>
         </div>
@@ -83,3 +78,4 @@ export default function AppShell({ children }: Props) {
     </AlertsProvider>
   );
 }
+

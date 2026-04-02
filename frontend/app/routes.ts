@@ -1,4 +1,4 @@
-import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
+﻿import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
 export default [
   // Root index redirects (handled by _app.tsx if not logged in)
@@ -23,3 +23,4 @@ export default [
   route("invoices/:id/print", "routes/invoices.print.tsx"),
   route("payments/esewa/result", "routes/payments.esewa.result.tsx"),
 ] satisfies RouteConfig;
+

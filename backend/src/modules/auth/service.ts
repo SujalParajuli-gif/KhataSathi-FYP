@@ -1,6 +1,7 @@
 import prisma from "../../db/prisma";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
+import { deleteReplacedUpload } from "../../lib/uploads";
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
@@ -64,6 +65,15 @@ export async function getMe(userId: string) {
 }
 
 export async function updateProfile(userId: string, data: { name?: string; phone?: string; gender?: string | null; address?: string | null; password?: string; profileImage?: string | null }) {
+  let previousProfileImage: string | null = null;
+  if (data.profileImage !== undefined) {
+    const existingUser = await prisma.user.findUnique({
+      where: { id: userId },
+      select: { profileImage: true },
+    });
+    previousProfileImage = existingUser?.profileImage ?? null;
+  }
+
   const updateData: any = {};
   if (data.name !== undefined) updateData.name = data.name.trim();
   if (data.phone !== undefined) updateData.phone = data.phone.trim() || null;
@@ -90,10 +100,20 @@ export async function updateProfile(userId: string, data: { name?: string; phone
       lastLogin: true,
     },
   });
+
+  if (data.profileImage !== undefined) {
+    await deleteReplacedUpload(previousProfileImage, user.profileImage);
+  }
+
   return user;
 }
 
 export async function uploadProfilePhoto(userId: string, photoUrl: string) {
+  const existingUser = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { profileImage: true },
+  });
+
   const user = await prisma.user.update({
     where: { id: userId },
     data: { profileImage: photoUrl },
@@ -110,5 +130,8 @@ export async function uploadProfilePhoto(userId: string, photoUrl: string) {
       lastLogin: true,
     },
   });
+
+  await deleteReplacedUpload(existingUser?.profileImage, user.profileImage);
+
   return user;
 }

@@ -1,5 +1,6 @@
-import React from "react";
+﻿import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
+import ProductImage from "~/components/ui/ProductImage";
 import type {
   Product,
   ProductStatus,
@@ -10,8 +11,6 @@ import {
   formatNpr,
   getStockFlag,
 } from "~/lib/domain/products/products.helpers";
-
-const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 type ProductFormErrors = Partial<
   Record<
@@ -34,12 +33,6 @@ type CsvImportResult = {
   errors: CsvImportError[];
 };
 
-function resolveImageUrl(imageUrl?: string) {
-  if (!imageUrl) return "";
-  if (imageUrl.startsWith("blob:") || imageUrl.startsWith("http")) return imageUrl;
-  return `${API_URL}${imageUrl}`;
-}
-
 function Field({
   label,
   error,
@@ -51,7 +44,7 @@ function Field({
 }) {
   return (
     <div className="space-y-[6px]">
-      <div className="text-[12px] font-semibold text-[var(--app-text-soft)]">{label}</div>
+      <div className="text-[12px] font-semibold text-[#565449]">{label}</div>
       {children}
       {error ? <div className="text-[12px] font-semibold text-rose-600">{error}</div> : null}
     </div>
@@ -77,8 +70,8 @@ function Button({
     variant === "primary"
       ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
       : variant === "danger"
-        ? "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:bg-rose-100"
-        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]";
+        ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100"
+        : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]";
   return (
     <button
       type="button"
@@ -108,8 +101,8 @@ function Select({
       value={value}
       onChange={(event) => onChange(event.target.value)}
       className={cn(
-        "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[14px] text-[var(--app-text)] outline-none",
-        error ? "border-rose-300" : "border-[var(--app-border)]",
+        "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[14px] text-[#000000] outline-none",
+        error ? "border-rose-300" : "border-[#CFCFD3]",
       )}
     >
       {options.map((option) => (
@@ -124,8 +117,8 @@ function Select({
 function StatusPill({ status }: { status: ProductStatus }) {
   const cls =
     status === "Active"
-      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
-      : "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]";
+      ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
+      : "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]";
   return (
     <span
       className={cn(
@@ -145,10 +138,10 @@ function StockPill({
 }) {
   const cls =
     flag === "In Stock"
-      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
+      ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
       : flag === "Low Stock"
-        ? "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)] border-[var(--app-warning-border)]"
-        : "bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] border-[var(--app-danger-border)]";
+        ? "bg-[#FFF7E8] text-[#B7791F] border-[#F6D28B]"
+        : "bg-[#FFF1F2] text-[#BE123C] border-[#FECDD3]";
   return (
     <span
       className={cn(
@@ -185,23 +178,23 @@ function ModalShell({
         className="absolute inset-0 bg-black/40"
       />
       <div className="absolute inset-0 flex items-center justify-center p-[14px]">
-        <div className="w-full max-w-[760px] overflow-hidden rounded-[16px] border border-[var(--app-border)] bg-white shadow-[0_30px_90px_-45px_rgba(17,18,13,0.65)]">
-          <div className="flex items-center justify-between border-b border-[var(--app-border)] px-[18px] py-[14px]">
-            <div className="text-[15px] font-semibold text-[var(--app-text)]">{title}</div>
+        <div className="w-full max-w-[760px] overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-white ">
+          <div className="flex items-center justify-between border-b border-[#CFCFD3] px-[18px] py-[14px]">
+            <div className="text-[15px] font-semibold text-[#000000]">{title}</div>
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-[36px] w-[36px] items-center justify-center rounded-[12px] border border-[var(--app-border)] hover:bg-[var(--app-surface-muted)]"
+              className="inline-flex h-[36px] w-[36px] items-center justify-center rounded-[12px] border border-[#CFCFD3] hover:bg-[#F3F4F6]"
               aria-label="Close modal"
             >
-              <GoogleIcon name="close" className="text-[var(--app-text-soft)]" />
+              <GoogleIcon name="close" className="text-[#565449]" />
             </button>
           </div>
 
           <div className="px-[18px] py-[16px]">{children}</div>
 
           {footer ? (
-            <div className="border-t border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 px-[18px] py-[14px]">
+            <div className="border-t border-[#CFCFD3] bg-[#F3F4F6]/75 px-[18px] py-[14px]">
               {footer}
             </div>
           ) : null}
@@ -225,15 +218,15 @@ function Toast({
   if (!open) return null;
   const cls =
     kind === "success"
-      ? "bg-[var(--app-success-bg)] border-[var(--app-success-border)] text-[var(--app-success-text)]"
+      ? "bg-[#EAF8EF] border-[#9DD8B2] text-[#179B4D]"
       : kind === "danger"
-        ? "bg-[var(--app-danger-bg)] border-[var(--app-danger-border)] text-[var(--app-danger-text)]"
-        : "bg-[var(--app-surface-muted)] border-[var(--app-border)] text-[var(--app-text-soft)]";
+        ? "bg-[#FFF1F2] border-[#FECDD3] text-[#BE123C]"
+        : "bg-[#F3F4F6] border-[#CFCFD3] text-[#565449]";
   return (
     <div className="fixed bottom-[16px] right-[16px] z-50">
       <div
         className={cn(
-          "w-[320px] rounded-[14px] border px-[14px] py-[12px] shadow-sm",
+          "w-[320px] rounded-[14px] border px-[14px] py-[12px] ",
           cls,
         )}
       >
@@ -242,7 +235,7 @@ function Toast({
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-[26px] w-[26px] items-center justify-center rounded-[10px] border border-transparent hover:border-[var(--app-border)] hover:bg-white"
+            className="inline-flex h-[26px] w-[26px] items-center justify-center rounded-[10px] border border-transparent hover:border-[#CFCFD3] hover:bg-white"
             aria-label="Close toast"
           >
             <GoogleIcon name="close" className="text-inherit" />
@@ -342,9 +335,6 @@ export default function ProductsModals({
     React.SetStateAction<{ open: boolean; kind: ToastKind; message: string }>
   >;
 }) {
-  const previewUrl = resolveImageUrl(productImagePreview);
-  const activeImageUrl = resolveImageUrl(activeProduct?.imageUrl);
-
   return (
     <>
       <ModalShell
@@ -363,22 +353,18 @@ export default function ProductsModals({
         <div className="grid grid-cols-1 gap-[12px] md:grid-cols-2">
           <div className="md:col-span-2">
             <Field label="Product Image" error={formErrors.image}>
-              <div className="rounded-[14px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-[12px]">
+              <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
                 <div className="flex flex-col gap-[12px] md:flex-row md:items-center">
-                  <div className="flex h-[110px] w-[110px] items-center justify-center overflow-hidden rounded-[14px] border border-[var(--app-border)] bg-white">
-                    {previewUrl ? (
-                      <img
-                        src={previewUrl}
-                        alt={form.name || "Product preview"}
-                        className="h-full w-full object-cover"
-                      />
-                    ) : (
-                      <GoogleIcon name="inventory_2" className="text-[34px] text-[var(--app-text-muted)]" />
-                    )}
-                  </div>
+                  <ProductImage
+                    src={productImagePreview}
+                    alt={form.name || "Product preview"}
+                    className="flex h-[110px] w-[110px] items-center justify-center overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-white"
+                    iconSizePx={34}
+                    iconClassName="text-[#8C8889]"
+                  />
 
                   <div className="min-w-0 flex-1 space-y-[10px]">
-                    <div className="text-[13px] text-[var(--app-text-soft)]">
+                    <div className="text-[13px] text-[#565449]">
                       Upload an image to save under <span className="font-semibold">uploads/products</span>.
                     </div>
 
@@ -388,11 +374,11 @@ export default function ProductsModals({
                       onChange={(event) =>
                         onProductImageChange(event.target.files?.[0] || null)
                       }
-                      className="w-full rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px] text-[14px] text-[var(--app-text)]"
+                      className="w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] py-[10px] text-[14px] text-[#000000]"
                     />
 
                     <div className="flex flex-wrap items-center gap-[10px]">
-                      <div className="text-[12px] text-[var(--app-text-muted)]">
+                      <div className="text-[12px] text-[#8C8889]">
                         {productImageName || (form.imageUrl ? "Saved image will be kept." : "No image selected.")}
                       </div>
                       {(productImageName || form.imageUrl) ? (
@@ -401,7 +387,7 @@ export default function ProductsModals({
                           onClick={onClearProductImage}
                           className="text-[12px] font-semibold text-slate-600 hover:text-slate-900"
                         >
-                          Clear selection
+                          {productImageName ? "Clear selection" : "Remove image"}
                         </button>
                       ) : null}
                     </div>
@@ -418,8 +404,8 @@ export default function ProductsModals({
                 setForm((product) => ({ ...product, name: event.target.value }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
-                formErrors.name ? "border-rose-300" : "border-[var(--app-border)]",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                formErrors.name ? "border-rose-300" : "border-[#CFCFD3]",
               )}
               placeholder="e.g. Wai Wai Noodles (Chicken)"
             />
@@ -432,8 +418,8 @@ export default function ProductsModals({
                 setForm((product) => ({ ...product, sku: event.target.value }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
-                formErrors.sku ? "border-rose-300" : "border-[var(--app-border)]",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                formErrors.sku ? "border-rose-300" : "border-[#CFCFD3]",
               )}
               placeholder="e.g. 890123456789"
             />
@@ -445,7 +431,7 @@ export default function ProductsModals({
               onChange={(event) =>
                 setForm((product) => ({ ...product, barcode: event.target.value }))
               }
-              className="w-full rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none"
+              className="w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] py-[10px] text-[#000000] outline-none"
               placeholder="Optional"
             />
           </Field>
@@ -492,8 +478,8 @@ export default function ProductsModals({
                 }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
-                formErrors.retailPrice ? "border-rose-300" : "border-[var(--app-border)]",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                formErrors.retailPrice ? "border-rose-300" : "border-[#CFCFD3]",
               )}
             />
           </Field>
@@ -509,8 +495,8 @@ export default function ProductsModals({
                 }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
-                formErrors.wholesalePrice ? "border-rose-300" : "border-[var(--app-border)]",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                formErrors.wholesalePrice ? "border-rose-300" : "border-[#CFCFD3]",
               )}
             />
           </Field>
@@ -523,8 +509,8 @@ export default function ProductsModals({
                 setForm((product) => ({ ...product, stock: Number(event.target.value) }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
-                formErrors.stock ? "border-rose-300" : "border-[var(--app-border)]",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                formErrors.stock ? "border-rose-300" : "border-[#CFCFD3]",
               )}
               />
           </Field>
@@ -544,10 +530,10 @@ export default function ProductsModals({
                 }))
               }
               className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[var(--app-text)] outline-none",
+                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
                 formErrors.lowStockThreshold
                   ? "border-rose-300"
-                  : "border-[var(--app-border)]",
+                  : "border-[#CFCFD3]",
               )}
             />
           </Field>
@@ -573,43 +559,47 @@ export default function ProductsModals({
         }
       >
         <div className="space-y-[14px]">
-          <div className="text-[13px] text-[var(--app-text-soft)]">
+          <div className="text-[13px] text-[#565449]">
             Upload a CSV file to create new products in bulk. Existing SKU or
             barcode matches are reported as row errors instead of being
             overwritten.
           </div>
 
-          <div className="rounded-[14px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-[12px]">
-            <div className="mb-[6px] text-[12px] font-semibold text-[var(--app-text-soft)]">
-              Expected columns
+          <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+            <div className="mb-[6px] text-[12px] font-semibold text-[#565449]">
+              Supported import fields
             </div>
-            <div className="text-[12px] leading-relaxed text-[var(--app-text-soft)]">
-              name, sku, barcode, brand, category, retailPrice,
-              wholesalePrice, wholesaleQtyThreshold or thresholdQty, stock,
-              lowStockThreshold, status
+            <div className="text-[12px] leading-relaxed text-[#565449]">
+              Use these CSV column names: <span className="font-semibold">name</span>,{" "}
+              <span className="font-semibold">sku</span>,{" "}
+              <span className="font-semibold">barcode</span>,{" "}
+              <span className="font-semibold">brand</span>,{" "}
+              <span className="font-semibold">category</span>,{" "}
+              <span className="font-semibold">retailPrice</span>,{" "}
+              <span className="font-semibold">wholesalePrice</span>,{" "}
+              <span className="font-semibold">wholesaleQtyThreshold</span> or{" "}
+              <span className="font-semibold">thresholdQty</span>,{" "}
+              <span className="font-semibold">stock</span>,{" "}
+              <span className="font-semibold">lowStockThreshold</span>, and{" "}
+              <span className="font-semibold">status</span>.
             </div>
-            <div className="mt-[8px] text-[12px] text-[var(--app-text-muted)]">
+            <div className="mt-[8px] text-[12px] text-[#8C8889]">
+              Required fields are name, sku, retailPrice, wholesalePrice, and stock.
+            </div>
+            <div className="mt-[6px] text-[12px] text-[#8C8889]">
               Brand names from the CSV are matched to existing brands and will
               be created automatically when needed.
             </div>
-            <a
-              href="/assets/static/sample-products.csv"
-              download
-              className="mt-[10px] inline-flex items-center gap-[6px] font-semibold text-[var(--app-text)] hover:text-[var(--app-text-soft)]"
-            >
-              <GoogleIcon name="download" className="text-inherit" />
-              Download sample CSV template
-            </a>
           </div>
 
-          <div className="rounded-[14px] border border-[var(--app-border)] bg-white p-[12px]">
+          <div className="rounded-[14px] border border-[#CFCFD3] bg-white p-[12px]">
             <input
               type="file"
               accept=".csv,text/csv"
               onChange={(event) => setImportFile(event.target.files?.[0] || null)}
-              className="w-full rounded-[12px] border border-[var(--app-border)] bg-white px-[12px] py-[10px] text-[var(--app-text)]"
+              className="w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] py-[10px] text-[#000000]"
             />
-            <div className="mt-[8px] text-[12px] text-[var(--app-text-muted)]">
+            <div className="mt-[8px] text-[12px] text-[#8C8889]">
               {importFile ? importFile.name : "No CSV file selected yet."}
             </div>
           </div>
@@ -623,16 +613,16 @@ export default function ProductsModals({
           {importResult ? (
             <div className="space-y-[10px]">
                 <div className="grid grid-cols-1 gap-[10px] md:grid-cols-3">
-                <div className="rounded-[14px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/80 p-[12px]">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-[var(--app-text-muted)]">
+                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6]/80 p-[12px]">
+                  <div className="text-[11px] font-semibold uppercase  text-[#8C8889]">
                     Rows Processed
                   </div>
-                  <div className="mt-[6px] text-[22px] font-extrabold text-[var(--app-text)]">
+                  <div className="mt-[6px] text-[22px] font-extrabold text-[#000000]">
                     {importResult.totalRows}
                   </div>
                 </div>
                 <div className="rounded-[14px] border border-emerald-200 bg-emerald-50 p-[12px]">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-emerald-700">
+                  <div className="text-[11px] font-semibold uppercase  text-emerald-700">
                     Imported
                   </div>
                   <div className="mt-[6px] text-[22px] font-extrabold text-emerald-800">
@@ -640,7 +630,7 @@ export default function ProductsModals({
                   </div>
                 </div>
                 <div className="rounded-[14px] border border-rose-200 bg-rose-50 p-[12px]">
-                  <div className="text-[11px] font-semibold uppercase tracking-wider text-rose-700">
+                  <div className="text-[11px] font-semibold uppercase  text-rose-700">
                     Row Errors
                   </div>
                   <div className="mt-[6px] text-[22px] font-extrabold text-rose-800">
@@ -650,8 +640,8 @@ export default function ProductsModals({
               </div>
 
               {importResult.errors.length > 0 ? (
-                <div className="rounded-[14px] border border-[var(--app-border)] bg-white">
-                  <div className="border-b border-[var(--app-border)] px-[12px] py-[10px] text-[12px] font-semibold text-[var(--app-text)]">
+                <div className="rounded-[14px] border border-[#CFCFD3] bg-white">
+                  <div className="border-b border-[#CFCFD3] px-[12px] py-[10px] text-[12px] font-semibold text-[#000000]">
                     Row-level issues
                   </div>
                   <div className="max-h-[220px] space-y-[8px] overflow-y-auto p-[12px]">
@@ -662,8 +652,8 @@ export default function ProductsModals({
                       >
                         <div className="font-semibold">
                           Row {errorItem.rowNumber}
-                          {errorItem.sku ? ` • SKU ${errorItem.sku}` : ""}
-                          {!errorItem.sku && errorItem.name ? ` • ${errorItem.name}` : ""}
+                          {errorItem.sku ? ` | SKU ${errorItem.sku}` : ""}
+                          {!errorItem.sku && errorItem.name ? ` | ${errorItem.name}` : ""}
                         </div>
                         <div className="mt-[4px]">{errorItem.message}</div>
                       </div>
@@ -702,44 +692,40 @@ export default function ProductsModals({
         {activeProduct ? (
           <div className="space-y-[16px]">
             <div className="flex flex-col gap-[14px] md:flex-row md:items-start">
-              <div className="flex h-[124px] w-[124px] items-center justify-center overflow-hidden rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
-                {activeImageUrl ? (
-                  <img
-                    src={activeImageUrl}
-                    alt={activeProduct.name}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <GoogleIcon name="inventory_2" className="text-[40px] text-[var(--app-text-muted)]" />
-                )}
-              </div>
+              <ProductImage
+                src={activeProduct.imageUrl}
+                alt={activeProduct.name}
+                className="flex h-[124px] w-[124px] items-center justify-center overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                iconSizePx={40}
+                iconClassName="text-[#8C8889]"
+              />
 
               <div className="grid flex-1 grid-cols-1 gap-[12px] md:grid-cols-2">
                 <div className="space-y-[4px]">
-                  <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">Name</div>
-                  <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                  <div className="text-[12px] font-semibold text-[#8C8889]">Name</div>
+                  <div className="text-[14px] font-semibold text-[#000000]">
                     {activeProduct.name}
                   </div>
                 </div>
 
                 <div className="space-y-[4px]">
-                  <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">SKU</div>
-                  <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                  <div className="text-[12px] font-semibold text-[#8C8889]">SKU</div>
+                  <div className="text-[14px] font-semibold text-[#000000]">
                     {activeProduct.sku}
                   </div>
                 </div>
 
                 <div className="space-y-[4px]">
-                  <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
+                  <div className="text-[12px] font-semibold text-[#8C8889]">
                     Barcode
                   </div>
-                  <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                  <div className="text-[14px] font-semibold text-[#000000]">
                     {activeProduct.barcode || "-"}
                   </div>
                 </div>
 
                 <div className="space-y-[4px]">
-                  <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">Status</div>
+                  <div className="text-[12px] font-semibold text-[#8C8889]">Status</div>
                   <div>
                     <StatusPill status={activeProduct.status} />
                   </div>
@@ -749,50 +735,50 @@ export default function ProductsModals({
 
             <div className="grid grid-cols-1 gap-[12px] md:grid-cols-2">
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">Brand</div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">Brand</div>
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {activeProduct.brand}
                 </div>
               </div>
 
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">Category</div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">Category</div>
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {activeProduct.category}
                 </div>
               </div>
 
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">
                   Retail Price
                 </div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {formatNpr(activeProduct.retailPrice)}
                 </div>
               </div>
 
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">
                   Wholesale Price
                 </div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {formatNpr(activeProduct.wholesalePrice)}
                 </div>
               </div>
 
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">
                   Threshold Qty
                 </div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {activeProduct.thresholdQty}
                 </div>
               </div>
 
               <div className="space-y-[4px]">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">Stock</div>
+                <div className="text-[12px] font-semibold text-[#8C8889]">Stock</div>
                 <div className="flex items-center gap-[10px]">
-                  <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                  <div className="text-[14px] font-semibold text-[#000000]">
                     {activeProduct.stock.toLocaleString()}
                   </div>
                   <StockPill flag={getStockFlag(activeProduct)} />
@@ -800,17 +786,17 @@ export default function ProductsModals({
               </div>
 
               <div className="space-y-[4px] md:col-span-2">
-                <div className="text-[12px] font-semibold text-[var(--app-text-muted)]">
+                <div className="text-[12px] font-semibold text-[#8C8889]">
                   Low Stock Threshold
                 </div>
-                <div className="text-[14px] font-semibold text-[var(--app-text)]">
+                <div className="text-[14px] font-semibold text-[#000000]">
                   {activeProduct.lowStockThreshold}
                 </div>
               </div>
             </div>
           </div>
         ) : (
-          <div className="text-[14px] text-[var(--app-text-muted)]">No product selected.</div>
+          <div className="text-[14px] text-[#8C8889]">No product selected.</div>
         )}
       </ModalShell>
 
@@ -828,10 +814,10 @@ export default function ProductsModals({
         }
       >
         <div className="space-y-[10px]">
-          <div className="text-[14px] text-[var(--app-text-soft)]">
+          <div className="text-[14px] text-[#565449]">
             This will set the product to <span className="font-semibold">Inactive</span> (soft delete).
           </div>
-          <div className="text-[12px] text-[var(--app-text-muted)]">
+          <div className="text-[12px] text-[#8C8889]">
             Soft delete is safer for invoice history and audit logs.
           </div>
         </div>
@@ -851,8 +837,8 @@ export default function ProductsModals({
         }
       >
         <div className="space-y-[10px]">
-          <div className="text-[14px] text-[var(--app-text-soft)]">{bulkAction?.message}</div>
-          <div className="text-[12px] text-[var(--app-text-muted)]">
+          <div className="text-[14px] text-[#565449]">{bulkAction?.message}</div>
+          <div className="text-[12px] text-[#8C8889]">
             This keeps invoice history and audit logs intact while removing these products from active selling flows.
           </div>
         </div>
@@ -867,3 +853,4 @@ export default function ProductsModals({
     </>
   );
 }
+

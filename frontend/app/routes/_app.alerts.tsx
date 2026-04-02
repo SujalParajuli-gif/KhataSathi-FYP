@@ -3,6 +3,7 @@ import Icon from "~/components/ui/Icon";
 import {
   alertColor,
   alertIcon,
+  alertTone,
   type AppAlertType,
 } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
@@ -26,13 +27,13 @@ function FilterCard({
     <button
       type="button"
       onClick={onClick}
-        className={cn(
-          "w-full rounded-[16px] border px-4 py-3 text-left transition",
-          active
-            ? "border-[#11120d] bg-[#11120d] text-white shadow-lg shadow-slate-200"
-            : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
-        )}
-      >
+      className={cn(
+        "w-full rounded-[16px] border px-4 py-3 text-left transition",
+        active
+          ? "border-[#11120d] bg-[#11120d] text-white  "
+          : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+      )}
+    >
       <div className="flex items-center justify-between gap-3">
         <span className="text-[13px] font-extrabold">{title}</span>
         {typeof count === "number" ? (
@@ -69,13 +70,16 @@ export default function AlertsPage() {
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
-      const matchesType = filterType === "all" ? true : alert.type === filterType;
+      const matchesType =
+        filterType === "all" ? true : alert.type === filterType;
       const matchesUnread = showUnreadOnly ? !alert.read : true;
       return matchesType && matchesUnread;
     });
   }, [alerts, filterType, showUnreadOnly]);
 
-  const invoiceCount = alerts.filter((alert) => alert.type === "Invoice").length;
+  const invoiceCount = alerts.filter(
+    (alert) => alert.type === "Invoice",
+  ).length;
   const stockCount = alerts.filter((alert) => alert.type === "Stock").length;
 
   async function handleMarkRead(alertKey: string) {
@@ -95,7 +99,9 @@ export default function AlertsPage() {
   }
 
   async function handleMarkAllRead() {
-    const unreadKeys = alerts.filter((alert) => !alert.read).map((alert) => alert.key);
+    const unreadKeys = alerts
+      .filter((alert) => !alert.read)
+      .map((alert) => alert.key);
     if (unreadKeys.length === 0) return;
 
     try {
@@ -114,13 +120,13 @@ export default function AlertsPage() {
   }
 
   return (
-    <div className="min-h-full rounded-[28px] bg-[var(--app-page-bg)] p-6 text-slate-900">
+    <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-slate-900">
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-extrabold tracking-tight">Alerts</h1>
+            <h1 className="text-2xl font-extrabold">Alerts</h1>
             {unreadCount > 0 ? (
-              <span className="rounded-full bg-rose-500 px-2.5 py-1 text-[11px] font-extrabold text-white">
+              <span className="rounded-full bg-[#2F67D8] px-2.5 py-1 text-[11px] font-extrabold text-white">
                 {unreadCount} unread
               </span>
             ) : null}
@@ -134,7 +140,7 @@ export default function AlertsPage() {
           type="button"
           onClick={handleMarkAllRead}
           disabled={unreadCount === 0}
-          className="h-[42px] rounded-[14px] border border-[var(--app-border)] bg-white px-4 text-[13px] font-extrabold text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] disabled:pointer-events-none disabled:opacity-50"
+          className="h-[42px] rounded-[14px] border border-[#CFCFD3] bg-white px-4 text-[13px] font-extrabold text-[#565449] hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-50"
         >
           Mark all as read
         </button>
@@ -163,10 +169,12 @@ export default function AlertsPage() {
             />
           </div>
 
-          <div className="rounded-[18px] border border-[var(--app-border)] bg-white p-4 shadow-sm">
+          <div className="rounded-[18px] border border-[#CFCFD3] bg-white p-4 ">
             <label className="flex cursor-pointer items-center justify-between gap-3">
               <div>
-                <div className="text-[13px] font-extrabold text-slate-900">Unread only</div>
+                <div className="text-[13px] font-extrabold text-slate-900">
+                  Unread only
+                </div>
                 <div className="mt-1 text-[12px] text-slate-500">
                   Hide alerts that are already marked as read.
                 </div>
@@ -181,7 +189,7 @@ export default function AlertsPage() {
               >
                 <div
                   className={cn(
-                    "h-5 w-5 rounded-full bg-white shadow-sm transition",
+                    "h-5 w-5 rounded-full bg-white  transition",
                     showUnreadOnly ? "translate-x-5" : "translate-x-0",
                   )}
                 />
@@ -198,76 +206,87 @@ export default function AlertsPage() {
 
         <div className="col-span-12 space-y-3 lg:col-span-9">
           {filteredAlerts.length === 0 ? (
-            <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-[var(--app-border)] bg-white text-slate-400">
+            <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-[#CFCFD3] bg-white text-slate-400">
               <Icon name="notifications_off" className="text-[40px]" />
-              <div className="mt-3 text-[14px] font-semibold">No alerts found.</div>
+              <div className="mt-3 text-[14px] font-semibold">
+                No alerts found.
+              </div>
             </div>
           ) : (
-            filteredAlerts.map((alert) => (
-              <div
-                key={alert.key}
-                className={cn(
-                  "rounded-[18px] border-2 bg-white p-4 shadow-sm transition",
-                  alert.read
-                    ? "border-[var(--app-border)]"
-                    : "border-[var(--app-warning-border)] shadow-orange-100/50",
-                )}
-              >
-                <div className="flex items-start gap-4">
-                  <div
-                    className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] ${alertColor(
-                      alert,
-                    )}`}
-                  >
-                    <Icon name={alertIcon(alert)} className="text-[20px]" />
-                  </div>
+            filteredAlerts.map((alert) => {
+              const tone = alertTone(alert);
 
-                  <div className="min-w-0 flex-1">
-                    <div className="flex flex-wrap items-start justify-between gap-3">
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <h3 className="truncate text-[14px] font-extrabold text-slate-900">
-                            {alert.title}
-                          </h3>
-                          {!alert.read ? (
-                              <span className="rounded-full bg-[var(--app-warning-bg)] px-2 py-0.5 text-[10px] font-extrabold text-[var(--app-warning-text)]">
-                                New
-                              </span>
-                          ) : null}
-                        </div>
-                        <div className="mt-1 text-[13px] leading-6 text-slate-600">
-                          {alert.message}
-                        </div>
-                      </div>
-
-                      <div className="shrink-0 text-[11px] font-semibold text-slate-400">
-                        {alert.timeLabel}
-                      </div>
+              return (
+                <div
+                  key={alert.key}
+                  className={cn(
+                    "rounded-[18px] border-2 p-4 transition",
+                    alert.read ? "border-[#D7DEE9] bg-white" : tone.pageUnread,
+                  )}
+                >
+                  <div className="flex items-start gap-4">
+                    <div
+                      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] ${alertColor(
+                        alert,
+                      )}`}
+                    >
+                      <Icon name={alertIcon(alert)} className="text-[20px]" />
                     </div>
 
-                    <div className="mt-4 flex items-center gap-3">
-                      {alert.read ? (
-                        <button
-                          type="button"
-                          onClick={() => handleMarkUnread(alert.key)}
-                          className="text-[12px] font-extrabold text-slate-500 hover:text-slate-700"
+                    <div className="min-w-0 flex-1">
+                      <div className="flex flex-wrap items-start justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="flex flex-wrap items-center gap-2">
+                            <h3 className="truncate text-[14px] font-extrabold text-slate-900">
+                              {alert.title}
+                            </h3>
+                            {!alert.read ? (
+                              <span
+                                className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${tone.badge}`}
+                              >
+                                New
+                              </span>
+                            ) : null}
+                          </div>
+                          <div className="mt-1 text-[13px] leading-6 text-slate-600">
+                            {alert.message}
+                          </div>
+                        </div>
+
+                        <div
+                          className={cn(
+                            "shrink-0 text-[11px] font-semibold",
+                            alert.read ? "text-slate-400" : tone.time,
+                          )}
                         >
-                          Mark as unread
-                        </button>
-                      ) : (
-                        <button
-                          type="button"
-                          onClick={() => handleMarkRead(alert.key)}
-                          className="text-[12px] font-extrabold text-[var(--app-text)] hover:text-[var(--app-text-soft)]"
-                        >
-                          Mark as read
-                        </button>
-                      )}
+                          {alert.timeLabel}
+                        </div>
+                      </div>
+
+                      <div className="mt-4 flex items-center gap-3">
+                        {alert.read ? (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkUnread(alert.key)}
+                            className={`text-[12px] font-extrabold ${tone.action}`}
+                          >
+                            Mark as unread
+                          </button>
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => handleMarkRead(alert.key)}
+                            className={`text-[12px] font-extrabold ${tone.action}`}
+                          >
+                            Mark as read
+                          </button>
+                        )}
+                      </div>
                     </div>
                   </div>
                 </div>
-              </div>
-            ))
+              );
+            })
           )}
         </div>
       </div>

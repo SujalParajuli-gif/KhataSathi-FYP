@@ -5,9 +5,9 @@ const DEFAULT_ESEWA_SECRET_KEY = "8gBm/:&EnhH.1/q";
 const DEFAULT_ESEWA_FORM_URL =
   "https://rc-epay.esewa.com.np/api/epay/main/v2/form";
 const DEFAULT_ESEWA_STATUS_CHECK_URL =
-  "https://rc.esewa.com.np/api/epay/transaction/status/";
-const LEGACY_ESEWA_STATUS_CHECK_URL =
   "https://uat.esewa.com.np/api/epay/transaction/status/";
+const FALLBACK_ESEWA_STATUS_CHECK_URL =
+  "https://rc.esewa.com.np/api/epay/transaction/status/";
 
 export const ESEWA_SIGNED_FIELD_NAMES = [
   "total_amount",
@@ -92,19 +92,13 @@ export function getEsewaConfig(): EsewaConfig {
 }
 
 export function getEsewaStatusCheckUrlCandidates(statusCheckUrl: string) {
-  const candidates = new Set<string>([
-    appendTrailingSlash(statusCheckUrl || DEFAULT_ESEWA_STATUS_CHECK_URL),
-  ]);
-
   const configuredUrl = appendTrailingSlash(
     statusCheckUrl || DEFAULT_ESEWA_STATUS_CHECK_URL,
   );
+  const candidates = new Set<string>([configuredUrl]);
 
-  if (configuredUrl === appendTrailingSlash(LEGACY_ESEWA_STATUS_CHECK_URL)) {
-    candidates.add(DEFAULT_ESEWA_STATUS_CHECK_URL);
-  }
-
-  candidates.add(DEFAULT_ESEWA_STATUS_CHECK_URL);
+  candidates.add(appendTrailingSlash(DEFAULT_ESEWA_STATUS_CHECK_URL));
+  candidates.add(appendTrailingSlash(FALLBACK_ESEWA_STATUS_CHECK_URL));
   return Array.from(candidates);
 }
 

@@ -1,4 +1,4 @@
-import {
+﻿import {
   isRouteErrorResponse,
   Links,
   Meta,
@@ -67,3 +67,4 @@ export function ErrorBoundary({ error }: Route.ErrorBoundaryProps) {
     </main>
   );
 }
+

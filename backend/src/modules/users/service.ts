@@ -1,4 +1,5 @@
 import prisma from "../../db/prisma";
+import { deleteReplacedUpload } from "../../lib/uploads";
 
 type CreateUserInput = {
   name: string;
@@ -75,7 +76,16 @@ export async function createUser(data: CreateUserInput) {
 }
 
 export async function updateUser(id: string, data: UpdateUserInput) {
-  return prisma.user.update({
+  let previousProfileImage: string | null = null;
+  if (data.profileImage !== undefined) {
+    const existingUser = await prisma.user.findUnique({
+      where: { id },
+      select: { profileImage: true },
+    });
+    previousProfileImage = existingUser?.profileImage ?? null;
+  }
+
+  const user = await prisma.user.update({
     where: { id },
     data: {
       ...data,
@@ -97,10 +107,21 @@ export async function updateUser(id: string, data: UpdateUserInput) {
       createdAt: true,
     },
   });
+
+  if (data.profileImage !== undefined) {
+    await deleteReplacedUpload(previousProfileImage, user.profileImage);
+  }
+
+  return user;
 }
 
 export async function uploadUserPhoto(id: string, photoUrl: string) {
-  return prisma.user.update({
+  const existingUser = await prisma.user.findUnique({
+    where: { id },
+    select: { profileImage: true },
+  });
+
+  const user = await prisma.user.update({
     where: { id },
     data: { profileImage: photoUrl },
     select: {
@@ -117,14 +138,8 @@ export async function uploadUserPhoto(id: string, photoUrl: string) {
       createdAt: true,
     },
   });
-}
 
-export async function getUserAuthById(id: string) {
-  return prisma.user.findUnique({
-    where: { id },
-    select: {
-      id: true,
-      passwordHash: true,
-    },
-  });
+  await deleteReplacedUpload(existingUser?.profileImage, user.profileImage);
+
+  return user;
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 import { ConfirmDialog } from "~/components/ui/Modal";
@@ -166,7 +166,7 @@ function buildPurchaseLookup(rawInvoices: any[]) {
         purchaseHistoryState: "history",
         lastPurchaseLabel: `${purchaseCount} purchase${
           purchaseCount === 1 ? "" : "s"
-        } • ${formatNpr(amount)} on ${formatDateLabel(createdAt)}`,
+        } | ${formatNpr(amount)} on ${formatDateLabel(createdAt)}`,
       });
       return;
     }
@@ -197,7 +197,7 @@ function Surface({
   return (
     <div
       className={cn(
-        "rounded-[28px] border border-slate-200/80 bg-white shadow-[0_18px_60px_-36px_rgba(15,23,42,0.35)]",
+        "rounded-[28px] border border-slate-200/80 bg-white ",
         className,
       )}
     >
@@ -227,8 +227,8 @@ function Button({
     variant === "primary"
       ? "border border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27] hover:border-[#2a2c27]"
       : variant === "danger"
-        ? "border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:opacity-90"
-        : "border border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]";
+        ? "border border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:opacity-90"
+        : "border border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]";
 
   return (
     <button
@@ -259,13 +259,13 @@ function SearchInput({
     <div className="relative group w-full md:w-[320px]">
       <Icon
         name="search"
-        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[var(--app-text-muted)] transition-colors group-focus-within:text-[var(--app-text)]"
+        className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889] transition-colors group-focus-within:text-[#000000]"
       />
       <input
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search by customer, phone, or email"
-        className="h-[44px] w-full rounded-[12px] border border-[var(--app-border)] bg-white pl-10 pr-4 text-[13px] font-semibold text-[var(--app-text)] outline-none transition placeholder:text-[var(--app-text-muted)] focus:border-[#11120d]"
+        className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white pl-10 pr-4 text-[13px] font-semibold text-[#000000] outline-none transition placeholder:text-[#8C8889] focus:border-[#11120d]"
       />
     </div>
   );
@@ -386,10 +386,10 @@ function ModalShell({
         aria-label="Close overlay"
       />
       <div className="absolute inset-0 flex items-center justify-center p-4">
-        <div className="w-full max-w-[860px] overflow-hidden rounded-[28px] border border-slate-200 bg-white shadow-2xl">
+        <div className="w-full max-w-[860px] overflow-hidden rounded-[28px] border border-slate-200 bg-white ">
           <div className="flex items-center justify-between border-b border-slate-100 px-6 py-5">
             <div>
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.22em] text-slate-400">
+              <div className="text-[11px] font-extrabold uppercase  text-slate-400">
                 Discount Profile
               </div>
               <div className="mt-1 text-[20px] font-extrabold text-slate-900">
@@ -476,7 +476,7 @@ function FilterChip({
       className={cn(
         "inline-flex items-center gap-2 rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
         active
-          ? "border-slate-900 bg-slate-900 text-white shadow-[0_16px_28px_-24px_rgba(15,23,42,0.9)]"
+          ? "border-slate-900 bg-slate-900 text-white "
           : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
       )}
     >
@@ -527,10 +527,7 @@ function MetricCard({
       <div className="flex items-start justify-between gap-3">
         <div>
           <div
-            className={cn(
-              "text-[11px] font-extrabold uppercase tracking-[0.22em]",
-              labelTone,
-            )}
+            className={cn("text-[11px] font-extrabold uppercase ", labelTone)}
           >
             {label}
           </div>
@@ -554,13 +551,13 @@ function MetricCard({
 
 function StatusBadge({ active }: { active: boolean }) {
   return active ? (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2.5 py-1 text-[11px] font-extrabold text-[var(--app-success-text)]">
-      <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-success-text)]" />
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#9DD8B2] bg-[#EAF8EF] px-2.5 py-1 text-[11px] font-extrabold text-[#179B4D]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[#179B4D]" />
       Active
     </span>
   ) : (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-text-muted)]">
-      <span className="h-1.5 w-1.5 rounded-full bg-[var(--app-text-muted)]" />
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-[#CFCFD3] bg-[#F3F4F6] px-2.5 py-1 text-[11px] font-bold text-[#8C8889]">
+      <span className="h-1.5 w-1.5 rounded-full bg-[#8C8889]" />
       Inactive
     </span>
   );
@@ -571,7 +568,7 @@ function DiscountBadge({ customer }: { customer: Customer }) {
 
   if (mode === "ADMIN_WHOLESALE") {
     return (
-      <span className="inline-flex rounded-[8px] border border-[var(--app-warning-border)] bg-[var(--app-warning-bg)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-warning-text)]">
+      <span className="inline-flex rounded-[8px] border border-[#F6D28B] bg-[#FFF7E8] px-2.5 py-1 text-[11px] font-bold text-[#B7791F]">
         Wholesale %
       </span>
     );
@@ -579,14 +576,14 @@ function DiscountBadge({ customer }: { customer: Customer }) {
 
   if (mode === "LOYALTY") {
     return (
-      <span className="inline-flex rounded-[8px] border border-[var(--app-success-border)] bg-[var(--app-success-bg)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-success-text)]">
+      <span className="inline-flex rounded-[8px] border border-[#9DD8B2] bg-[#EAF8EF] px-2.5 py-1 text-[11px] font-bold text-[#179B4D]">
         Loyalty %
       </span>
     );
   }
 
   return (
-    <span className="inline-flex rounded-[8px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-2.5 py-1 text-[11px] font-bold text-[var(--app-text-muted)]">
+    <span className="inline-flex rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6] px-2.5 py-1 text-[11px] font-bold text-[#8C8889]">
       No discount
     </span>
   );
@@ -613,8 +610,8 @@ function TableActionButton({
       className={cn(
         "inline-flex h-[34px] items-center justify-center gap-1.5 rounded-[10px] border px-3 text-[11px] font-bold transition",
         tone === "danger"
-          ? "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:opacity-90"
-          : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+          ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:opacity-90"
+          : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
         disabled && "cursor-not-allowed opacity-50",
       )}
     >
@@ -647,11 +644,11 @@ function CustomerCard({
   const loyalty = isEffectiveLoyalty(customer);
 
   return (
-    <div className="rounded-[26px] border border-slate-200 bg-white p-5 shadow-[0_18px_44px_-36px_rgba(15,23,42,0.45)] transition hover:border-slate-300 hover:shadow-[0_22px_60px_-40px_rgba(15,23,42,0.45)]">
+    <div className="rounded-[26px] border border-slate-200 bg-white p-5  transition hover:border-slate-300 ">
       <div className="flex flex-col gap-4 xl:flex-row xl:items-start xl:justify-between">
         <div className="min-w-0">
           <div className="flex items-start gap-4">
-            <div className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] bg-slate-900 text-[15px] font-extrabold text-white shadow-[0_18px_28px_-24px_rgba(15,23,42,0.9)]">
+            <div className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] bg-slate-900 text-[15px] font-extrabold text-white ">
               {getInitials(customer.name)}
             </div>
             <div className="min-w-0">
@@ -693,7 +690,7 @@ function CustomerCard({
 
       <div className="mt-5 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
         <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
-          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-400">
             Active Rule
           </div>
           <div className="mt-3">
@@ -706,7 +703,7 @@ function CustomerCard({
         </div>
 
         <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
-          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-400">
             Wholesale Discount
           </div>
           <div className="mt-3 text-[24px] font-extrabold text-slate-900">
@@ -720,7 +717,7 @@ function CustomerCard({
         </div>
 
         <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
-          <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-400">
             Loyalty Status
           </div>
           <div className="mt-3">
@@ -743,7 +740,7 @@ function CustomerCard({
 
         <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-4">
           <div className="flex items-center justify-between gap-3">
-            <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+            <div className="text-[11px] font-extrabold uppercase  text-slate-400">
               Last Purchase
             </div>
             {customer.purchaseCount > 0 ? (
@@ -1108,24 +1105,21 @@ export default function DiscountsPage() {
   }
 
   return (
-    <div className="min-h-full rounded-[28px] bg-[var(--app-page-bg)] p-6 text-[var(--app-text)]">
+    <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-[#000000]">
       <div className="mx-auto max-w-6xl space-y-9">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
-            <h1 className="text-[24px] font-extrabold tracking-tight text-[var(--app-text)]">
+            <h1 className="text-[24px] font-extrabold  text-[#000000]">
               Customer Discounts
             </h1>
-            <p className="mt-1 text-[13px] font-medium text-[var(--app-text-muted)]">
+            <p className="mt-1 text-[13px] font-medium text-[#8C8889]">
               Add, edit, and manage customer discount rules for billing.
             </p>
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
-            <div className="flex items-center gap-1.5 rounded-full border border-[var(--app-border)] bg-white px-4 py-2 text-[11px] font-bold text-[var(--app-text-muted)] shadow-sm">
-              <Icon
-                name="info"
-                className="text-[14px] text-[var(--app-warning-text)]"
-              />
+            <div className="flex items-center gap-1.5 rounded-full border border-[#CFCFD3] bg-white px-4 py-2 text-[11px] font-bold text-[#8C8889] ">
+              <Icon name="info" className="text-[14px] text-[#B7791F]" />
               <span>Wholesale overrides loyalty</span>
             </div>
           </div>
@@ -1162,8 +1156,8 @@ export default function DiscountsPage() {
           />
         </div>
 
-        <div className="overflow-hidden rounded-[24px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
-          <div className="flex flex-col gap-4 border-b border-[var(--app-border)] bg-white p-5 xl:flex-row xl:items-center xl:justify-between">
+        <div className="overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-white ">
+          <div className="flex flex-col gap-4 border-b border-[#CFCFD3] bg-white p-5 xl:flex-row xl:items-center xl:justify-between">
             <div className="hide-scrollbar flex w-full items-center gap-2 overflow-x-auto pb-2 xl:w-auto xl:pb-0">
               <FilterChip
                 label="All Discounts"
@@ -1206,13 +1200,13 @@ export default function DiscountsPage() {
 
           <div className="px-5 py-5">
             {loadError ? (
-              <div className="mb-4 rounded-[16px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-[13px] font-semibold text-[var(--app-danger-text)]">
+              <div className="mb-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
                 {loadError}
               </div>
             ) : null}
 
             {actionError ? (
-              <div className="mb-4 rounded-[16px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-4 py-3 text-[13px] font-semibold text-[var(--app-danger-text)]">
+              <div className="mb-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
                 {actionError}
               </div>
             ) : null}
@@ -1221,40 +1215,40 @@ export default function DiscountsPage() {
           <div className="overflow-x-auto">
             <table className="w-full border-collapse text-left">
               <thead>
-                <tr className="border-b border-[var(--app-border)] bg-[var(--app-surface-muted)]/70">
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                <tr className="border-b border-[#CFCFD3] bg-[#F3F4F6]/70">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Customer Details
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Discount Type
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Rate
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Last Purchase
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Status
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Action
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[var(--app-border)]/60">
+              <tbody className="divide-y divide-[#CFCFD3]/60">
                 {loading ? (
                   Array.from({ length: 5 }).map((_, index) => (
                     <tr key={index}>
                       <td colSpan={6} className="px-6 py-4">
-                        <div className="h-12 animate-pulse rounded-[12px] bg-[var(--app-surface-muted)]" />
+                        <div className="h-12 animate-pulse rounded-[12px] bg-[#F3F4F6]" />
                       </td>
                     </tr>
                   ))
                 ) : filtered.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 text-center">
-                      <div className="flex flex-col items-center justify-center text-[var(--app-text-muted)]">
+                      <div className="flex flex-col items-center justify-center text-[#8C8889]">
                         <Icon
                           name="search_off"
                           className="mb-2 text-[32px] opacity-50"
@@ -1278,21 +1272,21 @@ export default function DiscountsPage() {
                     return (
                       <tr
                         key={customer.id}
-                        className="group transition-colors hover:bg-[var(--app-surface-muted)]/70"
+                        className="group transition-colors hover:bg-[#F3F4F6]/70"
                       >
                         <td className="px-6 py-4">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[12px] font-extrabold text-[var(--app-text-soft)]">
+                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#CFCFD3] bg-[#F3F4F6] text-[12px] font-extrabold text-[#565449]">
                               {getInitials(customer.name).charAt(0)}
                             </div>
                             <div className="min-w-0">
-                              <div className="truncate text-[13px] font-bold text-[var(--app-text)] transition-colors group-hover:text-[var(--app-text-soft)]">
+                              <div className="truncate text-[13px] font-bold text-[#000000] transition-colors group-hover:text-[#565449]">
                                 {customer.name}
                               </div>
-                              <div className="truncate text-[11px] font-semibold text-[var(--app-text-muted)]">
+                              <div className="truncate text-[11px] font-semibold text-[#8C8889]">
                                 {customer.phone || "No phone on file"}
                               </div>
-                              <div className="truncate text-[11px] font-medium text-[var(--app-text-muted)]/80">
+                              <div className="truncate text-[11px] font-medium text-[#8C8889]/80">
                                 {customer.email || "No email on file"}
                               </div>
                             </div>
@@ -1303,10 +1297,10 @@ export default function DiscountsPage() {
                         </td>
                         <td className="px-6 py-4">
                           <div className="flex flex-col">
-                            <span className="text-[14px] font-extrabold text-[var(--app-text)]">
+                            <span className="text-[14px] font-extrabold text-[#000000]">
                               {rate}
                             </span>
-                            <span className="text-[10px] font-semibold text-[var(--app-text-muted)]">
+                            <span className="text-[10px] font-semibold text-[#8C8889]">
                               {discountMode === "NONE"
                                 ? "standard"
                                 : "on subtotal"}
@@ -1318,11 +1312,11 @@ export default function DiscountsPage() {
                             className={cn(
                               "max-w-[240px] text-[12px] font-semibold leading-6",
                               customer.purchaseHistoryState === "history"
-                                ? "text-[var(--app-text-soft)]"
+                                ? "text-[#565449]"
                                 : customer.purchaseHistoryState ===
                                     "cancelled_only"
-                                  ? "text-[var(--app-danger-text)]"
-                                  : "text-[var(--app-text-muted)]",
+                                  ? "text-[#BE123C]"
+                                  : "text-[#8C8889]",
                             )}
                           >
                             {customer.lastPurchaseLabel}
@@ -1359,8 +1353,8 @@ export default function DiscountsPage() {
             </table>
           </div>
 
-          <div className="flex items-center justify-between border-t border-[var(--app-border)] bg-[var(--app-surface-muted)]/40 px-6 py-4">
-            <div className="text-[11px] font-bold text-[var(--app-text-muted)]">
+          <div className="flex items-center justify-between border-t border-[#CFCFD3] bg-[#F3F4F6]/40 px-6 py-4">
+            <div className="text-[11px] font-bold text-[#8C8889]">
               Showing {filtered.length} records
             </div>
           </div>
@@ -1382,7 +1376,7 @@ export default function DiscountsPage() {
           <div className="space-y-6">
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="space-y-2">
-                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                   Customer name
                 </div>
                 <Input
@@ -1396,7 +1390,7 @@ export default function DiscountsPage() {
               </div>
 
               <div className="space-y-2">
-                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                   Phone
                 </div>
                 <Input
@@ -1410,7 +1404,7 @@ export default function DiscountsPage() {
               </div>
 
               <div className="space-y-2 lg:col-span-2">
-                <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                   Email
                 </div>
                 <Input
@@ -1427,7 +1421,7 @@ export default function DiscountsPage() {
             <div className="grid gap-4 lg:grid-cols-2">
               <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-5">
                 <div className="flex items-center justify-between gap-3">
-                  <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                  <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                     Wholesale Discount
                   </div>
                   {formHasWholesale ? (
@@ -1453,7 +1447,7 @@ export default function DiscountsPage() {
               <div className="rounded-[20px] border border-slate-200 bg-slate-50/70 p-5">
                 <div className="flex items-center justify-between gap-3">
                   <div>
-                    <div className="text-[12px] font-extrabold uppercase tracking-[0.18em] text-slate-400">
+                    <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                       Loyalty Access
                     </div>
                     <div className="mt-1 text-[16px] font-extrabold text-slate-900">

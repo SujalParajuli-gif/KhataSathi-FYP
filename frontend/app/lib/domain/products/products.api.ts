@@ -1,4 +1,4 @@
-import {
+﻿import {
   createProductApi,
   deactivateProductApi,
   getCategoriesApi,
@@ -123,6 +123,7 @@ function toBackendPayload(product: Omit<Product, "id">) {
     name: product.name,
     sku: product.sku,
     barcode: product.barcode || undefined,
+    imageUrl: product.imageUrl || null,
     brandId,
     category: product.category || undefined,
     retailPrice: Number(product.retailPrice),
@@ -163,3 +164,4 @@ export async function bulkSetStatus(ids: string[], status: ProductStatus) {
   await Promise.all(ids.map((id) => setProductStatus(id, status)));
   return { ok: true };
 }
+

@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+﻿import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
@@ -23,7 +23,7 @@ function Field({
   return (
     <div className={className}>
       {label ? (
-        <div className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.22em] text-[#8C8889]">
+        <div className="mb-2 text-[11px] font-extrabold uppercase  text-[#8C8889]">
           {label}
         </div>
       ) : null}
@@ -54,7 +54,7 @@ function TextInput({
   return (
     <div
       className={cn(
-        "flex h-[52px] items-center gap-3 rounded-[14px] border-2 bg-white px-[16px] transition-all duration-200 shadow-sm",
+        "flex h-[52px] items-center gap-3 rounded-[14px] border-2 bg-white px-[16px] transition-all duration-200 ",
         hasError
           ? "border-rose-300"
           : "border-[#CFCFD3] focus-within:border-[#000000] hover:border-[#8C8889]",
@@ -95,7 +95,7 @@ function Button({
     "h-[52px] rounded-[14px] border-2 px-6 text-[13px] font-extrabold transition flex items-center justify-center gap-2 active:scale-95";
   const variants = {
     primary:
-      "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937] shadow-md shadow-slate-900/15",
+      "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937]  ",
     outline:
       "border-[#CFCFD3] bg-white text-[#000000] hover:bg-[#F8FAFC] hover:border-[#8C8889]",
     ghost:
@@ -212,7 +212,7 @@ export default function LoginPage() {
         </div>
 
         <div className="relative z-10 w-full max-w-[1240px] overflow-hidden rounded-[28px] border border-[#D9DDE3] bg-white">
-          <div className="grid min-h-[720px] lg:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
+          <div className="grid min-h-[720px] lg:grid-cols-[420px_520px] xl:grid-cols-[420px_820px]">
             <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">
               <div className="w-full max-w-[318px]">
                 <div className="mb-10 space-y-4">
@@ -315,7 +315,7 @@ export default function LoginPage() {
                 </form>
 
                 <div className="pt-6 text-center text-[11px] font-bold text-[#9CA3AF]">
-                  © {new Date().getFullYear()} {navData.brand.name}
+                  Copyright {new Date().getFullYear()} {navData.brand.name}
                 </div>
               </div>
             </div>
@@ -335,3 +335,4 @@ export default function LoginPage() {
     </div>
   );
 }
+

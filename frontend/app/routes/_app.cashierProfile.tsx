@@ -1,11 +1,13 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import { SuccessDialog } from "~/components/ui/Modal";
+import UserAvatar from "~/components/ui/UserAvatar";
 import {
   getMeApi,
   updateProfileApi,
   uploadProfilePhotoApi,
 } from "~/lib/api/endpoints";
+import { API_BASE_URL } from "~/lib/api/baseUrl";
 import { setAuthUser } from "~/lib/auth";
 
 type TabKey = "personal" | "security";
@@ -24,7 +26,6 @@ type CashierProfile = {
   lastLogin?: string | null;
 };
 
-const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 const LOCATION_STORAGE_KEY = "khatasathi_cashier_profile_location";
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -86,7 +87,7 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-sm flex flex-col h-full">
+    <section className="overflow-hidden rounded-[22px] border border-slate-200 bg-white  flex flex-col h-full">
       <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="text-[15px] font-extrabold text-slate-900">
@@ -148,7 +149,7 @@ function Field({
   return (
     <div className="space-y-2">
       <div className="flex items-center justify-between gap-3">
-        <label className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+        <label className="text-[11px] font-extrabold uppercase  text-slate-500">
           {label}
         </label>
         {hint ? (
@@ -411,9 +412,9 @@ export default function CashierProfileSection() {
   if (loading) {
     return (
       <div className="space-y-5 pb-8">
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[340px_1fr]">
-          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white" />
-          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white" />
+        <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
+          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white xl:w-[340px] xl:flex-none" />
+          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white xl:min-w-0 xl:flex-1" />
         </div>
       </div>
     );
@@ -422,336 +423,348 @@ export default function CashierProfileSection() {
   return (
     <>
       <div className="space-y-5 pb-8 text-slate-900">
-        <div className="grid grid-cols-1 gap-5 xl:grid-cols-[340px_1fr]">
-          <Panel
-            title="Account Overview"
-            subtitle="Photo, contact , and sign-in for this cashier account."
-          >
-            <div className="space-y-5 px-5 py-5">
-              <div className="flex flex-col items-center text-center">
-                <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[30px] font-extrabold text-slate-700">
-                  {profile.profileImage ? (
-                    <img
-                      src={`${API_URL}${profile.profileImage}`}
-                      alt="Profile"
-                      className="h-full w-full object-cover"
-                    />
-                  ) : (
-                    initials || "CU"
-                  )}
-                </div>
-                <div className="mt-4 text-[20px] font-extrabold text-slate-900">
-                  {fullName}
-                </div>
-                <div className="mt-1 text-[13px] font-semibold text-slate-500">
-                  {profile.email || "No email available"}
-                </div>
-                <div className="mt-3">
-                  <label className="cursor-pointer">
-                    <input
-                      type="file"
-                      className="hidden"
-                      accept="image/*"
-                      onChange={(e) => handlePhotoChange(e.target.files?.[0])}
-                    />
-                    <span
-                      className={cn(
-                        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition",
-                        uploadingPhoto
-                          ? "border-slate-200 bg-slate-100 text-slate-400"
-                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-                      )}
-                    >
-                      <Icon name="photo_camera" className="text-[18px]" />
-                      {uploadingPhoto ? "Uploading..." : "Change Photo"}
-                    </span>
-                  </label>
-                </div>
-              </div>
-
-              <div className="space-y-3 rounded-[18px] border border-slate-200 bg-slate-50/70 p-4 text-[13px] font-semibold text-slate-600">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="phone" className="text-[18px]" /> Phone
-                  </span>
-                  <span className="text-right text-slate-900">
-                    {profile.phone || "No phone added"}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="location_on" className="text-[18px]" /> Region
-                  </span>
-                  <span className="text-right text-slate-900">
-                    {profile.location}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="schedule" className="text-[18px]" /> Last login
-                  </span>
-                  <span className="text-right text-slate-900">
-                    {formatDateTime(profile.lastLogin)}
-                  </span>
-                </div>
-              </div>
-            </div>
-          </Panel>
-
-          <Panel
-            title={tab === "personal" ? "Personal Details" : "Login & Password"}
-            subtitle={
-              tab === "personal"
-                ? "Update the same profile fields already available on this page."
-                : "Keep the current password fields, password guidance, and save flow."
-            }
-            actions={
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => setTab("personal")}
-                  className={cn(
-                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                    tab === "personal"
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                  )}
-                >
-                  Personal Information
-                </button>
-                <button
-                  type="button"
-                  onClick={() => setTab("security")}
-                  className={cn(
-                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                    tab === "security"
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                  )}
-                >
-                  Login & Password
-                </button>
-              </div>
-            }
-          >
-            <div className="flex flex-col h-full justify-between space-y-6 px-5 py-5">
-              <div className="space-y-6">
-                {error ? (
-                  <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
-                    {error}
+        <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
+          <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
+            <Panel
+              title="Account Overview"
+              subtitle="Photo, contact , and sign-in for this cashier account."
+            >
+              <div className="space-y-5 px-5 py-5">
+                <div className="flex flex-col items-center text-center">
+                  <UserAvatar
+                    src={
+                      profile.profileImage
+                        ? `${API_BASE_URL}${profile.profileImage}`
+                        : undefined
+                    }
+                    alt="Profile"
+                    className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[30px] font-extrabold text-slate-700"
+                    fallback={initials || "CU"}
+                  />
+                  <div className="mt-4 text-[20px] font-extrabold text-slate-900">
+                    {fullName}
                   </div>
-                ) : null}
+                  <div className="mt-1 text-[13px] font-semibold text-slate-500">
+                    {profile.email || "No email available"}
+                  </div>
+                  <div className="mt-3">
+                    <label className="cursor-pointer">
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={(e) => handlePhotoChange(e.target.files?.[0])}
+                      />
+                      <span
+                        className={cn(
+                          "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition",
+                          uploadingPhoto
+                            ? "border-slate-200 bg-slate-100 text-slate-400"
+                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+                        )}
+                      >
+                        <Icon name="photo_camera" className="text-[18px]" />
+                        {uploadingPhoto ? "Uploading..." : "Change Photo"}
+                      </span>
+                    </label>
+                  </div>
+                </div>
 
-                {tab === "personal" ? (
-                  <>
-                    <Field label="Gender">
-                      <div className="flex flex-wrap gap-3">
-                        {(["Male", "Female"] as const).map((gender) => (
-                          <button
-                            key={gender}
-                            type="button"
-                            onClick={() =>
-                              setProfile((current) => ({ ...current, gender }))
-                            }
-                            className={cn(
-                              "rounded-[14px] border px-6 py-3 text-[13px] font-extrabold transition",
-                              profile.gender === gender
-                                ? "border-slate-900 bg-slate-900 text-white"
-                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                            )}
-                          >
-                            {gender}
-                          </button>
-                        ))}
-                      </div>
-                    </Field>
+                <div className="space-y-5 rounded-[18px] border border-slate-200 bg-slate-50/70 p-10 text-[13px] font-semibold text-slate-600 xl:h-[200px] xl:mt-20">
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2">
+                      <Icon name="phone" className="text-[18px]" /> Phone
+                    </span>
+                    <span className="text-right text-slate-900">
+                      {profile.phone || "No phone added"}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2">
+                      <Icon name="location_on" className="text-[18px]" /> Region
+                    </span>
+                    <span className="text-right text-slate-900">
+                      {profile.location}
+                    </span>
+                  </div>
+                  <div className="flex items-center justify-between gap-3">
+                    <span className="inline-flex items-center gap-2">
+                      <Icon name="schedule" className="text-[18px]" /> Last
+                      login
+                    </span>
+                    <span className="text-right text-slate-900">
+                      {formatDateTime(profile.lastLogin)}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </Panel>
+          </div>
 
-                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                      <Field label="First Name">
-                        <TextInput
-                          value={profile.firstName}
-                          onChange={(value) =>
-                            setProfile((current) => ({
-                              ...current,
-                              firstName: value,
-                            }))
-                          }
-                          placeholder="First name"
-                        />
+          <div className="xl:min-w-0 xl:flex-1">
+            <Panel
+              title={
+                tab === "personal" ? "Personal Details" : "Login & Password"
+              }
+              subtitle={
+                tab === "personal"
+                  ? "Update the same profile fields already available on this page."
+                  : "Keep the current password fields, password guidance, and save flow."
+              }
+              actions={
+                <div className="flex flex-wrap gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setTab("personal")}
+                    className={cn(
+                      "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                      tab === "personal"
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                    )}
+                  >
+                    Personal Information
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setTab("security")}
+                    className={cn(
+                      "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                      tab === "security"
+                        ? "border-slate-900 bg-slate-900 text-white"
+                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                    )}
+                  >
+                    Login & Password
+                  </button>
+                </div>
+              }
+            >
+              <div className="flex flex-col h-full justify-between space-y-6 px-5 py-5">
+                <div className="space-y-6">
+                  {error ? (
+                    <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                      {error}
+                    </div>
+                  ) : null}
+
+                  {tab === "personal" ? (
+                    <>
+                      <Field label="Gender">
+                        <div className="flex flex-wrap gap-3">
+                          {(["Male", "Female"] as const).map((gender) => (
+                            <button
+                              key={gender}
+                              type="button"
+                              onClick={() =>
+                                setProfile((current) => ({
+                                  ...current,
+                                  gender,
+                                }))
+                              }
+                              className={cn(
+                                "rounded-[14px] border px-6 py-3 text-[13px] font-extrabold transition",
+                                profile.gender === gender
+                                  ? "border-slate-900 bg-slate-900 text-white"
+                                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                              )}
+                            >
+                              {gender}
+                            </button>
+                          ))}
+                        </div>
                       </Field>
 
-                      <Field label="Last Name">
-                        <TextInput
-                          value={profile.lastName}
-                          onChange={(value) =>
-                            setProfile((current) => ({
-                              ...current,
-                              lastName: value,
-                            }))
-                          }
-                          placeholder="Last name"
-                        />
-                      </Field>
-
-                      <div className="md:col-span-2">
-                        <Field label="Email Address" hint="Read-only here">
+                      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                        <Field label="First Name">
                           <TextInput
-                            value={profile.email}
-                            onChange={() => {}}
-                            placeholder="Email address"
-                            disabled
-                            right={
-                              profile.emailVerified ? (
-                                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-emerald-700">
-                                  <Icon
-                                    name="verified"
-                                    className="text-[14px]"
-                                  />
-                                  Verified
-                                </span>
-                              ) : (
-                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
-                                  Sign-in Email
-                                </span>
-                              )
-                            }
-                          />
-                        </Field>
-                      </div>
-
-                      <div className="md:col-span-2">
-                        <Field label="Home Address">
-                          <TextInput
-                            value={profile.address}
+                            value={profile.firstName}
                             onChange={(value) =>
                               setProfile((current) => ({
                                 ...current,
-                                address: value,
+                                firstName: value,
                               }))
                             }
-                            placeholder="e.g. Kathmandu, Nepal"
+                            placeholder="First name"
+                          />
+                        </Field>
+
+                        <Field label="Last Name">
+                          <TextInput
+                            value={profile.lastName}
+                            onChange={(value) =>
+                              setProfile((current) => ({
+                                ...current,
+                                lastName: value,
+                              }))
+                            }
+                            placeholder="Last name"
+                          />
+                        </Field>
+
+                        <div className="md:col-span-2">
+                          <Field label="Email Address" hint="Read-only here">
+                            <TextInput
+                              value={profile.email}
+                              onChange={() => {}}
+                              placeholder="Email address"
+                              disabled
+                              right={
+                                profile.emailVerified ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-extrabold uppercase  text-emerald-700">
+                                    <Icon
+                                      name="verified"
+                                      className="text-[14px]"
+                                    />
+                                    Verified
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase  text-slate-500">
+                                    Sign-in Email
+                                  </span>
+                                )
+                              }
+                            />
+                          </Field>
+                        </div>
+
+                        <div className="md:col-span-2">
+                          <Field label="Home Address">
+                            <TextInput
+                              value={profile.address}
+                              onChange={(value) =>
+                                setProfile((current) => ({
+                                  ...current,
+                                  address: value,
+                                }))
+                              }
+                              placeholder="e.g. Kathmandu, Nepal"
+                            />
+                          </Field>
+                        </div>
+
+                        <Field label="Phone Number">
+                          <TextInput
+                            value={profile.phone}
+                            onChange={(value) =>
+                              setProfile((current) => ({
+                                ...current,
+                                phone: value,
+                              }))
+                            }
+                            placeholder="+977 98XXXXXXXX"
+                          />
+                        </Field>
+
+                        <Field
+                          label="Country / Region"
+                          hint="Stored locally on this device"
+                        >
+                          <SelectInput
+                            value={profile.location}
+                            onChange={(value) =>
+                              setProfile((current) => ({
+                                ...current,
+                                location: value,
+                              }))
+                            }
+                            options={["Nepal", "India", "Other"]}
+                          />
+                        </Field>
+                      </div>
+                    </>
+                  ) : (
+                    <>
+                      <Field label="Current Password">
+                        <TextInput
+                          value={pwd.current}
+                          onChange={(value) =>
+                            setPwd((current) => ({
+                              ...current,
+                              current: value,
+                            }))
+                          }
+                          placeholder="Enter current password"
+                          type="password"
+                        />
+                      </Field>
+
+                      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                        <Field label="New Password">
+                          <TextInput
+                            value={pwd.next}
+                            onChange={(value) =>
+                              setPwd((current) => ({ ...current, next: value }))
+                            }
+                            placeholder="New password"
+                            type="password"
+                          />
+                        </Field>
+
+                        <Field label="Confirm New Password">
+                          <TextInput
+                            value={pwd.confirm}
+                            onChange={(value) =>
+                              setPwd((current) => ({
+                                ...current,
+                                confirm: value,
+                              }))
+                            }
+                            placeholder="Repeat new password"
+                            type="password"
                           />
                         </Field>
                       </div>
 
-                      <Field label="Phone Number">
-                        <TextInput
-                          value={profile.phone}
-                          onChange={(value) =>
-                            setProfile((current) => ({
-                              ...current,
-                              phone: value,
-                            }))
-                          }
-                          placeholder="+977 98XXXXXXXX"
-                        />
-                      </Field>
+                      {isPwdMismatch ? (
+                        <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                          Passwords do not match.
+                        </div>
+                      ) : null}
 
-                      <Field
-                        label="Country / Region"
-                        hint="Stored locally on this device"
-                      >
-                        <SelectInput
-                          value={profile.location}
-                          onChange={(value) =>
-                            setProfile((current) => ({
-                              ...current,
-                              location: value,
-                            }))
-                          }
-                          options={["Nepal", "India", "Other"]}
-                        />
-                      </Field>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <Field label="Current Password">
-                      <TextInput
-                        value={pwd.current}
-                        onChange={(value) =>
-                          setPwd((current) => ({ ...current, current: value }))
-                        }
-                        placeholder="Enter current password"
-                        type="password"
-                      />
-                    </Field>
-
-                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                      <Field label="New Password">
-                        <TextInput
-                          value={pwd.next}
-                          onChange={(value) =>
-                            setPwd((current) => ({ ...current, next: value }))
-                          }
-                          placeholder="New password"
-                          type="password"
-                        />
-                      </Field>
-
-                      <Field label="Confirm New Password">
-                        <TextInput
-                          value={pwd.confirm}
-                          onChange={(value) =>
-                            setPwd((current) => ({
-                              ...current,
-                              confirm: value,
-                            }))
-                          }
-                          placeholder="Repeat new password"
-                          type="password"
-                        />
-                      </Field>
-                    </div>
-
-                    {isPwdMismatch ? (
-                      <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
-                        Passwords do not match.
+                      <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-5">
+                        <div className="text-[11px] font-extrabold uppercase  text-slate-500">
+                          Password Requirements
+                        </div>
+                        <div className="mt-2 text-[13px] font-medium leading-7 text-slate-600">
+                          Use 8 or more characters, mixing letters, numbers, and
+                          symbols. Avoid using dictionary words or easily
+                          guessable personal information.
+                        </div>
                       </div>
-                    ) : null}
+                    </>
+                  )}
+                </div>
 
-                    <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-5">
-                      <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
-                        Password Requirements
-                      </div>
-                      <div className="mt-2 text-[13px] font-medium leading-7 text-slate-600">
-                        Use 8 or more characters, mixing letters, numbers, and
-                        symbols. Avoid using dictionary words or easily
-                        guessable personal information.
-                      </div>
-                    </div>
-                  </>
-                )}
+                {/* Action Buttons moved to the bottom of the content area */}
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
+                  <ActionButton
+                    icon="restart_alt"
+                    label="Discard Changes"
+                    onClick={discard}
+                    disabled={
+                      saving || (!hasProfileChanges && !hasSecurityChanges)
+                    }
+                  />
+                  <ActionButton
+                    icon={tab === "security" ? "lock" : "save"}
+                    label={
+                      saving
+                        ? "Saving..."
+                        : tab === "security"
+                          ? "Update Password"
+                          : "Save Profile"
+                    }
+                    onClick={save}
+                    disabled={
+                      saving || (tab === "security" ? isPwdMismatch : false)
+                    }
+                    primary
+                  />
+                </div>
               </div>
-
-              {/* Action Buttons moved to the bottom of the content area */}
-              <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
-                <ActionButton
-                  icon="restart_alt"
-                  label="Discard Changes"
-                  onClick={discard}
-                  disabled={
-                    saving || (!hasProfileChanges && !hasSecurityChanges)
-                  }
-                />
-                <ActionButton
-                  icon={tab === "security" ? "lock" : "save"}
-                  label={
-                    saving
-                      ? "Saving..."
-                      : tab === "security"
-                        ? "Update Password"
-                        : "Save Profile"
-                  }
-                  onClick={save}
-                  disabled={
-                    saving || (tab === "security" ? isPwdMismatch : false)
-                  }
-                  primary
-                />
-              </div>
-            </div>
-          </Panel>
+            </Panel>
+          </div>
         </div>
       </div>
 

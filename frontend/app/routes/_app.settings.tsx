@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+﻿import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import Icon from "~/components/ui/Icon";
 import {
@@ -114,7 +114,7 @@ function Card({
   return (
     <div
       className={cn(
-        "rounded-[18px] border border-slate-200 bg-white shadow-sm",
+        "rounded-[18px] border border-slate-200 bg-white",
         className,
       )}
     >
@@ -208,12 +208,12 @@ function Stat({
   return (
     <Card>
       <div className="p-5">
-        <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+        <div className="text-[11px] font-extrabold uppercase  text-slate-400">
           {label}
         </div>
         <div
           className={cn(
-            "mt-2 text-[28px] font-extrabold tracking-tight",
+            "mt-2 text-[28px] font-extrabold ",
             valueTone,
           )}
         >
@@ -570,10 +570,10 @@ export default function SettingsPage() {
     <div className="space-y-6">
       <div className="flex flex-col gap-4">
         <div>
-          <div className="text-[11px] font-extrabold uppercase tracking-[0.22em] text-slate-400">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-400">
             Admin Settings
           </div>
-          <div className="mt-1 text-[24px] font-extrabold tracking-tight text-slate-900">
+          <div className="mt-1 text-[24px] font-extrabold  text-slate-900">
             Operational settings and controls
           </div>
           <div className="mt-1 text-[13px] text-slate-500">
@@ -642,9 +642,9 @@ export default function SettingsPage() {
       {tab === "overview" ? (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
           <Card>
-            <div className="flex flex-col gap-3 border-b border-[var(--app-border)] px-5 py-4 md:flex-row md:items-center md:justify-between">
+            <div className="flex flex-col gap-3 border-b border-[#CFCFD3] px-5 py-4 md:flex-row md:items-center md:justify-between">
               <div>
-                <div className="text-[18px] font-extrabold text-[var(--app-text)]">
+                <div className="text-[18px] font-extrabold text-[#000000]">
                   Business defaults
                 </div>
               </div>
@@ -665,11 +665,11 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="grid grid-cols-1 gap-4 p-5 lg:grid-cols-3">
-              <div className="rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 p-4">
-                <div className="text-[13px] font-extrabold text-[var(--app-text)]">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]/70 p-4">
+                <div className="text-[13px] font-extrabold text-[#000000]">
                   Stock alert threshold
                 </div>
-                <div className="mt-1 text-[12px] text-[var(--app-text-muted)]">
+                <div className="mt-1 text-[12px] text-[#8C8889]">
                   Used as the default when opening the add-product form.
                 </div>
                 <input
@@ -679,14 +679,14 @@ export default function SettingsPage() {
                   onChange={(e) =>
                     setDefaultLowStock(Math.max(0, Number(e.target.value || 0)))
                   }
-                  className="mt-4 w-full rounded-[14px] border border-[var(--app-border)] bg-white px-3 py-2 text-[14px] text-[var(--app-text)] outline-none focus:border-[#11120d]"
+                  className="mt-4 w-full rounded-[14px] border border-[#CFCFD3] bg-white px-3 py-2 text-[14px] text-[#000000] outline-none focus:border-[#11120d]"
                 />
               </div>
-              <div className="rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 p-4">
-                <div className="text-[13px] font-extrabold text-[var(--app-text)]">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]/70 p-4">
+                <div className="text-[13px] font-extrabold text-[#000000]">
                   Wholesale quantity default
                 </div>
-                <div className="mt-1 text-[12px] text-[var(--app-text-muted)]">
+                <div className="mt-1 text-[12px] text-[#8C8889]">
                   Used as the default threshold when adding a new product.
                 </div>
                 <input
@@ -698,14 +698,14 @@ export default function SettingsPage() {
                       Math.max(1, Number(e.target.value || 1)),
                     )
                   }
-                  className="mt-4 w-full rounded-[14px] border border-[var(--app-border)] bg-white px-3 py-2 text-[14px] text-[var(--app-text)] outline-none focus:border-[#11120d]"
+                  className="mt-4 w-full rounded-[14px] border border-[#CFCFD3] bg-white px-3 py-2 text-[14px] text-[#000000] outline-none focus:border-[#11120d]"
                 />
               </div>
-              <div className="rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 p-4">
-                <div className="text-[13px] font-extrabold text-[var(--app-text)]">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]/70 p-4">
+                <div className="text-[13px] font-extrabold text-[#000000]">
                   Loyalty discount percentage
                 </div>
-                <div className="mt-1 text-[12px] text-[var(--app-text-muted)]">
+                <div className="mt-1 text-[12px] text-[#8C8889]">
                   Used as the admin default in the Customer Discounts flow.
                 </div>
                 <input
@@ -718,7 +718,7 @@ export default function SettingsPage() {
                       clampPercent(Number(e.target.value || 0)),
                     )
                   }
-                  className="mt-4 w-full rounded-[14px] border border-[var(--app-border)] bg-white px-3 py-2 text-[14px] text-[var(--app-text)] outline-none focus:border-[#11120d]"
+                  className="mt-4 w-full rounded-[14px] border border-[#CFCFD3] bg-white px-3 py-2 text-[14px] text-[#000000] outline-none focus:border-[#11120d]"
                 />
               </div>
             </div>
@@ -805,7 +805,7 @@ export default function SettingsPage() {
           <div className="overflow-x-auto p-5">
             <table className="w-full min-w-[760px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-slate-100 text-[11px] font-extrabold uppercase tracking-wider text-slate-400">
+                <tr className="border-b border-slate-100 text-[11px] font-extrabold uppercase  text-slate-400">
                   <th className="px-3 py-3">Brand</th>
                   <th className="px-3 py-3">Products</th>
                   <th className="px-3 py-3">Active Products</th>
@@ -1053,7 +1053,7 @@ export default function SettingsPage() {
         >
           <div className="space-y-4">
             <div>
-              <div className="text-[12px] font-extrabold uppercase tracking-wider text-slate-400">
+              <div className="text-[12px] font-extrabold uppercase  text-slate-400">
                 Brand name
               </div>
               <input
@@ -1262,3 +1262,4 @@ export default function SettingsPage() {
     </div>
   );
 }
+

@@ -1,4 +1,4 @@
-import { Navigate, Outlet, useLocation } from "react-router";
+﻿import { Navigate, Outlet, useLocation } from "react-router";
 import AppShell from "~/components/layout/AppShell";
 import { getAuthUser, isLoggedIn } from "~/lib/auth";
 import {
@@ -36,3 +36,4 @@ export default function AppLayout() {
     </AppShell>
   );
 }
+

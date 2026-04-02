@@ -1,8 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+﻿import { useEffect, useMemo, useState } from "react";
+import {
+  InvoiceStatusChip,
+  PaymentMethodChip,
+} from "~/components/invoices/InvoiceChips";
 import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
 import Icon from "~/components/ui/Icon";
 import { getInvoiceApi, listInvoicesApi } from "~/lib/api/endpoints";
-import type { AppInvoice, InvoiceStatusLabel, PaymentMethodLabel } from "~/lib/invoices";
+import type { AppInvoice, InvoiceStatusLabel } from "~/lib/invoices";
 import {
   formatNpr,
   getInvoiceReference,
@@ -13,52 +17,14 @@ function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-function statusPill(status: InvoiceStatusLabel) {
-  const styles: Record<InvoiceStatusLabel, string> = {
-    Paid: "bg-emerald-50 text-emerald-700 border-emerald-200",
-    Partial: "bg-amber-50 text-amber-800 border-amber-200",
-    Unpaid: "bg-rose-50 text-rose-700 border-rose-200",
-    Cancelled: "bg-slate-100 text-slate-600 border-slate-200",
-  };
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px] font-extrabold",
-        styles[status],
-      )}
-    >
-      {status.toUpperCase()}
-    </span>
-  );
-}
-
-function methodChip(method: PaymentMethodLabel) {
-  const styles: Record<PaymentMethodLabel, string> = {
-    Cash: "bg-white text-slate-700 border-slate-200",
-    eSewa: "bg-emerald-50 text-emerald-800 border-emerald-200",
-    Khalti: "bg-indigo-50 text-indigo-700 border-indigo-200",
-    None: "bg-slate-50 text-slate-500 border-slate-200",
-  };
-
-  return (
-    <span
-      className={cn(
-        "inline-flex items-center rounded-[10px] border px-2 py-1 text-[11px] font-bold",
-        styles[method],
-      )}
-    >
-      {method === "None" ? "No Payment" : method}
-    </span>
-  );
-}
-
 export default function HistoryPage() {
   const [invoices, setInvoices] = useState<AppInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All");
-  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(null);
+  const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
+    null,
+  );
   const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null);
 
   async function loadInvoices() {
@@ -89,7 +55,9 @@ export default function HistoryPage() {
   const filtered = useMemo(() => {
     const loweredQuery = query.trim().toLowerCase();
     return invoices
-      .filter((invoice) => (activeTab === "All" ? true : invoice.status === activeTab))
+      .filter((invoice) =>
+        activeTab === "All" ? true : invoice.status === activeTab,
+      )
       .filter((invoice) => {
         if (!loweredQuery) return true;
 
@@ -109,7 +77,8 @@ export default function HistoryPage() {
   const totalSales = useMemo(
     () =>
       filtered.reduce(
-        (sum, invoice) => sum + (invoice.status === "Cancelled" ? 0 : invoice.netTotal),
+        (sum, invoice) =>
+          sum + (invoice.status === "Cancelled" ? 0 : invoice.netTotal),
         0,
       ),
     [filtered],
@@ -121,7 +90,8 @@ export default function HistoryPage() {
   const totalDue = useMemo(
     () =>
       filtered.reduce(
-        (sum, invoice) => sum + (invoice.status === "Cancelled" ? 0 : invoice.dueAmount),
+        (sum, invoice) =>
+          sum + (invoice.status === "Cancelled" ? 0 : invoice.dueAmount),
         0,
       ),
     [filtered],
@@ -152,17 +122,18 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="min-h-full rounded-[28px] bg-[var(--app-page-bg)] p-6 text-slate-900">
+    <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-[24px] text-[#0F172A]">
       <div className="grid grid-cols-12 gap-4">
         <div className="col-span-12 lg:col-span-4">
-          <h1 className="text-2xl font-extrabold tracking-tight">History</h1>
+          <h1 className="text-2xl font-extrabold ">History</h1>
           <p className="mt-1 text-sm text-slate-500">
-            Real invoice records with payment totals, status, method, and reference data.
+            Real invoice records with payment totals, status, method, and
+            reference data.
           </p>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4 shadow-sm sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
             Net Total
           </div>
           <div className="mt-2 text-[22px] font-extrabold text-slate-900">
@@ -170,8 +141,8 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4 shadow-sm sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
             Paid
           </div>
           <div className="mt-2 text-[22px] font-extrabold text-emerald-700">
@@ -179,8 +150,8 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4 shadow-sm sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
             Due
           </div>
           <div className="mt-2 text-[22px] font-extrabold text-rose-700">
@@ -188,8 +159,8 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4 shadow-sm lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  lg:col-span-2">
+          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
             Records
           </div>
           <div className="mt-2 text-[22px] font-extrabold text-slate-900">
@@ -200,24 +171,26 @@ export default function HistoryPage() {
 
       <div className="mt-6 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
         <div className="flex flex-wrap items-center gap-2">
-          {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map((tab) => {
-            const active = tab === activeTab;
-            return (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => setActiveTab(tab)}
-                className={cn(
-                  "rounded-full border-2 px-4 py-2 text-[12px] font-extrabold transition",
-                  active
-                    ? "border-[#11120d] bg-[#11120d] text-white"
-                    : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
-                )}
-              >
-                {tab}
-              </button>
-            );
-          })}
+          {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
+            (tab) => {
+              const active = tab === activeTab;
+              return (
+                <button
+                  key={tab}
+                  type="button"
+                  onClick={() => setActiveTab(tab)}
+                  className={cn(
+                    "rounded-full border-2 px-4 py-2 text-[12px] font-extrabold transition",
+                    active
+                      ? "border-[#11120d] bg-[#11120d] text-white"
+                      : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
+                  )}
+                >
+                  {tab}
+                </button>
+              );
+            },
+          )}
         </div>
 
         <div className="relative w-full xl:w-[360px]">
@@ -229,16 +202,16 @@ export default function HistoryPage() {
             value={query}
             onChange={(event) => setQuery(event.target.value)}
             placeholder="Search invoice, customer, cashier, reference..."
-            className="h-[46px] w-full rounded-[14px] border border-[var(--app-border)] bg-white pl-12 pr-4 text-[14px] font-semibold text-[var(--app-text)] outline-none focus:border-[#11120d]"
+            className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] pl-[48px] pr-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
           />
         </div>
       </div>
 
-      <div className="mt-6 overflow-hidden rounded-[20px] border border-[var(--app-border)] bg-white shadow-sm">
+      <div className="mt-6 overflow-hidden rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] ">
         <div className="overflow-x-auto">
           <table className="min-w-[1200px] w-full">
             <thead>
-              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+              <tr className="border-b border-slate-200 bg-slate-50 text-left text-[11px] font-extrabold uppercase  text-slate-500">
                 <th className="px-5 py-3">Invoice</th>
                 <th className="px-5 py-3">Customer</th>
                 <th className="px-5 py-3">Date</th>
@@ -265,7 +238,9 @@ export default function HistoryPage() {
                       <div className="font-mono text-[13px] font-extrabold text-slate-900">
                         {invoice.invoiceNo}
                       </div>
-                      <div className="mt-1 text-[12px] text-slate-500">{invoice.itemSummary}</div>
+                      <div className="mt-1 text-[12px] text-slate-500">
+                        {invoice.itemSummary}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4">
@@ -287,7 +262,9 @@ export default function HistoryPage() {
                     </td>
 
                     <td className="px-5 py-4">
-                      <div>{methodChip(invoice.paymentMethod)}</div>
+                      <div>
+                        <PaymentMethodChip method={invoice.paymentMethod} />
+                      </div>
                       <div className="mt-1 text-[12px] text-slate-500">
                         Cashier: {invoice.cashierName}
                       </div>
@@ -309,7 +286,9 @@ export default function HistoryPage() {
                       {formatNpr(invoice.dueAmount)}
                     </td>
 
-                    <td className="px-5 py-4">{statusPill(invoice.status)}</td>
+                    <td className="px-5 py-4">
+                      <InvoiceStatusChip status={invoice.status} />
+                    </td>
 
                     <td className="px-5 py-4">
                       <div className="flex items-center justify-end gap-2">

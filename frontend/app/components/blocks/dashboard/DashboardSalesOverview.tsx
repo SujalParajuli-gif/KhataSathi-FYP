@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -113,7 +113,9 @@ export default function DashboardSalesOverview({
       totalInvoices,
       totalItems,
       totalRevenue,
-      averageInvoices: data.length ? Math.round(totalInvoices / data.length) : 0,
+      averageInvoices: data.length
+        ? Math.round(totalInvoices / data.length)
+        : 0,
     };
   }, [data]);
 
@@ -122,12 +124,12 @@ export default function DashboardSalesOverview({
       <div className="px-[20px] py-[18px] flex items-center justify-between">
         <div className="flex items-center gap-2">
           <SectionTitle title="Invoice Activity" />
-          <span className="text-[11px] font-bold text-slate-400 uppercase tracking-widest">
+          <span className="text-[11px] font-bold text-slate-400 uppercase ">
             Operational
           </span>
         </div>
 
-        <div className="flex rounded-xl border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1">
+        <div className="flex rounded-xl border border-[#CFCFD3] bg-[#F3F4F6] p-1">
           {(["today", "week", "month"] as RangeKey[]).map((r) => (
             <button
               key={r}
@@ -135,8 +137,8 @@ export default function DashboardSalesOverview({
               onClick={() => onRangeChange(r)}
               className={`px-3 py-1.5 text-[11px] font-bold rounded-lg capitalize transition-all ${
                 range === r
-                  ? "bg-white text-[var(--app-text)] shadow-sm"
-                  : "text-[var(--app-text-muted)] hover:text-[var(--app-text)]"
+                  ? "bg-white text-[#000000] "
+                  : "text-[#8C8889] hover:text-[#000000]"
               }`}
               aria-pressed={range === r}
             >
@@ -146,35 +148,43 @@ export default function DashboardSalesOverview({
         </div>
       </div>
 
-      <div className="px-[20px] -mt-2 pb-[10px] flex flex-wrap items-center gap-2 text-[11px] font-bold">
+      <div className="px-[20px] -mt-2 pb-[20px] flex flex-wrap items-center gap-2 text-[11px] font-bold">
         <span className="text-slate-500">
-          Avg invoices: <span className="text-slate-900">{totals.averageInvoices}</span>
+          Avg invoices:{" "}
+          <span className="text-slate-900">{totals.averageInvoices}</span>
         </span>
-        <span className="text-slate-300">•</span>
+        <span className="text-slate-300">|</span>
         <span className="text-slate-500">
-          Items sold: <span className="text-slate-900">{totals.totalItems}</span>
+          Items sold:{" "}
+          <span className="text-slate-900">{totals.totalItems}</span>
         </span>
-        <span className="text-slate-300">•</span>
+        <span className="text-slate-300">|</span>
         <span className="text-slate-500">
-          Revenue: <span className="text-slate-900">{formatNpr(totals.totalRevenue)}</span>
+          Revenue:{" "}
+          <span className="text-slate-900">
+            {formatNpr(totals.totalRevenue)}
+          </span>
         </span>
       </div>
 
-      <div className="px-[20px] pb-[20px]">
+      <div className="px-[20px] pb-[30px]">
         {loading ? (
-          <div className="h-[240px] animate-pulse rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/70" />
+          <div className="h-[240px] animate-pulse rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]/70" />
         ) : error ? (
           <div className="h-[240px] rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-6 text-[13px] font-semibold text-rose-700">
             {error}
           </div>
         ) : data.length === 0 ? (
-          <div className="h-[240px] rounded-[16px] border border-dashed border-[var(--app-border)] bg-[var(--app-surface-muted)]/70 px-4 py-6 text-[13px] font-semibold text-[var(--app-text-muted)]">
+          <div className="h-[240px] rounded-[16px] border border-dashed border-[#CFCFD3] bg-[#F3F4F6]/70 px-4 py-6 text-[13px] font-semibold text-[#8C8889]">
             No invoice activity was recorded for this range.
           </div>
         ) : (
-          <SafeChartFrame className="h-[240px] rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/55 p-3">
+          <SafeChartFrame className="h-[240px] rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]/55 p-3">
             <ResponsiveContainer width="100%" height="100%">
-              <ComposedChart data={data} margin={{ top: 8, right: 18, left: 0, bottom: 8 }}>
+              <ComposedChart
+                data={data}
+                margin={{ top: 8, right: 18, left: 0, bottom: 8 }}
+              >
                 <CartesianGrid stroke="#e2e8f0" strokeDasharray="3 3" />
                 <XAxis
                   dataKey="label"
@@ -199,8 +209,10 @@ export default function DashboardSalesOverview({
                 <Tooltip
                   content={({ active, payload, label }) =>
                     active && payload?.[0]?.payload ? (
-                      <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 shadow-lg">
-                        <div className="text-[12px] font-extrabold text-slate-900">{label}</div>
+                      <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 ">
+                        <div className="text-[12px] font-extrabold text-slate-900">
+                          {label}
+                        </div>
                         <div className="mt-1 text-[12px] font-semibold text-slate-600">
                           Invoices: {payload[0].payload.invoices}
                         </div>
@@ -215,7 +227,11 @@ export default function DashboardSalesOverview({
                   }
                 />
                 <Legend
-                  wrapperStyle={{ fontSize: 11, fontWeight: 700, color: "#475569" }}
+                  wrapperStyle={{
+                    fontSize: 11,
+                    fontWeight: 700,
+                    color: "#475569",
+                  }}
                 />
                 <Bar
                   yAxisId="count"

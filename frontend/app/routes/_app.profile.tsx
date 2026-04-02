@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+﻿import React, { useEffect, useState } from "react";
 import {
   createUserApi,
   getMeApi,
@@ -8,12 +8,11 @@ import {
   uploadProfilePhotoApi,
   uploadUserPhotoApi,
 } from "~/lib/api/endpoints";
-import { ConfirmDialog, SuccessDialog } from "~/components/ui/Modal";
+import { API_BASE_URL } from "~/lib/api/baseUrl";
+import { ConfirmDialog, StatusDialog } from "~/components/ui/Modal";
+import UserAvatar from "~/components/ui/UserAvatar";
 import { setAuthUser } from "~/lib/auth";
 import { Link } from "react-router";
-
-const API_BASE_URL =
-  import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
 
 function formatLastLogin(value?: string | null) {
   return value ? new Date(value).toLocaleString() : "Never";
@@ -51,7 +50,7 @@ function GIcon({
 
 function CardShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[22px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
+    <div className="overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-white">
       {children}
     </div>
   );
@@ -60,11 +59,9 @@ function CardShell({ children }: { children: React.ReactNode }) {
 function SectionTitle({ title, sub }: { title: string; sub?: string }) {
   return (
     <div>
-      <h2 className="text-[15px] font-extrabold tracking-tight text-[var(--app-text)]">
-        {title}
-      </h2>
+      <h2 className="text-[15px] font-extrabold  text-[#000000]">{title}</h2>
       {sub ? (
-        <p className="mt-[3px] text-[12px] font-medium text-[var(--app-text-muted)]">{sub}</p>
+        <p className="mt-[3px] text-[12px] font-medium text-[#8C8889]">{sub}</p>
       ) : null}
     </div>
   );
@@ -89,7 +86,9 @@ function TextField({
 }) {
   return (
     <div className="space-y-1.5">
-      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">{label}</div>
+      <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
+        {label}
+      </div>
       <input
         type={type}
         value={value}
@@ -98,13 +97,13 @@ function TextField({
         onChange={(e) => onChange?.(e.target.value)}
         className={[
           "w-full rounded-[12px] border bg-white px-3 py-2.5",
-          "text-[13px] font-semibold text-[var(--app-text)] outline-none",
-          "placeholder:text-[var(--app-text-muted)]",
+          "text-[13px] font-semibold text-[#000000] outline-none",
+          "placeholder:text-[#8C8889]",
           disabled
-            ? "border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[var(--app-text-muted)]"
+            ? "border-[#CFCFD3] bg-[#F3F4F6] text-[#8C8889]"
             : error
               ? "border-rose-300 focus:border-rose-400"
-              : "border-[var(--app-border)] focus:border-[#11120d]",
+              : "border-[#CFCFD3] focus:border-[#11120d]",
         ].join(" ")}
       />
       {error ? (
@@ -129,16 +128,18 @@ function SelectField({
 }) {
   return (
     <div className="space-y-1.5">
-      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">{label}</div>
+      <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
+        {label}
+      </div>
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
         className={[
           "w-full rounded-[12px] border bg-white px-3 py-2.5",
-          "text-[13px] font-semibold text-[var(--app-text)] outline-none",
+          "text-[13px] font-semibold text-[#000000] outline-none",
           error
             ? "border-rose-300 focus:border-rose-400"
-            : "border-[var(--app-border)] focus:border-[#11120d]",
+            : "border-[#CFCFD3] focus:border-[#11120d]",
         ].join(" ")}
       >
         {options.map((option) => (
@@ -171,8 +172,8 @@ function Button({
     variant === "primary"
       ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
       : variant === "danger"
-        ? "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:bg-rose-100"
-        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]";
+        ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100"
+        : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]";
 
   return (
     <button
@@ -201,12 +202,12 @@ function Badge({
 }) {
   const cls =
     tone === "green"
-      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
-      : "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]";
+      ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
+      : "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]";
 
   return (
     <span
-      className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-extrabold uppercase tracking-wide ${cls}`}
+      className={`inline-flex items-center rounded-md border px-2 py-1 text-[11px] font-extrabold uppercase  ${cls}`}
     >
       {children}
     </span>
@@ -235,18 +236,18 @@ function Modal({
         onClick={onClose}
       />
 
-      <div className="relative w-full max-w-[580px] rounded-[16px] border border-[var(--app-border)] bg-white shadow-[0_30px_90px_-45px_rgba(17,18,13,0.65)]">
-        <div className="flex items-center justify-between border-b border-[var(--app-border)] px-5 py-4">
-          <div className="text-[14px] font-extrabold text-[var(--app-text)]">
+      <div className="relative w-full max-w-[580px] rounded-[16px] border border-[#CFCFD3] bg-white">
+        <div className="flex items-center justify-between border-b border-[#CFCFD3] px-5 py-4">
+          <div className="text-[14px] font-extrabold text-[#000000]">
             {title}
           </div>
           <button
             type="button"
             onClick={onClose}
-            className="inline-flex h-9 w-9 items-center justify-center rounded-[12px] border border-[var(--app-border)] bg-white hover:bg-[var(--app-surface-muted)]"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white hover:bg-[#F3F4F6]"
             aria-label="Close modal"
           >
-            <GIcon name="close" sizePx={18} className="text-[var(--app-text-soft)]" />
+            <GIcon name="close" sizePx={18} className="text-[#565449]" />
           </button>
         </div>
 
@@ -269,23 +270,22 @@ function ImageUpload({
 }) {
   return (
     <div className="space-y-2">
-      <div className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">{label}</div>
+      <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
+        {label}
+      </div>
 
       <div className="flex items-center gap-3">
-        <div className="flex h-[56px] w-[56px] shrink-0 items-center justify-center overflow-hidden rounded-[16px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
-          {previewUrl ? (
-            <img
-              src={previewUrl}
-              alt="Preview"
-              className="h-full w-full object-cover"
-            />
-          ) : (
-            <GIcon name="person" sizePx={22} className="text-[var(--app-text-muted)]" />
-          )}
-        </div>
+        <UserAvatar
+          src={previewUrl}
+          alt="Preview"
+          className="flex h-[56px] w-[56px] shrink-0 items-center justify-center overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]"
+          fallback={
+            <GIcon name="person" sizePx={22} className="text-[#8C8889]" />
+          }
+        />
 
-        <label className="inline-flex cursor-pointer items-center gap-2 rounded-[12px] border border-[var(--app-border)] bg-white px-3 py-2.5 text-[13px] font-bold text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]">
-          <GIcon name="upload" sizePx={18} className="text-[var(--app-text-muted)]" />
+        <label className="inline-flex cursor-pointer items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 py-2.5 text-[13px] font-bold text-[#565449] hover:bg-[#F3F4F6]">
+          <GIcon name="upload" sizePx={18} className="text-[#8C8889]" />
           Upload
           <input
             type="file"
@@ -302,9 +302,9 @@ function ImageUpload({
         <button
           type="button"
           onClick={onClear}
-          className="inline-flex items-center gap-2 rounded-[12px] border border-[var(--app-border)] bg-white px-3 py-2.5 text-[13px] font-bold text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]"
+          className="inline-flex items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 py-2.5 text-[13px] font-bold text-[#565449] hover:bg-[#F3F4F6]"
         >
-          <GIcon name="delete" sizePx={18} className="text-[var(--app-text-muted)]" />
+          <GIcon name="delete" sizePx={18} className="text-[#8C8889]" />
           Remove
         </button>
       </div>
@@ -339,8 +339,12 @@ export default function ProfilePage() {
 
   const [cashiers, setCashiers] = useState<Cashier[]>([]);
   const [loadingCashiers, setLoadingCashiers] = useState(false);
-  const [profileSuccessOpen, setProfileSuccessOpen] = useState(false);
-  const [profileSuccessMessage, setProfileSuccessMessage] = useState("");
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackTitle, setFeedbackTitle] = useState("");
+  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [feedbackTone, setFeedbackTone] = useState<"success" | "error">(
+    "success",
+  );
 
   const [addOpen, setAddOpen] = useState(false);
   const [newName, setNewName] = useState("");
@@ -367,7 +371,6 @@ export default function ProfilePage() {
   const [editPhone, setEditPhone] = useState("");
   const [editGender, setEditGender] = useState("");
   const [editAddress, setEditAddress] = useState("");
-  const [editCurrentPassword, setEditCurrentPassword] = useState("");
   const [editNewPassword, setEditNewPassword] = useState("");
   const [editConfirmPassword, setEditConfirmPassword] = useState("");
   const [editActive, setEditActive] = useState(true);
@@ -376,15 +379,16 @@ export default function ProfilePage() {
   );
   const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
   const [editPhotoRemoved, setEditPhotoRemoved] = useState(false);
+  const [editWantsPasswordChange, setEditWantsPasswordChange] = useState(false);
   const [editFormError, setEditFormError] = useState("");
   const [editFieldErrors, setEditFieldErrors] = useState({
     name: "",
     email: "",
-    currentPassword: "",
     newPassword: "",
     confirmPassword: "",
   });
-  const [pendingDeactivateCashier, setPendingDeactivateCashier] = useState<Cashier | null>(null);
+  const [pendingDeactivateCashier, setPendingDeactivateCashier] =
+    useState<Cashier | null>(null);
 
   function mapCashier(user: any): Cashier {
     return {
@@ -420,6 +424,17 @@ export default function ProfilePage() {
       profileImage: user.profileImage,
     });
     window.dispatchEvent(new Event("auth_change"));
+  }
+
+  function showFeedback(
+    tone: "success" | "error",
+    title: string,
+    message: string,
+  ) {
+    setFeedbackTone(tone);
+    setFeedbackTitle(title);
+    setFeedbackMessage(message);
+    setFeedbackOpen(true);
   }
 
   useEffect(() => {
@@ -471,18 +486,17 @@ export default function ProfilePage() {
     setEditPhone(cashier.phone);
     setEditGender(cashier.gender || "");
     setEditAddress(cashier.address || "");
-    setEditCurrentPassword("");
     setEditNewPassword("");
     setEditConfirmPassword("");
     setEditActive(cashier.active);
     setEditPhotoUrl(cashier.profileImage || undefined);
     setEditPhotoFile(null);
     setEditPhotoRemoved(false);
+    setEditWantsPasswordChange(false);
     setEditFormError("");
     setEditFieldErrors({
       name: "",
       email: "",
-      currentPassword: "",
       newPassword: "",
       confirmPassword: "",
     });
@@ -497,18 +511,17 @@ export default function ProfilePage() {
     setEditPhone("");
     setEditGender("");
     setEditAddress("");
-    setEditCurrentPassword("");
     setEditNewPassword("");
     setEditConfirmPassword("");
     setEditActive(true);
     setEditPhotoUrl(undefined);
     setEditPhotoFile(null);
     setEditPhotoRemoved(false);
+    setEditWantsPasswordChange(false);
     setEditFormError("");
     setEditFieldErrors({
       name: "",
       email: "",
-      currentPassword: "",
       newPassword: "",
       confirmPassword: "",
     });
@@ -542,7 +555,6 @@ export default function ProfilePage() {
     const nextErrors = {
       name: "",
       email: "",
-      currentPassword: "",
       newPassword: "",
       confirmPassword: "",
     };
@@ -552,12 +564,9 @@ export default function ProfilePage() {
     else if (!isValidEmail(editEmail.trim()))
       nextErrors.email = "Enter a valid email address.";
 
-    const wantsPasswordChange =
-      !!editCurrentPassword || !!editNewPassword || !!editConfirmPassword;
+    const wantsPasswordChange = editWantsPasswordChange;
 
     if (wantsPasswordChange) {
-      if (!editCurrentPassword)
-        nextErrors.currentPassword = "Enter the current password.";
       if (!editNewPassword) nextErrors.newPassword = "Enter the new password.";
       else if (editNewPassword.length < 6)
         nextErrors.newPassword = "Password must be at least 6 characters.";
@@ -595,13 +604,21 @@ export default function ProfilePage() {
       await loadCashiers();
       setAddOpen(false);
       resetAddForm();
+      showFeedback(
+        "success",
+        "Cashier added",
+        newPhotoFile
+          ? "The cashier account and profile photo have been added successfully."
+          : "The cashier account has been added successfully.",
+      );
     } catch (error: any) {
       console.error(error);
-      setAddFormError(
+      const message =
         error.response?.data?.error ||
-          error?.message ||
-          "Error adding cashier.",
-      );
+        error?.message ||
+        "Error adding cashier.";
+      setAddFormError(message);
+      showFeedback("error", "Could not add cashier", message);
     }
   }
 
@@ -610,8 +627,7 @@ export default function ProfilePage() {
 
     try {
       setEditFormError("");
-      const wantsPasswordChange =
-        !!editCurrentPassword || !!editNewPassword || !!editConfirmPassword;
+      const wantsPasswordChange = editWantsPasswordChange;
 
       await updateUserApi(editId, {
         name: editName.trim(),
@@ -622,7 +638,6 @@ export default function ProfilePage() {
         isActive: editActive,
         ...(wantsPasswordChange
           ? {
-              currentPassword: editCurrentPassword,
               newPassword: editNewPassword,
             }
           : {}),
@@ -636,13 +651,25 @@ export default function ProfilePage() {
 
       await loadCashiers();
       closeEdit();
+      showFeedback(
+        "success",
+        wantsPasswordChange ? "Password updated" : "Cashier updated",
+        wantsPasswordChange
+          ? "The cashier password has been updated successfully."
+          : editPhotoRemoved
+            ? "The cashier profile has been updated and the photo has been removed."
+            : editPhotoFile
+              ? "The cashier profile and photo have been updated successfully."
+              : "The cashier profile has been updated successfully.",
+      );
     } catch (error: any) {
       console.error(error);
-      setEditFormError(
+      const message =
         error.response?.data?.error ||
-          error?.message ||
-          "Error updating cashier.",
-      );
+        error?.message ||
+        "Error updating cashier.";
+      setEditFormError(message);
+      showFeedback("error", "Could not update cashier", message);
     }
   }
 
@@ -658,8 +685,19 @@ export default function ProfilePage() {
     try {
       await updateUserApi(id, { isActive: true });
       await loadCashiers();
-    } catch {
-      alert("Failed to toggle status");
+      showFeedback(
+        "success",
+        "Cashier activated",
+        "The cashier account has been activated successfully.",
+      );
+    } catch (error: any) {
+      showFeedback(
+        "error",
+        "Could not activate cashier",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to activate the cashier account.",
+      );
     }
   }
 
@@ -669,9 +707,20 @@ export default function ProfilePage() {
     try {
       await updateUserApi(pendingDeactivateCashier.id, { isActive: false });
       await loadCashiers();
+      showFeedback(
+        "success",
+        "Cashier deactivated",
+        "The cashier account has been deactivated successfully.",
+      );
       setPendingDeactivateCashier(null);
-    } catch {
-      alert("Failed to toggle status");
+    } catch (error: any) {
+      showFeedback(
+        "error",
+        "Could not deactivate cashier",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to deactivate the cashier account.",
+      );
     }
   }
 
@@ -685,203 +734,224 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-[18px] pb-10">
-      <div className="grid grid-cols-1 gap-5 xl:grid-cols-[340px_1fr]">
-        <CardShell>
-          <div className="border-b border-[var(--app-border)] px-[16px] py-[14px]">
-            <SectionTitle
-              title="Account overview"
-              sub="Photo, role, and sign-in status for this admin account."
-            />
-          </div>
-          <div className="space-y-5 px-[16px] py-[16px]">
-            <div className="flex flex-col items-center text-center">
-            <div className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-[var(--app-border)] bg-[var(--app-surface-muted)] text-[30px] font-extrabold text-[var(--app-text-soft)]">
-              {adminPhotoUrl ? (
-                <img
+      <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
+        <div className="xl:w-[440px] xl:flex-none">
+          <CardShell>
+            <div className="border-b border-[#CFCFD3] px-[16px] py-[14px]">
+              <SectionTitle
+                title="Account overview"
+                sub="Photo, role, and sign-in status for this admin account."
+              />
+            </div>
+            <div className="space-y-5 px-[16px] py-[16px]">
+              <div className="flex flex-col items-center text-center xl:h-69">
+                <UserAvatar
                   src={resolveImageUrl(adminPhotoUrl)}
                   alt="Admin"
-                  className="h-full w-full object-cover"
+                  className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-[#CFCFD3] bg-[#F3F4F6] text-[30px] font-extrabold text-[#565449]"
+                  fallback={adminInitials}
                 />
-              ) : (
-                adminInitials
-              )}
+
+                <div>
+                  <div className="mt-4 text-[20px] font-extrabold text-[#000000]">
+                    {me.name}
+                  </div>
+                  <div className="hidden mt-1 text-[13px] font-semibold text-[#8C8889]">
+                    Role: <span className="text-slate-700">{me.role}</span> |
+                    Last login:{" "}
+                    <span className="text-slate-700">{me.lastLogin}</span>
+                  </div>
+                  <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                    {me.email || "No email available"}
+                  </div>
+                  <div className="mt-3 flex flex-wrap justify-center gap-2">
+                    <label className="cursor-pointer">
+                      <input
+                        type="file"
+                        className="hidden"
+                        accept="image/*"
+                        onChange={async (event) => {
+                          const file = event.target.files?.[0];
+                          if (!file) return;
+                          const previewUrl = URL.createObjectURL(file);
+                          setAdminPhotoUrl(previewUrl);
+                          try {
+                            const response = await uploadProfilePhotoApi(file);
+                            if (response.user) {
+                              setAdminPhotoUrl(
+                                response.user.profileImage || undefined,
+                              );
+                              await syncAuth(response.user);
+                              showFeedback(
+                                "success",
+                                "Photo updated",
+                                "Your profile photo has been updated.",
+                              );
+                            }
+                          } catch (error: any) {
+                            showFeedback(
+                              "error",
+                              "Could not update photo",
+                              error?.message || "Upload failed.",
+                            );
+                          }
+                        }}
+                      />
+                      <span className="inline-flex items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 py-2.5 text-[13px] font-bold text-[#565449] hover:bg-[#F3F4F6]">
+                        <GIcon
+                          name="photo_camera"
+                          sizePx={18}
+                          className="text-[#8C8889]"
+                        />
+                        Change Photo
+                      </span>
+                    </label>
+                    <Button
+                      variant="secondary"
+                      icon="delete"
+                      onClick={async () => {
+                        try {
+                          const response = await updateProfileApi({
+                            profileImage: null,
+                          });
+                          if (response.user) {
+                            setAdminPhotoUrl(undefined);
+                            await syncAuth(response.user);
+                            showFeedback(
+                              "success",
+                              "Photo removed",
+                              "Your profile photo has been removed.",
+                            );
+                          }
+                        } catch (error: any) {
+                          showFeedback(
+                            "error",
+                            "Could not remove photo",
+                            error?.response?.data?.error ||
+                              error?.message ||
+                              "Failed to clear photo.",
+                          );
+                        }
+                      }}
+                    >
+                      Remove Photo
+                    </Button>
+                  </div>
+                </div>
+              </div>
+
+              <div className="space-y-3 rounded-[18px] border border-[#CFCFD3] bg-[#F3F4F6]/80 p-4 text-[13px] font-semibold text-[#565449]">
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2">
+                    <GIcon name="badge" sizePx={18} className="text-inherit" />
+                    Role
+                  </span>
+                  <span className="text-right text-[#000000]">{me.role}</span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2">
+                    <GIcon name="phone" sizePx={18} className="text-inherit" />
+                    Phone
+                  </span>
+                  <span className="text-right text-[#000000]">
+                    {me.phone || "No phone added"}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2">
+                    <GIcon
+                      name="schedule"
+                      sizePx={18}
+                      className="text-inherit"
+                    />
+                    Last login
+                  </span>
+                  <span className="text-right text-[#000000]">
+                    {me.lastLogin}
+                  </span>
+                </div>
+              </div>
+            </div>
+          </CardShell>
+        </div>
+
+        <div className="space-y-[16px] xl:min-w-0 xl:flex-1">
+          <CardShell>
+            <div className="border-b border-[#CFCFD3] px-[16px] py-[14px]">
+              <SectionTitle
+                title="Personal details"
+                sub="Update the same admin profile fields already supported in this workspace."
+              />
             </div>
 
-            <div>
-              <div className="mt-4 text-[20px] font-extrabold text-[var(--app-text)]">
-                {me.name}
-              </div>
-              <div className="hidden mt-1 text-[13px] font-semibold text-[var(--app-text-muted)]">
-                Role: <span className="text-slate-700">{me.role}</span> · Last
-                login: <span className="text-slate-700">{me.lastLogin}</span>
-              </div>
-              <div className="mt-1 text-[13px] font-semibold text-[var(--app-text-muted)]">
-                {me.email || "No email available"}
-              </div>
-              <div className="mt-3 flex flex-wrap justify-center gap-2">
-                <label className="cursor-pointer">
-                  <input
-                    type="file"
-                    className="hidden"
-                    accept="image/*"
-                    onChange={async (event) => {
-                      const file = event.target.files?.[0];
-                      if (!file) return;
-                      const previewUrl = URL.createObjectURL(file);
-                      setAdminPhotoUrl(previewUrl);
-                      try {
-                        const response = await uploadProfilePhotoApi(file);
-                        if (response.user) {
-                          setAdminPhotoUrl(
-                            response.user.profileImage || undefined,
-                          );
-                          await syncAuth(response.user);
-                          setProfileSuccessMessage(
-                            "Your profile photo has been updated.",
-                          );
-                          setProfileSuccessOpen(true);
-                        }
-                      } catch {
-                        alert("Upload failed");
-                      }
-                    }}
-                  />
-                  <span className="inline-flex items-center gap-2 rounded-[12px] border border-[var(--app-border)] bg-white px-3 py-2.5 text-[13px] font-bold text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]">
-                    <GIcon
-                      name="photo_camera"
-                      sizePx={18}
-                      className="text-[var(--app-text-muted)]"
-                    />
-                    Change Photo
-                  </span>
-                </label>
+            <div className="flex h-full flex-col justify-between gap-6 p-[16px]">
+              <TextField label="Email" value={me.email} disabled />
+              <TextField
+                label="Name"
+                value={me.name}
+                onChange={(value) =>
+                  setMe((current) => ({ ...current, name: value }))
+                }
+              />
+              <TextField
+                label="Phone"
+                value={me.phone}
+                onChange={(value) =>
+                  setMe((current) => ({ ...current, phone: value }))
+                }
+              />
+              <TextField label="Role" value={me.role} disabled />
+
+              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#CFCFD3] pt-5">
+                <Button variant="secondary" icon="key" disabled>
+                  Change password
+                </Button>
+                <Link to="/logout">
+                  <Button variant="danger" icon="logout">
+                    Logout
+                  </Button>
+                </Link>
                 <Button
-                  variant="secondary"
-                  icon="delete"
+                  variant="primary"
+                  icon="save"
                   onClick={async () => {
                     try {
                       const response = await updateProfileApi({
-                        profileImage: null,
+                        name: me.name,
+                        phone: me.phone,
                       });
                       if (response.user) {
-                        setAdminPhotoUrl(undefined);
-                        await syncAuth(response.user);
-                        setProfileSuccessMessage(
-                          "Your profile photo has been removed.",
+                        setAdminPhotoUrl(
+                          response.user.profileImage || adminPhotoUrl,
                         );
-                        setProfileSuccessOpen(true);
+                        await syncAuth(response.user);
+                        showFeedback(
+                          "success",
+                          "Profile updated",
+                          "Your profile details have been updated.",
+                        );
                       }
-                    } catch {
-                      alert("Failed to clear photo");
+                    } catch (error: any) {
+                      showFeedback(
+                        "error",
+                        "Could not save profile",
+                        error?.response?.data?.error ||
+                          error?.message ||
+                          "Failed to save profile.",
+                      );
                     }
                   }}
                 >
-                  Remove Photo
+                  Save Profile
                 </Button>
               </div>
             </div>
-          </div>
-
-          <div className="space-y-3 rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/80 p-4 text-[13px] font-semibold text-[var(--app-text-soft)]">
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-2">
-                <GIcon name="badge" sizePx={18} className="text-inherit" />
-                Role
-              </span>
-              <span className="text-right text-[var(--app-text)]">{me.role}</span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-2">
-                <GIcon name="phone" sizePx={18} className="text-inherit" />
-                Phone
-              </span>
-              <span className="text-right text-[var(--app-text)]">
-                {me.phone || "No phone added"}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span className="inline-flex items-center gap-2">
-                <GIcon name="schedule" sizePx={18} className="text-inherit" />
-                Last login
-              </span>
-              <span className="text-right text-[var(--app-text)]">
-                {me.lastLogin}
-              </span>
-            </div>
-          </div>
+          </CardShell>
         </div>
-      </CardShell>
-
-      <div className="space-y-[16px]">
-        <CardShell>
-          <div className="border-b border-[var(--app-border)] px-[16px] py-[14px]">
-            <SectionTitle
-              title="Personal details"
-              sub="Update the same admin profile fields already supported in this workspace."
-            />
-          </div>
-
-          <div className="flex h-full flex-col justify-between gap-6 p-[16px]">
-            <TextField label="Email" value={me.email} disabled />
-            <TextField
-              label="Name"
-              value={me.name}
-              onChange={(value) =>
-                setMe((current) => ({ ...current, name: value }))
-              }
-            />
-            <TextField
-              label="Phone"
-              value={me.phone}
-              onChange={(value) =>
-                setMe((current) => ({ ...current, phone: value }))
-              }
-            />
-            <TextField label="Role" value={me.role} disabled />
-
-            <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[var(--app-border)] pt-5">
-              <Button variant="secondary" icon="key" disabled>
-                Change password
-              </Button>
-              <Link to="/logout">
-                <Button variant="danger" icon="logout">
-                  Logout
-                </Button>
-              </Link>
-              <Button
-                variant="primary"
-                icon="save"
-                onClick={async () => {
-                  try {
-                    const response = await updateProfileApi({
-                      name: me.name,
-                      phone: me.phone,
-                    });
-                    if (response.user) {
-                      setAdminPhotoUrl(
-                        response.user.profileImage || adminPhotoUrl,
-                      );
-                      await syncAuth(response.user);
-                      setProfileSuccessMessage(
-                        "Your profile details have been updated.",
-                      );
-                      setProfileSuccessOpen(true);
-                    }
-                  } catch {
-                    alert("Failed to save profile");
-                  }
-                }}
-              >
-                Save Profile
-              </Button>
-            </div>
-          </div>
-        </CardShell>
-      </div>
       </div>
 
       <CardShell>
-        <div className="flex items-center justify-between gap-3 border-b border-[var(--app-border)] px-[16px] py-[14px]">
+        <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] px-[16px] py-[14px]">
           <SectionTitle
             title="Manage cashiers"
             sub="Create, edit, activate/deactivate, and review cashier accounts."
@@ -902,7 +972,7 @@ export default function ProfilePage() {
         <div className="p-[12px] overflow-x-auto">
           <table className="w-full min-w-[860px] text-left">
             <thead>
-              <tr className="text-[11px] font-extrabold uppercase tracking-wider text-[var(--app-text-muted)]">
+              <tr className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                 <th className="px-3 py-3">Cashier</th>
                 <th className="px-3 py-3">Email</th>
                 <th className="px-3 py-3">Phone</th>
@@ -912,12 +982,12 @@ export default function ProfilePage() {
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-[var(--app-border)]">
+            <tbody className="divide-y divide-[#CFCFD3]">
               {loadingCashiers ? (
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-3 py-8 text-center text-[var(--app-text-muted)]"
+                    className="px-3 py-8 text-center text-[#8C8889]"
                   >
                     Loading cashier accounts...
                   </td>
@@ -926,7 +996,7 @@ export default function ProfilePage() {
                 <tr>
                   <td
                     colSpan={6}
-                    className="px-3 py-8 text-center text-[var(--app-text-muted)]"
+                    className="px-3 py-8 text-center text-[#8C8889]"
                   >
                     No cashier accounts found.
                   </td>
@@ -935,31 +1005,28 @@ export default function ProfilePage() {
                 cashiers.map((cashier) => (
                   <tr
                     key={cashier.id}
-                    className="text-[13px] font-semibold text-[var(--app-text-soft)]"
+                    className="text-[13px] font-semibold text-[#565449]"
                   >
                     <td className="px-3 py-3">
                       <div className="flex items-center gap-3">
-                        <div className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[12px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
-                          {cashier.profileImage ? (
-                            <img
-                              src={resolveImageUrl(cashier.profileImage)}
-                              alt={cashier.name}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
+                        <UserAvatar
+                          src={resolveImageUrl(cashier.profileImage)}
+                          alt={cashier.name}
+                          className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                          fallback={
                             <GIcon
                               name="person"
                               sizePx={18}
-                              className="text-[var(--app-text-muted)]"
+                              className="text-[#8C8889]"
                             />
-                          )}
-                        </div>
+                          }
+                        />
 
                         <div className="min-w-0">
-                          <div className="truncate font-extrabold text-[var(--app-text)]">
+                          <div className="truncate font-extrabold text-[#000000]">
                             {cashier.name}
                           </div>
-                          <div className="text-[12px] text-[var(--app-text-muted)]">
+                          <div className="text-[12px] text-[#8C8889]">
                             ID: {cashier.id}
                           </div>
                         </div>
@@ -968,7 +1035,7 @@ export default function ProfilePage() {
 
                     <td className="px-3 py-3">{cashier.email}</td>
                     <td className="px-3 py-3">{cashier.phone || "—"}</td>
-                    <td className="px-3 py-3 text-[var(--app-text-muted)]">
+                    <td className="px-3 py-3 text-[#8C8889]">
                       {cashier.lastLogin}
                     </td>
 
@@ -1146,27 +1213,54 @@ export default function ProfilePage() {
             value={editAddress}
             onChange={setEditAddress}
           />
-          <TextField
-            label="Previous Password"
-            value={editCurrentPassword}
-            onChange={setEditCurrentPassword}
-            type="password"
-            error={editFieldErrors.currentPassword}
-          />
-          <TextField
-            label="New Password"
-            value={editNewPassword}
-            onChange={setEditNewPassword}
-            type="password"
-            error={editFieldErrors.newPassword}
-          />
-          <TextField
-            label="Confirm New Password"
-            value={editConfirmPassword}
-            onChange={setEditConfirmPassword}
-            type="password"
-            error={editFieldErrors.confirmPassword}
-          />
+          <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="text-[12px] font-extrabold text-[#000000]">
+                  Password
+                </div>
+                <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+                  Only reset it if you want to change this cashier's login
+                  password.
+                </div>
+              </div>
+              <Button
+                variant="secondary"
+                icon="key"
+                onClick={() => {
+                  setEditWantsPasswordChange((value) => !value);
+                  setEditNewPassword("");
+                  setEditConfirmPassword("");
+                  setEditFieldErrors((current) => ({
+                    ...current,
+                    newPassword: "",
+                    confirmPassword: "",
+                  }));
+                }}
+              >
+                {editWantsPasswordChange ? "Cancel Reset" : "Change Password"}
+              </Button>
+            </div>
+
+            {editWantsPasswordChange ? (
+              <div className="mt-3 space-y-4">
+                <TextField
+                  label="New Password"
+                  value={editNewPassword}
+                  onChange={setEditNewPassword}
+                  type="password"
+                  error={editFieldErrors.newPassword}
+                />
+                <TextField
+                  label="Confirm New Password"
+                  value={editConfirmPassword}
+                  onChange={setEditConfirmPassword}
+                  type="password"
+                  error={editFieldErrors.confirmPassword}
+                />
+              </div>
+            ) : null}
+          </div>
 
           <label className="inline-flex items-center gap-2 text-[13px] font-semibold text-slate-700 select-none">
             <input
@@ -1205,18 +1299,21 @@ export default function ProfilePage() {
         details={
           pendingDeactivateCashier ? (
             <div className="space-y-1">
-              <div className="font-semibold text-slate-700">{pendingDeactivateCashier.name}</div>
+              <div className="font-semibold text-slate-700">
+                {pendingDeactivateCashier.name}
+              </div>
               <div>{pendingDeactivateCashier.email}</div>
             </div>
           ) : null
         }
       />
 
-      <SuccessDialog
-        open={profileSuccessOpen}
-        title="Profile updated"
-        message={profileSuccessMessage}
-        onClose={() => setProfileSuccessOpen(false)}
+      <StatusDialog
+        open={feedbackOpen}
+        tone={feedbackTone}
+        title={feedbackTitle}
+        message={feedbackMessage}
+        onClose={() => setFeedbackOpen(false)}
         actionLabel="Continue"
       />
     </div>

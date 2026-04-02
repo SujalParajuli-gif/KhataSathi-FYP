@@ -1,4 +1,4 @@
-import { useState } from "react";
+﻿import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ConfirmDialog } from "~/components/ui/Modal";
 import { clearAuthUser } from "~/lib/auth";
@@ -35,3 +35,4 @@ export default function LogoutPage() {
     </div>
   );
 }
+

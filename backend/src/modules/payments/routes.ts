@@ -18,8 +18,16 @@ router.post("/payments/esewa/failure/:paymentId", failEsewaPayment);
 
 router.use(authGuard);
 
-router.post("/payments/esewa/initiate", requireRole("CASHIER"), initiateEsewaPayment);
+router.post(
+  "/payments/esewa/initiate",
+  requireRole("CASHIER", "ADMIN"),
+  initiateEsewaPayment,
+);
 router.get("/invoices/:id/payments", listPayments);
-router.post("/invoices/:id/payments", requireRole("CASHIER"), addPayment);
+router.post(
+  "/invoices/:id/payments",
+  requireRole("CASHIER", "ADMIN"),
+  addPayment,
+);
 
 export default router;

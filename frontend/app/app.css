@@ -1,4 +1,4 @@
-@import "tailwindcss";
+﻿@import "tailwindcss";
 
 @font-face {
   font-family: "IBM Plex Sans";
@@ -60,33 +60,13 @@
 
 html,
 body {
-  @apply bg-white;
   color-scheme: light;
   accent-color: #000000;
-  font-family: var(--font-sans);
+  font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
+    "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
+    "Noto Color Emoji";
   background: #cfcfd3;
   color: #000000;
-}
-
-:root {
-  --app-page-bg: #f1f1f1;
-  --app-surface: #ffffff;
-  --app-surface-muted: #f3f4f6;
-  --app-border: #cfcfd3;
-  --app-border-strong: #8c8889;
-  --app-text: #000000;
-  --app-text-muted: #8c8889;
-  --app-text-soft: #565449;
-  --app-success-bg: #eaf8ef;
-  --app-success-border: #9dd8b2;
-  --app-success-text: #179b4d;
-  --app-warning-bg: #fff7e8;
-  --app-warning-border: #f6d28b;
-  --app-warning-text: #b7791f;
-  --app-danger-bg: #fff1f2;
-  --app-danger-border: #fecdd3;
-  --app-danger-text: #be123c;
-  --control-icon-color: #8c8889;
 }
 
 button,
@@ -108,28 +88,38 @@ input[type="number"] {
   color-scheme: light;
 }
 
+input[type="number"] {
+  appearance: textfield;
+  -moz-appearance: textfield;
+}
+
 select {
   appearance: none;
   -webkit-appearance: none;
   background-image:
-    linear-gradient(45deg, transparent 50%, var(--control-icon-color) 50%),
-    linear-gradient(135deg, var(--control-icon-color) 50%, transparent 50%);
+    linear-gradient(45deg, transparent 50%, #8c8889 50%),
+    linear-gradient(135deg, #8c8889 50%, transparent 50%);
   background-position:
-    calc(100% - 18px) calc(50% - 2px),
-    calc(100% - 13px) calc(50% - 2px);
+    right 18px center,
+    right 13px center;
   background-repeat: no-repeat;
   background-size: 5px 5px, 5px 5px;
-  padding-right: 2.75rem;
+  padding-right: 44px;
 }
 
 input[type="date"] {
-  padding-right: 2.75rem;
+  padding-right: 44px;
 }
 
-input[type="date"]::-webkit-calendar-picker-indicator,
+input[type="date"]::-webkit-calendar-picker-indicator {
+  filter: invert(42%) sepia(14%) saturate(522%) hue-rotate(176deg) brightness(92%) contrast(84%);
+}
+
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
-  filter: invert(42%) sepia(14%) saturate(522%) hue-rotate(176deg) brightness(92%) contrast(84%);
+  appearance: none;
+  -webkit-appearance: none;
+  margin: 0;
 }
 
 ::selection {
@@ -150,3 +140,4 @@ input[type="number"]::-webkit-outer-spin-button {
   vertical-align: middle;
   flex-shrink: 0;
 }
+

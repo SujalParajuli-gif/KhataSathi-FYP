@@ -3,6 +3,7 @@ import fs from "fs";
 import multer from "multer";
 import path from "path";
 import prisma from "../../db/prisma";
+import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
 import { list, getOne, create, update, deactivate, categories, importCsv } from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
@@ -35,6 +36,17 @@ router.post("/:id/image", requireRole("ADMIN"), imgUpload.single("image"), async
   try {
     if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
     const imageUrl = `/uploads/products/${req.file.filename}`;
+    const existingProduct = await prisma.product.findUnique({
+      where: { id: req.params.id },
+      select: { imageUrl: true },
+    });
+
+    if (!existingProduct) {
+      await deleteUploadFile(imageUrl);
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+
     const product = await prisma.product.update({
       where: { id: req.params.id },
       data: { imageUrl },
@@ -42,8 +54,12 @@ router.post("/:id/image", requireRole("ADMIN"), imgUpload.single("image"), async
         brand: { select: { id: true, name: true } },
       },
     });
+    await deleteReplacedUpload(existingProduct.imageUrl, product.imageUrl);
     res.json(product);
   } catch (err: any) {
+    if (req.file) {
+      await deleteUploadFile(`/uploads/products/${req.file.filename}`);
+    }
     res.status(500).json({ error: err.message });
   }
 });

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+﻿import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
@@ -60,10 +60,10 @@ export default function InvoicePrintPage() {
 
   return (
     <div className="min-h-screen bg-slate-100 p-6 text-slate-900 print:bg-white print:p-0">
-      <div className="mx-auto max-w-4xl rounded-[24px] border border-slate-200 bg-white shadow-xl print:max-w-none print:rounded-none print:border-0 print:shadow-none">
+      <div className="mx-auto max-w-4xl rounded-[24px] border border-slate-200 bg-white  print:max-w-none print:rounded-none print:border-0 ">
         <div className="flex items-center justify-between gap-3 border-b border-slate-200 px-6 py-4 print:hidden">
           <div>
-            <div className="text-[12px] font-extrabold uppercase tracking-wider text-slate-500">
+            <div className="text-[12px] font-extrabold uppercase  text-slate-500">
               Print Invoice
             </div>
             <div className="mt-1 text-[18px] font-extrabold text-slate-900">
@@ -105,7 +105,7 @@ export default function InvoicePrintPage() {
             <div className="flex items-start justify-between gap-6 border-b border-slate-200 pb-6">
               <div>
                 <BrandLogo className="h-12 w-[220px] max-w-full" />
-                <div className="mt-4 text-[22px] font-extrabold tracking-tight text-slate-900">
+                <div className="mt-4 text-[22px] font-extrabold  text-slate-900">
                   Invoice
                 </div>
                 <div className="mt-2 text-[13px] leading-6 text-slate-500">
@@ -138,7 +138,7 @@ export default function InvoicePrintPage() {
             <div className="mt-6 overflow-hidden rounded-[18px] border border-slate-200">
               <table className="w-full">
                 <thead>
-                  <tr className="bg-slate-50 text-left text-[11px] font-extrabold uppercase tracking-wider text-slate-500">
+                  <tr className="bg-slate-50 text-left text-[11px] font-extrabold uppercase  text-slate-500">
                     <th className="px-4 py-3">Item</th>
                     <th className="px-4 py-3 text-right">Qty</th>
                     <th className="px-4 py-3 text-right">Unit Price</th>
@@ -169,9 +169,9 @@ export default function InvoicePrintPage() {
               </table>
             </div>
 
-            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-[1.2fr_0.8fr]">
+            <div className="mt-6 grid grid-cols-1 gap-6 md:grid-cols-[380px_260px]">
               <div className="rounded-[18px] border border-slate-200 p-4">
-                <div className="text-[12px] font-extrabold uppercase tracking-wider text-slate-500">
+                <div className="text-[12px] font-extrabold uppercase  text-slate-500">
                   Payment Details
                 </div>
                 <div className="mt-3 space-y-3">
@@ -195,7 +195,7 @@ export default function InvoicePrintPage() {
                   <div className="mt-4 overflow-hidden rounded-[14px] border border-slate-200">
                     <table className="w-full">
                       <thead>
-                        <tr className="bg-slate-50 text-left text-[10px] font-extrabold uppercase tracking-wider text-slate-500">
+                        <tr className="bg-slate-50 text-left text-[10px] font-extrabold uppercase  text-slate-500">
                           <th className="px-3 py-2">Method</th>
                           <th className="px-3 py-2">Reference</th>
                           <th className="px-3 py-2 text-right">Amount</th>
@@ -220,7 +220,7 @@ export default function InvoicePrintPage() {
               </div>
 
               <div className="rounded-[18px] border border-slate-200 bg-slate-50 p-4">
-                <div className="text-[12px] font-extrabold uppercase tracking-wider text-slate-500">
+                <div className="text-[12px] font-extrabold uppercase  text-slate-500">
                   Summary
                 </div>
                 <div className="mt-4 space-y-3 text-[13px]">
@@ -263,3 +263,4 @@ export default function InvoicePrintPage() {
     </div>
   );
 }
+

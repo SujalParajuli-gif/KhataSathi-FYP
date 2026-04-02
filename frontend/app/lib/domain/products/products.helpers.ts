@@ -1,4 +1,4 @@
-// frontend/app/lib/domain/products/products.helpers.ts
+﻿// frontend/app/lib/domain/products/products.helpers.ts
 import type { Product, StockFlag } from "./products.types";
 
 export function cn(...xs: Array<string | false | null | undefined>) {
@@ -14,3 +14,4 @@ export function getStockFlag(p: Product): StockFlag {
   if (p.stock <= p.lowStockThreshold) return "Low Stock";
   return "In Stock";
 }
+

@@ -1,5 +1,6 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+﻿import React, { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "~/components/ui/Icon";
+import ProductImage from "~/components/ui/ProductImage";
 import { DialogButton, ModalFrame, SuccessDialog } from "~/components/ui/Modal";
 import {
   listProductsApi,
@@ -42,8 +43,6 @@ type Product = {
   imageColor?: string;
 };
 
-const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-
 type CartLine = {
   productId: string;
   qty: number;
@@ -68,12 +67,6 @@ function clampPercent(v: number) {
 function clampNumber(v: number, min: number, max: number) {
   if (!Number.isFinite(v)) return min;
   return Math.min(max, Math.max(min, v));
-}
-
-function resolveProductImageUrl(path?: string) {
-  if (!path) return "";
-  if (path.startsWith("http")) return path;
-  return `${API_URL}${path}`;
 }
 
 function getCustomerDiscountMode(c: Customer | null) {
@@ -158,13 +151,13 @@ function Button({
     primary:
       "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27] focus:ring-slate-300",
     secondary:
-      "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)] focus:ring-slate-200",
+      "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000] focus:ring-slate-200",
     success:
-      "border-[var(--app-success-border)] bg-[var(--app-success-text)] text-white hover:bg-[#138441] focus:ring-emerald-200",
+      "border-[#9DD8B2] bg-[#179B4D] text-white hover:bg-[#138441] focus:ring-emerald-200",
     danger:
-      "border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] hover:bg-rose-100 focus:ring-rose-200",
+      "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100 focus:ring-rose-200",
     ghost:
-      "border-transparent bg-transparent text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)] hover:text-[var(--app-text)]",
+      "border-transparent bg-transparent text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
   };
 
   return (
@@ -220,7 +213,7 @@ function Input({
   return (
     <div className={className}>
       {label ? (
-        <label className="block text-[11px] font-extrabold text-slate-600 uppercase tracking-wider mb-2 ml-1">
+        <label className="block text-[11px] font-extrabold text-slate-600 uppercase  mb-2 ml-1">
           {label}
         </label>
       ) : null}
@@ -229,7 +222,7 @@ function Input({
           "flex items-center gap-[10px] rounded-[14px] border bg-white px-[14px] py-[12px] transition",
           invalid
             ? "border-rose-300 focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100"
-            : "border-[var(--app-border)] focus-within:border-[#11120d] focus-within:ring-2 focus-within:ring-black/5",
+            : "border-[#CFCFD3] focus-within:border-[#11120d] focus-within:ring-2 focus-within:ring-black/5",
         )}
       >
         {leftIcon ? (
@@ -270,14 +263,11 @@ function Pill({
   tone?: "neutral" | "green" | "orange" | "sky" | "rose" | "purple";
 }) {
   const map = {
-    neutral:
-      "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]",
-    green:
-      "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]",
-    orange:
-      "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)] border-[var(--app-warning-border)]",
+    neutral: "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]",
+    green: "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]",
+    orange: "bg-[#FFF7E8] text-[#B7791F] border-[#F6D28B]",
     sky: "bg-slate-100 text-slate-700 border-slate-200",
-    rose: "bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] border-[var(--app-danger-border)]",
+    rose: "bg-[#FFF1F2] text-[#BE123C] border-[#FECDD3]",
     purple: "bg-slate-100 text-slate-700 border-slate-200",
   };
 
@@ -303,7 +293,7 @@ function Segmented({
   options: Array<{ value: string; label: string }>;
 }) {
   return (
-    <div className="flex gap-2 rounded-[14px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1.5">
+    <div className="flex gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[6px]">
       {options.map((o) => {
         const active = o.value === value;
         return (
@@ -314,8 +304,8 @@ function Segmented({
             className={cn(
               "flex-1 rounded-[11px] py-2.5 text-[12px] font-extrabold transition",
               active
-                ? "bg-white text-[var(--app-text)] shadow-sm"
-                : "text-[var(--app-text-muted)] hover:bg-white/80 hover:text-[var(--app-text)]",
+                ? "bg-[#FFFFFF] text-[#000000] "
+                : "text-[#8C8889] hover:bg-[rgba(255,255,255,0.8)] hover:text-[#000000]",
             )}
           >
             {o.label}
@@ -702,41 +692,32 @@ export default function BillingPage() {
         return;
       }
 
-      let shouldRedirectToEsewa = false;
-      let esewaFormAction = "";
-      let esewaFormFields: Record<string, string> = {};
-
       for (const line of cartRows) {
         await addInvoiceItemApi(invoiceId, line.productId, line.qty);
       }
 
       await finalizeInvoiceApi(invoiceId, subtotalDiscount);
 
-      if (paymentStatus !== "Unpaid") {
-        const method = paymentMethod === "eSewa" ? "ESEWA" : "CASH";
-        if (method === "CASH") {
-          await addPaymentApi(invoiceId, {
-            method,
-            amount: effectivePaidAmount,
-            status: "SUCCESS",
-          });
-        } else {
-          const initiated = await initiateEsewaPaymentApi(
+      if (paymentStatus !== "Unpaid" && effectivePaidAmount > 0) {
+        if (paymentMethod === "eSewa") {
+          const paymentIntent = await initiateEsewaPaymentApi({
             invoiceId,
-            effectivePaidAmount,
-          );
-          shouldRedirectToEsewa = true;
-          esewaFormAction = initiated.formAction;
-          esewaFormFields = initiated.fields || {};
+            amount: effectivePaidAmount,
+          });
+
+          submitEsewaForm(paymentIntent);
+          return;
         }
+
+        await addPaymentApi(invoiceId, {
+          method: "CASH",
+          amount: effectivePaidAmount,
+          status: "SUCCESS",
+        });
       }
 
       setShowPaymentModal(false);
       resetBill();
-      if (shouldRedirectToEsewa) {
-        submitEsewaForm(esewaFormAction, esewaFormFields);
-        return;
-      }
 
       setLastCreatedInvoiceId(invoiceId);
       setShowSuccess(true);
@@ -821,9 +802,9 @@ export default function BillingPage() {
 
   return (
     <>
-      <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[var(--app-border)] bg-white font-sans text-slate-800 shadow-[0_24px_64px_-40px_rgba(17,18,13,0.55)] md:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col border-r border-[var(--app-border)] bg-white">
-          <div className="border-b border-[var(--app-border)] bg-white px-5 py-5">
+      <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800  md:flex-row">
+        <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF]">
+          <div className="border-b border-[#CFCFD3] bg-[#FFFFFF] px-[20px] py-[20px]">
             {/* Top Bar Layout Fix */}
             <div className="flex flex-col">
               <div className="grid grid-cols-12 gap-4 items-start">
@@ -887,12 +868,12 @@ export default function BillingPage() {
             </div>
           </div>
 
-          <div className="flex-1 overflow-y-auto p-5 bg-[var(--app-surface-muted)]/55">
-            <div className="mb-5 flex items-center justify-between">
-              <h3 className="text-sm font-extrabold text-[var(--app-text-soft)] uppercase tracking-wide">
+          <div className="flex-1 overflow-y-auto bg-[rgba(243,244,246,0.55)] p-[20px]">
+            <div className="mb-[20px] flex items-center justify-between">
+              <h3 className="text-[14px] font-extrabold uppercase  text-[#565449]">
                 Manual Add List
               </h3>
-              <div className="rounded-full border border-[var(--app-border)] bg-white px-3 py-1.5 text-xs font-bold text-[var(--app-text-muted)]">
+              <div className="rounded-full border border-[#CFCFD3] bg-[#FFFFFF] px-[12px] py-[6px] text-[12px] font-bold text-[#8C8889]">
                 Showing {manualResults.length} items
               </div>
             </div>
@@ -910,28 +891,22 @@ export default function BillingPage() {
                     disabled={outOfStock}
                     onClick={() => addToCart(p.id)}
                     className={cn(
-                      "flex items-center gap-3 text-left rounded-[16px] border border-[var(--app-border)] bg-white p-3 transition",
+                      "flex items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px] text-left transition",
                       outOfStock
                         ? "opacity-60 cursor-not-allowed grayscale"
-                        : "hover:bg-[var(--app-surface-muted)]/80 hover:border-slate-300",
+                        : "hover:border-slate-300 hover:bg-[rgba(243,244,246,0.8)]",
                     )}
                   >
-                    <div className="relative flex h-12 w-12 shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
-                      {p.imageUrl ? (
-                        <img
-                          src={resolveProductImageUrl(p.imageUrl)}
-                          alt={p.name}
-                          className="h-full w-full object-cover"
-                        />
-                      ) : (
-                        <Icon
-                          name="inventory_2"
-                          className="text-[var(--app-text-soft)]"
-                        />
-                      )}
+                    <div className="relative flex h-[48px] w-[48px] shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]">
+                      <ProductImage
+                        src={p.imageUrl}
+                        alt={p.name}
+                        className="flex h-full w-full items-center justify-center"
+                        iconClassName="text-[#565449]"
+                      />
                       <div
                         className={cn(
-                          "absolute -top-1 -right-1 h-3 w-3 rounded-full border-2 border-white",
+                          "absolute right-1 top-1 h-3 w-3 rounded-full border-2 border-white",
                           outOfStock
                             ? "bg-slate-400"
                             : low
@@ -949,7 +924,7 @@ export default function BillingPage() {
                         {outOfStock && <Pill tone="neutral">OUT</Pill>}
                       </div>
                       <div className="text-[11px] text-slate-500 truncate font-medium">
-                        {p.brand} • SKU: {p.sku}
+                        {p.brand} | SKU: {p.sku}
                       </div>
                       <div className="flex items-center justify-between mt-1.5">
                         <div className="flex items-center gap-2 text-[10px] text-slate-500 font-semibold">
@@ -979,17 +954,17 @@ export default function BillingPage() {
           </div>
         </div>
 
-        <div className="relative z-20 flex w-full flex-col border-l border-[var(--app-border)] bg-white md:w-[420px]">
-          <div className="flex-shrink-0 border-b border-[var(--app-border)] bg-white p-4">
+        <div className="relative z-20 flex w-full flex-col border-l border-[#CFCFD3] bg-[#FFFFFF] md:w-[420px]">
+          <div className="flex-shrink-0 border-b border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
             {!isCustomerSearchOpen ? (
-              <div className="flex items-center justify-between rounded-[20px] border border-[var(--app-border)] bg-white p-3 transition">
+              <div className="flex items-center justify-between rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px] transition">
                 <div className="flex items-center gap-3 overflow-hidden">
                   <div
                     className={cn(
                       "w-11 h-11 rounded-xl flex items-center justify-center text-xl shrink-0 border",
                       selectedCustomer
-                        ? "bg-[var(--app-surface-muted)] text-[var(--app-text)] border-[var(--app-border)]"
-                        : "bg-[var(--app-surface-muted)] text-[var(--app-text-muted)] border-[var(--app-border)]",
+                        ? "border-[#CFCFD3] bg-[#F3F4F6] text-[#000000]"
+                        : "border-[#CFCFD3] bg-[#F3F4F6] text-[#8C8889]",
                     )}
                   >
                     <Icon name={selectedCustomer ? "person" : "person_off"} />
@@ -1057,8 +1032,8 @@ export default function BillingPage() {
                 </div>
               </div>
             ) : (
-              <div className="rounded-[20px] border border-[var(--app-border)] bg-white p-3">
-                <div className="flex items-center gap-2 mb-3">
+              <div className="rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]">
+                <div className="mb-[12px] flex items-center gap-2">
                   <Input
                     value={customerQuery}
                     onChange={setCustomerQuery}
@@ -1083,7 +1058,7 @@ export default function BillingPage() {
                         setSelectedCustomerId(c.id);
                         setCustomerSearchOpen(false);
                       }}
-                      className="flex w-full items-center justify-between rounded-xl border border-transparent px-3 py-2.5 text-left text-sm transition hover:border-[var(--app-border)] hover:bg-[var(--app-surface-muted)]"
+                      className="flex w-full items-center justify-between rounded-xl border border-transparent px-[12px] py-[10px] text-left text-[14px] transition hover:border-[#CFCFD3] hover:bg-[#F3F4F6]"
                     >
                       <span className="font-semibold text-slate-800">
                         {c.name}
@@ -1103,7 +1078,7 @@ export default function BillingPage() {
             )}
           </div>
 
-          <div className="flex-1 overflow-y-auto bg-[var(--app-surface-muted)]/35 p-3 space-y-2 relative">
+          <div className="relative flex-1 space-y-2 overflow-y-auto bg-[rgba(243,244,246,0.35)] p-[12px]">
             {cartRows.length === 0 ? (
               <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 select-none">
                 <Icon
@@ -1117,7 +1092,7 @@ export default function BillingPage() {
               cartRows.map((row) => (
                 <div
                   key={row.productId}
-                  className="flex flex-col gap-2 rounded-[16px] border border-[var(--app-border)] bg-white p-3 transition hover:border-slate-300 shadow-sm"
+                  className="flex flex-col gap-2 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]  transition hover:border-slate-300"
                 >
                   <div className="flex items-start justify-between gap-3">
                     <div className="flex-1 min-w-0">
@@ -1125,7 +1100,7 @@ export default function BillingPage() {
                         {row.product.name}
                       </div>
                       <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-500 font-medium mt-1">
-                        <span className="rounded border border-[var(--app-border)] bg-[var(--app-surface-muted)] px-1.5 py-0.5">
+                        <span className="rounded border border-[#CFCFD3] bg-[#F3F4F6] px-[6px] py-[2px]">
                           {formatNpr(row.unitPrice)}/u
                         </span>
                         {row.priceType === "Wholesale" ? (
@@ -1148,12 +1123,12 @@ export default function BillingPage() {
                   </div>
 
                   <div className="flex items-center justify-between mt-1 border-t border-slate-100 pt-2">
-                    <div className="flex items-center gap-1 rounded-[10px] border border-[var(--app-border)] bg-[var(--app-surface-muted)] p-1">
+                    <div className="flex items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-[#F3F4F6] p-[4px]">
                       <button
                         type="button"
                         onClick={() => changeQty(row.productId, row.qty - 1)}
                         disabled={row.qty <= 1}
-                        className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-white border border-[var(--app-border)] text-lg font-medium leading-none shadow-sm transition hover:text-rose-600 disabled:opacity-40"
+                        className="flex h-[24px] w-[24px] items-center justify-center rounded-[6px] border border-[#CFCFD3] bg-[#FFFFFF] text-lg font-medium leading-none  transition hover:text-rose-600 disabled:opacity-40"
                         aria-label="Decrease quantity"
                       >
                         -
@@ -1173,7 +1148,7 @@ export default function BillingPage() {
                         type="button"
                         onClick={() => changeQty(row.productId, row.qty + 1)}
                         disabled={row.qty >= row.product.stock}
-                        className="flex h-6 w-6 items-center justify-center rounded-[6px] bg-white border border-[var(--app-border)] text-lg font-medium leading-none shadow-sm transition hover:text-emerald-600 disabled:opacity-40"
+                        className="flex h-[24px] w-[24px] items-center justify-center rounded-[6px] border border-[#CFCFD3] bg-[#FFFFFF] text-lg font-medium leading-none  transition hover:text-emerald-600 disabled:opacity-40"
                         aria-label="Increase quantity"
                       >
                         +
@@ -1188,7 +1163,7 @@ export default function BillingPage() {
             )}
           </div>
 
-          <div className="flex-shrink-0 bg-white border-t border-slate-200 shadow-[0_-6px_22px_rgba(0,0,0,0.06)]">
+          <div className="flex-shrink-0 bg-white border-t border-slate-200 ">
             <div className="px-5 pt-4 pb-3 space-y-2 text-sm">
               <div className="flex justify-between text-slate-500">
                 <span>Subtotal</span>
@@ -1212,7 +1187,7 @@ export default function BillingPage() {
                 <span className="text-slate-900 font-extrabold text-lg">
                   Total
                 </span>
-                <span className="font-mono font-extrabold text-3xl text-slate-900 tracking-tight">
+                <span className="font-mono font-extrabold text-3xl text-slate-900 ">
                   {formatNpr(grandTotal)}
                 </span>
               </div>
@@ -1223,9 +1198,9 @@ export default function BillingPage() {
               ) : null}
             </div>
 
-            <div className="space-y-3 border-t border-[var(--app-border)] bg-[var(--app-surface-muted)]/85 p-4">
+            <div className="space-y-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] p-[16px]">
               {billingError ? (
-                <div className="rounded-[14px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-[12px] font-semibold text-[var(--app-danger-text)]">
+                <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[8px] text-[12px] font-semibold text-[#BE123C]">
                   {billingError}
                 </div>
               ) : null}
@@ -1233,7 +1208,7 @@ export default function BillingPage() {
               <div className="flex gap-2">
                 <Button
                   variant="ghost"
-                  className="flex-1 border border-[var(--app-border)]"
+                  className="flex-1 border border-[#CFCFD3]"
                   onClick={resetBill}
                   disabled={!hasBillDraft}
                   icon="restart_alt"
@@ -1249,17 +1224,12 @@ export default function BillingPage() {
                   onClick={() => openPaymentFlow()}
                 >
                   {paymentMethod === "eSewa"
-                    ? "Open eSewa"
+                    ? "Continue to eSewa"
                     : `Pay ${formatNpr(grandTotal)}`}
                 </Button>
               </div>
 
-              <div className="rounded-[14px] border border-[var(--app-border)] bg-white px-3 py-3 text-[12px] font-semibold text-[var(--app-text-soft)]">
-                Payment details open in a centered modal so the billing screen
-                stays stable while you scan, search, and review the cart.
-              </div>
-
-              <div className="pt-1 text-[11px] text-[var(--app-text-muted)] flex flex-wrap gap-x-3 gap-y-1">
+              <div className="flex flex-wrap gap-x-3 gap-y-1 pt-[4px] text-[11px] text-[#8C8889]">
                 <span className="font-semibold">Shortcuts:</span>
                 <span>F2 Search</span>
                 <span>F3 SKU</span>
@@ -1282,47 +1252,47 @@ export default function BillingPage() {
       >
         <div className="space-y-5">
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+            <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
+              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                 Items
               </div>
-              <div className="mt-2 text-[24px] font-extrabold text-[var(--app-text)]">
+              <div className="mt-[8px] text-[24px] font-extrabold text-[#000000]">
                 {cartRows.length}
               </div>
-              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
                 {cart.reduce((sum, line) => sum + line.qty, 0)} units in cart
               </div>
             </div>
-            <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+            <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
+              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                 Customer
               </div>
-              <div className="mt-2 text-[16px] font-extrabold text-[var(--app-text)]">
+              <div className="mt-[8px] text-[16px] font-extrabold text-[#000000]">
                 {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
               </div>
-              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
                 {selectedCustomer
                   ? selectedCustomer.phone || "No phone on file"
                   : "No customer selected"}
               </div>
             </div>
-            <div className="rounded-[18px] border border-[var(--app-border)] bg-white p-4">
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+            <div className="rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
+              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                 Total
               </div>
-              <div className="mt-2 font-mono text-[24px] font-extrabold text-[var(--app-text)]">
+              <div className="mt-[8px] font-mono text-[24px] font-extrabold text-[#000000]">
                 {formatNpr(grandTotal)}
               </div>
-              <div className="mt-1 text-[12px] font-semibold text-[var(--app-text-muted)]">
+              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
                 Subtotal {formatNpr(subTotal)}
               </div>
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-[1fr_1fr]">
+          <div className="grid gap-4 md:grid-cols-[320px_320px]">
             <div className="space-y-4">
               <div>
-                <div className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                <div className="mb-[8px] text-[11px] font-extrabold uppercase  text-[#8C8889]">
                   Payment method
                 </div>
                 <div className="grid grid-cols-2 gap-3">
@@ -1333,7 +1303,7 @@ export default function BillingPage() {
                       "rounded-[18px] border px-4 py-4 text-left transition",
                       paymentMethod === "Cash"
                         ? "border-[#11120d] bg-[#11120d] text-white"
-                        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+                        : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
                     )}
                   >
                     <Icon name="payments" />
@@ -1348,8 +1318,8 @@ export default function BillingPage() {
                     className={cn(
                       "rounded-[18px] border px-4 py-4 text-left transition",
                       paymentMethod === "eSewa"
-                        ? "border-[var(--app-success-border)] bg-[var(--app-success-bg)] text-[var(--app-success-text)]"
-                        : "border-[var(--app-border)] bg-white text-[var(--app-text-soft)] hover:bg-[var(--app-surface-muted)]",
+                        ? "border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D]"
+                        : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
                     )}
                   >
                     <Icon name="qr_code_2" />
@@ -1360,12 +1330,12 @@ export default function BillingPage() {
 
               <div>
                 <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                  <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Payment status
                   </div>
                   {paymentMethod === "eSewa" ? (
-                    <div className="text-[11px] font-bold text-[var(--app-text-muted)]">
-                      Official redirect after confirm
+                    <div className="text-[11px] font-bold text-[#8C8889]">
+                      Redirects to the eSewa test payment page
                     </div>
                   ) : null}
                 </div>
@@ -1407,23 +1377,23 @@ export default function BillingPage() {
                 />
               ) : null}
 
-              <div className="rounded-[18px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4 text-[12px] font-semibold text-[var(--app-text-soft)]">
+              <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px] text-[12px] font-semibold text-[#565449]">
                 {paymentStatus === "Unpaid"
                   ? "This will create the invoice without adding a payment yet."
                   : paymentMethod === "eSewa"
-                    ? "Confirm to create the invoice and continue through the official eSewa payment step."
+                    ? "Confirm to create the invoice and continue to the eSewa test payment page for this amount."
                     : "Confirm to finalize the invoice and record the payment immediately."}
               </div>
             </div>
 
             <div className="space-y-4">
               {showEsewaDetails ? (
-                <div className="rounded-[22px] border border-[var(--app-success-border)] bg-[var(--app-success-bg)]/80 p-4">
-                  <div className="text-center text-[11px] font-extrabold uppercase tracking-[0.22em] text-[var(--app-success-text)]">
+                <div className="rounded-[22px] border border-[#9DD8B2] bg-[rgba(234,248,239,0.8)] p-[16px]">
+                  <div className="text-center text-[11px] font-extrabold uppercase  text-[#179B4D]">
                     Scan To Pay
                   </div>
                   {showEsewaQr ? (
-                    <div className="mt-3 overflow-hidden rounded-[18px] border border-[var(--app-border)] bg-white p-4">
+                    <div className="mt-[12px] overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
                       <img
                         src="/assets/images/esewa/qr.png"
                         alt="eSewa QR code"
@@ -1432,16 +1402,16 @@ export default function BillingPage() {
                       />
                     </div>
                   ) : (
-                    <div className="mt-3 rounded-[18px] border border-[var(--app-border)] bg-white px-4 py-10 text-center text-[13px] font-semibold text-[var(--app-text-muted)]">
-                      eSewa QR is unavailable right now, but the official
-                      redirect will still open after confirmation.
+                    <div className="mt-[12px] rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] py-[40px] text-center text-[13px] font-semibold text-[#8C8889]">
+                      eSewa QR is unavailable right now, but you can still
+                      continue to the eSewa test page to complete the payment.
                     </div>
                   )}
-                  <div className="mt-4 rounded-[18px] border border-[var(--app-border)] bg-white px-4 py-3 text-center">
-                    <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                  <div className="mt-[16px] rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] py-[12px] text-center">
+                    <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                       Billing amount
                     </div>
-                    <div className="mt-2 font-mono text-[24px] font-extrabold text-[var(--app-text)]">
+                    <div className="mt-[8px] font-mono text-[24px] font-extrabold text-[#000000]">
                       {formatNpr(
                         paymentStatus === "Partial"
                           ? effectivePaidAmount
@@ -1451,32 +1421,32 @@ export default function BillingPage() {
                   </div>
                 </div>
               ) : (
-                <div className="rounded-[22px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]/75 p-4">
-                  <div className="text-[11px] font-extrabold uppercase tracking-[0.18em] text-[var(--app-text-muted)]">
+                <div className="rounded-[22px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
+                  <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
                     Settlement summary
                   </div>
-                  <div className="mt-4 space-y-3 text-[13px] font-semibold text-[var(--app-text-soft)]">
+                  <div className="mt-[16px] space-y-[12px] text-[13px] font-semibold text-[#565449]">
                     <div className="flex items-center justify-between">
                       <span>Subtotal</span>
-                      <span className="font-mono text-[var(--app-text)]">
+                      <span className="font-mono text-[#000000]">
                         {formatNpr(subTotal)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Discount</span>
-                      <span className="font-mono text-[var(--app-text)]">
+                      <span className="font-mono text-[#000000]">
                         -{formatNpr(subtotalDiscount)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Collected now</span>
-                      <span className="font-mono text-[var(--app-text)]">
+                      <span className="font-mono text-[#000000]">
                         {formatNpr(effectivePaidAmount)}
                       </span>
                     </div>
                     <div className="flex items-center justify-between">
                       <span>Due after bill</span>
-                      <span className="font-mono text-[var(--app-text)]">
+                      <span className="font-mono text-[#000000]">
                         {formatNpr(balanceDue)}
                       </span>
                     </div>
@@ -1485,7 +1455,7 @@ export default function BillingPage() {
               )}
 
               {billingError ? (
-                <div className="rounded-[14px] border border-[var(--app-danger-border)] bg-[var(--app-danger-bg)] px-3 py-2 text-[12px] font-semibold text-[var(--app-danger-text)]">
+                <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[8px] text-[12px] font-semibold text-[#BE123C]">
                   {billingError}
                 </div>
               ) : null}

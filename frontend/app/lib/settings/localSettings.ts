@@ -1,4 +1,4 @@
-export const LOCAL_SETTINGS_KEYS = {
+﻿export const LOCAL_SETTINGS_KEYS = {
   defaultLowStockThreshold: "ks_defaultLowStockThreshold",
   wholesaleQtyThreshold: "ks_wholesaleQtyThreshold",
   loyaltyDiscountPercent: "ks_loyaltyDiscountPercent",
@@ -27,3 +27,4 @@ export function writeStoredNumber(key: string, value: number) {
     // ignore storage write failures for local-only admin defaults
   }
 }
+

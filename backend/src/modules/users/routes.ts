@@ -5,6 +5,7 @@ import * as userController from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { uploadUserPhoto } from "./service";
+import { deleteUploadFile } from "../../lib/uploads";
 
 const storage = multer.diskStorage({
   destination: (_req, _file, cb) => cb(null, path.join(__dirname, "../../../../uploads")),
@@ -28,6 +29,9 @@ router.post("/:id/photo", upload.single("photo"), async (req, res) => {
     const user = await uploadUserPhoto(String(req.params.id), photoUrl);
     res.json(user);
   } catch (err: any) {
+    if (req.file) {
+      await deleteUploadFile(`/uploads/${req.file.filename}`);
+    }
     res.status(500).json({ error: err.message });
   }
 });

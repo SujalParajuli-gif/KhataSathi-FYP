@@ -1,5 +1,6 @@
-import React from "react";
+﻿import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
+import ProductImage from "~/components/ui/ProductImage";
 import type { Product } from "~/lib/domain/products/products.types";
 import {
   cn,
@@ -7,20 +8,12 @@ import {
   getStockFlag,
 } from "~/lib/domain/products/products.helpers";
 
-const API_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:4000";
-
 type ProductStatus = "Active" | "Inactive";
 type StockFlag = "In Stock" | "Low Stock" | "Out of Stock";
 
-function resolveImageUrl(imageUrl?: string) {
-  if (!imageUrl) return "";
-  if (imageUrl.startsWith("http")) return imageUrl;
-  return `${API_URL}${imageUrl}`;
-}
-
 function Card({ children }: { children: React.ReactNode }) {
   return (
-    <div className="rounded-[14px] border border-[var(--app-border)] bg-white shadow-[0_18px_45px_-38px_rgba(17,18,13,0.45)]">
+    <div className="rounded-[14px] border border-[#CFCFD3] bg-white ">
       {children}
     </div>
   );
@@ -29,8 +22,8 @@ function Card({ children }: { children: React.ReactNode }) {
 function StatusPill({ status }: { status: ProductStatus }) {
   const cls =
     status === "Active"
-      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
-      : "bg-[var(--app-surface-muted)] text-[var(--app-text-soft)] border-[var(--app-border)]";
+      ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
+      : "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]";
   return (
     <span
       className={cn(
@@ -46,10 +39,10 @@ function StatusPill({ status }: { status: ProductStatus }) {
 function StockPill({ flag }: { flag: StockFlag }) {
   const cls =
     flag === "In Stock"
-      ? "bg-[var(--app-success-bg)] text-[var(--app-success-text)] border-[var(--app-success-border)]"
+      ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
       : flag === "Low Stock"
-        ? "bg-[var(--app-warning-bg)] text-[var(--app-warning-text)] border-[var(--app-warning-border)]"
-        : "bg-[var(--app-danger-bg)] text-[var(--app-danger-text)] border-[var(--app-danger-border)]";
+        ? "bg-[#FFF7E8] text-[#B7791F] border-[#F6D28B]"
+        : "bg-[#FFF1F2] text-[#BE123C] border-[#FECDD3]";
   return (
     <span
       className={cn(
@@ -76,9 +69,9 @@ function IconButton({
       type="button"
       aria-label={label}
       onClick={onClick}
-      className="inline-flex h-[40px] w-[40px] items-center justify-center rounded-[12px] border border-[var(--app-border)] bg-white hover:bg-[var(--app-surface-muted)] active:scale-[0.98]"
+      className="inline-flex h-[40px] w-[40px] items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white hover:bg-[#F3F4F6] active:scale-[0.98]"
     >
-      <GoogleIcon name={icon} className="text-[var(--app-text-soft)]" />
+      <GoogleIcon name={icon} className="text-[#565449]" />
     </button>
   );
 }
@@ -112,7 +105,7 @@ export default function ProductsTableCard({
         <div className="overflow-x-auto">
           <table className="w-full min-w-[1040px] text-left">
             <thead>
-              <tr className="border-b border-[var(--app-border)] text-[12px] font-semibold text-[var(--app-text-muted)]">
+              <tr className="border-b border-[#CFCFD3] text-[12px] font-semibold text-[#8C8889]">
                 <th className="w-[44px] px-[10px] py-[12px]">
                   <input
                     type="checkbox"
@@ -134,7 +127,7 @@ export default function ProductsTableCard({
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-[var(--app-border)]">
+            <tbody className="divide-y divide-[#CFCFD3]">
               {rows.map((product) => {
                 const flag = getStockFlag(product);
                 const isSelected = !!selected[product.id];
@@ -144,7 +137,7 @@ export default function ProductsTableCard({
                     key={product.id}
                     className={cn(
                       "text-[14px]",
-                      isSelected && "bg-[var(--app-surface-muted)]/80",
+                      isSelected && "bg-[#F3F4F6]/80",
                     )}
                   >
                     <td className="px-[10px] py-[14px]">
@@ -159,26 +152,18 @@ export default function ProductsTableCard({
 
                     <td className="px-[10px] py-[14px]">
                       <div className="flex items-center gap-[12px]">
-                        <div className="flex h-[48px] w-[48px] items-center justify-center overflow-hidden rounded-[12px] border border-[var(--app-border)] bg-[var(--app-surface-muted)]">
-                          {product.imageUrl ? (
-                            <img
-                              src={resolveImageUrl(product.imageUrl)}
-                              alt={product.name}
-                              className="h-full w-full object-cover"
-                            />
-                          ) : (
-                            <GoogleIcon
-                              name="inventory_2"
-                              className="text-[var(--app-text-muted)]"
-                            />
-                          )}
-                        </div>
+                        <ProductImage
+                          src={product.imageUrl}
+                          alt={product.name}
+                          className="flex h-[48px] w-[48px] items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                          iconClassName="text-[#8C8889]"
+                        />
 
                         <div className="min-w-0">
-                          <div className="max-w-[340px] truncate font-semibold text-[var(--app-text)]">
+                          <div className="max-w-[340px] truncate font-semibold text-[#000000]">
                             {product.name}
                           </div>
-                          <div className="text-[12px] text-[var(--app-text-muted)]">
+                          <div className="text-[12px] text-[#8C8889]">
                             SKU: {product.sku}
                             {product.barcode ? (
                               <span className="ml-[10px]">Barcode: {product.barcode}</span>
@@ -188,15 +173,15 @@ export default function ProductsTableCard({
                       </div>
                     </td>
 
-                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.brand}</td>
-                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.category}</td>
-                    <td className="px-[10px] py-[14px] font-semibold text-[var(--app-text)]">
+                    <td className="px-[10px] py-[14px] text-[#565449]">{product.brand}</td>
+                    <td className="px-[10px] py-[14px] text-[#565449]">{product.category}</td>
+                    <td className="px-[10px] py-[14px] font-semibold text-[#000000]">
                       {formatNpr(product.retailPrice)}
                     </td>
-                    <td className="px-[10px] py-[14px] font-semibold text-[var(--app-text)]">
+                    <td className="px-[10px] py-[14px] font-semibold text-[#000000]">
                       {formatNpr(product.wholesalePrice)}
                     </td>
-                    <td className="px-[10px] py-[14px] text-[var(--app-text-soft)]">{product.thresholdQty}</td>
+                    <td className="px-[10px] py-[14px] text-[#565449]">{product.thresholdQty}</td>
 
                     <td className="px-[10px] py-[14px]">
                       <div className="flex items-center gap-[10px]">
@@ -211,7 +196,7 @@ export default function ProductsTableCard({
                           )}
                           title={`Low stock threshold: ${product.lowStockThreshold}`}
                         />
-                        <div className="font-semibold text-[var(--app-text)]">
+                        <div className="font-semibold text-[#000000]">
                           {product.stock.toLocaleString()}
                         </div>
                         <StockPill flag={flag} />
@@ -247,7 +232,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 ? (
                 <tr>
-                  <td colSpan={10} className="px-[14px] py-[22px] text-[14px] text-[var(--app-text-muted)]">
+                  <td colSpan={10} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
                     No products match your filters.
                   </td>
                 </tr>
@@ -256,14 +241,15 @@ export default function ProductsTableCard({
           </table>
         </div>
 
-        <div className="flex flex-col gap-[10px] px-[10px] py-[12px] text-[13px] text-[var(--app-text-soft)] md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-[10px] px-[10px] py-[12px] text-[13px] text-[#565449] md:flex-row md:items-center md:justify-between">
           <div>
-            Showing <span className="font-semibold text-[var(--app-text)]">{total === 0 ? 0 : start + 1}</span>
-            -<span className="font-semibold text-[var(--app-text)]">{end}</span> of{" "}
-            <span className="font-semibold text-[var(--app-text)]">{total}</span> products
+            Showing <span className="font-semibold text-[#000000]">{total === 0 ? 0 : start + 1}</span>
+            -<span className="font-semibold text-[#000000]">{end}</span> of{" "}
+            <span className="font-semibold text-[#000000]">{total}</span> products
           </div>
         </div>
       </div>
     </Card>
   );
 }
+

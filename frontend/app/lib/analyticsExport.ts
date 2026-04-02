@@ -1,4 +1,4 @@
-import type { AnalyticsReport } from "./reports";
+﻿import type { AnalyticsReport } from "./reports";
 import { paymentMethodLabel, paymentStatusLabel } from "./reports";
 
 function downloadBlob(filename: string, data: BlobPart, mimeType: string) {
@@ -174,3 +174,4 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
 export function downloadCsvBlob(report: AnalyticsReport, blob: Blob) {
   downloadBlob(`${buildBaseFilename(report)}.csv`, blob, "text/csv;charset=utf-8");
 }
+

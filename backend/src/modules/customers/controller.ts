@@ -1,6 +1,42 @@
 import { Request, Response } from "express";
 import * as custService from "./service";
 
+function parseCustomerName(value: unknown) {
+  const normalized = String(value || "").trim();
+  if (!normalized) {
+    throw new Error("Customer name is required");
+  }
+  return normalized;
+}
+
+function parseOptionalText(value: unknown) {
+  const normalized = String(value || "").trim();
+  return normalized || undefined;
+}
+
+function parseBooleanValue(value: unknown) {
+  if (typeof value === "string") {
+    return value.toLowerCase() === "true";
+  }
+  return Boolean(value);
+}
+
+function parsePercent(value: unknown, label: string) {
+  if (value === undefined || value === null || value === "") {
+    return 0;
+  }
+
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    throw new Error(`${label} must be a valid number`);
+  }
+  if (normalized < 0 || normalized > 100) {
+    throw new Error(`${label} must be between 0 and 100`);
+  }
+
+  return normalized;
+}
+
 export async function list(req: Request, res: Response) {
   try {
     const activeOnly = req.query.active === "true";
@@ -28,20 +64,25 @@ export async function getOne(req: Request, res: Response) {
 
 export async function create(req: Request, res: Response) {
   try {
-    const { name, phone, email, loyaltyPercent, wholesalePercent } = req.body;
-    if (!name) {
-      res.status(400).json({ error: "Customer name is required" });
-      return;
-    }
     const newCust = await custService.createCustomer({
-      name: String(name).trim(),
-      phone: phone ? String(phone).trim() : undefined,
-      email: email ? String(email).trim() : undefined,
-      loyaltyPercent: Number(loyaltyPercent) || 0,
-      wholesalePercent: Number(wholesalePercent) || 0,
+      name: parseCustomerName(req.body.name),
+      phone: parseOptionalText(req.body.phone),
+      email: parseOptionalText(req.body.email),
+      loyaltyPercent: parsePercent(req.body.loyaltyPercent, "Loyalty percent"),
+      wholesalePercent: parsePercent(
+        req.body.wholesalePercent,
+        "Wholesale percent",
+      ),
     });
     res.status(201).json(newCust);
   } catch (err: any) {
+    if (
+      err.message.includes("Customer name") ||
+      err.message.includes("percent")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     if (err.code === "P2002") {
       res.status(409).json({ error: "Phone number already exists" });
       return;
@@ -53,14 +94,50 @@ export async function create(req: Request, res: Response) {
 
 export async function update(req: Request, res: Response) {
   try {
-    const body = { ...req.body };
-    if (body.phone !== undefined) body.phone = body.phone ? String(body.phone).trim() : null;
-    if (body.email !== undefined) body.email = body.email ? String(body.email).trim() : null;
-    const customer = await custService.updateCustomer(String(req.params.id), body);
+    const body = req.body || {};
+    const data: any = {};
+
+    if (body.name !== undefined) {
+      data.name = parseCustomerName(body.name);
+    }
+    if (body.phone !== undefined) {
+      data.phone = parseOptionalText(body.phone) || null;
+    }
+    if (body.email !== undefined) {
+      data.email = parseOptionalText(body.email) || null;
+    }
+    if (body.loyaltyPercent !== undefined) {
+      data.loyaltyPercent = parsePercent(
+        body.loyaltyPercent,
+        "Loyalty percent",
+      );
+    }
+    if (body.wholesalePercent !== undefined) {
+      data.wholesalePercent = parsePercent(
+        body.wholesalePercent,
+        "Wholesale percent",
+      );
+    }
+    if (body.isActive !== undefined) {
+      data.isActive = parseBooleanValue(body.isActive);
+    }
+
+    const customer = await custService.updateCustomer(String(req.params.id), data);
     res.json(customer);
   } catch (err: any) {
+    if (
+      err.message.includes("Customer name") ||
+      err.message.includes("percent")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     if (err.code === "P2025") {
       res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    if (err.code === "P2002") {
+      res.status(409).json({ error: "Phone number already exists" });
       return;
     }
     console.error("Update customer error:", err);

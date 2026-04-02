@@ -1,4 +1,4 @@
-import navData from "~/config/ui.nav.json";
+﻿import navData from "~/config/ui.nav.json";
 
 type Props = {
   variant?: "full" | "icon";
@@ -39,3 +39,4 @@ export default function BrandLogo({
     </div>
   );
 }
+

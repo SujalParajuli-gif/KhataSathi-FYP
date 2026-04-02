@@ -1,4 +1,4 @@
-// frontend/app/lib/domain/products/products.types.ts
+﻿// frontend/app/lib/domain/products/products.types.ts
 export type ProductStatus = "Active" | "Inactive";
 export type StockFlag = "In Stock" | "Low Stock" | "Out of Stock";
 
@@ -34,3 +34,4 @@ export type ProductsQuery = {
   page?: number;
   pageSize?: number;
 };
+

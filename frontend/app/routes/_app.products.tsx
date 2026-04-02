@@ -1,4 +1,4 @@
-import React, { useMemo, useState } from "react";
+﻿import React, { useMemo, useState } from "react";
 import type { Product, ToastKind } from "~/lib/domain/products/products.types";
 import { importCsvApi } from "~/lib/api/endpoints";
 import {
@@ -279,7 +279,8 @@ export default function ProductsPage() {
 
   function handleProductImageChange(file: File | null) {
     if (!file) {
-      resetImageState(form.imageUrl || "");
+      resetImageState("");
+      setForm((current) => ({ ...current, imageUrl: "" }));
       setFormErrors((prev) => ({ ...prev, image: undefined }));
       return;
     }
@@ -336,6 +337,7 @@ export default function ProductsPage() {
         name: form.name.trim(),
         sku: form.sku.trim(),
         barcode: form.barcode?.trim() || "",
+        imageUrl: form.imageUrl || null,
         category: form.category?.trim() || "",
         thresholdQty: Math.max(1, Number(form.thresholdQty || 1)),
         stock: Math.max(0, Number(form.stock || 0)),
@@ -577,3 +579,4 @@ export default function ProductsPage() {
     </div>
   );
 }
+

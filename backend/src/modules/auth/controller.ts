@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { loginUser, getMe, updateProfile as updateProfileService, uploadProfilePhoto } from "./service";
+import { deleteUploadFile } from "../../lib/uploads";
 
 export async function login(req: Request, res: Response) {
     try {
@@ -67,6 +68,9 @@ export async function uploadPhoto(req: Request, res: Response) {
         const user = await uploadProfilePhoto(req.user!.id, photoUrl);
         res.json({ user });
     } catch (err: any) {
+        if (req.file) {
+            await deleteUploadFile(`/uploads/${req.file.filename}`);
+        }
         console.error("Upload photo error:", err);
         res.status(500).json({ error: err.message || "Internal server error" });
     }
