@@ -1,13 +1,41 @@
 import { Request, Response } from "express";
 import * as invoiceService from "./service";
 
+function parsePositiveWholeNumber(value: unknown, label: string) {
+  const normalized = Number(value);
+  if (!Number.isInteger(normalized) || normalized < 1) {
+    throw new Error(`${label} must be a whole number greater than 0`);
+  }
+  return normalized;
+}
+
+function parseOptionalNonNegativeNumber(value: unknown, label: string) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    throw new Error(`${label} must be a valid number`);
+  }
+  if (normalized < 0) {
+    throw new Error(`${label} cannot be negative`);
+  }
+
+  return normalized;
+}
+
 export async function createDraft(req: Request, res: Response) {
   try {
     const cashierId = req.user!.id;
     const { customerId } = req.body;
     const invoice = await invoiceService.createDraft(cashierId, customerId);
     res.status(201).json(invoice);
-  } catch (err) {
+  } catch (err: any) {
+    if (err.message.includes("unique invoice number")) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
     console.error("Create draft error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -15,17 +43,34 @@ export async function createDraft(req: Request, res: Response) {
 
 export async function list(req: Request, res: Response) {
   try {
+    const page =
+      req.query.page === undefined
+        ? 1
+        : parsePositiveWholeNumber(req.query.page, "page");
+    const pageSize =
+      req.query.pageSize === undefined
+        ? 20
+        : parsePositiveWholeNumber(req.query.pageSize, "pageSize");
+
     const filters = {
       status: req.query.status as string | undefined,
       cashierId: req.query.cashierId as string | undefined,
       from: req.query.from as string | undefined,
       to: req.query.to as string | undefined,
-      page: req.query.page ? Number(req.query.page) : 1,
-      pageSize: req.query.pageSize ? Number(req.query.pageSize) : 20,
+      page,
+      pageSize,
     };
     const result = await invoiceService.listInvoices(filters);
     res.json(result);
-  } catch (err) {
+  } catch (err: any) {
+    if (
+      err.message.includes("page") ||
+      err.message.includes("format") ||
+      err.message.includes("calendar date")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     console.error("List invoices error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -50,14 +95,20 @@ export async function addItem(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
     const { productId, qty } = req.body;
-    if (!productId || !qty || qty < 1) {
-      res.status(400).json({ error: "productId and qty (>= 1) are required" });
+    if (!productId) {
+      res.status(400).json({ error: "productId is required" });
       return;
     }
-    const item = await invoiceService.addItem(invoiceId, productId, Number(qty));
+
+    const item = await invoiceService.addItem(
+      invoiceId,
+      String(productId),
+      parsePositiveWholeNumber(qty, "qty"),
+    );
     res.status(201).json(item);
   } catch (err: any) {
     if (
+      err.message.includes("qty") ||
       err.message.includes("finalized") ||
       err.message.includes("not found") ||
       err.message.includes("inactive") ||
@@ -76,14 +127,15 @@ export async function updateItem(req: Request, res: Response) {
     const invoiceId = String(req.params.id);
     const itemId = String(req.params.itemId);
     const { qty } = req.body;
-    if (!qty || qty < 1) {
-      res.status(400).json({ error: "qty (>= 1) is required" });
-      return;
-    }
-    const item = await invoiceService.updateItem(invoiceId, itemId, Number(qty));
+    const item = await invoiceService.updateItem(
+      invoiceId,
+      itemId,
+      parsePositiveWholeNumber(qty, "qty"),
+    );
     res.json(item);
   } catch (err: any) {
     if (
+      err.message.includes("qty") ||
       err.message.includes("finalized") ||
       err.message.includes("not found") ||
       err.message.includes("stock") ||
@@ -121,15 +173,24 @@ export async function finalize(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
     const userId = req.user!.id;
-    const discountAmount = req.body?.discountAmount;
+    const discountAmount = parseOptionalNonNegativeNumber(
+      req.body?.discountAmount,
+      "Discount amount",
+    );
     const invoice = await invoiceService.finalizeInvoice(
       invoiceId,
       userId,
-      discountAmount === undefined ? undefined : Number(discountAmount),
+      discountAmount,
     );
     res.json(invoice);
   } catch (err: any) {
-    if (err.message.includes("finalized") || err.message.includes("not found") || err.message.includes("Insufficient") || err.message.includes("empty")) {
+    if (
+      err.message.includes("Discount amount") ||
+      err.message.includes("finalized") ||
+      err.message.includes("not found") ||
+      err.message.includes("Insufficient") ||
+      err.message.includes("empty")
+    ) {
       res.status(400).json({ error: err.message });
       return;
     }
@@ -140,7 +201,10 @@ export async function finalize(req: Request, res: Response) {
 
 export async function cancel(req: Request, res: Response) {
   try {
-    const invoice = await invoiceService.cancelInvoice(String(req.params.id), req.user!.id);
+    const invoice = await invoiceService.cancelInvoice(
+      String(req.params.id),
+      req.user!.id,
+    );
     res.json(invoice);
   } catch (err: any) {
     if (

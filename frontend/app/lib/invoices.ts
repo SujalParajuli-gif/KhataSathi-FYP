@@ -1,5 +1,5 @@
-export type InvoiceStatusLabel = "Paid" | "Partial" | "Unpaid" | "Cancelled";
-export type PaymentMethodLabel = "Cash" | "eSewa" | "Khalti" | "None";
+﻿export type InvoiceStatusLabel = "Paid" | "Partial" | "Unpaid" | "Cancelled";
+export type PaymentMethodLabel = "Cash" | "eSewa" | "None";
 
 export type InvoiceItemSummary = {
   id: string;
@@ -123,7 +123,6 @@ export function mapPaymentMethod(payments: any[]): PaymentMethodLabel {
 
   const upper = String(preferred?.method || "").toUpperCase();
   if (upper === "ESEWA") return "eSewa";
-  if (upper === "KHALTI") return "Khalti";
   if (upper === "CASH") return "Cash";
   return "None";
 }
@@ -171,7 +170,11 @@ export function normalizeInvoice(raw: any): AppInvoice {
   const discount = Number(raw.loyaltyDiscountAmount ?? raw.discount ?? 0);
   const netTotal = Number(raw.netTotal ?? raw.total ?? subtotal - discount);
   const paidAmount = Number(raw.paidTotal ?? raw.paidAmount ?? 0);
-  const dueAmount = Math.max(0, Number(raw.dueAmount ?? netTotal - paidAmount));
+  const status = mapInvoiceStatus(raw.status, raw.paymentStatus);
+  const dueAmount =
+    status === "Cancelled"
+      ? 0
+      : Math.max(0, Number(raw.dueAmount ?? netTotal - paidAmount));
 
   return {
     id: raw.id,
@@ -184,7 +187,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
     createdAt,
     createdDateLabel: formatDateLabel(createdAt),
     createdTimeLabel: formatTimeLabel(createdAt),
-    status: mapInvoiceStatus(raw.status, raw.paymentStatus),
+    status,
     paymentMethod: mapPaymentMethod(payments),
     subtotal,
     discount,
@@ -201,3 +204,4 @@ export function openInvoicePrint(invoiceId: string) {
   if (typeof window === "undefined") return;
   window.open(`/invoices/${invoiceId}/print`, "_blank", "noopener,noreferrer");
 }
+

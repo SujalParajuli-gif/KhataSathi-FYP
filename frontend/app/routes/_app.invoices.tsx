@@ -1,4 +1,8 @@
-import React, { useEffect, useMemo, useState } from "react";
+﻿import React, { useEffect, useMemo, useState } from "react";
+import {
+  InvoiceStatusChip,
+  PaymentMethodChip,
+} from "~/components/invoices/InvoiceChips";
 import Icon from "~/components/ui/Icon";
 import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
 import {
@@ -19,83 +23,6 @@ import { formatNpr, normalizeInvoice, openInvoicePrint } from "~/lib/invoices";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
-}
-
-function statusPill(status: InvoiceStatusLabel) {
-  const map: Record<InvoiceStatusLabel, { label: string; cls: string }> = {
-    Paid: {
-      label: "PAID",
-      cls: "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]",
-    },
-    Partial: {
-      label: "PARTIAL",
-      cls: "bg-[#FFF7E8] text-[#B7791F] border-[#F6D28B]",
-    },
-    Unpaid: {
-      label: "UNPAID",
-      cls: "bg-rose-50 text-rose-700 border-rose-200",
-    },
-    Cancelled: {
-      label: "CANCELLED",
-      cls: "bg-[#F3F4F6] text-[#6B7280] border-[#D1D5DB]",
-    },
-  };
-
-  return (
-    <span
-      className={cn(
-        "px-[12px] py-[5px] rounded-full text-[11px] font-extrabold border tracking-wide",
-        map[status].cls,
-      )}
-    >
-      {map[status].label}
-    </span>
-  );
-}
-
-function methodChip(method: PaymentMethodLabel) {
-  const base =
-    "inline-flex items-center gap-1.5 px-[8px] py-[4px] rounded-[10px] text-[11px] font-bold border";
-
-  if (method === "Cash") {
-    return (
-      <span
-        className={cn(base, "bg-[#FFFFFF] text-[#000000] border-[#8C8889]")}
-      >
-        <Icon name="payments" className="text-[13px]" />
-        Cash
-      </span>
-    );
-  }
-
-  if (method === "eSewa") {
-    return (
-      <span
-        className={cn(base, "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]")}
-      >
-        <Icon name="qr_code_2" className="text-[13px]" />
-        eSewa
-      </span>
-    );
-  }
-
-  if (method === "Khalti") {
-    return (
-      <span
-        className={cn(base, "bg-[#F3E8FF] text-[#7C3AED] border-[#D8B4FE]")}
-      >
-        <Icon name="account_balance_wallet" className="text-[13px]" />
-        Khalti
-      </span>
-    );
-  }
-
-  return (
-    <span className={cn(base, "bg-[#F3F4F6] text-[#6B7280] border-[#D1D5DB]")}>
-      <Icon name="block" className="text-[13px]" />
-      No Payment
-    </span>
-  );
 }
 
 function calcSummary(invoices: AppInvoice[]) {
@@ -218,10 +145,10 @@ function InvoiceEditModal({
         onClick={onClose}
         aria-label="Close"
       />
-      <div className="absolute left-1/2 top-1/2 w-[560px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 rounded-[20px] border-2 border-[#CFCFD3] bg-[#FFFFFF] shadow-2xl overflow-hidden">
+      <div className="absolute left-1/2 top-1/2 w-[560px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 rounded-[20px] border-2 border-[#CFCFD3] bg-[#FFFFFF]  overflow-hidden">
         <div className="p-5 border-b border-[#CFCFD3] flex items-center justify-between">
           <div>
-            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase ">
               Edit invoice
             </div>
             <div className="text-[18px] font-extrabold text-[#000000] mt-1">
@@ -240,7 +167,7 @@ function InvoiceEditModal({
 
         <div className="p-5 space-y-4">
           <div>
-            <div className="block text-[12px] font-extrabold text-[#8C8889] uppercase tracking-wider mb-2">
+            <div className="block text-[12px] font-extrabold text-[#8C8889] uppercase  mb-2">
               Payment method
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -277,7 +204,9 @@ function InvoiceEditModal({
 
             <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
               <div className="text-[#8C8889] font-bold">Status</div>
-              <div className="mt-2">{statusPill(invoice.status)}</div>
+              <div className="mt-2">
+                <InvoiceStatusChip status={invoice.status} />
+              </div>
             </div>
 
             <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
@@ -296,7 +225,7 @@ function InvoiceEditModal({
           </div>
 
           <div>
-            <label className="block text-[12px] font-extrabold text-[#8C8889] uppercase tracking-wider mb-2">
+            <label className="block text-[12px] font-extrabold text-[#8C8889] uppercase  mb-2">
               Add payment amount
             </label>
             <input
@@ -326,8 +255,8 @@ function InvoiceEditModal({
 
           {paymentMethod === "eSewa" && canSettle ? (
             <div className="rounded-[14px] border border-[#9DD8B2] bg-[#EAF8EF] px-4 py-3 text-[12px] text-[#179B4D]">
-              This will create a pending eSewa attempt for the exact amount and
-              redirect to the official sandbox form.
+              This will redirect to the eSewa test page for the exact amount
+              entered here.
             </div>
           ) : null}
 
@@ -540,21 +469,24 @@ export default function CashierInvoicesPage() {
     try {
       setSavingEdit(true);
 
-      if (editPaymentMethod === "Cash") {
-        await addPaymentApi(editInvoice.id, {
-          method: "CASH",
+      if (editPaymentMethod === "eSewa") {
+        const paymentIntent = await initiateEsewaPaymentApi({
+          invoiceId: editInvoice.id,
           amount,
-          status: "SUCCESS",
         });
 
-        await refreshInvoiceState(editInvoice.id);
-        closeEditInvoice();
-      } else {
-        const initiated = await initiateEsewaPaymentApi(editInvoice.id, amount);
-        closeEditInvoice();
-        submitEsewaForm(initiated.formAction, initiated.fields || {});
+        submitEsewaForm(paymentIntent);
         return;
       }
+
+      await addPaymentApi(editInvoice.id, {
+        method: "CASH",
+        amount,
+        status: "SUCCESS",
+      });
+
+      await refreshInvoiceState(editInvoice.id);
+      closeEditInvoice();
     } catch (error: any) {
       setPaymentError(
         error?.response?.data?.error || "Failed to update invoice.",
@@ -633,7 +565,7 @@ export default function CashierInvoicesPage() {
 
         <div className="flex items-center gap-3">
           <div className="w-[360px] max-w-[70vw]">
-            <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px] shadow-sm focus-within:border-[#000000] transition-colors">
+            <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px]  focus-within:border-[#000000] transition-colors">
               <Icon name="search" className="text-[#8C8889]" />
               <input
                 value={query}
@@ -650,7 +582,7 @@ export default function CashierInvoicesPage() {
           <button
             type="button"
             onClick={() => setFilterOpen((value) => !value)}
-            className="h-[44px] px-[16px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center gap-2 transition shadow-sm"
+            className="h-[44px] px-[16px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center gap-2 transition "
           >
             <Icon name="filter_list" />
             Filter
@@ -659,8 +591,8 @@ export default function CashierInvoicesPage() {
       </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mt-6">
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
+          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Total Sales
           </div>
           <div className="text-2xl font-extrabold text-[#000000] mt-1">
@@ -668,8 +600,8 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
+          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Invoices Generated
           </div>
           <div className="text-2xl font-extrabold text-[#000000] mt-1">
@@ -677,8 +609,8 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
+          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Paid Invoices
           </div>
           <div className="text-2xl font-extrabold text-[#179B4D] mt-1">
@@ -686,8 +618,8 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-[#B7791F] uppercase tracking-wider">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
+          <div className="text-[11px] font-extrabold text-[#B7791F] uppercase ">
             Partial Invoices
           </div>
           <div className="text-2xl font-extrabold text-[#B7791F] mt-1">
@@ -695,8 +627,8 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-rose-700 uppercase tracking-wider">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
+          <div className="text-[11px] font-extrabold text-rose-700 uppercase ">
             Unpaid Invoices
           </div>
           <div className="text-2xl font-extrabold text-rose-700 mt-1">
@@ -704,8 +636,8 @@ export default function CashierInvoicesPage() {
           </div>
         </div>
 
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 shadow-sm">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
+          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Outstanding Due
           </div>
           <div className="text-2xl font-extrabold text-[#000000] mt-1">
@@ -727,7 +659,7 @@ export default function CashierInvoicesPage() {
                   setPage(1);
                 }}
                 className={cn(
-                  "px-[16px] py-[8px] rounded-[999px] border-2 text-[12px] font-extrabold transition shadow-sm",
+                  "px-[16px] py-[8px] rounded-[999px] border-2 text-[12px] font-extrabold transition ",
                   active
                     ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
                     : "bg-[#FFFFFF] text-[#8C8889] border-[#CFCFD3] hover:bg-[#CFCFD3]",
@@ -741,9 +673,9 @@ export default function CashierInvoicesPage() {
       </div>
 
       {isFilterOpen ? (
-        <div className="mt-4 rounded-[18px] border-2 border-[#CFCFD3] bg-[#FFFFFF] p-5 shadow-sm">
+        <div className="mt-4 rounded-[18px] border-2 border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
           <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] pb-4">
-            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase ">
               Filter Options
             </div>
             <button
@@ -757,7 +689,7 @@ export default function CashierInvoicesPage() {
 
           <div className="mt-4 grid grid-cols-12 gap-5">
             <div className="col-span-4">
-              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
                 Cashier Match
               </div>
               <label className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[#000000] cursor-pointer">
@@ -772,11 +704,11 @@ export default function CashierInvoicesPage() {
             </div>
 
             <div className="col-span-8">
-              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
                 Payment Method
               </div>
               <div className="mt-3 flex gap-2 flex-wrap">
-                {(["All", "Cash", "eSewa", "Khalti", "None"] as const).map(
+                {(["All", "Cash", "eSewa", "None"] as const).map(
                   (method) => {
                     const active = method === methodFilter;
                     return (
@@ -802,27 +734,27 @@ export default function CashierInvoicesPage() {
         </div>
       ) : null}
 
-      <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden shadow-sm">
+      <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden ">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[800px]">
             <thead>
               <tr className="bg-[#CFCFD3]/40 border-b-2 border-[#CFCFD3]">
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
                   Invoice / Date
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
                   Customer
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
                   Summary
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
                   Status & Method
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider text-right">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase  text-right">
                   Net Total
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase tracking-wider text-center">
+                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase  text-center">
                   Actions
                 </th>
               </tr>
@@ -882,8 +814,11 @@ export default function CashierInvoicesPage() {
                   <td className="px-5 py-4 align-top">
                     <div className="flex flex-col items-start gap-2">
                       <div className="flex items-center gap-2">
-                        {statusPill(invoice.status)}
-                        {methodChip(invoice.paymentMethod)}
+                        <InvoiceStatusChip status={invoice.status} />
+                        <PaymentMethodChip
+                          method={invoice.paymentMethod}
+                          showIcon
+                        />
                       </div>
 
                       {invoice.status !== "Paid" &&
@@ -1021,3 +956,4 @@ export default function CashierInvoicesPage() {
     </div>
   );
 }
+
