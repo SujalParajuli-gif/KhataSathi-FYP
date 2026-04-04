@@ -96,6 +96,19 @@ export default function HistoryPage() {
       ),
     [filtered],
   );
+  const walkInRecordCount = useMemo(
+    () => filtered.filter((invoice) => !invoice.customerId).length,
+    [filtered],
+  );
+  const esewaRecordCount = useMemo(
+    () => filtered.filter((invoice) => invoice.paymentMethod === "eSewa").length,
+    [filtered],
+  );
+  const referenceRecordCount = useMemo(
+    () =>
+      filtered.filter((invoice) => Boolean(getInvoiceReference(invoice))).length,
+    [filtered],
+  );
 
   async function openInvoice(id: string) {
     const cached = invoices.find((invoice) => invoice.id === id) || null;
@@ -123,48 +136,77 @@ export default function HistoryPage() {
 
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-[24px] text-[#0F172A]">
-      <div className="grid grid-cols-12 gap-4">
-        <div className="col-span-12 lg:col-span-4">
+      <div className="flex flex-wrap items-start justify-between gap-4">
+        <div>
           <h1 className="text-2xl font-extrabold ">History</h1>
           <p className="mt-1 text-sm text-slate-500">
             Real invoice records with payment totals, status, method, and
             reference data.
           </p>
         </div>
+      </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
+      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-7">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
             Net Total
           </div>
-          <div className="mt-2 text-[22px] font-extrabold text-slate-900">
+          <div className="mt-1 text-2xl font-extrabold text-[#000000]">
             {formatNpr(totalSales)}
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#179B4D]">
             Paid
           </div>
-          <div className="mt-2 text-[22px] font-extrabold text-emerald-700">
+          <div className="mt-1 text-2xl font-extrabold text-[#179B4D]">
             {formatNpr(totalPaid)}
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  sm:col-span-4 lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-rose-700">
             Due
           </div>
-          <div className="mt-2 text-[22px] font-extrabold text-rose-700">
+          <div className="mt-1 text-2xl font-extrabold text-rose-700">
             {formatNpr(totalDue)}
           </div>
         </div>
 
-        <div className="col-span-12 rounded-[18px] border-2 border-slate-200 bg-white p-4  lg:col-span-2">
-          <div className="text-[11px] font-extrabold uppercase  text-slate-500">
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
             Records
           </div>
-          <div className="mt-2 text-[22px] font-extrabold text-slate-900">
+          <div className="mt-1 text-2xl font-extrabold text-[#000000]">
             {filtered.length}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
+            Walk-in Records
+          </div>
+          <div className="mt-1 text-2xl font-extrabold text-[#000000]">
+            {walkInRecordCount}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#179B4D]">
+            eSewa Records
+          </div>
+          <div className="mt-1 text-2xl font-extrabold text-[#000000]">
+            {esewaRecordCount}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
+          <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
+            Reference IDs
+          </div>
+          <div className="mt-1 text-2xl font-extrabold text-[#000000]">
+            {referenceRecordCount}
           </div>
         </div>
       </div>
@@ -287,7 +329,18 @@ export default function HistoryPage() {
                     </td>
 
                     <td className="px-5 py-4">
-                      <InvoiceStatusChip status={invoice.status} />
+                      <div className="space-y-1">
+                        <InvoiceStatusChip status={invoice.status} />
+                        {invoice.status === "Cancelled" &&
+                        invoice.cancelledByName ? (
+                          <div className="text-[11px] font-semibold text-slate-500">
+                            Cancelled by {invoice.cancelledByName}
+                            {invoice.cancelledByRole
+                              ? ` (${invoice.cancelledByRole})`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
                     </td>
 
                     <td className="px-5 py-4">
