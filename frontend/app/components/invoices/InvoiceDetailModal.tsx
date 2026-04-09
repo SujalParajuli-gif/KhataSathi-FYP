@@ -131,6 +131,36 @@ export default function InvoiceDetailModal({
               </div>
             </div>
 
+            {invoice.status === "Cancelled" ? (
+              <div className="rounded-[16px] border-[2px] border-rose-200 bg-rose-50 p-[16px]">
+                <div className="text-[12px] font-extrabold uppercase text-rose-700">
+                  Cancellation Details
+                </div>
+                <div className="mt-[12px] grid grid-cols-1 gap-[12px] md:grid-cols-3">
+                  <div>
+                    <div className="font-bold text-rose-700">Cancelled by</div>
+                    <div className="mt-[4px] font-extrabold text-[#000000]">
+                      {invoice.cancelledByName || "Unknown user"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="font-bold text-rose-700">Role</div>
+                    <div className="mt-[4px] font-extrabold text-[#000000]">
+                      {invoice.cancelledByRole || "Unknown"}
+                    </div>
+                  </div>
+                  <div>
+                    <div className="font-bold text-rose-700">Cancelled at</div>
+                    <div className="mt-[4px] font-semibold text-[#000000]">
+                      {invoice.cancelledAt
+                        ? new Date(invoice.cancelledAt).toLocaleString()
+                        : "Not recorded"}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
+
             <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
               <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
                 <div className="text-[12px] font-extrabold uppercase  text-[#565449]">

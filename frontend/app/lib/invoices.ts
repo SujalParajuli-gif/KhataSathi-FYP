@@ -42,6 +42,9 @@ export type AppInvoice = {
   items: InvoiceItemSummary[];
   itemSummary: string;
   payments: InvoicePaymentSummary[];
+  cancelledAt?: string;
+  cancelledByName?: string;
+  cancelledByRole?: string;
 };
 
 function buildCustomerSubtitle(rawCustomer: any) {
@@ -197,6 +200,9 @@ export function normalizeInvoice(raw: any): AppInvoice {
     items,
     itemSummary: buildInvoiceItemSummary(items),
     payments,
+    cancelledAt: raw.cancelledAt || undefined,
+    cancelledByName: raw.cancelledBy?.name || undefined,
+    cancelledByRole: raw.cancelledBy?.role || undefined,
   };
 }
 

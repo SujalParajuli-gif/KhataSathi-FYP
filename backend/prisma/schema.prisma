@@ -58,7 +58,8 @@ model User {
   nagariktaNo       String?
   createdAt         DateTime @default(now())
 
-  invoices          Invoice[]
+  invoices          Invoice[] @relation("CashierInvoices")
+  cancelledInvoices Invoice[] @relation("CancelledInvoices")
   payments          Payment[]
   stockTransactions StockTransaction[]
   auditLogs         AuditLog[]
@@ -92,8 +93,10 @@ model Product {
   retailPrice           Float
   wholesalePrice        Float
   wholesaleQtyThreshold Int      @default(1)
+  usesDefaultWholesaleQtyThreshold Boolean @default(false)
   stock                 Int      @default(0)
   lowStockThreshold     Int      @default(5)
+  usesDefaultLowStockThreshold Boolean @default(false)
   isActive              Boolean  @default(true)
   imageUrl              String?
   createdAt             DateTime @default(now())
@@ -125,6 +128,7 @@ model Invoice {
   invoiceNo              String               @unique
   status                 InvoiceStatus        @default(DRAFT)
   cashierId              String
+  cancelledById          String?
   customerId             String?
   subTotal               Float                @default(0)
   loyaltyDiscountPercent Float                @default(0)
@@ -134,12 +138,23 @@ model Invoice {
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   createdAt              DateTime             @default(now())
   finalizedAt            DateTime?
+  cancelledAt            DateTime?
 
-  cashier           User               @relation(fields: [cashierId], references: [id])
+  cashier           User               @relation("CashierInvoices", fields: [cashierId], references: [id])
+  cancelledBy       User?              @relation("CancelledInvoices", fields: [cancelledById], references: [id])
   customer          Customer?          @relation(fields: [customerId], references: [id])
   items             InvoiceItem[]
   payments          Payment[]
   stockTransactions StockTransaction[]
+}
+
+model BusinessSettings {
+  id                           Int      @id
+  defaultLowStockThreshold     Int      @default(5)
+  defaultWholesaleQtyThreshold Int      @default(15)
+  loyaltyDiscountPercent       Float    @default(2)
+  createdAt                    DateTime @default(now())
+  updatedAt                    DateTime @updatedAt
 }
 
 model InvoiceItem {

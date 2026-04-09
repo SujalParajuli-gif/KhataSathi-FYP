@@ -4,6 +4,10 @@ import {
   toBusinessClock,
 } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
+import {
+  getBusinessSettings,
+  resolveWholesaleQtyThreshold,
+} from "../settings/service";
 
 const MAX_CREATE_DRAFT_RETRIES = 5;
 
@@ -216,6 +220,13 @@ export async function listInvoices(filters: InvoiceFilters) {
             wholesalePercent: true,
           },
         },
+        cancelledBy: {
+          select: {
+            id: true,
+            name: true,
+            role: true,
+          },
+        },
         items: {
           select: {
             id: true,
@@ -274,12 +285,20 @@ export async function getInvoice(id: string) {
           wholesalePercent: true,
         },
       },
+      cancelledBy: {
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
+      },
     },
   });
 }
 
 export async function addItem(invoiceId: string, productId: string, qty: number) {
   const normalizedQty = normalizePositiveInteger(qty, "qty");
+  const settings = await getBusinessSettings();
 
   const invoice = await prisma.invoice.findUnique({
     where: { id: invoiceId },
@@ -311,7 +330,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
     const recalculatedUnitPrice = shouldUseQuantityWholesalePrice(
       invoice.customer,
       newQty,
-      product.wholesaleQtyThreshold,
+      resolveWholesaleQtyThreshold(product, settings),
     )
       ? product.wholesalePrice
       : product.retailPrice;
@@ -339,7 +358,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
   const appliedUnitPrice = shouldUseQuantityWholesalePrice(
     invoice.customer,
     normalizedQty,
-    product.wholesaleQtyThreshold,
+    resolveWholesaleQtyThreshold(product, settings),
   )
     ? product.wholesalePrice
     : product.retailPrice;
@@ -361,6 +380,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
 
 export async function updateItem(invoiceId: string, itemId: string, qty: number) {
   const normalizedQty = normalizePositiveInteger(qty, "qty");
+  const settings = await getBusinessSettings();
 
   const invoice = await prisma.invoice.findUnique({
     where: { id: invoiceId },
@@ -394,7 +414,7 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
   const appliedUnitPrice = shouldUseQuantityWholesalePrice(
     invoice.customer,
     normalizedQty,
-    item.product.wholesaleQtyThreshold,
+    resolveWholesaleQtyThreshold(item.product, settings),
   )
     ? item.product.wholesalePrice
     : item.product.retailPrice;
@@ -599,6 +619,8 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
       where: { id: invoiceId },
       data: {
         paymentStatus: "CANCELLED",
+        cancelledAt: new Date(),
+        cancelledById: userId,
       },
     });
 

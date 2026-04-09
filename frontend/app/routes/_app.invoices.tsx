@@ -590,7 +590,7 @@ export default function CashierInvoicesPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-6 gap-4 mt-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4 mt-6">
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Total Sales
@@ -633,6 +633,15 @@ export default function CashierInvoicesPage() {
           </div>
           <div className="text-2xl font-extrabold text-rose-700 mt-1">
             {summary.unpaid}
+          </div>
+        </div>
+
+        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
+          <div className="text-[11px] font-extrabold text-slate-500 uppercase ">
+            Cancelled Invoices
+          </div>
+          <div className="text-2xl font-extrabold text-slate-900 mt-1">
+            {summary.cancelled}
           </div>
         </div>
 
@@ -828,6 +837,15 @@ export default function CashierInvoicesPage() {
                             Due: {formatNpr(invoice.dueAmount)}
                           </div>
                         )}
+                      {invoice.status === "Cancelled" &&
+                      invoice.cancelledByName ? (
+                        <div className="text-[11px] font-semibold text-slate-500">
+                          Cancelled by {invoice.cancelledByName}
+                          {invoice.cancelledByRole
+                            ? ` (${invoice.cancelledByRole})`
+                            : ""}
+                        </div>
+                      ) : null}
                     </div>
                   </td>
 
