@@ -9,19 +9,17 @@ import {
 } from "~/components/ui/Modal";
 import {
   createBrandApi,
+  getBusinessSettingsApi,
   listAuditLogsApi,
   listBrandsApi,
   listLoginAttemptsApi,
   listProductsApi,
   listUsersApi,
   triggerBackupApi,
+  updateBusinessSettingsApi,
   updateBrandApi,
+  type BusinessSettings,
 } from "~/lib/api/endpoints";
-import {
-  LOCAL_SETTINGS_KEYS,
-  readStoredNumber,
-  writeStoredNumber,
-} from "~/lib/settings/localSettings";
 
 type TabKey = "overview" | "brands" | "audit" | "backup";
 type Brand = { id: string; name: string; active: boolean };
@@ -60,6 +58,8 @@ type LoginAttemptRow = {
   createdAt: string;
 };
 type BackupResult = { filename?: string; filepath?: string; message?: string };
+
+const INITIAL_DEFAULTS = buildBusinessDefaults(5, 15, 2);
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -251,47 +251,30 @@ export default function SettingsPage() {
   const [pendingBrandDeactivation, setPendingBrandDeactivation] =
     useState<Brand | null>(null);
   const [pendingBrandSave, setPendingBrandSave] = useState(false);
-  const [defaultLowStock, setDefaultLowStock] = useState(() =>
-    Math.max(
-      0,
-      Math.floor(
-        readStoredNumber(LOCAL_SETTINGS_KEYS.defaultLowStockThreshold, 5),
-      ),
-    ),
+  const [defaultLowStock, setDefaultLowStock] = useState(
+    INITIAL_DEFAULTS.defaultLowStock,
   );
-  const [wholesaleQtyThreshold, setWholesaleQtyThreshold] = useState(() =>
-    Math.max(
-      1,
-      Math.floor(
-        readStoredNumber(LOCAL_SETTINGS_KEYS.wholesaleQtyThreshold, 1),
-      ),
-    ),
+  const [wholesaleQtyThreshold, setWholesaleQtyThreshold] = useState(
+    INITIAL_DEFAULTS.wholesaleQtyThreshold,
   );
-  const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(() =>
-    clampPercent(
-      readStoredNumber(LOCAL_SETTINGS_KEYS.loyaltyDiscountPercent, 2),
-    ),
+  const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(
+    INITIAL_DEFAULTS.loyaltyDiscountPercent,
   );
-  const [savedDefaults, setSavedDefaults] = useState(() =>
-    buildBusinessDefaults(
-      readStoredNumber(LOCAL_SETTINGS_KEYS.defaultLowStockThreshold, 5),
-      readStoredNumber(LOCAL_SETTINGS_KEYS.wholesaleQtyThreshold, 1),
-      readStoredNumber(LOCAL_SETTINGS_KEYS.loyaltyDiscountPercent, 2),
-    ),
-  );
+  const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS);
   const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false);
 
   async function loadData(showLoader = true) {
     if (showLoader) setLoading(true);
     else setRefreshing(true);
     try {
-      const [brandData, productData, userData, auditData, loginData] =
+      const [brandData, productData, userData, auditData, loginData, settingsData] =
         await Promise.allSettled([
           listBrandsApi(),
           listProductsApi({ pageSize: 300 }),
           listUsersApi(),
           listAuditLogsApi({ pageSize: 20 }),
           listLoginAttemptsApi({ pageSize: 12 }),
+          getBusinessSettingsApi(),
         ]);
 
       if (brandData.status === "fulfilled") {
@@ -345,6 +328,17 @@ export default function SettingsPage() {
             ? loginData.value.attempts
             : [],
         );
+      }
+      if (settingsData.status === "fulfilled") {
+        const normalizedSettings = buildBusinessDefaults(
+          Number(settingsData.value?.defaultLowStockThreshold ?? 5),
+          Number(settingsData.value?.defaultWholesaleQtyThreshold ?? 15),
+          Number(settingsData.value?.loyaltyDiscountPercent ?? 2),
+        );
+        setDefaultLowStock(normalizedSettings.defaultLowStock);
+        setWholesaleQtyThreshold(normalizedSettings.wholesaleQtyThreshold);
+        setLoyaltyDiscountPercent(normalizedSettings.loyaltyDiscountPercent);
+        setSavedDefaults(normalizedSettings);
       }
     } finally {
       setLoading(false);
@@ -541,20 +535,27 @@ export default function SettingsPage() {
     }
   }
 
-  function saveBusinessDefaults() {
-    writeStoredNumber(
-      LOCAL_SETTINGS_KEYS.defaultLowStockThreshold,
-      normalizedDefaults.defaultLowStock,
+  async function saveBusinessDefaults() {
+    const updated = await updateBusinessSettingsApi({
+      defaultLowStockThreshold: normalizedDefaults.defaultLowStock,
+      defaultWholesaleQtyThreshold: normalizedDefaults.wholesaleQtyThreshold,
+      loyaltyDiscountPercent: normalizedDefaults.loyaltyDiscountPercent,
+    } satisfies Partial<BusinessSettings>);
+    const saved = buildBusinessDefaults(
+      Number(updated.defaultLowStockThreshold ?? normalizedDefaults.defaultLowStock),
+      Number(
+        updated.defaultWholesaleQtyThreshold ??
+          normalizedDefaults.wholesaleQtyThreshold,
+      ),
+      Number(
+        updated.loyaltyDiscountPercent ??
+          normalizedDefaults.loyaltyDiscountPercent,
+      ),
     );
-    writeStoredNumber(
-      LOCAL_SETTINGS_KEYS.wholesaleQtyThreshold,
-      normalizedDefaults.wholesaleQtyThreshold,
-    );
-    writeStoredNumber(
-      LOCAL_SETTINGS_KEYS.loyaltyDiscountPercent,
-      normalizedDefaults.loyaltyDiscountPercent,
-    );
-    setSavedDefaults(normalizedDefaults);
+    setDefaultLowStock(saved.defaultLowStock);
+    setWholesaleQtyThreshold(saved.wholesaleQtyThreshold);
+    setLoyaltyDiscountPercent(saved.loyaltyDiscountPercent);
+    setSavedDefaults(saved);
     setShowDefaultsConfirm(false);
   }
 
@@ -670,7 +671,8 @@ export default function SettingsPage() {
                   Stock alert threshold
                 </div>
                 <div className="mt-1 text-[12px] text-[#8C8889]">
-                  Used as the default when opening the add-product form.
+                  Applied automatically when a product uses the business
+                  default stock alert threshold.
                 </div>
                 <input
                   type="number"
@@ -687,7 +689,8 @@ export default function SettingsPage() {
                   Wholesale quantity default
                 </div>
                 <div className="mt-1 text-[12px] text-[#8C8889]">
-                  Used as the default threshold when adding a new product.
+                  Applied automatically when a product uses the business
+                  default wholesale threshold.
                 </div>
                 <input
                   type="number"
@@ -1204,7 +1207,7 @@ export default function SettingsPage() {
       <ConfirmDialog
         open={showDefaultsConfirm}
         title="Save business defaults?"
-        message="These threshold values will become the saved admin defaults for new products and customer discount setup."
+        message="These values will become the saved business defaults for products that follow admin defaults and for loyalty setup."
         confirmLabel="Save Defaults"
         onConfirm={saveBusinessDefaults}
         onClose={() => setShowDefaultsConfirm(false)}
