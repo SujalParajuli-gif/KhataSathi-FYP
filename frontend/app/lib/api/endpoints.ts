@@ -14,7 +14,13 @@ export async function getMeApi() {
     return res.data; // { user }
 }
 
-export async function updateProfileApi(data: { name?: string; phone?: string; gender?: string | null; address?: string | null; password?: string; profileImage?: string | null }) {
+export type BusinessSettings = {
+    defaultLowStockThreshold: number;
+    defaultWholesaleQtyThreshold: number;
+    loyaltyDiscountPercent: number;
+};
+
+export async function updateProfileApi(data: { name?: string; phone?: string; gender?: string | null; address?: string | null; currentPassword?: string; newPassword?: string; profileImage?: string | null }) {
     const res = await api.patch("/api/auth/profile", data);
     return res.data;
 }
@@ -118,6 +124,16 @@ export async function importCsvApi(file: File) {
         throw new Error(err.error || "Failed to import products.");
     }
     return res.json();
+}
+
+export async function getBusinessSettingsApi() {
+    const res = await api.get("/api/settings/business");
+    return res.data as BusinessSettings;
+}
+
+export async function updateBusinessSettingsApi(data: Partial<BusinessSettings>) {
+    const res = await api.put("/api/settings/business", data);
+    return res.data as BusinessSettings;
 }
 
 // â”€â”€â”€ Customers â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€

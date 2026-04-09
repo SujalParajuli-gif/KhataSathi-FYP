@@ -1,4 +1,8 @@
 import prisma from "../../db/prisma";
+import {
+    applyBusinessThresholds,
+    getBusinessSettings,
+} from "../settings/service";
 
 /**
  * Restock a product (add stock).
@@ -39,7 +43,11 @@ export async function restockProduct(
         });
     });
 
-    return prisma.product.findUnique({ where: { id: productId } });
+    const updatedProduct = await prisma.product.findUnique({ where: { id: productId } });
+    if (!updatedProduct) return updatedProduct;
+
+    const settings = await getBusinessSettings();
+    return applyBusinessThresholds(updatedProduct, settings);
 }
 
 /**
@@ -86,7 +94,11 @@ export async function adjustStock(
         });
     });
 
-    return prisma.product.findUnique({ where: { id: productId } });
+    const updatedProduct = await prisma.product.findUnique({ where: { id: productId } });
+    if (!updatedProduct) return updatedProduct;
+
+    const settings = await getBusinessSettings();
+    return applyBusinessThresholds(updatedProduct, settings);
 }
 
 /**
@@ -95,13 +107,18 @@ export async function adjustStock(
 export async function getLowStockProducts() {
     // Prisma doesn't let us compare two columns (stock <= lowStockThreshold),
     // so we fetch active products and filter in JS.
-    const products = await prisma.product.findMany({
+    const [products, settings] = await Promise.all([
+        prisma.product.findMany({
         where: { isActive: true },
         include: { brand: { select: { id: true, name: true } } },
         orderBy: { stock: "asc" },
-    });
+        }),
+        getBusinessSettings(),
+    ]);
 
-    return products.filter((p) => p.stock <= p.lowStockThreshold);
+    return products
+        .map((product) => applyBusinessThresholds(product, settings))
+        .filter((p) => p.stock <= p.lowStockThreshold);
 }
 
 /**
