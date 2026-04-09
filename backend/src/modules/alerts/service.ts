@@ -1,4 +1,8 @@
 import prisma from "../../db/prisma";
+import {
+  applyBusinessThresholds,
+  getBusinessSettings,
+} from "../settings/service";
 
 type AlertLevel = "CRITICAL" | "LOW" | "INFO";
 type AlertType = "Stock" | "Invoice";
@@ -85,7 +89,7 @@ function shouldSuppressFinalizedAlert(log: any, latestPaidLogByInvoiceId: Map<st
 }
 
 export async function listAlerts(userId: string, role: "ADMIN" | "CASHIER", limit = 20) {
-  const [readRows, lowStockProducts, auditLogs] = await Promise.all([
+  const [readRows, lowStockProducts, auditLogs, settings] = await Promise.all([
     prisma.userAlertRead.findMany({
       where: { userId },
       select: { alertKey: true },
@@ -112,6 +116,7 @@ export async function listAlerts(userId: string, role: "ADMIN" | "CASHIER", limi
       orderBy: { createdAt: "desc" },
       take: Math.max(limit * 3, 20),
     }),
+    getBusinessSettings(),
   ]);
 
   const readKeys = new Set(readRows.map((row) => row.alertKey));
@@ -128,6 +133,7 @@ export async function listAlerts(userId: string, role: "ADMIN" | "CASHIER", limi
   });
 
   lowStockProducts
+    .map((product) => applyBusinessThresholds(product, settings))
     .filter((product) => product.stock <= product.lowStockThreshold)
     .forEach((product) => {
       const key = `stock-${product.id}`;

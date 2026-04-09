@@ -64,14 +64,41 @@ export async function getMe(userId: string) {
   return user;
 }
 
-export async function updateProfile(userId: string, data: { name?: string; phone?: string; gender?: string | null; address?: string | null; password?: string; profileImage?: string | null }) {
+export async function updateProfile(userId: string, data: { name?: string; phone?: string; gender?: string | null; address?: string | null; currentPassword?: string; newPassword?: string; password?: string; profileImage?: string | null }) {
+  const nextPassword = data.newPassword || data.password;
   let previousProfileImage: string | null = null;
-  if (data.profileImage !== undefined) {
-    const existingUser = await prisma.user.findUnique({
+  let existingUser:
+    | {
+        passwordHash: string;
+        profileImage: string | null;
+      }
+    | null = null;
+
+  if (data.profileImage !== undefined || nextPassword) {
+    existingUser = await prisma.user.findUnique({
       where: { id: userId },
-      select: { profileImage: true },
+      select: { passwordHash: true, profileImage: true },
     });
+  }
+
+  if (data.profileImage !== undefined) {
     previousProfileImage = existingUser?.profileImage ?? null;
+  }
+
+  if (nextPassword) {
+    if (!existingUser) {
+      throw new Error("User not found");
+    }
+    if (!data.currentPassword) {
+      throw new Error("Current password is required");
+    }
+    const passwordMatches = await bcrypt.compare(
+      data.currentPassword,
+      existingUser.passwordHash,
+    );
+    if (!passwordMatches) {
+      throw new Error("Current password is incorrect");
+    }
   }
 
   const updateData: any = {};
@@ -79,8 +106,8 @@ export async function updateProfile(userId: string, data: { name?: string; phone
   if (data.phone !== undefined) updateData.phone = data.phone.trim() || null;
   if (data.gender !== undefined) updateData.gender = data.gender?.trim() || null;
   if (data.address !== undefined) updateData.address = data.address?.trim() || null;
-  if (data.password) {
-    updateData.passwordHash = await bcrypt.hash(data.password, 10);
+  if (nextPassword) {
+    updateData.passwordHash = await bcrypt.hash(nextPassword, 10);
   }
   if (data.profileImage !== undefined) updateData.profileImage = data.profileImage;
 

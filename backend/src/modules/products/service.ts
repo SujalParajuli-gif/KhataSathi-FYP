@@ -1,6 +1,10 @@
 import type { Prisma } from "@prisma/client";
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload } from "../../lib/uploads";
+import {
+    applyBusinessThresholds,
+    getBusinessSettings,
+} from "../settings/service";
 
 interface ProductFilters {
     search?: string;
@@ -39,6 +43,7 @@ export async function listProducts(filters: ProductFilters) {
     }
 
     const skip = (page - 1) * pageSize;
+    const settings = await getBusinessSettings();
 
     if (lowStockOnly) {
         // Fetch all matching the where clause
@@ -47,14 +52,18 @@ export async function listProducts(filters: ProductFilters) {
             include: { brand: { select: { id: true, name: true } } },
             orderBy: { createdAt: "desc" },
         });
-        
+
+        const resolvedProducts = allProducts.map((product) =>
+            applyBusinessThresholds(product, settings),
+        );
+
         // Filter in JS
-        const filtered = allProducts.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold);
+        const filtered = resolvedProducts.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold);
         const total = filtered.length;
-        
+
         // Paginate in JS
         const paged = filtered.slice(skip, skip + pageSize);
-        
+
         return { products: paged, total, page, pageSize };
     } else {
         const [products, total] = await Promise.all([
@@ -68,22 +77,31 @@ export async function listProducts(filters: ProductFilters) {
             prisma.product.count({ where }),
         ]);
 
-        return { products, total, page, pageSize };
+        return {
+            products: products.map((product) => applyBusinessThresholds(product, settings)),
+            total,
+            page,
+            pageSize,
+        };
     }
 }
 
 export async function getProduct(id: string) {
-    return prisma.product.findUnique({
+    const settings = await getBusinessSettings();
+    const product = await prisma.product.findUnique({
         where: { id },
         include: { brand: { select: { id: true, name: true } } },
     });
+    return product ? applyBusinessThresholds(product, settings) : product;
 }
 
 export async function getProductByBarcode(barcode: string) {
-    return prisma.product.findUnique({
+    const settings = await getBusinessSettings();
+    const product = await prisma.product.findUnique({
         where: { barcode },
         include: { brand: { select: { id: true, name: true } } },
     });
+    return product ? applyBusinessThresholds(product, settings) : product;
 }
 
 interface CreateProductInput {
@@ -95,14 +113,24 @@ interface CreateProductInput {
     retailPrice: number;
     wholesalePrice: number;
     wholesaleQtyThreshold?: number;
+    usesDefaultWholesaleQtyThreshold?: boolean;
     stock?: number;
     lowStockThreshold?: number;
+    usesDefaultLowStockThreshold?: boolean;
     isActive?: boolean;
     imageUrl?: string | null;
 }
 
 export async function createProduct(data: CreateProductInput) {
-    return prisma.product.create({
+    const settings = await getBusinessSettings();
+    const usesDefaultWholesaleQtyThreshold =
+        data.usesDefaultWholesaleQtyThreshold ??
+        (data.wholesaleQtyThreshold === undefined);
+    const usesDefaultLowStockThreshold =
+        data.usesDefaultLowStockThreshold ??
+        (data.lowStockThreshold === undefined);
+
+    const product = await prisma.product.create({
         data: {
             name: data.name,
             sku: data.sku,
@@ -111,14 +139,22 @@ export async function createProduct(data: CreateProductInput) {
             category: data.category || null,
             retailPrice: data.retailPrice,
             wholesalePrice: data.wholesalePrice,
-            wholesaleQtyThreshold: data.wholesaleQtyThreshold ?? 1,
+            wholesaleQtyThreshold:
+                data.wholesaleQtyThreshold ??
+                settings.defaultWholesaleQtyThreshold,
+            usesDefaultWholesaleQtyThreshold,
             stock: data.stock ?? 0,
-            lowStockThreshold: data.lowStockThreshold ?? 5,
+            lowStockThreshold:
+                data.lowStockThreshold ??
+                settings.defaultLowStockThreshold,
+            usesDefaultLowStockThreshold,
             isActive: data.isActive ?? true,
             imageUrl: data.imageUrl ?? null,
         },
         include: { brand: { select: { id: true, name: true } } },
     });
+
+    return applyBusinessThresholds(product, settings);
 }
 
 export async function updateProduct(id: string, data: Partial<CreateProductInput> & { isActive?: boolean }) {
@@ -132,9 +168,35 @@ export async function updateProduct(id: string, data: Partial<CreateProductInput
         previousImageUrl = existing?.imageUrl ?? null;
     }
 
+    const updateData: any = { ...data };
+    if (
+        updateData.usesDefaultWholesaleQtyThreshold === undefined &&
+        updateData.wholesaleQtyThreshold !== undefined
+    ) {
+        updateData.usesDefaultWholesaleQtyThreshold = false;
+    }
+    if (
+        updateData.usesDefaultLowStockThreshold === undefined &&
+        updateData.lowStockThreshold !== undefined
+    ) {
+        updateData.usesDefaultLowStockThreshold = false;
+    }
+    if (
+        updateData.usesDefaultWholesaleQtyThreshold === true &&
+        updateData.wholesaleQtyThreshold === undefined
+    ) {
+        delete updateData.wholesaleQtyThreshold;
+    }
+    if (
+        updateData.usesDefaultLowStockThreshold === true &&
+        updateData.lowStockThreshold === undefined
+    ) {
+        delete updateData.lowStockThreshold;
+    }
+
     const product = await prisma.product.update({
         where: { id },
-        data,
+        data: updateData,
         include: { brand: { select: { id: true, name: true } } },
     });
 
@@ -142,7 +204,8 @@ export async function updateProduct(id: string, data: Partial<CreateProductInput
         await deleteReplacedUpload(previousImageUrl, product.imageUrl);
     }
 
-    return product;
+    const settings = await getBusinessSettings();
+    return applyBusinessThresholds(product, settings);
 }
 
 export async function deactivateProduct(id: string) {
@@ -171,10 +234,7 @@ type CsvImportRow = {
     category?: string;
     retailPrice: number;
     wholesalePrice: number;
-    wholesaleQtyThreshold?: number;
     stock?: number;
-    lowStockThreshold?: number;
-    isActive?: boolean;
 };
 
 type CsvImportError = {
@@ -186,12 +246,6 @@ type CsvImportError = {
 
 function normalizeCsvText(value: unknown) {
     return typeof value === "string" ? value.trim() : "";
-}
-
-function normalizeCsvBoolean(value: unknown) {
-    const normalized = normalizeCsvText(value).toLowerCase();
-    if (!normalized) return true;
-    return !["inactive", "false", "0", "no"].includes(normalized);
 }
 
 function parseCsvNumber(
@@ -293,20 +347,7 @@ function normalizeCsvImportRow(rawRow: Record<string, unknown>, rowNumber: numbe
         category: normalizeCsvText(normalizedRow.category) || undefined,
         retailPrice: parseCsvNumber(normalizedRow.retailprice, "retailPrice", rowNumber, { min: 0.01 })!,
         wholesalePrice: parseCsvNumber(normalizedRow.wholesaleprice, "wholesalePrice", rowNumber, { min: 0.01 })!,
-        wholesaleQtyThreshold: parseCsvNumber(
-            normalizedRow.wholesaleqtythreshold ?? normalizedRow.thresholdqty,
-            "wholesaleQtyThreshold",
-            rowNumber,
-            { min: 1, allowBlank: true },
-        ),
         stock: parseCsvNumber(normalizedRow.stock, "stock", rowNumber, { min: 0, allowBlank: true }),
-        lowStockThreshold: parseCsvNumber(
-            normalizedRow.lowstockthreshold,
-            "lowStockThreshold",
-            rowNumber,
-            { min: 0, allowBlank: true },
-        ),
-        isActive: normalizeCsvBoolean(normalizedRow.status),
     };
 }
 
@@ -314,6 +355,7 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
     const createdProducts: Array<{ id: string; sku: string; name: string }> = [];
     const errors: CsvImportError[] = [];
     const brandCache = new Map<string, string>();
+    const settings = await getBusinessSettings();
 
     const existingBrands = await prisma.brand.findMany({
         select: { id: true, name: true },
@@ -357,10 +399,12 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
                         category: row.category || null,
                         retailPrice: row.retailPrice,
                         wholesalePrice: row.wholesalePrice,
-                        wholesaleQtyThreshold: row.wholesaleQtyThreshold ?? 1,
+                        wholesaleQtyThreshold: settings.defaultWholesaleQtyThreshold,
+                        usesDefaultWholesaleQtyThreshold: true,
                         stock: row.stock ?? 0,
-                        lowStockThreshold: row.lowStockThreshold ?? 5,
-                        isActive: row.isActive ?? true,
+                        lowStockThreshold: settings.defaultLowStockThreshold,
+                        usesDefaultLowStockThreshold: true,
+                        isActive: true,
                     },
                     select: { id: true, sku: true, name: true },
                 });

@@ -23,6 +23,13 @@ function parseBooleanValue(value: unknown) {
   return Boolean(value);
 }
 
+function parseOptionalBoolean(value: unknown) {
+  if (value === undefined || value === null || value === "") {
+    return undefined;
+  }
+  return parseBooleanValue(value);
+}
+
 function parseOptionalNumber(
   value: unknown,
   label: string,
@@ -118,12 +125,19 @@ export async function create(req: Request, res: Response) {
         "wholesaleQtyThreshold",
         { min: 1 },
       ),
+      usesDefaultWholesaleQtyThreshold: parseOptionalBoolean(
+        req.body.usesDefaultWholesaleQtyThreshold,
+      ),
       stock: parseOptionalNumber(req.body.stock, "stock", { min: 0 }),
       lowStockThreshold: parseOptionalNumber(
         req.body.lowStockThreshold,
         "lowStockThreshold",
         { min: 0 },
       ),
+      usesDefaultLowStockThreshold: parseOptionalBoolean(
+        req.body.usesDefaultLowStockThreshold,
+      ),
+      isActive: parseOptionalBoolean(req.body.isActive),
     });
 
     res.status(201).json(product);
@@ -188,6 +202,11 @@ export async function update(req: Request, res: Response) {
         { min: 1 },
       );
     }
+    if (body.usesDefaultWholesaleQtyThreshold !== undefined) {
+      data.usesDefaultWholesaleQtyThreshold = parseOptionalBoolean(
+        body.usesDefaultWholesaleQtyThreshold,
+      );
+    }
     if (body.stock !== undefined) {
       data.stock = parseOptionalNumber(body.stock, "stock", { min: 0 });
     }
@@ -196,6 +215,11 @@ export async function update(req: Request, res: Response) {
         body.lowStockThreshold,
         "lowStockThreshold",
         { min: 0 },
+      );
+    }
+    if (body.usesDefaultLowStockThreshold !== undefined) {
+      data.usesDefaultLowStockThreshold = parseOptionalBoolean(
+        body.usesDefaultLowStockThreshold,
       );
     }
     if (body.imageUrl !== undefined) {

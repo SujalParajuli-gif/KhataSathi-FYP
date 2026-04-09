@@ -14,7 +14,7 @@ import {
 
 type ProductFormErrors = Partial<
   Record<
-    "name" | "sku" | "retailPrice" | "wholesalePrice" | "stock" | "lowStockThreshold" | "image",
+    "name" | "sku" | "retailPrice" | "wholesalePrice" | "thresholdQty" | "stock" | "lowStockThreshold" | "image",
     string
   >
 >;
@@ -111,6 +111,47 @@ function Select({
         </option>
       ))}
     </select>
+  );
+}
+
+function ThresholdModeSwitch({
+  mode,
+  onChange,
+  defaultLabel,
+  customLabel,
+}: {
+  mode: "default" | "custom";
+  onChange: (mode: "default" | "custom") => void;
+  defaultLabel: string;
+  customLabel: string;
+}) {
+  return (
+    <div className="grid grid-cols-2 gap-[8px]">
+      <button
+        type="button"
+        onClick={() => onChange("default")}
+        className={cn(
+          "rounded-[12px] border px-[12px] py-[10px] text-left text-[12px] font-semibold transition",
+          mode === "default"
+            ? "border-[#11120d] bg-[#11120d] text-white"
+            : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+        )}
+      >
+        {defaultLabel}
+      </button>
+      <button
+        type="button"
+        onClick={() => onChange("custom")}
+        className={cn(
+          "rounded-[12px] border px-[12px] py-[10px] text-left text-[12px] font-semibold transition",
+          mode === "custom"
+            ? "border-[#11120d] bg-[#11120d] text-white"
+            : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+        )}
+      >
+        {customLabel}
+      </button>
+    </div>
   );
 }
 
@@ -249,6 +290,7 @@ function Toast({
 export default function ProductsModals({
   brands,
   categories,
+  businessDefaults,
 
   openAddEdit,
   setOpenAddEdit,
@@ -288,6 +330,10 @@ export default function ProductsModals({
 }: {
   brands: string[];
   categories: string[];
+  businessDefaults: {
+    defaultLowStockThreshold: number;
+    defaultWholesaleQtyThreshold: number;
+  };
 
   openAddEdit: boolean;
   setOpenAddEdit: (v: boolean) => void;
@@ -501,6 +547,51 @@ export default function ProductsModals({
             />
           </Field>
 
+          <div className="md:col-span-2">
+            <Field label="Wholesale Quantity Threshold" error={formErrors.thresholdQty}>
+              <div className="space-y-[10px] rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+                <ThresholdModeSwitch
+                  mode={form.thresholdQtyMode}
+                  onChange={(mode) =>
+                    setForm((product) => ({
+                      ...product,
+                      thresholdQtyMode: mode,
+                      thresholdQty:
+                        mode === "default"
+                          ? businessDefaults.defaultWholesaleQtyThreshold
+                          : product.thresholdQty || businessDefaults.defaultWholesaleQtyThreshold,
+                    }))
+                  }
+                  defaultLabel={`Use business default (${businessDefaults.defaultWholesaleQtyThreshold})`}
+                  customLabel="Set custom threshold"
+                />
+                {form.thresholdQtyMode === "default" ? (
+                  <div className="rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] py-[10px] text-[12px] font-semibold text-[#565449]">
+                    This product will follow future admin wholesale threshold updates.
+                  </div>
+                ) : (
+                  <input
+                    type="number"
+                    min={1}
+                    value={form.thresholdQty}
+                    onChange={(event) =>
+                      setForm((product) => ({
+                        ...product,
+                        thresholdQty: Number(event.target.value),
+                      }))
+                    }
+                    className={cn(
+                      "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                      formErrors.thresholdQty
+                        ? "border-rose-300"
+                        : "border-[#CFCFD3]",
+                    )}
+                  />
+                )}
+              </div>
+            </Field>
+          </div>
+
           <Field label="Stock" error={formErrors.stock}>
             <input
               type="number"
@@ -519,23 +610,46 @@ export default function ProductsModals({
             label="Stock Alert Threshold"
             error={formErrors.lowStockThreshold}
           >
-            <input
-              type="number"
-              min={0}
-              value={form.lowStockThreshold}
-              onChange={(event) =>
-                setForm((product) => ({
-                  ...product,
-                  lowStockThreshold: Number(event.target.value),
-                }))
-              }
-              className={cn(
-                "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
-                formErrors.lowStockThreshold
-                  ? "border-rose-300"
-                  : "border-[#CFCFD3]",
+            <div className="space-y-[10px] rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+              <ThresholdModeSwitch
+                mode={form.lowStockThresholdMode}
+                onChange={(mode) =>
+                  setForm((product) => ({
+                    ...product,
+                    lowStockThresholdMode: mode,
+                    lowStockThreshold:
+                      mode === "default"
+                        ? businessDefaults.defaultLowStockThreshold
+                        : product.lowStockThreshold ?? businessDefaults.defaultLowStockThreshold,
+                  }))
+                }
+                defaultLabel={`Use business default (${businessDefaults.defaultLowStockThreshold})`}
+                customLabel="Set custom threshold"
+              />
+              {form.lowStockThresholdMode === "default" ? (
+                <div className="rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] py-[10px] text-[12px] font-semibold text-[#565449]">
+                  This product will follow future admin stock alert threshold updates.
+                </div>
+              ) : (
+                <input
+                  type="number"
+                  min={0}
+                  value={form.lowStockThreshold}
+                  onChange={(event) =>
+                    setForm((product) => ({
+                      ...product,
+                      lowStockThreshold: Number(event.target.value),
+                    }))
+                  }
+                  className={cn(
+                    "w-full rounded-[12px] border bg-white px-[12px] py-[10px] text-[#000000] outline-none",
+                    formErrors.lowStockThreshold
+                      ? "border-rose-300"
+                      : "border-[#CFCFD3]",
+                  )}
+                />
               )}
-            />
+            </div>
           </Field>
         </div>
       </ModalShell>
@@ -577,18 +691,15 @@ export default function ProductsModals({
               <span className="font-semibold">category</span>,{" "}
               <span className="font-semibold">retailPrice</span>,{" "}
               <span className="font-semibold">wholesalePrice</span>,{" "}
-              <span className="font-semibold">wholesaleQtyThreshold</span> or{" "}
-              <span className="font-semibold">thresholdQty</span>,{" "}
-              <span className="font-semibold">stock</span>,{" "}
-              <span className="font-semibold">lowStockThreshold</span>, and{" "}
-              <span className="font-semibold">status</span>.
+              <span className="font-semibold">stock</span>.
             </div>
             <div className="mt-[8px] text-[12px] text-[#8C8889]">
-              Required fields are name, sku, retailPrice, wholesalePrice, and stock.
+              Required fields are name, sku, brand, retailPrice, wholesalePrice, and stock.
             </div>
             <div className="mt-[6px] text-[12px] text-[#8C8889]">
-              Brand names from the CSV are matched to existing brands and will
-              be created automatically when needed.
+              Wholesale threshold, stock alert threshold, and status will use
+              business defaults. Brands from the CSV are matched to existing
+              brands and created automatically when needed.
             </div>
           </div>
 
@@ -770,8 +881,15 @@ export default function ProductsModals({
                 <div className="text-[12px] font-semibold text-[#8C8889]">
                   Threshold Qty
                 </div>
-                <div className="text-[14px] font-semibold text-[#000000]">
-                  {activeProduct.thresholdQty}
+                <div className="flex items-center gap-[8px]">
+                  <div className="text-[14px] font-semibold text-[#000000]">
+                    {activeProduct.thresholdQty}
+                  </div>
+                  <span className="rounded-full border border-[#CFCFD3] bg-[#F3F4F6] px-[8px] py-[2px] text-[11px] font-semibold text-[#565449]">
+                    {activeProduct.thresholdQtyMode === "default"
+                      ? "Business default"
+                      : "Custom"}
+                  </span>
                 </div>
               </div>
 
@@ -789,8 +907,15 @@ export default function ProductsModals({
                 <div className="text-[12px] font-semibold text-[#8C8889]">
                   Low Stock Threshold
                 </div>
-                <div className="text-[14px] font-semibold text-[#000000]">
-                  {activeProduct.lowStockThreshold}
+                <div className="flex items-center gap-[8px]">
+                  <div className="text-[14px] font-semibold text-[#000000]">
+                    {activeProduct.lowStockThreshold}
+                  </div>
+                  <span className="rounded-full border border-[#CFCFD3] bg-[#F3F4F6] px-[8px] py-[2px] text-[11px] font-semibold text-[#565449]">
+                    {activeProduct.lowStockThresholdMode === "default"
+                      ? "Business default"
+                      : "Custom"}
+                  </span>
                 </div>
               </div>
             </div>

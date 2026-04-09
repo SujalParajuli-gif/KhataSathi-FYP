@@ -49,11 +49,36 @@ export async function me(req: Request, res: Response) {
 
 export async function updateProfile(req: Request, res: Response) {
     try {
-        const { name, phone, gender, address, password, profileImage } = req.body;
-        const user = await updateProfileService(req.user!.id, { name, phone, gender, address, password, profileImage });
+        const {
+            name,
+            phone,
+            gender,
+            address,
+            currentPassword,
+            newPassword,
+            password,
+            profileImage,
+        } = req.body;
+        const user = await updateProfileService(req.user!.id, {
+            name,
+            phone,
+            gender,
+            address,
+            currentPassword,
+            newPassword,
+            password,
+            profileImage,
+        });
         res.json({ user });
     } catch (err: any) {
         console.error("Update profile error:", err);
+        if (
+            String(err?.message || "").includes("Current password") ||
+            String(err?.message || "").includes("User not found")
+        ) {
+            res.status(400).json({ error: err.message });
+            return;
+        }
         res.status(500).json({ error: err.message || "Internal server error" });
     }
 }

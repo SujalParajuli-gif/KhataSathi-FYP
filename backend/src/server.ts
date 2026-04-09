@@ -14,6 +14,7 @@ import auditRoutes from "./modules/audit/routes";
 import adminRoutes from "./modules/admin/backup";
 import userRoutes from "./modules/users/routes";
 import alertRoutes from "./modules/alerts/routes";
+import settingsRoutes from "./modules/settings/routes";
 
 const app = express();
 const PORT = Number(process.env.PORT) || 4000;
@@ -40,6 +41,7 @@ app.use("/api/audit", auditRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
 app.use("/api/alerts", alertRoutes);
+app.use("/api/settings", settingsRoutes);
 
 app.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ KhataSathi Backend running on http://localhost:${PORT}`);

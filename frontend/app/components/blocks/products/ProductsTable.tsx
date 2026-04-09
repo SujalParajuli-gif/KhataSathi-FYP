@@ -181,7 +181,16 @@ export default function ProductsTableCard({
                     <td className="px-[10px] py-[14px] font-semibold text-[#000000]">
                       {formatNpr(product.wholesalePrice)}
                     </td>
-                    <td className="px-[10px] py-[14px] text-[#565449]">{product.thresholdQty}</td>
+                    <td className="px-[10px] py-[14px] text-[#565449]">
+                      <div className="font-semibold text-[#000000]">
+                        {product.thresholdQty}
+                      </div>
+                      <div className="mt-[4px] text-[11px] text-[#8C8889]">
+                        {product.thresholdQtyMode === "default"
+                          ? "Business default"
+                          : "Custom"}
+                      </div>
+                    </td>
 
                     <td className="px-[10px] py-[14px]">
                       <div className="flex items-center gap-[10px]">
