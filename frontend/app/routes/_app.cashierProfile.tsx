@@ -336,6 +336,14 @@ export default function CashierProfileSection() {
         setError("Enter a new password before saving security settings.");
         return;
       }
+      if (!pwd.current) {
+        setError("Enter your current password to continue.");
+        return;
+      }
+      if (!pwd.next) {
+        setError("Enter the new password.");
+        return;
+      }
       if (isPwdMismatch) {
         setError("New password and confirmation must match.");
         return;
@@ -350,7 +358,10 @@ export default function CashierProfileSection() {
         gender: profile.gender,
         address: profile.address,
       };
-      if (tab === "security" && pwd.next) payload.password = pwd.next;
+      if (tab === "security" && pwd.next) {
+        payload.currentPassword = pwd.current;
+        payload.newPassword = pwd.next;
+      }
 
       const res = await updateProfileApi(payload);
       if (res.user) {

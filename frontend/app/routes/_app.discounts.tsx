@@ -5,6 +5,7 @@ import { ConfirmDialog } from "~/components/ui/Modal";
 import {
   createCustomerApi,
   deactivateCustomerApi,
+  getBusinessSettingsApi,
   listCustomersApi,
   listInvoicesApi,
   updateCustomerApi,
@@ -35,10 +36,6 @@ type PurchaseSummary = {
   purchaseHistoryState: PurchaseHistoryState;
 };
 
-const LS_KEYS = {
-  loyaltyDiscountPercent: "ks_loyaltyDiscountPercent",
-};
-
 const DEFAULT_PURCHASE_SUMMARY: PurchaseSummary = {
   lastPurchaseLabel: "No purchase history yet",
   purchaseCount: 0,
@@ -47,17 +44,6 @@ const DEFAULT_PURCHASE_SUMMARY: PurchaseSummary = {
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
-}
-
-function readInt(key: string, fallback: number) {
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return fallback;
-    const n = Number(raw);
-    return Number.isFinite(n) ? n : fallback;
-  } catch {
-    return fallback;
-  }
 }
 
 function clampPercent(v: number) {
@@ -839,10 +825,6 @@ export default function DiscountsPage() {
   const formHasWholesale = typeof fWholesaleDiscount === "number";
 
   useEffect(() => {
-    setLoyaltyDiscountPercent(readInt(LS_KEYS.loyaltyDiscountPercent, 2));
-  }, []);
-
-  useEffect(() => {
     let active = true;
 
     async function load() {
@@ -850,15 +832,19 @@ export default function DiscountsPage() {
       setLoadError("");
 
       try {
-        const [customerData, invoices] = await Promise.all([
+        const [customerData, invoices, settings] = await Promise.all([
           listCustomersApi(),
           loadAllInvoices(),
+          getBusinessSettingsApi(),
         ]);
 
         if (!active) return;
 
         const purchaseLookup = buildPurchaseLookup(invoices);
         const rawCustomers = normalizeCustomerList(customerData);
+        setLoyaltyDiscountPercent(
+          clampPercent(Number(settings?.loyaltyDiscountPercent ?? 2)),
+        );
 
         setCustomers(
           rawCustomers.map((customer: any) => {

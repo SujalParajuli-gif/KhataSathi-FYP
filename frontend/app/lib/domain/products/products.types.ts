@@ -1,6 +1,7 @@
 ﻿// frontend/app/lib/domain/products/products.types.ts
 export type ProductStatus = "Active" | "Inactive";
 export type StockFlag = "In Stock" | "Low Stock" | "Out of Stock";
+export type ThresholdMode = "default" | "custom";
 
 export type Product = {
   id: string;
@@ -15,9 +16,11 @@ export type Product = {
   retailPrice: number;
   wholesalePrice: number;
   thresholdQty: number;
+  thresholdQtyMode: ThresholdMode;
 
   stock: number;
   lowStockThreshold: number;
+  lowStockThresholdMode: ThresholdMode;
 
   status: ProductStatus;
 };

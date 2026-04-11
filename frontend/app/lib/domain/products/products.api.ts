@@ -21,8 +21,10 @@ type BackendProduct = {
   retailPrice: number;
   wholesalePrice: number;
   wholesaleQtyThreshold?: number;
+  usesDefaultWholesaleQtyThreshold?: boolean;
   stock: number;
   lowStockThreshold: number;
+  usesDefaultLowStockThreshold?: boolean;
   imageUrl?: string | null;
   isActive: boolean;
 };
@@ -41,8 +43,14 @@ function toFrontendProduct(product: BackendProduct): Product {
     retailPrice: Number(product.retailPrice ?? 0),
     wholesalePrice: Number(product.wholesalePrice ?? 0),
     thresholdQty: Number(product.wholesaleQtyThreshold ?? 1),
+    thresholdQtyMode: product.usesDefaultWholesaleQtyThreshold
+      ? "default"
+      : "custom",
     stock: Number(product.stock ?? 0),
     lowStockThreshold: Number(product.lowStockThreshold ?? 0),
+    lowStockThresholdMode: product.usesDefaultLowStockThreshold
+      ? "default"
+      : "custom",
     status: product.isActive ? "Active" : "Inactive",
   };
 }
@@ -129,8 +137,11 @@ function toBackendPayload(product: Omit<Product, "id">) {
     retailPrice: Number(product.retailPrice),
     wholesalePrice: Number(product.wholesalePrice),
     wholesaleQtyThreshold: Number(product.thresholdQty ?? 1),
+    usesDefaultWholesaleQtyThreshold: product.thresholdQtyMode === "default",
     stock: Number(product.stock ?? 0),
     lowStockThreshold: Number(product.lowStockThreshold ?? 0),
+    usesDefaultLowStockThreshold:
+      product.lowStockThresholdMode === "default",
     isActive: product.status === "Active",
   };
 }

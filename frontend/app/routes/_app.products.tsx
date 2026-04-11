@@ -1,6 +1,10 @@
 ﻿import React, { useMemo, useState } from "react";
 import type { Product, ToastKind } from "~/lib/domain/products/products.types";
-import { importCsvApi } from "~/lib/api/endpoints";
+import {
+  getBusinessSettingsApi,
+  importCsvApi,
+  type BusinessSettings,
+} from "~/lib/api/endpoints";
 import {
   bulkSetStatus,
   createProduct,
@@ -13,14 +17,9 @@ import {
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
 import ProductsModals from "~/components/blocks/products/ProductsModals";
-import {
-  LOCAL_SETTINGS_KEYS,
-  readStoredNumber,
-} from "~/lib/settings/localSettings";
-
 type ProductFormErrors = Partial<
   Record<
-    "name" | "sku" | "retailPrice" | "wholesalePrice" | "stock" | "lowStockThreshold" | "image",
+    "name" | "sku" | "retailPrice" | "wholesalePrice" | "thresholdQty" | "stock" | "lowStockThreshold" | "image",
     string
   >
 >;
@@ -49,21 +48,31 @@ type BulkActionState =
       successMessage: string;
     };
 
-export default function ProductsPage() {
-  function buildDefaultProductForm(brandOptions: string[], categoryOptions: string[]): Product {
-    const defaultThresholdQty = Math.max(
-      1,
-      Math.floor(
-        readStoredNumber(LOCAL_SETTINGS_KEYS.wholesaleQtyThreshold, 1),
-      ),
-    );
-    const defaultLowStockThreshold = Math.max(
+function normalizeBusinessDefaults(
+  settings?: Partial<BusinessSettings> | null,
+): BusinessSettings {
+  return {
+    defaultLowStockThreshold: Math.max(
       0,
-      Math.floor(
-        readStoredNumber(LOCAL_SETTINGS_KEYS.defaultLowStockThreshold, 5),
-      ),
-    );
+      Math.floor(Number(settings?.defaultLowStockThreshold ?? 5)),
+    ),
+    defaultWholesaleQtyThreshold: Math.max(
+      1,
+      Math.floor(Number(settings?.defaultWholesaleQtyThreshold ?? 15)),
+    ),
+    loyaltyDiscountPercent: Math.max(
+      0,
+      Math.min(100, Number(settings?.loyaltyDiscountPercent ?? 2)),
+    ),
+  };
+}
 
+export default function ProductsPage() {
+  function buildDefaultProductForm(
+    brandOptions: string[],
+    categoryOptions: string[],
+    settings: BusinessSettings,
+  ): Product {
     return {
       id: "new",
       name: "",
@@ -74,15 +83,20 @@ export default function ProductsPage() {
       category: categoryOptions[1] ?? "Groceries",
       retailPrice: 0,
       wholesalePrice: 0,
-      thresholdQty: defaultThresholdQty,
+      thresholdQty: settings.defaultWholesaleQtyThreshold,
+      thresholdQtyMode: "default",
       stock: 0,
-      lowStockThreshold: defaultLowStockThreshold,
+      lowStockThreshold: settings.defaultLowStockThreshold,
+      lowStockThresholdMode: "default",
       status: "Active",
     };
   }
 
   const [brands, setBrands] = useState<string[]>(["All Brands"]);
   const [categories, setCategories] = useState<string[]>(["All Categories"]);
+  const [businessDefaults, setBusinessDefaults] = useState<BusinessSettings>(
+    () => normalizeBusinessDefaults(),
+  );
 
   const [products, setProducts] = useState<Product[]>([]);
   const [total, setTotal] = useState(0);
@@ -131,7 +145,11 @@ export default function ProductsPage() {
   );
 
   const [form, setForm] = useState<Product>(() =>
-    buildDefaultProductForm(["All Brands", "CG Foods"], ["All Categories", "Groceries"]),
+    buildDefaultProductForm(
+      ["All Brands", "CG Foods"],
+      ["All Categories", "Groceries"],
+      normalizeBusinessDefaults(),
+    ),
   );
 
   function toastMsg(kind: ToastKind, message: string) {
@@ -164,9 +182,13 @@ export default function ProductsPage() {
   }
 
   async function loadMeta() {
-    const meta = await fetchProductsMeta();
+    const [meta, settings] = await Promise.all([
+      fetchProductsMeta(),
+      getBusinessSettingsApi(),
+    ]);
     setBrands(["All Brands", ...meta.brands]);
     setCategories(["All Categories", ...meta.categories]);
+    setBusinessDefaults(normalizeBusinessDefaults(settings));
   }
 
   async function loadProducts() {
@@ -247,7 +269,7 @@ export default function ProductsPage() {
 
   function openAdd() {
     setActiveProductId(null);
-    setForm(buildDefaultProductForm(brands, categories));
+    setForm(buildDefaultProductForm(brands, categories, businessDefaults));
     clearFormValidation();
     resetImageState("");
     setOpenAddEdit(true);
@@ -317,10 +339,19 @@ export default function ProductsPage() {
     if (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0) {
       errors.wholesalePrice = "Wholesale price must be greater than 0.";
     }
+    if (
+      form.thresholdQtyMode === "custom" &&
+      (!Number.isFinite(form.thresholdQty) || form.thresholdQty < 1)
+    ) {
+      errors.thresholdQty = "Wholesale threshold must be at least 1.";
+    }
     if (!Number.isFinite(form.stock) || form.stock < 0) {
       errors.stock = "Stock cannot be negative.";
     }
-    if (!Number.isFinite(form.lowStockThreshold) || form.lowStockThreshold < 0) {
+    if (
+      form.lowStockThresholdMode === "custom" &&
+      (!Number.isFinite(form.lowStockThreshold) || form.lowStockThreshold < 0)
+    ) {
       errors.lowStockThreshold = "Stock alert threshold cannot be negative.";
     }
 
@@ -339,9 +370,15 @@ export default function ProductsPage() {
         barcode: form.barcode?.trim() || "",
         imageUrl: form.imageUrl || null,
         category: form.category?.trim() || "",
-        thresholdQty: Math.max(1, Number(form.thresholdQty || 1)),
+        thresholdQty:
+          form.thresholdQtyMode === "default"
+            ? businessDefaults.defaultWholesaleQtyThreshold
+            : Math.max(1, Number(form.thresholdQty || 1)),
         stock: Math.max(0, Number(form.stock || 0)),
-        lowStockThreshold: Math.max(0, Number(form.lowStockThreshold || 0)),
+        lowStockThreshold:
+          form.lowStockThresholdMode === "default"
+            ? businessDefaults.defaultLowStockThreshold
+            : Math.max(0, Number(form.lowStockThreshold || 0)),
       };
       delete (payload as any).id;
 
@@ -536,6 +573,7 @@ export default function ProductsPage() {
       <ProductsModals
         brands={brands}
         categories={categories}
+        businessDefaults={businessDefaults}
         openAddEdit={openAddEdit}
         setOpenAddEdit={setOpenAddEdit}
         openImport={openImport}

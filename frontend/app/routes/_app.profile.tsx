@@ -10,9 +10,10 @@ import {
 } from "~/lib/api/endpoints";
 import { API_BASE_URL } from "~/lib/api/baseUrl";
 import { ConfirmDialog, StatusDialog } from "~/components/ui/Modal";
+import Icon from "~/components/ui/Icon";
 import UserAvatar from "~/components/ui/UserAvatar";
 import { setAuthUser } from "~/lib/auth";
-import { Link } from "react-router";
+import { useMemo } from "react";
 
 function formatLastLogin(value?: string | null) {
   return value ? new Date(value).toLocaleString() : "Never";
@@ -26,6 +27,10 @@ function resolveImageUrl(path?: string | null) {
 
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
+}
+
+function cn(...xs: Array<string | false | null | undefined>) {
+  return xs.filter(Boolean).join(" ");
 }
 
 function GIcon({
@@ -312,6 +317,19 @@ function ImageUpload({
   );
 }
 
+type AdminProfile = {
+  firstName: string;
+  lastName: string;
+  gender: "Male" | "Female";
+  email: string;
+  emailVerified: boolean | null;
+  address: string;
+  phone: string;
+  location: string;
+  roleLabel: string;
+  lastLogin?: string | null;
+};
+
 type Cashier = {
   id: string;
   name: string;
@@ -324,18 +342,247 @@ type Cashier = {
   profileImage?: string | null;
 };
 
+type AdminTabKey = "personal" | "security";
+
+const ADMIN_LOCATION_STORAGE_KEY = "khatasathi_admin_profile_location";
+
+function readStoredAdminLocation() {
+  if (typeof window === "undefined") return "Nepal";
+  return window.localStorage.getItem(ADMIN_LOCATION_STORAGE_KEY) || "Nepal";
+}
+
+function splitName(name?: string | null) {
+  const parts = String(name || "")
+    .trim()
+    .split(/\s+/)
+    .filter(Boolean);
+
+  return {
+    firstName: parts[0] || "",
+    lastName: parts.slice(1).join(" "),
+  };
+}
+
+function formatRoleLabel(role?: string | null) {
+  return String(role || "").toLowerCase() === "admin" ? "Admin" : "User";
+}
+
+function formatDateTime(value?: string | null) {
+  if (!value) return "Not available";
+  return new Date(value).toLocaleString();
+}
+
+function mapUserToAdminProfile(user: any): AdminProfile {
+  const { firstName, lastName } = splitName(user?.name);
+
+  return {
+    firstName,
+    lastName,
+    gender: user?.gender === "Female" ? "Female" : "Male",
+    email: user?.email || "",
+    emailVerified:
+      typeof user?.emailVerified === "boolean" ? user.emailVerified : null,
+    address: user?.address || "",
+    phone: user?.phone || "",
+    location: readStoredAdminLocation(),
+    roleLabel: formatRoleLabel(user?.role),
+    lastLogin: user?.lastLogin || null,
+  };
+}
+
+function ProfilePanel({
+  title,
+  subtitle,
+  actions,
+  children,
+}: {
+  title: string;
+  subtitle?: string;
+  actions?: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="flex h-full flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white">
+      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
+        <div>
+          <div className="text-[15px] font-extrabold text-slate-900">
+            {title}
+          </div>
+          {subtitle ? (
+            <div className="mt-1 text-[12px] font-medium text-slate-500">
+              {subtitle}
+            </div>
+          ) : null}
+        </div>
+        {actions}
+      </div>
+      <div className="flex-1">{children}</div>
+    </section>
+  );
+}
+
+function ProfileActionButton({
+  icon,
+  label,
+  onClick,
+  disabled,
+  primary = false,
+}: {
+  icon: string;
+  label: string;
+  onClick?: () => void;
+  disabled?: boolean;
+  primary?: boolean;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      className={cn(
+        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
+        primary
+          ? "border-slate-900 bg-slate-900 text-white hover:bg-slate-800"
+          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+      )}
+    >
+      <Icon name={icon} className="text-[18px]" />
+      {label}
+    </button>
+  );
+}
+
+function ProfileField({
+  label,
+  hint,
+  children,
+}: {
+  label: string;
+  hint?: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="space-y-2">
+      <div className="flex items-center justify-between gap-3">
+        <label className="text-[11px] font-extrabold uppercase text-slate-500">
+          {label}
+        </label>
+        {hint ? (
+          <span className="text-[11px] font-semibold text-slate-400">
+            {hint}
+          </span>
+        ) : null}
+      </div>
+      {children}
+    </div>
+  );
+}
+
+function ProfileTextInput({
+  value,
+  onChange,
+  placeholder,
+  type = "text",
+  disabled = false,
+  right,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  placeholder?: string;
+  type?: string;
+  disabled?: boolean;
+  right?: React.ReactNode;
+}) {
+  return (
+    <div
+      className={cn(
+        "flex items-center gap-3 rounded-[14px] border bg-white px-4 py-3 transition",
+        disabled
+          ? "border-slate-200 bg-slate-50 text-slate-400"
+          : "border-slate-200 focus-within:border-slate-900",
+      )}
+    >
+      <input
+        type={type}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        placeholder={placeholder}
+        disabled={disabled}
+        className={cn(
+          "w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-slate-400",
+          disabled ? "text-slate-500" : "text-slate-900",
+        )}
+      />
+      {right ? <div className="shrink-0">{right}</div> : null}
+    </div>
+  );
+}
+
+function ProfileSelectInput({
+  value,
+  onChange,
+  options,
+}: {
+  value: string;
+  onChange: (value: string) => void;
+  options: string[];
+}) {
+  return (
+    <div className="rounded-[14px] border border-slate-200 bg-white px-4 py-3 transition focus-within:border-slate-900">
+      <select
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+        className="w-full appearance-none bg-transparent text-[14px] font-semibold text-slate-900 outline-none"
+      >
+        {options.map((option) => (
+          <option key={option} value={option}>
+            {option}
+          </option>
+        ))}
+      </select>
+    </div>
+  );
+}
+
 export default function ProfilePage() {
-  const [me, setMe] = useState({
-    name: "Admin User",
-    role: "admin",
-    lastLogin: "Never",
-    email: "admin@khatasathi.local",
-    phone: "+977 98XXXXXXXX",
+  const [adminProfile, setAdminProfile] = useState<AdminProfile>({
+    firstName: "",
+    lastName: "",
+    gender: "Male",
+    email: "",
+    emailVerified: null,
+    address: "",
+    phone: "",
+    location: "Nepal",
+    roleLabel: "Admin",
+    lastLogin: null,
   });
+  const [adminInitialProfile, setAdminInitialProfile] = useState<AdminProfile>({
+    firstName: "",
+    lastName: "",
+    gender: "Male",
+    email: "",
+    emailVerified: null,
+    address: "",
+    phone: "",
+    location: "Nepal",
+    roleLabel: "Admin",
+    lastLogin: null,
+  });
+  const [adminTab, setAdminTab] = useState<AdminTabKey>("personal");
 
   const [adminPhotoUrl, setAdminPhotoUrl] = useState<string | undefined>(
     undefined,
   );
+  const [uploadingAdminPhoto, setUploadingAdminPhoto] = useState(false);
+  const [adminSecurity, setAdminSecurity] = useState({
+    current: "",
+    next: "",
+    confirm: "",
+  });
+  const [adminSecurityError, setAdminSecurityError] = useState("");
+  const [savingAdminProfile, setSavingAdminProfile] = useState(false);
+  const [savingAdminPassword, setSavingAdminPassword] = useState(false);
 
   const [cashiers, setCashiers] = useState<Cashier[]>([]);
   const [loadingCashiers, setLoadingCashiers] = useState(false);
@@ -442,13 +689,9 @@ export default function ProfilePage() {
       try {
         const data = await getMeApi();
         const user = data.user || data;
-        setMe({
-          name: user.name || "Admin User",
-          role: user.role || "admin",
-          lastLogin: formatLastLogin(user.lastLogin),
-          email: user.email || "",
-          phone: user.phone || "",
-        });
+        const nextAdminProfile = mapUserToAdminProfile(user);
+        setAdminProfile(nextAdminProfile);
+        setAdminInitialProfile(nextAdminProfile);
         setAdminPhotoUrl(user.profileImage || undefined);
       } catch {}
 
@@ -459,6 +702,15 @@ export default function ProfilePage() {
 
     load();
   }, []);
+
+  useEffect(() => {
+    if (typeof window !== "undefined") {
+      window.localStorage.setItem(
+        ADMIN_LOCATION_STORAGE_KEY,
+        adminProfile.location,
+      );
+    }
+  }, [adminProfile.location]);
 
   function resetAddForm() {
     setNewName("");
@@ -724,229 +976,521 @@ export default function ProfilePage() {
     }
   }
 
-  const adminInitials =
-    me.name
-      .split(/\s+/)
-      .filter(Boolean)
-      .slice(0, 2)
-      .map((part) => part[0]?.toUpperCase() || "")
-      .join("") || "AD";
+  const adminDisplayName =
+    `${adminProfile.firstName} ${adminProfile.lastName}`.trim() || "Admin";
+  const adminInitials = useMemo(
+    () =>
+      adminDisplayName
+        .split(" ")
+        .filter(Boolean)
+        .slice(0, 2)
+        .map((part) => part[0]?.toUpperCase() || "")
+        .join(""),
+    [adminDisplayName],
+  );
+  const adminHasProfileChanges =
+    JSON.stringify(adminProfile) !== JSON.stringify(adminInitialProfile);
+  const adminHasSecurityChanges = Boolean(
+    adminSecurity.current || adminSecurity.next || adminSecurity.confirm,
+  );
+  const adminPasswordMismatch =
+    !!adminSecurity.next &&
+    !!adminSecurity.confirm &&
+    adminSecurity.next !== adminSecurity.confirm;
+
+  function discardAdminChanges() {
+    setAdminSecurityError("");
+
+    if (adminTab === "personal") {
+      setAdminProfile(adminInitialProfile);
+      return;
+    }
+
+    setAdminSecurity({ current: "", next: "", confirm: "" });
+  }
+
+  async function handleAdminPhotoChange(file?: File | null) {
+    if (!file) return;
+
+    const previousPhotoUrl = adminPhotoUrl;
+    const previewUrl = URL.createObjectURL(file);
+    setAdminPhotoUrl(previewUrl);
+    setUploadingAdminPhoto(true);
+
+    try {
+      const response = await uploadProfilePhotoApi(file);
+      if (response.user) {
+        const nextAdminProfile = {
+          ...mapUserToAdminProfile(response.user),
+          location: adminProfile.location,
+          emailVerified: adminProfile.emailVerified,
+        };
+        setAdminProfile(nextAdminProfile);
+        setAdminInitialProfile(nextAdminProfile);
+        setAdminPhotoUrl(response.user.profileImage || undefined);
+        await syncAuth(response.user);
+      }
+
+      showFeedback(
+        "success",
+        "Photo updated",
+        "Your profile photo has been updated.",
+      );
+    } catch (error: any) {
+      setAdminPhotoUrl(previousPhotoUrl);
+      showFeedback(
+        "error",
+        "Could not update photo",
+        error?.response?.data?.error || error?.message || "Upload failed.",
+      );
+    } finally {
+      setUploadingAdminPhoto(false);
+    }
+  }
+
+  async function handleSaveAdminProfile() {
+    try {
+      setSavingAdminProfile(true);
+      const response = await updateProfileApi({
+        name: `${adminProfile.firstName} ${adminProfile.lastName}`.trim(),
+        phone: adminProfile.phone,
+        gender: adminProfile.gender,
+        address: adminProfile.address,
+      });
+      if (response.user) {
+        const nextAdminProfile = {
+          ...mapUserToAdminProfile(response.user),
+          location: adminProfile.location,
+          emailVerified: adminProfile.emailVerified,
+        };
+        setAdminProfile(nextAdminProfile);
+        setAdminInitialProfile(nextAdminProfile);
+        setAdminPhotoUrl(response.user.profileImage || adminPhotoUrl);
+        await syncAuth(response.user);
+        showFeedback(
+          "success",
+          "Profile updated",
+          "Your profile details have been updated.",
+        );
+      }
+    } catch (error: any) {
+      showFeedback(
+        "error",
+        "Could not save profile",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to save profile.",
+      );
+    } finally {
+      setSavingAdminProfile(false);
+    }
+  }
+
+  async function handleSaveAdminPassword() {
+    if (!adminSecurity.current) {
+      setAdminSecurityError("Enter your current password to continue.");
+      return;
+    }
+    if (!adminSecurity.next) {
+      setAdminSecurityError("Enter the new password.");
+      return;
+    }
+    if (adminSecurity.next.length < 6) {
+      setAdminSecurityError("Password must be at least 6 characters.");
+      return;
+    }
+    if (adminSecurity.next !== adminSecurity.confirm) {
+      setAdminSecurityError("New password and confirmation must match.");
+      return;
+    }
+
+    try {
+      setSavingAdminPassword(true);
+      setAdminSecurityError("");
+      await updateProfileApi({
+        currentPassword: adminSecurity.current,
+        newPassword: adminSecurity.next,
+      });
+      setAdminSecurity({ current: "", next: "", confirm: "" });
+      showFeedback(
+        "success",
+        "Password updated",
+        "Your password has been updated successfully.",
+      );
+    } catch (error: any) {
+      setAdminSecurityError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to update password.",
+      );
+    } finally {
+      setSavingAdminPassword(false);
+    }
+  }
 
   return (
-    <div className="space-y-[18px] pb-10">
+    <div className="space-y-5 pb-10 text-slate-900">
       <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
-        <div className="xl:w-[440px] xl:flex-none">
-          <CardShell>
-            <div className="border-b border-[#CFCFD3] px-[16px] py-[14px]">
-              <SectionTitle
-                title="Account overview"
-                sub="Photo, role, and sign-in status for this admin account."
-              />
-            </div>
-            <div className="space-y-5 px-[16px] py-[16px]">
-              <div className="flex flex-col items-center text-center xl:h-69">
+        <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
+          <ProfilePanel
+            title="Account Overview"
+            subtitle="Photo, contact, and sign-in for this admin account."
+          >
+            <div className="space-y-5 px-5 py-5">
+              <div className="flex flex-col items-center text-center">
                 <UserAvatar
                   src={resolveImageUrl(adminPhotoUrl)}
-                  alt="Admin"
-                  className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-[#CFCFD3] bg-[#F3F4F6] text-[30px] font-extrabold text-[#565449]"
-                  fallback={adminInitials}
+                  alt="Admin profile"
+                  className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[30px] font-extrabold text-slate-700"
+                  fallback={adminInitials || "AD"}
                 />
-
-                <div>
-                  <div className="mt-4 text-[20px] font-extrabold text-[#000000]">
-                    {me.name}
-                  </div>
-                  <div className="hidden mt-1 text-[13px] font-semibold text-[#8C8889]">
-                    Role: <span className="text-slate-700">{me.role}</span> |
-                    Last login:{" "}
-                    <span className="text-slate-700">{me.lastLogin}</span>
-                  </div>
-                  <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
-                    {me.email || "No email available"}
-                  </div>
-                  <div className="mt-3 flex flex-wrap justify-center gap-2">
-                    <label className="cursor-pointer">
-                      <input
-                        type="file"
-                        className="hidden"
-                        accept="image/*"
-                        onChange={async (event) => {
-                          const file = event.target.files?.[0];
-                          if (!file) return;
-                          const previewUrl = URL.createObjectURL(file);
-                          setAdminPhotoUrl(previewUrl);
-                          try {
-                            const response = await uploadProfilePhotoApi(file);
-                            if (response.user) {
-                              setAdminPhotoUrl(
-                                response.user.profileImage || undefined,
-                              );
-                              await syncAuth(response.user);
-                              showFeedback(
-                                "success",
-                                "Photo updated",
-                                "Your profile photo has been updated.",
-                              );
-                            }
-                          } catch (error: any) {
-                            showFeedback(
-                              "error",
-                              "Could not update photo",
-                              error?.message || "Upload failed.",
-                            );
-                          }
-                        }}
-                      />
-                      <span className="inline-flex items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 py-2.5 text-[13px] font-bold text-[#565449] hover:bg-[#F3F4F6]">
-                        <GIcon
-                          name="photo_camera"
-                          sizePx={18}
-                          className="text-[#8C8889]"
-                        />
-                        Change Photo
-                      </span>
-                    </label>
-                    <Button
-                      variant="secondary"
-                      icon="delete"
-                      onClick={async () => {
-                        try {
-                          const response = await updateProfileApi({
-                            profileImage: null,
-                          });
-                          if (response.user) {
-                            setAdminPhotoUrl(undefined);
-                            await syncAuth(response.user);
-                            showFeedback(
-                              "success",
-                              "Photo removed",
-                              "Your profile photo has been removed.",
-                            );
-                          }
-                        } catch (error: any) {
-                          showFeedback(
-                            "error",
-                            "Could not remove photo",
-                            error?.response?.data?.error ||
-                              error?.message ||
-                              "Failed to clear photo.",
-                          );
-                        }
-                      }}
+                <div className="mt-4 text-[20px] font-extrabold text-slate-900">
+                  {adminDisplayName}
+                </div>
+                <div className="mt-1 text-[13px] font-semibold text-slate-500">
+                  {adminProfile.email || "No email available"}
+                </div>
+                <div className="mt-3">
+                  <label className="cursor-pointer">
+                    <input
+                      type="file"
+                      className="hidden"
+                      accept="image/*"
+                      onChange={(event) =>
+                        handleAdminPhotoChange(event.target.files?.[0])
+                      }
+                    />
+                    <span
+                      className={cn(
+                        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition",
+                        uploadingAdminPhoto
+                          ? "border-slate-200 bg-slate-100 text-slate-400"
+                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+                      )}
                     >
-                      Remove Photo
-                    </Button>
-                  </div>
+                      <Icon name="photo_camera" className="text-[18px]" />
+                      {uploadingAdminPhoto ? "Uploading..." : "Change Photo"}
+                    </span>
+                  </label>
                 </div>
               </div>
 
-              <div className="space-y-3 rounded-[18px] border border-[#CFCFD3] bg-[#F3F4F6]/80 p-4 text-[13px] font-semibold text-[#565449]">
+              <div className="space-y-5 rounded-[18px] border border-slate-200 bg-slate-50/70 p-10 text-[13px] font-semibold text-slate-600 xl:h-[200px] xl:mt-20">
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <GIcon name="badge" sizePx={18} className="text-inherit" />
-                    Role
+                    <Icon name="phone" className="text-[18px]" /> Phone
                   </span>
-                  <span className="text-right text-[#000000]">{me.role}</span>
-                </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <GIcon name="phone" sizePx={18} className="text-inherit" />
-                    Phone
-                  </span>
-                  <span className="text-right text-[#000000]">
-                    {me.phone || "No phone added"}
+                  <span className="text-right text-slate-900">
+                    {adminProfile.phone || "No phone added"}
                   </span>
                 </div>
                 <div className="flex items-center justify-between gap-3">
                   <span className="inline-flex items-center gap-2">
-                    <GIcon
-                      name="schedule"
-                      sizePx={18}
-                      className="text-inherit"
-                    />
-                    Last login
+                    <Icon name="location_on" className="text-[18px]" /> Region
                   </span>
-                  <span className="text-right text-[#000000]">
-                    {me.lastLogin}
+                  <span className="text-right text-slate-900">
+                    {adminProfile.location}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between gap-3">
+                  <span className="inline-flex items-center gap-2">
+                    <Icon name="schedule" className="text-[18px]" /> Last
+                    login
+                  </span>
+                  <span className="text-right text-slate-900">
+                    {formatDateTime(adminProfile.lastLogin)}
                   </span>
                 </div>
               </div>
             </div>
-          </CardShell>
+          </ProfilePanel>
         </div>
 
-        <div className="space-y-[16px] xl:min-w-0 xl:flex-1">
-          <CardShell>
-            <div className="border-b border-[#CFCFD3] px-[16px] py-[14px]">
-              <SectionTitle
-                title="Personal details"
-                sub="Update the same admin profile fields already supported in this workspace."
-              />
-            </div>
-
-            <div className="flex h-full flex-col justify-between gap-6 p-[16px]">
-              <TextField label="Email" value={me.email} disabled />
-              <TextField
-                label="Name"
-                value={me.name}
-                onChange={(value) =>
-                  setMe((current) => ({ ...current, name: value }))
-                }
-              />
-              <TextField
-                label="Phone"
-                value={me.phone}
-                onChange={(value) =>
-                  setMe((current) => ({ ...current, phone: value }))
-                }
-              />
-              <TextField label="Role" value={me.role} disabled />
-
-              <div className="flex flex-wrap items-center justify-end gap-2 border-t border-[#CFCFD3] pt-5">
-                <Button variant="secondary" icon="key" disabled>
-                  Change password
-                </Button>
-                <Link to="/logout">
-                  <Button variant="danger" icon="logout">
-                    Logout
-                  </Button>
-                </Link>
-                <Button
-                  variant="primary"
-                  icon="save"
-                  onClick={async () => {
-                    try {
-                      const response = await updateProfileApi({
-                        name: me.name,
-                        phone: me.phone,
-                      });
-                      if (response.user) {
-                        setAdminPhotoUrl(
-                          response.user.profileImage || adminPhotoUrl,
-                        );
-                        await syncAuth(response.user);
-                        showFeedback(
-                          "success",
-                          "Profile updated",
-                          "Your profile details have been updated.",
-                        );
-                      }
-                    } catch (error: any) {
-                      showFeedback(
-                        "error",
-                        "Could not save profile",
-                        error?.response?.data?.error ||
-                          error?.message ||
-                          "Failed to save profile.",
-                      );
-                    }
+        <div className="xl:min-w-0 xl:flex-1">
+          <ProfilePanel
+            title={
+              adminTab === "personal" ? "Personal Details" : "Login & Password"
+            }
+            subtitle={
+              adminTab === "personal"
+                ? "Update the same profile fields already available on this page."
+                : "Keep the current password fields, password guidance, and save flow."
+            }
+            actions={
+              <div className="flex flex-wrap gap-2">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminTab("personal");
+                    setAdminSecurityError("");
                   }}
+                  className={cn(
+                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                    adminTab === "personal"
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  )}
                 >
-                  Save Profile
-                </Button>
+                  Personal Information
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setAdminTab("security");
+                    setAdminSecurityError("");
+                  }}
+                  className={cn(
+                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
+                    adminTab === "security"
+                      ? "border-slate-900 bg-slate-900 text-white"
+                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                  )}
+                >
+                  Login & Password
+                </button>
+              </div>
+            }
+          >
+            <div className="flex h-full flex-col justify-between space-y-6 px-5 py-5">
+              <div className="space-y-6">
+                {adminTab === "personal" ? (
+                  <>
+                    <ProfileField label="Gender">
+                      <div className="flex flex-wrap gap-3">
+                        {(["Male", "Female"] as const).map((gender) => (
+                          <button
+                            key={gender}
+                            type="button"
+                            onClick={() =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                gender,
+                              }))
+                            }
+                            className={cn(
+                              "rounded-[14px] border px-6 py-3 text-[13px] font-extrabold transition",
+                              adminProfile.gender === gender
+                                ? "border-slate-900 bg-slate-900 text-white"
+                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+                            )}
+                          >
+                            {gender}
+                          </button>
+                        ))}
+                      </div>
+                    </ProfileField>
+
+                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                      <ProfileField label="First Name">
+                        <ProfileTextInput
+                          value={adminProfile.firstName}
+                          onChange={(value) =>
+                            setAdminProfile((current) => ({
+                              ...current,
+                              firstName: value,
+                            }))
+                          }
+                          placeholder="First name"
+                        />
+                      </ProfileField>
+
+                      <ProfileField label="Last Name">
+                        <ProfileTextInput
+                          value={adminProfile.lastName}
+                          onChange={(value) =>
+                            setAdminProfile((current) => ({
+                              ...current,
+                              lastName: value,
+                            }))
+                          }
+                          placeholder="Last name"
+                        />
+                      </ProfileField>
+
+                      <div className="md:col-span-2">
+                        <ProfileField label="Email Address" hint="Read-only here">
+                          <ProfileTextInput
+                            value={adminProfile.email}
+                            onChange={() => {}}
+                            disabled
+                            right={
+                              adminProfile.emailVerified ? (
+                                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-extrabold uppercase text-emerald-700">
+                                  <Icon
+                                    name="verified"
+                                    className="text-[14px]"
+                                  />
+                                  Verified
+                                </span>
+                              ) : (
+                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase text-slate-500">
+                                  Sign-in Email
+                                </span>
+                              )
+                            }
+                          />
+                        </ProfileField>
+                      </div>
+
+                      <div className="md:col-span-2">
+                        <ProfileField label="Home Address">
+                          <ProfileTextInput
+                            value={adminProfile.address}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                address: value,
+                              }))
+                            }
+                            placeholder="e.g. Kathmandu, Nepal"
+                          />
+                        </ProfileField>
+                      </div>
+
+                      <ProfileField label="Phone Number">
+                        <ProfileTextInput
+                          value={adminProfile.phone}
+                          onChange={(value) =>
+                            setAdminProfile((current) => ({
+                              ...current,
+                              phone: value,
+                            }))
+                          }
+                          placeholder="+977 98XXXXXXXX"
+                        />
+                      </ProfileField>
+
+                      <ProfileField
+                        label="Country / Region"
+                        hint="Stored locally on this device"
+                      >
+                        <ProfileSelectInput
+                          value={adminProfile.location}
+                          onChange={(value) =>
+                            setAdminProfile((current) => ({
+                              ...current,
+                              location: value,
+                            }))
+                          }
+                          options={["Nepal", "India", "Other"]}
+                        />
+                      </ProfileField>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    {adminSecurityError ? (
+                      <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                        {adminSecurityError}
+                      </div>
+                    ) : null}
+
+                    <ProfileField label="Current Password">
+                      <ProfileTextInput
+                        value={adminSecurity.current}
+                        onChange={(value) => {
+                          setAdminSecurity((current) => ({
+                            ...current,
+                            current: value,
+                          }));
+                          setAdminSecurityError("");
+                        }}
+                        placeholder="Enter current password"
+                        type="password"
+                      />
+                    </ProfileField>
+
+                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                      <ProfileField label="New Password">
+                        <ProfileTextInput
+                          value={adminSecurity.next}
+                          onChange={(value) => {
+                            setAdminSecurity((current) => ({
+                              ...current,
+                              next: value,
+                            }));
+                            setAdminSecurityError("");
+                          }}
+                          placeholder="New password"
+                          type="password"
+                        />
+                      </ProfileField>
+
+                      <ProfileField label="Confirm New Password">
+                        <ProfileTextInput
+                          value={adminSecurity.confirm}
+                          onChange={(value) => {
+                            setAdminSecurity((current) => ({
+                              ...current,
+                              confirm: value,
+                            }));
+                            setAdminSecurityError("");
+                          }}
+                          placeholder="Repeat new password"
+                          type="password"
+                        />
+                      </ProfileField>
+                    </div>
+
+                    {adminPasswordMismatch ? (
+                      <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                        Passwords do not match.
+                      </div>
+                    ) : null}
+
+                    <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-5">
+                      <div className="text-[11px] font-extrabold uppercase text-slate-500">
+                        Password Requirements
+                      </div>
+                      <div className="mt-2 text-[13px] font-medium leading-7 text-slate-600">
+                        Use 6 or more characters, mixing letters, numbers, and
+                        symbols. Avoid using dictionary words or easily
+                        guessable personal information.
+                      </div>
+                    </div>
+                  </>
+                )}
+              </div>
+
+              <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
+                <ProfileActionButton
+                  icon="restart_alt"
+                  label="Discard Changes"
+                  onClick={discardAdminChanges}
+                  disabled={
+                    adminTab === "personal"
+                      ? !adminHasProfileChanges || savingAdminProfile
+                      : !adminHasSecurityChanges || savingAdminPassword
+                  }
+                />
+                <ProfileActionButton
+                  icon={adminTab === "security" ? "lock" : "save"}
+                  label={
+                    adminTab === "security"
+                      ? savingAdminPassword
+                        ? "Updating..."
+                        : "Update Password"
+                      : savingAdminProfile
+                        ? "Saving..."
+                        : "Save Profile"
+                  }
+                  onClick={
+                    adminTab === "security"
+                      ? handleSaveAdminPassword
+                      : handleSaveAdminProfile
+                  }
+                  disabled={
+                    adminTab === "security"
+                      ? savingAdminPassword ||
+                        adminPasswordMismatch ||
+                        !adminHasSecurityChanges
+                      : savingAdminProfile || !adminHasProfileChanges
+                  }
+                  primary
+                />
               </div>
             </div>
-          </CardShell>
+          </ProfilePanel>
         </div>
       </div>
 

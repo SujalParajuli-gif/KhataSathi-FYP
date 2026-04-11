@@ -932,8 +932,8 @@ export default function BillingPage() {
                             Stock {p.stock}
                           </span>
                           <span>
-                            Wholesale @{" "}
-                            {Math.max(1, p.wholesaleQtyThreshold || 1)}+
+                            Wholesale &gt;={" "}
+                            {Math.max(1, p.wholesaleQtyThreshold || 1)}
                           </span>
                         </div>
                         <div className="font-mono font-extrabold text-slate-800 text-[13px]">
