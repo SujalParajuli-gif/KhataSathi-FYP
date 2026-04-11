@@ -199,7 +199,7 @@ Login -> Select Products -> Select Customer -> Create Draft Invoice -> Apply Pri
 
 ### Billing
 
-![Billing](./screenshots/billing.png)
+![Billing](./screenshots/Billing.png)
 
 ### Products
 
