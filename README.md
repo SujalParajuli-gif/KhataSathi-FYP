@@ -1,90 +1,156 @@
-# Khata Sathi
+# KhataSathi
 
-> Final Year Project focused on point of sale, inventory control, invoicing, and day-to-day retail operations.
+> Final Year Project for a web-based billing and inventory management system designed for a single-shop wholesale and retail environment in Nepal.
 
 ## Overview
 
-Khata Sathi is a full-stack POS and Inventory Management System built to help shops and small-to-medium businesses manage billing, products, stock, customers, invoices, cashier activity, and operational records from a single web application. The project is designed around practical retail workflows where speed, billing accuracy, and clear inventory visibility matter every day.
+KhataSathi is a full-stack billing and inventory management system built around the day-to-day workflow of a shop. It brings billing, product management, stock tracking, customer discounts, invoice handling, payment recording, analytics, and operational history into one web application used by Admin and Cashier roles.
 
-It combines role-based access, product and customer management, payment handling, reporting, and inventory tracking into one structured system so that routine business tasks can be completed with less manual effort and better operational consistency.
+The project was developed for practical single-shop use. The current implementation supports one shop, cash payments, eSewa sandbox payment flow, inventory operations, invoice lifecycle handling, audit visibility, and manual database backup. It is not a multi-branch platform, does not include Khalti in the completed implementation, and is not intended to replace a full accounting or VAT filing system.
+
+## Project Preview
+
+### Demo Video
+
+Our Systems walkthrough video link:
+
+[Watch Demo Video](https://drive.google.com/file/d/1bBHBIjrcKxBGoasQc-mBcoLOoG20-TQ3/view?usp=drive_link)
+
+[![KhataSathi Demo](./screenshots/SystemDemo.png)](https://drive.google.com/file/d/1bBHBIjrcKxBGoasQc-mBcoLOoG20-TQ3/view?usp=drive_link)
+
+## Overview Images
+
+![Dashboard Preview](./screenshots/Dashboard.png)
+![Billing Preview](./screenshots/Billing.png)
 
 ## Problem Statement
 
-Many shops still depend on manual billing, disconnected spreadsheets, or loosely organized records for sales, stock, and customer information. This often leads to:
+Many small wholesale and retail shops still depend on handwritten bills, spreadsheets, or loosely managed records for products, sales, customers, and stock. This often creates issues such as:
 
-- slow checkout and billing delays
-- stock mismatch and poor inventory visibility
-- difficulty tracking invoices and payment status
-- limited insight into cashier activity and sales performance
-- inconsistent customer records and discount handling
+- slow billing during busy counter hours
+- stock mismatch after repeated sales or manual changes
+- difficulty tracking unpaid and partially paid invoices
+- inconsistent handling of loyalty and wholesale discounts
+- poor visibility into cashier activity and sales summaries
+- weak traceability when invoice, price, or stock changes happen
 
 ## Solution Summary
 
-Khata Sathi addresses these challenges by providing a centralized web-based platform where administrators and cashiers can manage the full sales cycle, from product setup and customer selection to billing, invoice generation, payment recording, stock updates, and reporting.
+KhataSathi addresses these issues through a centralized web-based system where administrators and cashiers can manage billing, products, customers, invoices, payments, stock, and reporting from one controlled workflow.
 
-The system is structured to support real shop operations with role-based workflows, organized master data, low-stock awareness, invoice history, and business reporting that helps store owners monitor daily activity more effectively.
+The implementation is based on the actual business rules used in the system. Draft invoices can be edited before finalization, stock is deducted only when an invoice is finalized, cancelled finalized invoices restore stock, quantity-threshold wholesale pricing can apply automatically, customer-wide wholesale discounts take priority over threshold pricing, loyalty discount applies when wholesale discount is absent, and payment handling supports partial settlement with overpayment prevention.
+
+### Business Rules Implemented in the System
+
+- invoices are first created in `DRAFT` state and remain editable until finalization
+- every invoice is linked to the cashier who created it
+- finalization is blocked if the invoice has no items
+- stock is deducted only when an invoice is finalized, not when the draft is created
+- cancelling a finalized invoice restores stock through reverse stock transactions
+- quantity-threshold wholesale pricing uses the product's wholesale quantity threshold and wholesale price
+- if a customer has a wholesale discount percentage, that subtotal discount takes priority over quantity-threshold wholesale pricing
+- loyalty discount is used when wholesale discount is not applied
+- applied unit prices and discount amounts are stored with invoice data for later review and auditability
+- invoice payment status changes based on successful payments, with support for unpaid, partially paid, fully paid, and cancelled states
 
 ## Core Features
 
-- role-based authentication for admin and cashier users
-- product management with SKU, barcode, pricing, stock, and image support
-- brand and category-based product organization
-- customer management with loyalty and wholesale discount handling
-- billing workflow for product selection, quantity handling, and payment capture
-- invoice creation, viewing, printing, and payment status tracking
-- stock updates tied to sales, restocking, and manual adjustments
-- low-stock alerts and operational notifications
-- analytics and reporting with chart-based summaries
-- payment handling for cash and configurable digital payment flow support
-- profile and settings management for business-level defaults
-- audit and login activity visibility for operational traceability
+### Authentication and Access Control
+
+- role-based authentication for `Admin` and `Cashier`
+- JWT-based access control
+- protected route handling
+- login attempt logging
+
+### Master Data Management
+
+- user management for admin and cashier accounts
+- brand management
+- product catalog management
+- customer management with loyalty and wholesale discount fields
+- product image upload
+- CSV product import
+
+### Product and Pricing Logic
+
+- SKU and optional barcode support
+- retail price and wholesale price support
+- wholesale quantity threshold per product
+- low-stock threshold management
+- quantity-threshold wholesale pricing at item level
+- customer-wide wholesale discount at subtotal level
+- loyalty discount when wholesale discount is not applied
+
+### Billing and Invoice Workflow
+
+- draft invoice creation
+- add, update, and remove item operations while invoice is in `DRAFT`
+- invoice finalization only after at least one item exists
+- invoice cancellation after finalization
+- applied unit prices and discount values stored for auditability
+- printable invoice route
+
+### Payments and Stock Handling
+
+- `CASH` and `ESEWA` payment methods
+- partial payment support
+- overpayment prevention
+- payment records with `PENDING`, `SUCCESS`, and `FAILED` states
+- stock deduction on invoice finalization
+- stock restoration on cancelled finalized invoices
+- manual restock and stock adjustment operations
+- low-stock alert visibility
+
+### Reporting and Support Features
+
+- analytics for selectable date ranges
+- CSV and Excel export
+- audit logs
+- login attempt history
+- manual admin-triggered database backup
 
 ## User Roles
 
-| Role | Responsibilities |
-| --- | --- |
-| Admin | Manage products, brands, customers, discounts, users, settings, inventory rules, alerts, invoices, analytics, and operational records. |
-| Cashier | Handle billing, customer selection, payment collection, invoice creation, invoice history review, alerts, and personal profile management. |
+| Role    | Responsibilities                                                                                                                                                 |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Admin   | Manage users, brands, products, customers, settings, discounts, inventory operations, analytics, invoices, alerts, audit visibility, and manual database backup. |
+| Cashier | Handle billing, customer selection, invoice creation, payment recording, invoice review, alerts, and profile management.                                         |
 
 ## System Modules / Major Pages
 
-- Dashboard: business overview, recent activity, and stock-aware operational summary
-- Billing: cashier-focused sales flow with cart handling, customer selection, discounts, and payment processing
-- Products: product catalog management with stock, pricing, brand, category, and image support
-- Invoices: invoice listing, payment status visibility, editing/settlement flow, and print support
-- Analytics: sales trends, payment distribution, cashier performance, top products, top customers, and brand performance
-- Discounts: loyalty and customer-specific wholesale discount management
-- History: invoice/payment history review for operational tracking
-- Alerts: low-stock and invoice-related alert visibility
-- Settings: business defaults, thresholds, brand administration, and system-level controls
-- Profile: admin and cashier profile management
-- Customer Discounts: cashier-accessible view of loyalty and wholesale discount information
-- Authentication and Print Routes: login flow, invoice print route, and payment result handling
+- **Dashboard** - admin overview of sales, invoices, payment summary, and low-stock information
+- **Billing** - cashier-focused billing workflow with product selection, customer selection, draft invoice creation, finalization, and payment handling
+- **Products** - product catalog management with stock, thresholds, pricing, image upload, and CSV import
+- **Invoices** - invoice listing, detail review, payment handling, cancellation, and print access
+- **History** - invoice history and review workflow
+- **Analytics** - date-range based reporting, charts, summaries, and export
+- **Discounts** - customer loyalty and wholesale discount management
+- **Customer Discounts** - cashier-side read-only view of customer discount information
+- **Alerts** - low-stock and invoice-related alert visibility
+- **Settings** - business defaults, brand administration, login attempts, audit visibility, and manual backup
+- **Profile** - admin and cashier profile management
+- **Authentication / Print Routes** - login flow, printable invoice route, and eSewa result handling
 
 ## Tech Stack
 
-The current repository reflects the following stack:
-
-| Category | Technology |
-| --- | --- |
-| Frontend | React 19, React Router 7, TypeScript, Vite |
-| Styling | Tailwind CSS 4 |
-| Backend | Node.js, Express 5, TypeScript |
-| Database | MySQL |
-| ORM | Prisma |
-| API Client | Axios |
-| Forms and Validation | React Hook Form, Zod |
-| Authentication | JWT-based auth, bcryptjs |
-| Reporting and Charts | Recharts, ExcelJS, CSV export support |
-| File Handling | Multer and local uploads directory |
-| Payments | Cash workflow and eSewa-related integration support |
-| Package Manager | pnpm |
-
-If your local or final submission setup differs, you can update this section without changing the rest of the documentation structure.
+| Category                      | Technology                               |
+| ----------------------------- | ---------------------------------------- |
+| Frontend                      | React, TypeScript, React Router v7, Vite |
+| Styling                       | Tailwind CSS                             |
+| Charts and Export             | Recharts, ExcelJS                        |
+| API and Form Handling         | Axios, React Hook Form                   |
+| Backend                       | Node.js, Express, TypeScript             |
+| Validation and Security       | Zod, JWT, bcryptjs                       |
+| File and CSV Handling         | multer, csv-parse                        |
+| Database                      | MySQL                                    |
+| ORM                           | Prisma                                   |
+| Payments                      | Cash flow and eSewa sandbox integration  |
+| Backup                        | `mysqldump`-based manual SQL backup      |
+| Package Manager / Dev Tooling | pnpm, ts-node-dev                        |
 
 ## Architecture / How the System Works
 
-Khata Sathi follows a full-stack web application structure with a dedicated frontend and backend:
+KhataSathi follows a full-stack web application structure with separate frontend and backend layers:
 
 ```text
 Frontend (React + React Router)
@@ -93,7 +159,7 @@ Frontend (React + React Router)
 REST API Layer (Express)
         |
         v
-Business Logic + Validation + Role Checks
+Authentication + Role Checks + Business Rules
         |
         v
 Prisma ORM
@@ -102,36 +168,58 @@ Prisma ORM
 MySQL Database
 ```
 
-At runtime, authenticated users interact with the frontend interface, which communicates with the backend API using token-based requests. The backend applies authentication, role-based access control, validation, and business rules before reading from or writing to the database. Operational data such as invoices, payments, stock movements, customers, and product records are then surfaced back to the UI for billing, monitoring, and reporting.
+At runtime, the frontend sends authenticated requests to the backend using JWT-based authorization. The backend applies role checks, invoice logic, stock handling rules, pricing and discount rules, and payment validation before reading from or writing to MySQL through Prisma. Uploaded product and profile images are stored in the local `uploads` directory, while invoice, payment, stock, customer, and audit data are stored in the database.
 
 ## Key Business Workflows
 
-1. Admin or cashier logs in to the system through role-based authentication.
-2. The user accesses the appropriate dashboard or billing workspace based on role.
-3. Products are selected, customer information is attached if needed, and discounts are applied according to business rules.
-4. Payment is recorded and an invoice is generated.
-5. Product stock is updated automatically through inventory transactions.
-6. Invoice history, alerts, analytics, and reports reflect the completed operation for later review.
+1. Admin or cashier logs in, and the system records the login attempt.
+2. Active products and customers are loaded into the workflow.
+3. A cashier creates a draft invoice and adds, updates, or removes items while the invoice remains in `DRAFT`.
+4. The system applies product threshold pricing and customer discount rules.
+5. The invoice is finalized only when it contains at least one item, and stock is deducted at that point.
+6. Payment is recorded through `CASH` or eSewa sandbox flow, with support for partial settlement and overpayment prevention.
+7. If a finalized invoice is cancelled, stock is restored and the invoice state is updated accordingly.
+8. Alerts, analytics, invoice history, and audit logs reflect the completed activity.
 
-Typical retail flow:
+Typical sales flow:
 
 ```text
-Login -> Product/Customer Selection -> Billing -> Payment -> Invoice Generation -> Stock Update -> History/Analytics Visibility
+Login -> Select Products -> Select Customer -> Create Draft Invoice -> Apply Pricing / Discount Rules -> Finalize Invoice -> Record Payment -> Print / Review Invoice -> Stock and Analytics Update
 ```
 
-## Screens / Feature Highlights
+## Screenshots
 
-The project currently includes screens and workflows for:
+### Login
 
-- dashboard overview and operational summary
-- billing and checkout flow
-- products and stock administration
-- invoice listing, detail review, and print support
-- analytics and report visualization
-- discount and customer discount management
-- alerts, settings, and user profile management
+![Login Page](./screenshots/login.png)
 
-> Add screenshots or short GIFs here when preparing the public repository showcase. Recommended highlights: Dashboard, Billing, Products, Invoices, and Analytics.
+### Dashboard
+
+![Dashboard](./screenshots/Dashboard.png)
+
+### Billing
+
+![Billing](./screenshots/billing.png)
+
+### Products
+
+![Products](./screenshots/products.png)
+
+### Invoices
+
+![Invoices](./screenshots/Invoices.png)
+
+### Analytics
+
+![Analytics](./screenshots/analytics.jpeg)
+
+### Settings / Backup
+
+![Settings](./screenshots/settings.png)
+
+### Payment / QR
+
+![Payment](./screenshots/PaymentEsewa.png)
 
 ## Installation and Setup
 
@@ -141,15 +229,18 @@ The project currently includes screens and workflows for:
 - pnpm 10+ recommended
 - MySQL database instance
 - Git
+- `mysqldump` available for the backup feature
 
 ### Clone the Repository
 
 ```bash
-git clone <your-repository-url>
+git clone https://github.com/SujalParajuli-gif/KhataSathi-FYP.git
 cd KhataSathi-FYP
 ```
 
 ### Install Dependencies
+
+Install backend and frontend dependencies separately:
 
 ```bash
 cd backend
@@ -159,28 +250,24 @@ cd ../frontend
 pnpm install
 ```
 
-If you prefer `npm`, you can replace the package manager commands accordingly.
-
 ## Environment Variables
 
-Create environment files before running the project.
+Create `.env` files in both `backend` and `frontend` before running the project.
 
 ### Backend `.env`
 
 ```env
-DATABASE_URL="mysql://username:password@localhost:3306/khatasathi"
-JWT_SECRET="replace_with_a_secure_secret"
+DATABASE_URL="mysql://root:password@localhost:3306/khatasathi"
+JWT_SECRET="jwt_secret"
 PORT=4000
 FRONTEND_BASE_URL="http://localhost:5173"
 BACKEND_BASE_URL="http://localhost:4000"
 
-# Optional payment configuration
-ESEWA_PRODUCT_CODE=""
-ESEWA_SECRET_KEY=""
-ESEWA_FORM_URL=""
-ESEWA_STATUS_CHECK_URL=""
+ESEWA_PRODUCT_CODE="EPAYTEST"
+ESEWA_SECRET_KEY="esewa_secret"
+ESEWA_FORM_URL="https://rc-epay.esewa.com.np/api/epay/main/v2/form"
+ESEWA_STATUS_CHECK_URL="https://uat.esewa.com.np/api/epay/transaction/status/"
 
-# Optional backup configuration
 MYSQLDUMP_PATH=""
 MYSQL_BIN_DIR=""
 MYSQL_HOME=""
@@ -192,8 +279,6 @@ MYSQL_HOME=""
 VITE_API_BASE_URL="http://localhost:4000"
 ```
 
-Only keep the variables relevant to your environment. Add, rename, or remove fields based on your final deployment or academic submission needs.
-
 ## How to Run Frontend and Backend
 
 ### Run the Backend
@@ -203,11 +288,19 @@ cd backend
 pnpm dev
 ```
 
-The backend API is expected to run on:
+Backend API:
 
 ```text
 http://localhost:4000
 ```
+
+Health check endpoint:
+
+```text
+http://localhost:4000/api/health
+```
+
+The backend is API-only, so opening `http://localhost:4000` directly will show `Cannot GET /`, while `/api/health` confirms that the server is running correctly.
 
 ### Run the Frontend
 
@@ -216,7 +309,7 @@ cd frontend
 pnpm dev
 ```
 
-The frontend development server is expected to run on:
+Frontend development server:
 
 ```text
 http://localhost:5173
@@ -238,32 +331,38 @@ pnpm start
 
 ## Database Setup Overview
 
-Khata Sathi currently uses Prisma with a MySQL datasource.
+KhataSathi uses Prisma with a MySQL datasource.
 
 ### Recommended Setup Flow
 
-1. Create a MySQL database for the project.
-2. Update `DATABASE_URL` in `backend/.env`.
-3. Generate the Prisma client if needed.
-4. Run migrations.
-5. Seed development data if you want sample records for testing.
+1. Create a MySQL database named `khatasathi`
+2. Set `DATABASE_URL` in `backend/.env`
+3. Generate the Prisma client
+4. Run migrations
+5. Seed the database for local testing
 
 ### Example Commands
 
 ```bash
 cd backend
-pnpm prisma generate
-pnpm prisma migrate dev
-pnpm prisma db seed
+pnpm exec prisma generate
+pnpm exec prisma migrate dev
+pnpm exec prisma db seed
 ```
 
-The seed flow can be used to prepare local demo data for development. Review and adjust seeded accounts or sample business data before using the system beyond local testing.
+### Seeded Demo Accounts
+
+The seed file provides two accounts for local testing:
+
+- Admin: `admin@khatasathi.com` / `Admin@123`
+- Cashier: `cashier@khatasathi.com` / `Cashier@123`
 
 ## Folder Structure Overview
 
 ```text
 KhataSathi-FYP/
 |-- backend/
+|   |-- backups/
 |   |-- prisma/
 |   |   |-- migrations/
 |   |   |-- schema.prisma
@@ -284,40 +383,31 @@ KhataSathi-FYP/
 |   |-- public/
 |   `-- package.json
 |-- uploads/
+|-- screenshots/
 `-- README.md
 ```
 
-This structure separates presentation, API logic, database schema, and uploaded assets in a way that is easy to extend as the project grows.
+In practice, `backend/backups/` stores generated SQL backup files, `uploads/` stores locally uploaded profile and product images, and `Screenshots/` can be used to keep README or presentation visuals together with the project.
 
 ## Future Improvements / Scalability
 
-- supplier and purchase order management
-- barcode scanner integration for faster checkout
-- returns, refunds, and exchange workflows
-- multi-branch or multi-store support
-- advanced role and permission granularity
-- automated testing, CI/CD, and deployment pipelines
-- containerized deployment and environment standardization
-- richer financial reporting and downloadable statements
-- offline-first or sync-capable billing support for unstable network environments
+- supplier and purchase-order management
+- barcode scanner integration
+- returns and refund workflow
+- multi-branch support
+- additional payment gateway support beyond eSewa sandbox
+- stronger automated testing coverage
+- deployment and CI/CD setup
+- richer accounting and tax-related reporting
 
 ## Academic Project Note
 
-This repository was developed as a Final Year Project and is intended to demonstrate practical full-stack software engineering in the domain of POS and inventory management. It combines business workflow design, database modeling, API development, frontend implementation, reporting, and role-based system behavior in one academic project.
+KhataSathi was developed as a Final Year Project to model the core workflow of a single-shop wholesale and retail business in Nepal. The project focuses on billing, inventory, invoicing, payments, stock tracking, reporting, and operational visibility in a practical full-stack implementation.
 
-You can extend this section with your institution, department, supervisor, or submission details if required for final documentation.
-
-## Contribution
-
-This project is primarily maintained as an academic and portfolio repository. Constructive suggestions, issue reports, and improvement ideas are welcome. If you plan to contribute, open an issue first for major changes so the scope and direction can be discussed clearly.
-
-## License
-
-A repository-level license has not been finalized yet. If you plan to distribute, reuse, or open-source this project more formally, add a `LICENSE` file and update this section accordingly.
+The current completed scope is focused on real shop workflow. It supports one shop, uses eSewa sandbox for digital payment flow, does not include Khalti in the completed implementation, and does not aim to replace a full accounting or VAT filing system.
 
 ## Author
 
-**Name:** [Your Name]  
-**Program:** [Your Program / Department]  
-**Institution:** [Your College or University]  
-**Project:** Final Year Project - Khata Sathi
+**Sujal Parajuli**  
+BSc (Hons) Computing  
+Final Year Project - KhataSathi
