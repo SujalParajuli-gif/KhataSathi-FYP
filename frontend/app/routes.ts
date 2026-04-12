@@ -1,7 +1,6 @@
 ﻿import { type RouteConfig, index, layout, route } from "@react-router/dev/routes";
 
 export default [
-  // Root index redirects (handled by _app.tsx if not logged in)
   layout("routes/_app.tsx", [
     index("routes/_app.dashboard.tsx"),
     route("products", "routes/_app.products.tsx"),
@@ -18,7 +17,6 @@ export default [
     route("logout", "routes/_app.logout.tsx"),
   ]),
 
-  // Login page (outside the _app shell)
   route("login", "routes/login.tsx"),
   route("invoices/:id/print", "routes/invoices.print.tsx"),
   route("payments/esewa/result", "routes/payments.esewa.result.tsx"),

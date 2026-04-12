@@ -200,7 +200,6 @@ export default function LoginPage() {
           <div className="absolute left-[-8%] top-[-10%] h-[420px] w-[420px] rounded-full bg-white/70 blur-3xl" />
           <div className="absolute bottom-[-18%] right-[-8%] h-[420px] w-[420px] rounded-full bg-slate-200/50 blur-3xl" />
 
-          {/* Faded background image behind all components */}
           <div className="absolute inset-0 flex items-center justify-center opacity-5">
             <img
               src="/assets/images/Login.png"

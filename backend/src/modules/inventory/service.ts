@@ -4,9 +4,6 @@ import {
     getBusinessSettings,
 } from "../settings/service";
 
-/**
- * Restock a product (add stock).
- */
 export async function restockProduct(
     productId: string,
     qty: number,
@@ -50,9 +47,6 @@ export async function restockProduct(
     return applyBusinessThresholds(updatedProduct, settings);
 }
 
-/**
- * Adjust stock (can be positive or negative).
- */
 export async function adjustStock(
     productId: string,
     qtyDelta: number,
@@ -62,7 +56,6 @@ export async function adjustStock(
     const product = await prisma.product.findUnique({ where: { id: productId } });
     if (!product) throw new Error("Product not found");
 
-    // Don't allow stock to go below zero
     if (product.stock + qtyDelta < 0) {
         throw new Error(`Adjustment would result in negative stock. Current: ${product.stock}, delta: ${qtyDelta}`);
     }
@@ -101,12 +94,7 @@ export async function adjustStock(
     return applyBusinessThresholds(updatedProduct, settings);
 }
 
-/**
- * Get low-stock products.
- */
 export async function getLowStockProducts() {
-    // Prisma doesn't let us compare two columns (stock <= lowStockThreshold),
-    // so we fetch active products and filter in JS.
     const [products, settings] = await Promise.all([
         prisma.product.findMany({
         where: { isActive: true },
@@ -121,9 +109,6 @@ export async function getLowStockProducts() {
         .filter((p) => p.stock <= p.lowStockThreshold);
 }
 
-/**
- * Get stock transactions for a product.
- */
 export async function getStockTransactions(productId?: string, limit = 50) {
     const where = productId ? { productId } : {};
     return prisma.stockTransaction.findMany({

@@ -1,4 +1,3 @@
-// frontend/app/components/blocks/products/ProductsFilters.tsx
 import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import { cn } from "~/lib/domain/products/products.helpers";

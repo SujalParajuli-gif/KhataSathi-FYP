@@ -232,7 +232,6 @@ export default function ProductsPage() {
         toastMsg("danger", error?.message || "Failed to load products.");
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   React.useEffect(() => {
@@ -243,7 +242,6 @@ export default function ProductsPage() {
         toastMsg("danger", error?.message || "Failed to load products.");
       }
     })();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [q, brand, category, stockStatus, status, lowOnly, pageSize]);
 
   function clearFilters() {
