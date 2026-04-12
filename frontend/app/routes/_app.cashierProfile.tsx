@@ -747,7 +747,6 @@ export default function CashierProfileSection() {
                   )}
                 </div>
 
-                {/* Action Buttons moved to the bottom of the content area */}
                 <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
                   <ActionButton
                     icon="restart_alt"

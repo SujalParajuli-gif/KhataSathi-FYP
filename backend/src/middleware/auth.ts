@@ -1,8 +1,6 @@
-// src/middleware/auth.ts — JWT Authentication Middleware
 import { Request, Response, NextFunction } from "express";
 import jwt from "jsonwebtoken";
 
-// Extend Express Request to include user info
 declare global {
     namespace Express {
         interface Request {
@@ -16,11 +14,6 @@ declare global {
 
 const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret";
 
-/**
- * Middleware: verifies JWT from Authorization header.
- * Attaches req.user = { id, role } if valid.
- * Returns 401 if missing or invalid.
- */
 export function authGuard(req: Request, res: Response, next: NextFunction) {
     const header = req.headers.authorization;
 

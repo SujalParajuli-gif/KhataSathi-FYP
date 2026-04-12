@@ -21,7 +21,6 @@ export async function listProducts(filters: ProductFilters) {
 
     const where: any = {};
 
-    // Search by name, SKU, or barcode
     if (search && search.trim()) {
         const s = search.trim();
         where.OR = [
@@ -35,18 +34,13 @@ export async function listProducts(filters: ProductFilters) {
     if (category) where.category = category;
     if (isActive !== undefined) where.isActive = isActive;
 
-    // Low stock filter: stock <= lowStockThreshold AND stock > 0
-    // We'll handle this in raw where clause
     if (lowStockOnly) {
-        // Prisma doesn't support comparing two columns directly,
-        // so we fetch all and filter in JS for simplicity
     }
 
     const skip = (page - 1) * pageSize;
     const settings = await getBusinessSettings();
 
     if (lowStockOnly) {
-        // Fetch all matching the where clause
         const allProducts = await prisma.product.findMany({
             where,
             include: { brand: { select: { id: true, name: true } } },
@@ -57,11 +51,9 @@ export async function listProducts(filters: ProductFilters) {
             applyBusinessThresholds(product, settings),
         );
 
-        // Filter in JS
         const filtered = resolvedProducts.filter((p) => p.stock > 0 && p.stock <= p.lowStockThreshold);
         const total = filtered.length;
 
-        // Paginate in JS
         const paged = filtered.slice(skip, skip + pageSize);
 
         return { products: paged, total, page, pageSize };

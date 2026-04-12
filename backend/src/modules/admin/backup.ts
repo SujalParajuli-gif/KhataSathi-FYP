@@ -1,4 +1,3 @@
-// src/modules/admin/backup.ts — Backup endpoint (admin only)
 import { Router, Request, Response } from "express";
 import { spawn, spawnSync } from "child_process";
 import { createWriteStream, existsSync, mkdirSync, readdirSync } from "fs";
@@ -110,10 +109,6 @@ function resolveMysqldumpPath(): string | null {
     return null;
 }
 
-/**
- * POST /api/admin/backup
- * Triggers a mysqldump and saves to a timestamped file.
- */
 router.post("/backup", async (req: Request, res: Response) => {
     try {
         const dbUrl = process.env.DATABASE_URL || "";

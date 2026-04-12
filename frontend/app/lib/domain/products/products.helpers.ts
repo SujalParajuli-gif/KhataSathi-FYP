@@ -1,5 +1,4 @@
-﻿// frontend/app/lib/domain/products/products.helpers.ts
-import type { Product, StockFlag } from "./products.types";
+﻿import type { Product, StockFlag } from "./products.types";
 
 export function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");

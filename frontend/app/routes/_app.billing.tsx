@@ -396,7 +396,6 @@ export default function BillingPage() {
           );
         }
       } catch {
-        // silently fail
       } finally {
         setLoading(false);
       }
@@ -805,7 +804,6 @@ export default function BillingPage() {
       <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800  md:flex-row">
         <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF]">
           <div className="border-b border-[#CFCFD3] bg-[#FFFFFF] px-[20px] py-[20px]">
-            {/* Top Bar Layout Fix */}
             <div className="flex flex-col">
               <div className="grid grid-cols-12 gap-4 items-start">
                 <div className="col-span-5">

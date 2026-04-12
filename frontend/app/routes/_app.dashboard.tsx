@@ -324,7 +324,6 @@ export default function Dashboard() {
         }
         setPaymentSummary(builtPayment);
       } catch {
-        // silently fail
       }
     }
 

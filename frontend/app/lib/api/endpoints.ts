@@ -1,17 +1,16 @@
-﻿// frontend/app/lib/api/endpoints.ts â€” All API endpoint functions
-import { API_BASE_URL } from "./baseUrl";
+﻿import { API_BASE_URL } from "./baseUrl";
 import api from "./client";
 
 
 
 export async function loginApi(email: string, password: string) {
     const res = await api.post("/api/auth/login", { email, password });
-    return res.data; // { token, user }
+    return res.data;
 }
 
 export async function getMeApi() {
     const res = await api.get("/api/auth/me");
-    return res.data; // { user }
+    return res.data;
 }
 
 export type BusinessSettings = {
@@ -82,7 +81,7 @@ interface ProductFilters {
 
 export async function listProductsApi(filters?: ProductFilters) {
     const res = await api.get("/api/products", { params: filters });
-    return res.data; // { products, total, page, pageSize }
+    return res.data;
 }
 
 export async function getProductApi(id: string) {
@@ -166,7 +165,7 @@ export async function createInvoiceApi(customerId?: string) {
 
 export async function listInvoicesApi(filters?: any) {
     const res = await api.get("/api/invoices", { params: filters });
-    return res.data; // { invoices, total, page, pageSize }
+    return res.data;
 }
 
 export async function getInvoiceApi(id: string) {
@@ -289,12 +288,12 @@ export async function downloadAnalyticsCsvApi(filters: {
 
 export async function listAuditLogsApi(filters?: any) {
     const res = await api.get("/api/audit", { params: filters });
-    return res.data; // { logs, total, page, pageSize }
+    return res.data;
 }
 
 export async function listLoginAttemptsApi(filters?: any) {
     const res = await api.get("/api/audit/login-attempts", { params: filters });
-    return res.data; // { attempts, total, page, pageSize }
+    return res.data;
 }
 
 

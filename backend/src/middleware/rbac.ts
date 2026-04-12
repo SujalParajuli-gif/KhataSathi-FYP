@@ -1,12 +1,5 @@
-// src/middleware/rbac.ts — Role-Based Access Control
 import { Request, Response, NextFunction } from "express";
 
-/**
- * Middleware factory: only allows users with the given role(s).
- * Must be used AFTER authGuard so req.user is set.
- *
- * Usage: router.get("/admin-only", authGuard, requireRole("ADMIN"), handler);
- */
 export function requireRole(...roles: string[]) {
     return (req: Request, res: Response, next: NextFunction) => {
         if (!req.user) {
