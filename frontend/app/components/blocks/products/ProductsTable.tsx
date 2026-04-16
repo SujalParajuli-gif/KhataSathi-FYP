@@ -87,6 +87,9 @@ export default function ProductsTableCard({
   total,
   start,
   end,
+  page,
+  totalPages,
+  onPageChange,
 }: {
   rows: Product[];
   selected: Record<string, boolean>;
@@ -98,6 +101,9 @@ export default function ProductsTableCard({
   total: number;
   start: number;
   end: number;
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
 }) {
   return (
     <Card>
@@ -250,11 +256,52 @@ export default function ProductsTableCard({
           </table>
         </div>
 
-        <div className="flex flex-col gap-[10px] px-[10px] py-[12px] text-[13px] text-[#565449] md:flex-row md:items-center md:justify-between">
+        <div className="flex flex-col gap-[12px] px-[10px] py-[12px] text-[13px] text-[#565449] md:flex-row md:items-center md:justify-between">
           <div>
             Showing <span className="font-semibold text-[#000000]">{total === 0 ? 0 : start + 1}</span>
             -<span className="font-semibold text-[#000000]">{end}</span> of{" "}
             <span className="font-semibold text-[#000000]">{total}</span> products
+          </div>
+
+          <div className="flex items-center justify-center gap-[8px]">
+            <button
+              type="button"
+              onClick={() => onPageChange(Math.max(1, page - 1))}
+              className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
+            >
+              <GoogleIcon name="chevron_left" className="text-inherit" />
+            </button>
+
+            {Array.from({ length: totalPages })
+              .slice(0, 8)
+              .map((_, index) => {
+                const pageNumber = index + 1;
+                const active = pageNumber === page;
+
+                return (
+                  <button
+                    key={pageNumber}
+                    type="button"
+                    onClick={() => onPageChange(pageNumber)}
+                    className={cn(
+                      "inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border text-[12px] font-extrabold transition",
+                      active
+                        ? "border-[#11120d] bg-[#11120d] text-white"
+                        : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                    )}
+                  >
+                    {pageNumber}
+                  </button>
+                );
+              })}
+
+            <button
+              type="button"
+              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+              className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
+            >
+              <GoogleIcon name="chevron_right" className="text-inherit" />
+            </button>
           </div>
         </div>
       </div>

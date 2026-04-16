@@ -12,6 +12,10 @@ function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
 function FilterCard({
   active,
   title,
@@ -63,10 +67,15 @@ export default function AlertsPage() {
   } = useAlerts();
   const [filterType, setFilterType] = useState<"all" | AppAlertType>("all");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [page, setPage] = useState(1);
 
   useEffect(() => {
     refreshAlerts(100);
   }, []);
+
+  useEffect(() => {
+    setPage(1);
+  }, [filterType, showUnreadOnly]);
 
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
@@ -81,6 +90,13 @@ export default function AlertsPage() {
     (alert) => alert.type === "Invoice",
   ).length;
   const stockCount = alerts.filter((alert) => alert.type === "Stock").length;
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / pageSize));
+  const pageClamped = clampPage(page, 1, totalPages);
+  const pageItems = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filteredAlerts.slice(start, start + pageSize);
+  }, [filteredAlerts, pageClamped]);
 
   async function handleMarkRead(alertKey: string) {
     try {
@@ -213,7 +229,7 @@ export default function AlertsPage() {
               </div>
             </div>
           ) : (
-            filteredAlerts.map((alert) => {
+            pageItems.map((alert) => {
               const tone = alertTone(alert);
 
               return (
@@ -288,6 +304,53 @@ export default function AlertsPage() {
               );
             })
           )}
+
+          {filteredAlerts.length > 0 ? (
+            <div className="flex items-center justify-center gap-2 rounded-[18px] border border-[#CFCFD3] bg-white p-4">
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) => clampPage(current - 1, 1, totalPages))
+                }
+                className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+              >
+                <Icon name="chevron_left" className="text-[18px]" />
+              </button>
+
+              {Array.from({ length: totalPages })
+                .slice(0, 8)
+                .map((_, index) => {
+                  const pageNumber = index + 1;
+                  const active = pageNumber === pageClamped;
+
+                  return (
+                    <button
+                      key={pageNumber}
+                      type="button"
+                      onClick={() => setPage(pageNumber)}
+                      className={cn(
+                        "h-[32px] w-[32px] rounded-lg border text-[12px] font-extrabold transition",
+                        active
+                          ? "border-[#11120d] bg-[#11120d] text-white"
+                          : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
+                      )}
+                    >
+                      {pageNumber}
+                    </button>
+                  );
+                })}
+
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) => clampPage(current + 1, 1, totalPages))
+                }
+                className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+              >
+                <Icon name="chevron_right" className="text-[18px]" />
+              </button>
+            </div>
+          ) : null}
         </div>
       </div>
     </div>
