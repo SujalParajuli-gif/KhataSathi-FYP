@@ -67,6 +67,10 @@ function normalizeBusinessDefaults(
   };
 }
 
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
 export default function ProductsPage() {
   function buildDefaultProductForm(
     brandOptions: string[],
@@ -116,7 +120,9 @@ export default function ProductsPage() {
     [selected],
   );
 
-  const pageSize = 200;
+  const fetchPageSize = 200;
+  const tablePageSize = 10;
+  const [page, setPage] = useState(1);
 
   const [openAddEdit, setOpenAddEdit] = useState(false);
   const [openImport, setOpenImport] = useState(false);
@@ -205,7 +211,7 @@ export default function ProductsPage() {
         status,
         lowOnly,
         page: nextPage,
-        pageSize,
+        pageSize: fetchPageSize,
       });
 
       collected.push(...res.items);
@@ -242,7 +248,20 @@ export default function ProductsPage() {
         toastMsg("danger", error?.message || "Failed to load products.");
       }
     })();
-  }, [q, brand, category, stockStatus, status, lowOnly, pageSize]);
+  }, [q, brand, category, stockStatus, status, lowOnly, fetchPageSize]);
+
+  React.useEffect(() => {
+    setPage(1);
+  }, [q, brand, category, stockStatus, status, lowOnly]);
+
+  const totalPages = Math.max(1, Math.ceil(products.length / tablePageSize));
+  const pageClamped = clampPage(page, 1, totalPages);
+  const pageItems = useMemo(() => {
+    const start = (pageClamped - 1) * tablePageSize;
+    return products.slice(start, start + tablePageSize);
+  }, [pageClamped, products, tablePageSize]);
+  const pageStart = products.length === 0 ? 0 : (pageClamped - 1) * tablePageSize;
+  const pageEnd = products.length === 0 ? 0 : pageStart + pageItems.length;
 
   function clearFilters() {
     setQ("");
@@ -255,7 +274,7 @@ export default function ProductsPage() {
 
   function toggleAllOnPage(checked: boolean) {
     const next = { ...selected };
-    products.forEach((product) => {
+    pageItems.forEach((product) => {
       next[product.id] = checked;
     });
     setSelected(next);
@@ -556,7 +575,7 @@ export default function ProductsPage() {
       />
 
       <ProductsTableCard
-        rows={products}
+        rows={pageItems}
         selected={selected}
         toggleAllOnPage={toggleAllOnPage}
         toggleOne={toggleOne}
@@ -564,8 +583,11 @@ export default function ProductsPage() {
         onEdit={openEdit}
         onDelete={requestDelete}
         total={total}
-        start={total === 0 ? 0 : 0}
-        end={products.length}
+        start={pageStart}
+        end={pageEnd}
+        page={pageClamped}
+        totalPages={totalPages}
+        onPageChange={setPage}
       />
 
       <ProductsModals

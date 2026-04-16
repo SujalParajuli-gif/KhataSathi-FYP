@@ -548,49 +548,16 @@ export default function CashierInvoicesPage() {
 
   return (
     <div className="w-full">
-      <div className="flex items-start justify-between gap-4 flex-wrap">
-        <div>
-          <div className="text-[24px] font-extrabold text-[#000000]">
-            Invoices Management
-          </div>
-          <div className="text-[13px] text-[#8C8889] mt-1 font-bold">
-            {new Date().toLocaleDateString(undefined, {
-              weekday: "long",
-              day: "2-digit",
-              month: "long",
-              year: "numeric",
-            })}
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <div className="w-[360px] max-w-[70vw]">
-            <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px]  focus-within:border-[#000000] transition-colors">
-              <Icon name="search" className="text-[#8C8889]" />
-              <input
-                value={query}
-                onChange={(e) => {
-                  setQuery(e.target.value);
-                  setPage(1);
-                }}
-                placeholder="Search invoice no, customer, or item..."
-                className="w-full outline-none text-[13px] font-semibold text-[#000000] placeholder:text-[#8C8889] bg-transparent"
-              />
-            </div>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setFilterOpen((value) => !value)}
-            className="h-[44px] px-[16px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center gap-2 transition "
-          >
-            <Icon name="filter_list" />
-            Filter
-          </button>
-        </div>
+      <div className="text-[13px] text-[#8C8889] font-bold">
+        {new Date().toLocaleDateString(undefined, {
+          weekday: "long",
+          day: "2-digit",
+          month: "long",
+          year: "numeric",
+        })}
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4 mt-6">
+      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4 mt-4">
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
             Total Sales
@@ -655,70 +622,97 @@ export default function CashierInvoicesPage() {
         </div>
       </div>
 
-      <div className="mt-6 flex items-center gap-2 flex-wrap">
-        {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
-          (tab) => {
-            const active = tab === activeTab;
-            return (
-              <button
-                key={tab}
-                type="button"
-                onClick={() => {
-                  setActiveTab(tab);
-                  setPage(1);
-                }}
-                className={cn(
-                  "px-[16px] py-[8px] rounded-[999px] border-2 text-[12px] font-extrabold transition ",
-                  active
-                    ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
-                    : "bg-[#FFFFFF] text-[#8C8889] border-[#CFCFD3] hover:bg-[#CFCFD3]",
-                )}
-              >
-                {tab === "All" ? "All Invoices" : tab}
-              </button>
-            );
-          },
-        )}
-      </div>
-
-      {isFilterOpen ? (
-        <div className="mt-4 rounded-[18px] border-2 border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
-          <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] pb-4">
-            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase ">
-              Filter Options
+      <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+              Browse Invoices
             </div>
-            <button
-              type="button"
-              onClick={() => setFilterOpen(false)}
-              className="w-[32px] h-[32px] rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] flex items-center justify-center text-[#000000] transition"
-            >
-              <Icon name="close" className="text-[18px]" />
-            </button>
+            <div className="mt-3 flex items-center gap-2 flex-wrap">
+              {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
+                (tab) => {
+                  const active = tab === activeTab;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(tab);
+                        setPage(1);
+                      }}
+                      className={cn(
+                        "px-[16px] py-[8px] rounded-[999px] border-2 text-[12px] font-extrabold transition ",
+                        active
+                          ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
+                          : "bg-[#FFFFFF] text-[#8C8889] border-[#CFCFD3] hover:bg-[#CFCFD3]",
+                      )}
+                    >
+                      {tab === "All" ? "All Invoices" : tab}
+                    </button>
+                  );
+                },
+              )}
+            </div>
           </div>
 
-          <div className="mt-4 grid grid-cols-12 gap-5">
-            <div className="col-span-4">
-              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-                Cashier Match
-              </div>
-              <label className="mt-3 flex items-center gap-2 text-[13px] font-bold text-[#000000] cursor-pointer">
+          <div className="flex w-full flex-col gap-3 sm:flex-row xl:w-auto xl:min-w-[520px] xl:justify-end">
+            <div className="w-full xl:w-[360px]">
+              <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px] focus-within:border-[#000000] transition-colors">
+                <Icon name="search" className="text-[#8C8889]" />
                 <input
-                  type="checkbox"
-                  checked={onlyMine}
-                  onChange={(e) => setOnlyMine(e.target.checked)}
-                  className="w-4 h-4 accent-[#000000]"
+                  value={query}
+                  onChange={(e) => {
+                    setQuery(e.target.value);
+                    setPage(1);
+                  }}
+                  placeholder="Search invoice no, customer, or item..."
+                  className="w-full bg-transparent text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889]"
                 />
-                Show only my invoices
-              </label>
+              </div>
             </div>
 
-            <div className="col-span-8">
-              <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-                Payment Method
+            <button
+              type="button"
+              onClick={() => setFilterOpen((value) => !value)}
+              className="h-[44px] px-[16px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center justify-center gap-2 transition sm:self-start"
+            >
+              <Icon name={isFilterOpen ? "close" : "filter_list"} />
+              {isFilterOpen ? "Hide Filters" : "Filter"}
+            </button>
+          </div>
+        </div>
+
+        {isFilterOpen ? (
+          <div className="mt-4 rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-4">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+              Filter Options
+            </div>
+            <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+              Refine the visible invoices using the current criteria.
+            </div>
+
+            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
+                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                  Cashier Match
+                </div>
+                <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-3 text-[13px] font-bold text-[#000000]">
+                  <input
+                    type="checkbox"
+                    checked={onlyMine}
+                    onChange={(e) => setOnlyMine(e.target.checked)}
+                    className="h-4 w-4 accent-[#000000]"
+                  />
+                  Show only my invoices
+                </label>
               </div>
-              <div className="mt-3 flex gap-2 flex-wrap">
-                {(["All", "Cash", "eSewa", "None"] as const).map(
-                  (method) => {
+
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-8">
+                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                  Payment Method
+                </div>
+                <div className="mt-3 flex gap-2 flex-wrap">
+                  {(["All", "Cash", "eSewa", "None"] as const).map((method) => {
                     const active = method === methodFilter;
                     return (
                       <button
@@ -726,22 +720,22 @@ export default function CashierInvoicesPage() {
                         type="button"
                         onClick={() => setMethodFilter(method)}
                         className={cn(
-                          "px-[14px] py-[6px] rounded-lg border font-extrabold text-[12px] transition",
+                          "rounded-[12px] border px-[14px] py-[8px] text-[12px] font-extrabold transition",
                           active
-                            ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
-                            : "bg-[#FFFFFF] text-[#8C8889] border-[#CFCFD3] hover:bg-[#CFCFD3]",
+                            ? "border-[#000000] bg-[#000000] text-[#FFFFFF]"
+                            : "border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
                         )}
                       >
                         {method}
                       </button>
                     );
-                  },
-                )}
+                  })}
+                </div>
               </div>
             </div>
           </div>
-        </div>
-      ) : null}
+        ) : null}
+      </div>
 
       <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden ">
         <div className="overflow-x-auto">
@@ -974,4 +968,3 @@ export default function CashierInvoicesPage() {
     </div>
   );
 }
-

@@ -17,11 +17,38 @@ function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+function buildLocalDateBoundary(value: string, endOfDay = false) {
+  if (!value) return null;
+
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
+
+  return new Date(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  );
+}
+
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
 export default function HistoryPage() {
   const [invoices, setInvoices] = useState<AppInvoice[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All");
+  const [fromDate, setFromDate] = useState("");
+  const [toDate, setToDate] = useState("");
+  const [methodFilter, setMethodFilter] = useState<
+    "All" | AppInvoice["paymentMethod"]
+  >("All");
+  const [page, setPage] = useState(1);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
@@ -54,10 +81,28 @@ export default function HistoryPage() {
 
   const filtered = useMemo(() => {
     const loweredQuery = query.trim().toLowerCase();
+    const fromBoundary = buildLocalDateBoundary(fromDate);
+    const toBoundary = buildLocalDateBoundary(toDate, true);
+
     return invoices
       .filter((invoice) =>
         activeTab === "All" ? true : invoice.status === activeTab,
       )
+      .filter((invoice) =>
+        methodFilter === "All"
+          ? true
+          : invoice.paymentMethod === methodFilter,
+      )
+      .filter((invoice) => {
+        const createdAtTime = new Date(invoice.createdAt).getTime();
+        if (fromBoundary && createdAtTime < fromBoundary.getTime()) {
+          return false;
+        }
+        if (toBoundary && createdAtTime > toBoundary.getTime()) {
+          return false;
+        }
+        return true;
+      })
       .filter((invoice) => {
         if (!loweredQuery) return true;
 
@@ -72,7 +117,26 @@ export default function HistoryPage() {
           .toLowerCase()
           .includes(loweredQuery);
       });
-  }, [activeTab, invoices, query]);
+  }, [activeTab, fromDate, invoices, methodFilter, query, toDate]);
+
+  const hasExtraFilters =
+    fromDate.length > 0 || toDate.length > 0 || methodFilter !== "All";
+
+  function clearExtraFilters() {
+    setFromDate("");
+    setToDate("");
+    setMethodFilter("All");
+    setPage(1);
+  }
+
+  const pageSize = 10;
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const pageClamped = clampPage(page, 1, totalPages);
+
+  const pageItems = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, pageClamped]);
 
   const totalSales = useMemo(
     () =>
@@ -136,17 +200,12 @@ export default function HistoryPage() {
 
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-[24px] text-[#0F172A]">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div>
-          <h1 className="text-2xl font-extrabold ">History</h1>
-          <p className="mt-1 text-sm text-slate-500">
-            Real invoice records with payment totals, status, method, and
-            reference data.
-          </p>
-        </div>
-      </div>
+      <p className="max-w-[720px] text-[13px] font-medium text-slate-500">
+        Real invoice records with payment totals, status, method, and
+        reference data.
+      </p>
 
-      <div className="mt-6 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-7">
+      <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-7">
         <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
           <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
             Net Total
@@ -211,41 +270,125 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      <div className="mt-6 flex flex-col gap-4 xl:flex-row xl:items-center xl:justify-between">
-        <div className="flex flex-wrap items-center gap-2">
-          {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
-            (tab) => {
-              const active = tab === activeTab;
-              return (
-                <button
-                  key={tab}
-                  type="button"
-                  onClick={() => setActiveTab(tab)}
-                  className={cn(
-                    "rounded-full border-2 px-4 py-2 text-[12px] font-extrabold transition",
-                    active
-                      ? "border-[#11120d] bg-[#11120d] text-white"
-                      : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
-                  )}
-                >
-                  {tab}
-                </button>
-              );
-            },
-          )}
+      <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
+        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+              Browse Records
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
+                (tab) => {
+                  const active = tab === activeTab;
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      onClick={() => {
+                        setActiveTab(tab);
+                        setPage(1);
+                      }}
+                      className={cn(
+                        "rounded-full border-2 px-4 py-2 text-[12px] font-extrabold transition",
+                        active
+                          ? "border-[#11120d] bg-[#11120d] text-white"
+                          : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
+                      )}
+                    >
+                      {tab}
+                    </button>
+                  );
+                },
+              )}
+            </div>
+          </div>
+
+          <div className="relative w-full xl:w-[360px] xl:min-w-[360px]">
+            <Icon
+              name="search"
+              className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
+            />
+            <input
+              value={query}
+              onChange={(event) => {
+                setQuery(event.target.value);
+                setPage(1);
+              }}
+              placeholder="Search invoice, customer, cashier, reference..."
+              className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] pl-[48px] pr-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+            />
+          </div>
         </div>
 
-        <div className="relative w-full xl:w-[360px]">
-          <Icon
-            name="search"
-            className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
-          />
-          <input
-            value={query}
-            onChange={(event) => setQuery(event.target.value)}
-            placeholder="Search invoice, customer, cashier, reference..."
-            className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] pl-[48px] pr-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
-          />
+        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] xl:items-end">
+          <label className="space-y-2">
+            <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+              From Date
+            </div>
+            <input
+              type="date"
+              value={fromDate}
+              max={toDate || undefined}
+              onChange={(event) => {
+                setFromDate(event.target.value);
+                setPage(1);
+              }}
+              className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+            />
+          </label>
+
+          <label className="space-y-2">
+            <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+              To Date
+            </div>
+            <input
+              type="date"
+              value={toDate}
+              min={fromDate || undefined}
+              onChange={(event) => {
+                setToDate(event.target.value);
+                setPage(1);
+              }}
+              className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+            />
+          </label>
+
+          <label className="space-y-2">
+            <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+              Payment Method
+            </div>
+            <select
+              value={methodFilter}
+              onChange={(event) => {
+                setMethodFilter(
+                  event.target.value as "All" | AppInvoice["paymentMethod"],
+                );
+                setPage(1);
+              }}
+              className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+            >
+              <option value="All">All Methods</option>
+              <option value="Cash">Cash</option>
+              <option value="eSewa">eSewa</option>
+              <option value="None">None</option>
+            </select>
+          </label>
+
+          <div className="flex items-end">
+            <button
+              type="button"
+              onClick={clearExtraFilters}
+              disabled={!hasExtraFilters}
+              className={cn(
+                "h-[46px] w-full rounded-[14px] border px-4 text-[13px] font-extrabold transition md:w-auto md:min-w-[132px]",
+                hasExtraFilters
+                  ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]"
+                  : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",
+              )}
+            >
+              Clear filters
+            </button>
+          </div>
         </div>
       </div>
 
@@ -268,7 +411,7 @@ export default function HistoryPage() {
             </thead>
 
             <tbody>
-              {filtered.map((invoice) => {
+              {pageItems.map((invoice) => {
                 const reference = getInvoiceReference(invoice);
 
                 return (
@@ -359,7 +502,7 @@ export default function HistoryPage() {
                 );
               })}
 
-              {filtered.length === 0 ? (
+              {pageItems.length === 0 ? (
                 <tr>
                   <td colSpan={10} className="px-5 py-16 text-center">
                     <div className="flex flex-col items-center justify-center text-slate-400">
@@ -373,6 +516,51 @@ export default function HistoryPage() {
               ) : null}
             </tbody>
           </table>
+        </div>
+
+        <div className="flex items-center justify-center gap-2 border-t border-[#CFCFD3] bg-[#FFFFFF] p-4">
+          <button
+            type="button"
+            onClick={() =>
+              setPage((current) => clampPage(current - 1, 1, totalPages))
+            }
+            className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+          >
+            <Icon name="chevron_left" className="text-[18px]" />
+          </button>
+
+          {Array.from({ length: totalPages })
+            .slice(0, 8)
+            .map((_, index) => {
+              const pageNumber = index + 1;
+              const active = pageNumber === pageClamped;
+
+              return (
+                <button
+                  key={pageNumber}
+                  type="button"
+                  onClick={() => setPage(pageNumber)}
+                  className={cn(
+                    "h-[32px] w-[32px] rounded-lg border text-[12px] font-extrabold transition",
+                    active
+                      ? "border-[#11120d] bg-[#11120d] text-white"
+                      : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
+                  )}
+                >
+                  {pageNumber}
+                </button>
+              );
+            })}
+
+          <button
+            type="button"
+            onClick={() =>
+              setPage((current) => clampPage(current + 1, 1, totalPages))
+            }
+            className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+          >
+            <Icon name="chevron_right" className="text-[18px]" />
+          </button>
         </div>
       </div>
 
