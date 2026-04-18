@@ -3,6 +3,7 @@ import { parse } from "csv-parse";
 import { Readable } from "stream";
 import * as productService from "./service";
 
+// validating that a required text field is present and not just whitespace
 function parseRequiredText(value: unknown, label: string) {
   const normalized = String(value || "").trim();
   if (!normalized) {
@@ -11,11 +12,13 @@ function parseRequiredText(value: unknown, label: string) {
   return normalized;
 }
 
+// converting any input to a trimmed string, returning undefined if empty
 function parseOptionalText(value: unknown) {
   const normalized = String(value || "").trim();
   return normalized || undefined;
 }
 
+// converting various input types to a boolean
 function parseBooleanValue(value: unknown) {
   if (typeof value === "string") {
     return value.toLowerCase() === "true";
@@ -23,6 +26,8 @@ function parseBooleanValue(value: unknown) {
   return Boolean(value);
 }
 
+// returning a boolean if provided, or undefined if the field is missing
+// this is important because undefined means "do not change this field" in an update
 function parseOptionalBoolean(value: unknown) {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -30,6 +35,8 @@ function parseOptionalBoolean(value: unknown) {
   return parseBooleanValue(value);
 }
 
+// validating an optional numeric field — checks that it is a valid finite number
+// and optionally enforces a minimum value (e.g., prices must be >= 0.01)
 function parseOptionalNumber(
   value: unknown,
   label: string,
@@ -50,6 +57,7 @@ function parseOptionalNumber(
   return normalized;
 }
 
+// same as parseOptionalNumber but the value is required — it cannot be empty or missing
 function parseRequiredNumber(
   value: unknown,
   label: string,
@@ -62,8 +70,10 @@ function parseRequiredNumber(
   return normalized;
 }
 
+// listing products with optional filters — supports search, brand, category, active status, low stock, and pagination
 export async function list(req: Request, res: Response) {
   try {
+    // reading all filter options from the query string
     const filters = {
       search: req.query.search as string | undefined,
       brand: req.query.brand as string | undefined,
@@ -74,7 +84,7 @@ export async function list(req: Request, res: Response) {
           : req.query.active === "false"
             ? false
             : undefined,
-      lowStockOnly: req.query.lowStock === "true",
+      lowStockOnly: req.query.lowStock === "true", // when true, only show products where stock is below the threshold
       page: req.query.page ? Number(req.query.page) : 1,
       pageSize: req.query.pageSize ? Number(req.query.pageSize) : 50,
     };
@@ -87,6 +97,7 @@ export async function list(req: Request, res: Response) {
   }
 }
 
+// fetching a single product by its ID
 export async function getOne(req: Request, res: Response) {
   try {
     const productId = String(req.params.id);
@@ -102,6 +113,7 @@ export async function getOne(req: Request, res: Response) {
   }
 }
 
+// creating a new product — all input values are validated through the parse helper functions
 export async function create(req: Request, res: Response) {
   try {
     const product = await productService.createProduct({
@@ -111,7 +123,7 @@ export async function create(req: Request, res: Response) {
       brandId: parseRequiredText(req.body.brandId, "brandId"),
       category: parseOptionalText(req.body.category),
       retailPrice: parseRequiredNumber(req.body.retailPrice, "retailPrice", {
-        min: 0.01,
+        min: 0.01, // price must be at least 0.01
       }),
       wholesalePrice: parseRequiredNumber(
         req.body.wholesalePrice,
@@ -123,7 +135,7 @@ export async function create(req: Request, res: Response) {
       wholesaleQtyThreshold: parseOptionalNumber(
         req.body.wholesaleQtyThreshold,
         "wholesaleQtyThreshold",
-        { min: 1 },
+        { min: 1 }, // quantity threshold must be at least 1
       ),
       usesDefaultWholesaleQtyThreshold: parseOptionalBoolean(
         req.body.usesDefaultWholesaleQtyThreshold,
@@ -142,6 +154,7 @@ export async function create(req: Request, res: Response) {
 
     res.status(201).json(product);
   } catch (err: any) {
+    // checking for validation errors from our parse functions
     if (
       err.message.includes("required") ||
       err.message.includes("must be")
@@ -149,10 +162,12 @@ export async function create(req: Request, res: Response) {
       res.status(400).json({ error: err.message });
       return;
     }
+    // P2002 = unique constraint violation — SKU or barcode already exists
     if (err.code === "P2002") {
       res.status(409).json({ error: "SKU or barcode already exists" });
       return;
     }
+    // P2003 = foreign key constraint — the brand ID does not point to an existing brand
     if (err.code === "P2003") {
       res.status(400).json({ error: "Brand not found" });
       return;
@@ -162,12 +177,14 @@ export async function create(req: Request, res: Response) {
   }
 }
 
+// updating an existing product — only the fields that are provided in the request body get changed
 export async function update(req: Request, res: Response) {
   try {
     const productId = String(req.params.id);
     const body = req.body || {};
     const data: any = {};
 
+    // building the update object — each field is only included if it was actually sent in the request
     if (body.name !== undefined) {
       data.name = parseRequiredText(body.name, "name");
     }
@@ -256,6 +273,7 @@ export async function update(req: Request, res: Response) {
   }
 }
 
+// deactivating a product — soft delete by setting isActive to false
 export async function deactivate(req: Request, res: Response) {
   try {
     const productId = String(req.params.id);
@@ -271,6 +289,8 @@ export async function deactivate(req: Request, res: Response) {
   }
 }
 
+// returning all unique product categories from the database
+// the frontend uses this to populate the category filter dropdown
 export async function categories(req: Request, res: Response) {
   try {
     const cats = await productService.getCategories();
@@ -281,6 +301,8 @@ export async function categories(req: Request, res: Response) {
   }
 }
 
+// handling bulk product import from a CSV file
+// the file is uploaded in memory (not saved to disk), then parsed and processed row by row
 export async function importCsv(req: Request, res: Response) {
   try {
     const file = req.file;
@@ -290,22 +312,24 @@ export async function importCsv(req: Request, res: Response) {
     }
 
     const records: any[] = [];
-    const stream = Readable.from(file.buffer);
+    const stream = Readable.from(file.buffer); // creating a readable stream from the file buffer
 
+    // parsing the CSV with column headers, skipping empty lines, and trimming whitespace
     const parser = stream.pipe(
       parse({
-        columns: true,
+        columns: true, // first row is treated as column headers
         skip_empty_lines: true,
         trim: true,
-        bom: true,
+        bom: true, // handling byte order mark that some editors add
       }),
     );
 
+    // collecting all parsed rows into an array
     for await (const record of parser) {
       records.push(record);
     }
 
-    const result = await productService.importProductsFromCsv(records);
+    const result = await productService.importProductsFromCsv(records); // processing each row and creating products
     res.json(result);
   } catch (err) {
     console.error("Import CSV error:", err);

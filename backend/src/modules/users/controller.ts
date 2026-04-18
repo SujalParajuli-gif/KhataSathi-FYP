@@ -2,13 +2,17 @@ import { Request, Response } from "express";
 import * as userService from "./service";
 import bcrypt from "bcryptjs";
 
+// normalizing the role input to either "ADMIN" or "CASHIER"
+// if the role is not provided or is invalid, it defaults to "CASHIER"
 function normalizeRole(role: unknown): "ADMIN" | "CASHIER" {
   return String(role || "CASHIER").toUpperCase() === "ADMIN" ? "ADMIN" : "CASHIER";
 }
 
+// listing all users, with optional role filter
+// the admin uses this to view and manage cashier accounts
 export async function list(req: Request, res: Response) {
   try {
-    const role = req.query.role as "ADMIN" | "CASHIER" | undefined;
+    const role = req.query.role as "ADMIN" | "CASHIER" | undefined; // reading the optional role filter from the query string
     const users = await userService.listUsers({ role });
     res.json(users);
   } catch (err) {
@@ -17,14 +21,18 @@ export async function list(req: Request, res: Response) {
   }
 }
 
+// creating a new user — the admin uses this to add new cashier accounts
 export async function create(req: Request, res: Response) {
   try {
     const { name, email, phone, gender, address, role, password, isActive } = req.body;
+
+    // validating that the required fields are present
     if (!name || !email || !password) {
       res.status(400).json({ error: "Name, email, and password are required" });
       return;
     }
 
+    // normalizing all string inputs — trimming whitespace and lowercasing the email
     const normalizedName = String(name).trim();
     const normalizedEmail = String(email).trim().toLowerCase();
     const normalizedPhone =
@@ -34,7 +42,7 @@ export async function create(req: Request, res: Response) {
     const normalizedAddress =
       typeof address === "string" ? String(address).trim() || undefined : undefined;
 
-    const passwordHash = await bcrypt.hash(password, 10);
+    const passwordHash = await bcrypt.hash(password, 10); // hashing the password with 10 salt rounds before storing
     const user = await userService.createUser({
       name: normalizedName,
       email: normalizedEmail,
@@ -43,11 +51,12 @@ export async function create(req: Request, res: Response) {
       address: normalizedAddress,
       role: normalizeRole(role),
       passwordHash,
-      isActive: isActive !== false,
+      isActive: isActive !== false, // defaults to true unless explicitly set to false
     });
 
     res.status(201).json(user);
   } catch (err: any) {
+    // P2002 means a unique constraint was violated — either the email or phone already exists
     if (err.code === "P2002") {
       res.status(409).json({ error: "Email or phone already exists" });
       return;
@@ -57,18 +66,24 @@ export async function create(req: Request, res: Response) {
   }
 }
 
+// updating an existing user — admin can change name, email, role, password, active status, etc.
+// unlike the self-profile update, the admin does not need to provide the current password
 export async function update(req: Request, res: Response) {
   try {
     const userId = String(req.params.id);
-    const { password, newPassword, role, ...data } = req.body;
+    const { password, newPassword, role, ...data } = req.body; // separating password and role for special handling
     const updateData: any = { ...data };
-    if (role !== undefined) updateData.role = normalizeRole(role);
+
+    if (role !== undefined) updateData.role = normalizeRole(role); // normalizing role to ensure it is valid
+
+    // admin can set a new password directly — supporting both "newPassword" and "password" field names
     if (newPassword) {
       updateData.passwordHash = await bcrypt.hash(String(newPassword), 10);
     } else if (password) {
       updateData.passwordHash = await bcrypt.hash(password, 10);
     }
 
+    // trimming and normalizing all string fields before saving
     if (typeof updateData.name === "string") updateData.name = updateData.name.trim();
     if (typeof updateData.email === "string") {
       updateData.email = updateData.email.trim().toLowerCase();

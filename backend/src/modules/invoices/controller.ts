@@ -1,6 +1,8 @@
 import { Request, Response } from "express";
 import * as invoiceService from "./service";
 
+// validating that a value is a positive whole number (at least 1)
+// we use this for quantities and pagination parameters
 function parsePositiveWholeNumber(value: unknown, label: string) {
   const normalized = Number(value);
   if (!Number.isInteger(normalized) || normalized < 1) {
@@ -9,6 +11,8 @@ function parsePositiveWholeNumber(value: unknown, label: string) {
   return normalized;
 }
 
+// validating an optional non-negative number (can be 0 but not negative)
+// we use this for the discount amount field since a discount of 0 is valid but negative is not
 function parseOptionalNonNegativeNumber(value: unknown, label: string) {
   if (value === undefined || value === null || value === "") {
     return undefined;
@@ -25,13 +29,16 @@ function parseOptionalNonNegativeNumber(value: unknown, label: string) {
   return normalized;
 }
 
+// creating a new draft invoice for the current cashier
+// the cashier can optionally link a customer at creation time
 export async function createDraft(req: Request, res: Response) {
   try {
-    const cashierId = req.user!.id;
+    const cashierId = req.user!.id; // the cashier who is creating this invoice
     const { customerId } = req.body;
     const invoice = await invoiceService.createDraft(cashierId, customerId);
     res.status(201).json(invoice);
   } catch (err: any) {
+    // this handles when the auto-generated invoice number collides with an existing one
     if (err.message.includes("unique invoice number")) {
       res.status(409).json({ error: err.message });
       return;
@@ -41,8 +48,10 @@ export async function createDraft(req: Request, res: Response) {
   }
 }
 
+// listing invoices with filters for status, cashier, date range, and pagination
 export async function list(req: Request, res: Response) {
   try {
+    // parsing pagination parameters — defaulting to page 1 and 20 items per page
     const page =
       req.query.page === undefined
         ? 1
@@ -55,14 +64,15 @@ export async function list(req: Request, res: Response) {
     const filters = {
       status: req.query.status as string | undefined,
       cashierId: req.query.cashierId as string | undefined,
-      from: req.query.from as string | undefined,
-      to: req.query.to as string | undefined,
+      from: req.query.from as string | undefined, // start of date range in YYYY-MM-DD format
+      to: req.query.to as string | undefined, // end of date range in YYYY-MM-DD format
       page,
       pageSize,
     };
     const result = await invoiceService.listInvoices(filters);
     res.json(result);
   } catch (err: any) {
+    // checking for known validation errors (invalid page, date format, etc.)
     if (
       err.message.includes("page") ||
       err.message.includes("format") ||
@@ -76,6 +86,7 @@ export async function list(req: Request, res: Response) {
   }
 }
 
+// fetching a single invoice by ID with all its items and customer data
 export async function getOne(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
@@ -91,6 +102,8 @@ export async function getOne(req: Request, res: Response) {
   }
 }
 
+// adding a product item to a draft invoice
+// the quantity must be a positive whole number and the product must be active and in stock
 export async function addItem(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
@@ -107,6 +120,7 @@ export async function addItem(req: Request, res: Response) {
     );
     res.status(201).json(item);
   } catch (err: any) {
+    // checking for various business rule violations
     if (
       err.message.includes("qty") ||
       err.message.includes("finalized") ||
@@ -122,6 +136,7 @@ export async function addItem(req: Request, res: Response) {
   }
 }
 
+// updating the quantity of an existing item in a draft invoice
 export async function updateItem(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
@@ -149,6 +164,7 @@ export async function updateItem(req: Request, res: Response) {
   }
 }
 
+// removing an item from a draft invoice
 export async function removeItem(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
@@ -169,10 +185,12 @@ export async function removeItem(req: Request, res: Response) {
   }
 }
 
+// finalizing an invoice — this is the main action that locks the invoice, deducts stock, and creates audit logs
+// the optional discountAmount overrides the auto-calculated discount
 export async function finalize(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
-    const userId = req.user!.id;
+    const userId = req.user!.id; // the user performing the finalization — logged in the audit trail
     const discountAmount = parseOptionalNonNegativeNumber(
       req.body?.discountAmount,
       "Discount amount",
@@ -184,6 +202,7 @@ export async function finalize(req: Request, res: Response) {
     );
     res.json(invoice);
   } catch (err: any) {
+    // checking for various finalization errors — insufficient stock, already finalized, empty invoice, etc.
     if (
       err.message.includes("Discount amount") ||
       err.message.includes("finalized") ||
@@ -199,6 +218,8 @@ export async function finalize(req: Request, res: Response) {
   }
 }
 
+// cancelling an invoice — available to both cashiers and admins
+// a finalized invoice cannot be cancelled (it must be handled differently)
 export async function cancel(req: Request, res: Response) {
   try {
     const invoice = await invoiceService.cancelInvoice(

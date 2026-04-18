@@ -6,6 +6,7 @@ import {
 } from "./service";
 import * as paymentService from "./service";
 
+// building a redirect URL for eSewa failures — this sends the user to the frontend result page with an error message
 function buildGenericEsewaFailureRedirect(message: string) {
   const config = getEsewaConfig();
   return buildEsewaResultUrl(config.frontendBaseUrl, {
@@ -14,6 +15,7 @@ function buildGenericEsewaFailureRedirect(message: string) {
   });
 }
 
+// validating that a payment amount is a positive finite number
 function parsePositiveAmount(value: unknown) {
   const normalized = Number(value);
   if (!Number.isFinite(normalized) || normalized <= 0) {
@@ -22,16 +24,20 @@ function parsePositiveAmount(value: unknown) {
   return normalized;
 }
 
+// recording a manual payment against an invoice (cash, card, etc.)
+// the payment amount is added to the invoice's paidTotal and the paymentStatus is updated accordingly
 export async function addPayment(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
     const { method, amount, status, reference } = req.body;
 
+    // validating that the payment method is provided
     if (!method) {
       res.status(400).json({ error: "method is required" });
       return;
     }
 
+    // checking that the method is one of the supported types (CASH, CARD, ESEWA, BANK_TRANSFER)
     if (!SUPPORTED_PAYMENT_METHODS.includes(method as SupportedPaymentMethod)) {
       res.status(400).json({
         error: `method must be one of: ${SUPPORTED_PAYMENT_METHODS.join(", ")}`,
@@ -39,6 +45,7 @@ export async function addPayment(req: Request, res: Response) {
       return;
     }
 
+    // validating the payment status — defaults to SUCCESS for manual entries
     const validStatuses = ["PENDING", "SUCCESS", "FAILED"];
     const paymentStatus = status || "SUCCESS";
     if (!validStatuses.includes(paymentStatus)) {
@@ -59,6 +66,7 @@ export async function addPayment(req: Request, res: Response) {
 
     res.status(201).json(payment);
   } catch (err: any) {
+    // checking for various business rule violations
     if (
       err.message.includes("amount") ||
       err.message.includes("Overpayment") ||
@@ -77,6 +85,7 @@ export async function addPayment(req: Request, res: Response) {
   }
 }
 
+// initiating an eSewa online payment — creates a pending payment record and returns form data for eSewa redirect
 export async function initiateEsewaPayment(req: Request, res: Response) {
   try {
     const { invoiceId, amount } = req.body;
@@ -90,7 +99,7 @@ export async function initiateEsewaPayment(req: Request, res: Response) {
       parsePositiveAmount(amount),
       req.user!.id,
     );
-    res.status(201).json(result);
+    res.status(201).json(result); // returning the form fields the frontend needs to redirect to eSewa
   } catch (err: any) {
     if (
       err.message.includes("invoiceId") ||
@@ -112,8 +121,11 @@ export async function initiateEsewaPayment(req: Request, res: Response) {
   }
 }
 
+// handling the eSewa success callback — eSewa redirects the user here after a successful payment
+// we verify the payment signature, update the payment record, and redirect to the frontend result page
 export async function verifyEsewaPayment(req: Request, res: Response) {
   try {
+    // eSewa sends the encoded payload either as a query param or in the request body
     const encodedPayload =
       typeof req.query.data === "string"
         ? req.query.data
@@ -125,9 +137,10 @@ export async function verifyEsewaPayment(req: Request, res: Response) {
       String(req.params.paymentId),
       encodedPayload,
     );
-    res.redirect(result.redirectUrl);
+    res.redirect(result.redirectUrl); // redirecting to the frontend result page
   } catch (err: any) {
     console.error("Verify eSewa payment error:", err);
+    // if verification fails, we redirect to the frontend with an error message
     res.redirect(
       buildGenericEsewaFailureRedirect(
         err?.message || "Failed to verify the eSewa payment.",
@@ -136,6 +149,7 @@ export async function verifyEsewaPayment(req: Request, res: Response) {
   }
 }
 
+// handling the eSewa failure callback — eSewa redirects here when the user cancels or the payment fails
 export async function failEsewaPayment(req: Request, res: Response) {
   try {
     const result = await paymentService.failEsewaPayment(String(req.params.paymentId));
@@ -150,6 +164,7 @@ export async function failEsewaPayment(req: Request, res: Response) {
   }
 }
 
+// listing all payments for a specific invoice — shows payment history with method, amount, status, and who recorded it
 export async function listPayments(req: Request, res: Response) {
   try {
     const payments = await paymentService.listPayments(String(req.params.id));

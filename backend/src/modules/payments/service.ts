@@ -13,17 +13,24 @@ import {
   type EsewaStatusResponse,
 } from "./esewa";
 
+// the payment methods our system currently supports — CASH is manual, ESEWA is online
 export const SUPPORTED_PAYMENT_METHODS = ["CASH", "ESEWA"] as const;
 export type SupportedPaymentMethod = (typeof SUPPORTED_PAYMENT_METHODS)[number];
 
+// rounding to 2 decimal places to avoid JavaScript floating point issues
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+// generating a unique transaction UUID for eSewa payments
+// combining the current timestamp with random bytes to make sure each one is unique
 function buildEsewaTransactionUuid() {
   return `esw-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
+// recalculating the paidTotal and paymentStatus for an invoice based on its successful payments
+// we call this inside a transaction after every payment add, success, or failure
+// so the invoice record always reflects the actual payment state
 async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
   const invoice = await tx.invoice.findUnique({
     where: { id: invoiceId },
@@ -33,22 +40,24 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
     throw new Error("Invoice not found");
   }
 
+  // summing only the successful payments — pending and failed ones do not count toward the total
   const paidTotal = roundCurrency(
     invoice.payments
       .filter((payment: any) => payment.status === "SUCCESS")
       .reduce((sum: number, payment: any) => sum + payment.amount, 0),
   );
 
+  // determining the payment status based on how much has been paid vs the net total
   let paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED" =
     "UNPAID";
   if (invoice.paymentStatus === "CANCELLED") {
-    paymentStatus = "CANCELLED";
+    paymentStatus = "CANCELLED"; // a cancelled invoice stays cancelled regardless of payments
   } else if (invoice.netTotal <= 0) {
-    paymentStatus = "PAID";
+    paymentStatus = "PAID"; // if the net total is 0 or less (full discount), it is auto-paid
   } else if (paidTotal >= invoice.netTotal) {
     paymentStatus = "PAID";
   } else if (paidTotal > 0) {
-    paymentStatus = "PARTIALLY_PAID";
+    paymentStatus = "PARTIALLY_PAID"; // some money received but not the full amount yet
   }
 
   await tx.invoice.update({
@@ -59,6 +68,9 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
   return { paidTotal, paymentStatus, netTotal: invoice.netTotal };
 }
 
+// calculating the total already paid by summing only successful payments
+// optionally excluding a specific payment ID — we use this when checking if an eSewa payment
+// would cause overpayment, because the payment itself is already in the database as PENDING
 function getSuccessfulPaidTotal(payments: Array<{ id: string; amount: number; status: string }>, excludePaymentId?: string) {
   return roundCurrency(
     payments
@@ -71,6 +83,8 @@ function getSuccessfulPaidTotal(payments: Array<{ id: string; amount: number; st
   );
 }
 
+// validating that an invoice is in a valid state to accept a new payment
+// we cannot add payments to drafts, cancelled invoices, fully paid invoices, or zero-total ones
 function ensureInvoiceCanAcceptPayment(invoice: {
   status: string;
   paymentStatus: string;
@@ -91,6 +105,7 @@ function ensureInvoiceCanAcceptPayment(invoice: {
   }
 }
 
+// fetching the actor (user) info for audit log entries
 async function getActorSummaryTx(tx: any, userId: string) {
   return tx.user.findUnique({
     where: { id: userId },
@@ -98,6 +113,7 @@ async function getActorSummaryTx(tx: any, userId: string) {
   });
 }
 
+// building a redirect URL that sends the user to the frontend success page after eSewa completes
 function buildEsewaSuccessRedirect(params: {
   invoiceId: string;
   invoiceNo: string;
@@ -118,6 +134,7 @@ function buildEsewaSuccessRedirect(params: {
   });
 }
 
+// building a redirect URL that sends the user to the frontend failure page after eSewa fails
 function buildEsewaFailureRedirect(params: {
   invoiceId?: string;
   invoiceNo?: string;
@@ -139,6 +156,8 @@ function buildEsewaFailureRedirect(params: {
   });
 }
 
+// calling eSewa's status check API to verify whether a transaction actually completed on their side
+// we try multiple URL candidates because eSewa has different endpoints for test and sandbox
 async function fetchEsewaStatus(
   transactionUuid: string,
   totalAmount: string,
@@ -170,7 +189,7 @@ async function fetchEsewaStatus(
         );
       }
 
-      return data;
+      return data; // if we got a valid response, return it immediately
     } catch (err) {
       lastError =
         err instanceof Error
@@ -182,6 +201,10 @@ async function fetchEsewaStatus(
   throw lastError || new Error("Could not verify transaction with eSewa.");
 }
 
+// --
+
+// recording a manual payment (cash, card, etc.) against a finalized invoice
+// we validate overpayment only for successful payments — pending/failed payments do not affect the balance
 export async function addPayment(
   invoiceId: string,
   method: SupportedPaymentMethod,
@@ -203,6 +226,7 @@ export async function addPayment(
     throw new Error("Payment amount must be greater than zero");
   }
 
+  // checking for overpayment — the new payment plus what is already paid cannot exceed the net total
   if (status === "SUCCESS") {
     const currentPaid = getSuccessfulPaidTotal(invoice.payments);
 
@@ -215,6 +239,7 @@ export async function addPayment(
 
   return prisma.$transaction(async (tx) => {
     const actor = await getActorSummaryTx(tx, createdById);
+    // creating the payment record in the database
     const payment = await tx.payment.create({
       data: {
         invoiceId,
@@ -226,8 +251,10 @@ export async function addPayment(
       },
     });
 
+    // recalculating the invoice payment status after adding this payment
     const next = await recomputePaymentStatusTx(tx, invoiceId);
 
+    // only logging successful payments in the audit — pending and failed ones are just records
     if (status === "SUCCESS") {
       await tx.auditLog.create({
         data: {
@@ -256,6 +283,10 @@ export async function addPayment(
   });
 }
 
+// --
+
+// initiating an eSewa online payment — creates a PENDING payment record and returns the
+// form fields the frontend needs to redirect the user to eSewa's payment page
 export async function initiateEsewaPayment(
   invoiceId: string,
   amount: number,
@@ -275,13 +306,15 @@ export async function initiateEsewaPayment(
     throw new Error("Payment amount must be greater than zero");
   }
 
+  // making sure the payment amount does not exceed the remaining balance
   const currentPaid = getSuccessfulPaidTotal(invoice.payments);
   const remainingDue = roundCurrency(Math.max(0, invoice.netTotal - currentPaid));
   if (normalizedAmount > remainingDue) {
     throw new Error("Payment amount cannot exceed the remaining due.");
   }
 
-  const transactionUuid = buildEsewaTransactionUuid();
+  const transactionUuid = buildEsewaTransactionUuid(); // generating a unique ID for this transaction
+  // creating a PENDING payment record — it will be marked as SUCCESS or FAILED after eSewa responds
   const payment = await prisma.payment.create({
     data: {
       invoiceId,
@@ -293,6 +326,7 @@ export async function initiateEsewaPayment(
     },
   });
 
+  // building all the form fields that eSewa requires for payment initiation
   const amountText = formatEsewaAmount(normalizedAmount);
   const signedFieldNames = ESEWA_SIGNED_FIELD_NAMES.join(",");
   const fields: EsewaFormFields = {
@@ -303,12 +337,13 @@ export async function initiateEsewaPayment(
     product_code: config.productCode,
     product_service_charge: "0",
     product_delivery_charge: "0",
-    success_url: `${config.backendBaseUrl}/api/payments/esewa/verify/${payment.id}`,
-    failure_url: `${config.backendBaseUrl}/api/payments/esewa/failure/${payment.id}`,
+    success_url: `${config.backendBaseUrl}/api/payments/esewa/verify/${payment.id}`, // eSewa redirects here after success
+    failure_url: `${config.backendBaseUrl}/api/payments/esewa/failure/${payment.id}`, // eSewa redirects here after failure
     signed_field_names: signedFieldNames,
-    signature: "",
+    signature: "", // will be filled below
   };
 
+  // signing the fields with our secret key so eSewa can verify the request is from us
   fields.signature = buildEsewaSignature(
     fields,
     ESEWA_SIGNED_FIELD_NAMES,
@@ -320,11 +355,15 @@ export async function initiateEsewaPayment(
     invoiceId: invoice.id,
     invoiceNo: invoice.invoiceNo,
     amount: normalizedAmount,
-    formAction: config.formUrl,
-    fields,
+    formAction: config.formUrl, // the URL the frontend form should POST to
+    fields, // the form fields to include in the POST
   };
 }
 
+// --
+
+// marking an eSewa payment as successful — updates the payment record and the invoice's payment status
+// we also create an audit log entry to track who and when
 async function markEsewaPaymentSuccess(paymentId: string, reference?: string | null) {
   return prisma.$transaction(async (tx) => {
     const payment = await tx.payment.findUnique({
@@ -347,17 +386,20 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
       throw new Error("Cannot verify payment for a cancelled invoice");
     }
 
+    // if this payment is already marked as success, we just return it without doing anything
     if (payment.status === "SUCCESS") {
       return payment;
     }
 
     const actor = await getActorSummaryTx(tx, payment.createdById);
 
+    // checking that marking this payment as successful would not cause overpayment
     const currentPaid = getSuccessfulPaidTotal(payment.invoice.payments, payment.id);
     if (currentPaid + payment.amount > payment.invoice.netTotal) {
       throw new Error("Verified eSewa payment would overpay the invoice.");
     }
 
+    // updating the payment status to SUCCESS and storing the eSewa reference code
     const updatedPayment = await tx.payment.update({
       where: { id: paymentId },
       data: {
@@ -366,8 +408,10 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
       },
     });
 
+    // recalculating the invoice payment status after this payment was confirmed
     const next = await recomputePaymentStatusTx(tx, payment.invoiceId);
 
+    // creating an audit log entry for the successful eSewa payment
     await tx.auditLog.create({
       data: {
         actorId: payment.createdById,
@@ -394,6 +438,7 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
   });
 }
 
+// marking an eSewa payment as failed — updates the payment record and logs the failure reason
 async function markEsewaPaymentFailed(paymentId: string, reason: string) {
   return prisma.$transaction(async (tx) => {
     const payment = await tx.payment.findUnique({
@@ -415,6 +460,7 @@ async function markEsewaPaymentFailed(paymentId: string, reason: string) {
 
     const actor = await getActorSummaryTx(tx, payment.createdById);
 
+    // only update the status if it is not already SUCCESS or FAILED (i.e., it is still PENDING)
     if (payment.status !== "SUCCESS" && payment.status !== "FAILED") {
       await tx.payment.update({
         where: { id: paymentId },
@@ -424,6 +470,7 @@ async function markEsewaPaymentFailed(paymentId: string, reason: string) {
 
     await recomputePaymentStatusTx(tx, payment.invoiceId);
 
+    // logging the failure in the audit so the admin can see what happened
     await tx.auditLog.create({
       data: {
         actorId: payment.createdById,
@@ -446,6 +493,14 @@ async function markEsewaPaymentFailed(paymentId: string, reason: string) {
   });
 }
 
+// --
+
+// verifying an eSewa payment after eSewa redirects the user back to our success callback URL
+// this is a multi-step process:
+// 1. decode the base64 payload that eSewa sent
+// 2. verify the HMAC signature to make sure it was not tampered with
+// 3. call eSewa's status check API to confirm the transaction is actually COMPLETE
+// 4. if everything checks out, mark the payment as SUCCESS and update the invoice
 export async function verifyEsewaPayment(paymentId: string, encodedPayload?: string) {
   const config = getEsewaConfig();
   const payment = await prisma.payment.findUnique({
@@ -457,6 +512,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     },
   });
 
+  // if the payment record does not exist, redirect with a failure message
   if (!payment) {
     return {
       redirectUrl: buildEsewaFailureRedirect({
@@ -478,6 +534,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     };
   }
 
+  // if the invoice was cancelled while the user was paying on eSewa, we fail the payment
   if (payment.invoice.paymentStatus === "CANCELLED") {
     await markEsewaPaymentFailed(
       paymentId,
@@ -494,6 +551,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     };
   }
 
+  // if the payment is already verified, redirect to success
   if (payment.status === "SUCCESS") {
     return {
       redirectUrl: buildEsewaSuccessRedirect({
@@ -507,6 +565,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     };
   }
 
+  // step 1: decoding the base64-encoded payload from eSewa
   let payload;
   try {
     payload = decodeEsewaPayload(String(encodedPayload || ""));
@@ -523,6 +582,8 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     };
   }
 
+  // step 2: verifying the HMAC signature plus checking that the amount, product code,
+  // and transaction UUID all match what we originally sent to eSewa
   const payloadStatus = String(payload.status || "").toUpperCase();
   const payloadAmount = roundCurrency(Number(payload.total_amount || 0));
   if (
@@ -530,7 +591,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     payloadStatus !== "COMPLETE" ||
     payload.transaction_uuid !== payment.transactionUuid ||
     payload.product_code !== config.productCode ||
-    Math.abs(payloadAmount - payment.amount) > 0.01
+    Math.abs(payloadAmount - payment.amount) > 0.01 // allowing a tiny tolerance for floating point
   ) {
     await markEsewaPaymentFailed(paymentId, "eSewa callback validation failed.");
     return {
@@ -544,6 +605,8 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
     };
   }
 
+  // step 3: calling eSewa's status check API for server-to-server confirmation
+  // this is an extra security step on top of the payload verification
   try {
     const statusResponse = await fetchEsewaStatus(
       String(payment.transactionUuid || ""),
@@ -567,6 +630,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
       };
     }
 
+    // step 4: everything verified — extracting the reference code and marking as successful
     const reference =
       payload.transaction_code ||
       statusResponse.refId ||
@@ -584,6 +648,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
       }),
     };
   } catch {
+    // if the status check fails (network error, timeout, etc.), we mark the payment as failed
     await markEsewaPaymentFailed(paymentId, "Could not verify transaction with eSewa.");
     return {
       redirectUrl: buildEsewaFailureRedirect({
@@ -597,6 +662,7 @@ export async function verifyEsewaPayment(paymentId: string, encodedPayload?: str
   }
 }
 
+// handling eSewa's failure callback — the user either cancelled the payment or eSewa returned an error
 export async function failEsewaPayment(paymentId: string) {
   const payment = await prisma.payment.findUnique({
     where: { id: paymentId },
@@ -612,6 +678,7 @@ export async function failEsewaPayment(paymentId: string) {
     };
   }
 
+  // if the payment was already verified as successful before this callback, redirect to success
   if (payment.status === "SUCCESS") {
     return {
       redirectUrl: buildEsewaSuccessRedirect({
@@ -638,10 +705,11 @@ export async function failEsewaPayment(paymentId: string) {
   };
 }
 
+// listing all payments for a specific invoice — includes who recorded each payment
 export async function listPayments(invoiceId: string) {
   return prisma.payment.findMany({
     where: { invoiceId },
     include: { createdBy: { select: { id: true, name: true } } },
-    orderBy: { createdAt: "desc" },
+    orderBy: { createdAt: "desc" }, // newest payments first
   });
 }

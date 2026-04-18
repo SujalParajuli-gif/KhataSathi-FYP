@@ -1,10 +1,14 @@
 import prisma from "../../db/prisma";
 
+// listing all brands, optionally filtered to show only active ones
+// sorted alphabetically by name for consistent display in the frontend dropdown
 export async function listBrands(activeOnly?: boolean) {
     const where = activeOnly ? { isActive: true } : {};
     return prisma.brand.findMany({ where, orderBy: { name: "asc" } });
 }
 
+// fetching a single brand by ID along with its linked products
+// we include product details so the admin can see which products belong to this brand
 export async function getBrand(id: string) {
     return prisma.brand.findUnique({
         where: { id },
@@ -24,16 +28,22 @@ export async function getBrand(id: string) {
     });
 }
 
+// creating a new brand record in the database
+// the unique constraint on the name field is enforced by Prisma, so duplicates are handled in the controller
 export async function createBrand(name: string) {
     return prisma.brand.create({ data: { name } });
 }
 
+// updating a brand — can change the name, active status, or both
+// we wrap this in a transaction because deactivating a brand also deactivates all its products
+// and we need both operations to either succeed or fail together
 export async function updateBrand(
     id: string,
     data: { name?: string; isActive?: boolean },
     actorId?: string,
 ) {
     return prisma.$transaction(async (tx) => {
+        // fetching the existing brand first so we can compare before and after values for the audit log
         const existing = await tx.brand.findUnique({
             where: { id },
             include: {
@@ -52,15 +62,19 @@ export async function updateBrand(
             data,
         });
 
+        // when a brand is being deactivated, we also deactivate all active products under it
+        // this prevents products from being sold when their brand is no longer active
         let affectedProducts = 0;
         if (data.isActive === false && existing.isActive !== false) {
             const result = await tx.product.updateMany({
-                where: { brandId: id, isActive: true },
+                where: { brandId: id, isActive: true }, // only targeting currently active products
                 data: { isActive: false },
             });
-            affectedProducts = result.count;
+            affectedProducts = result.count; // storing how many products were affected for the audit log
         }
 
+        // creating an audit log entry if we know who performed this action
+        // this records what changed so the admin can review brand modifications later
         if (actorId) {
             await tx.auditLog.create({
                 data: {
@@ -79,10 +93,12 @@ export async function updateBrand(
             });
         }
 
-        return { ...updated, deactivatedProductCount: affectedProducts };
+        return { ...updated, deactivatedProductCount: affectedProducts }; // including the count so the frontend can show it to the admin
     });
 }
 
+// convenience function that calls updateBrand with isActive set to false
+// used by the deactivate route to keep the controller code clean
 export async function deactivateBrand(id: string, actorId?: string) {
     return updateBrand(id, { isActive: false }, actorId);
 }

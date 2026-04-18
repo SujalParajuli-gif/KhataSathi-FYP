@@ -2,6 +2,8 @@ import type { PaymentStatusInvoice } from "@prisma/client";
 import { Request, Response } from "express";
 import * as reportService from "./service";
 
+// extracting common filter parameters from the request query string
+// both from and to dates are required for all report endpoints
 function getFilters(req: Request) {
   const from = typeof req.query.from === "string" ? req.query.from : "";
   const to = typeof req.query.to === "string" ? req.query.to : "";
@@ -19,6 +21,8 @@ function getFilters(req: Request) {
   return { from, to, cashierId, paymentStatus };
 }
 
+// shared error handler for all report endpoints
+// we check the error message to determine if it is a validation error (400) or an unexpected error (500)
 function handleError(res: Response, err: unknown, label: string) {
   const message =
     err instanceof Error ? err.message : "An unexpected error occurred.";
@@ -27,12 +31,13 @@ function handleError(res: Response, err: unknown, label: string) {
     : 500;
 
   if (status === 500) {
-    console.error(`${label}:`, err);
+    console.error(`${label}:`, err); // only logging unexpected errors, not validation failures
   }
 
   res.status(status).json({ error: message });
 }
 
+// returning the full analytics dashboard data — revenue, invoice counts, payment breakdown, etc.
 export async function analytics(req: Request, res: Response) {
   try {
     const result = await reportService.getAnalyticsReport(getFilters(req));
@@ -42,6 +47,8 @@ export async function analytics(req: Request, res: Response) {
   }
 }
 
+// exporting the analytics data as a downloadable CSV file
+// the filename includes the date range so the admin knows which period the data covers
 export async function analyticsCsv(req: Request, res: Response) {
   try {
     const filters = getFilters(req);
@@ -51,7 +58,7 @@ export async function analyticsCsv(req: Request, res: Response) {
     res.setHeader("Content-Type", "text/csv; charset=utf-8");
     res.setHeader(
       "Content-Disposition",
-      `attachment; filename="${filename}"`,
+      `attachment; filename="${filename}"`, // this tells the browser to download the file instead of displaying it
     );
     res.send(csv);
   } catch (err) {
@@ -59,6 +66,7 @@ export async function analyticsCsv(req: Request, res: Response) {
   }
 }
 
+// returning a summary of total sales, revenue, and discount stats for a date range
 export async function salesSummary(req: Request, res: Response) {
   try {
     const { from, to } = getFilters(req);
@@ -69,11 +77,12 @@ export async function salesSummary(req: Request, res: Response) {
   }
 }
 
+// returning the top-selling products ranked by quantity sold within a date range
 export async function bestSellers(req: Request, res: Response) {
   try {
     const { from, to } = getFilters(req);
     const limit =
-      typeof req.query.limit === "string" ? Number(req.query.limit) : 10;
+      typeof req.query.limit === "string" ? Number(req.query.limit) : 10; // how many products to return, defaults to 10
     const result = await reportService.bestSellers(from, to, limit);
     res.json(result);
   } catch (err) {
@@ -81,6 +90,7 @@ export async function bestSellers(req: Request, res: Response) {
   }
 }
 
+// returning sales performance breakdown per cashier for a date range
 export async function cashierSales(req: Request, res: Response) {
   try {
     const { from, to } = getFilters(req);

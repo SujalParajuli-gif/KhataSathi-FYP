@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import * as custService from "./service";
 
+// validating and trimming the customer name — we require it to be a non-empty string
 function parseCustomerName(value: unknown) {
   const normalized = String(value || "").trim();
   if (!normalized) {
@@ -9,11 +10,15 @@ function parseCustomerName(value: unknown) {
   return normalized;
 }
 
+// converting any input to a trimmed string, returning undefined if it is empty
+// we use this for optional fields like phone and email
 function parseOptionalText(value: unknown) {
   const normalized = String(value || "").trim();
   return normalized || undefined;
 }
 
+// converting various input types to a boolean value
+// the frontend can send "true" as a string or as an actual boolean, so we handle both
 function parseBooleanValue(value: unknown) {
   if (typeof value === "string") {
     return value.toLowerCase() === "true";
@@ -21,6 +26,9 @@ function parseBooleanValue(value: unknown) {
   return Boolean(value);
 }
 
+// validating that a discount percent is a number between 0 and 100
+// we use this for both loyaltyPercent and wholesalePercent fields
+// if the value is empty or not provided, it defaults to 0
 function parsePercent(value: unknown, label: string) {
   if (value === undefined || value === null || value === "") {
     return 0;
@@ -37,9 +45,10 @@ function parsePercent(value: unknown, label: string) {
   return normalized;
 }
 
+// listing all customers, with optional filtering for active-only customers
 export async function list(req: Request, res: Response) {
   try {
-    const activeOnly = req.query.active === "true";
+    const activeOnly = req.query.active === "true"; // checking the query parameter to decide whether to filter
     const customers = await custService.listCustomers(activeOnly);
     res.json(customers);
   } catch (err) {
@@ -48,6 +57,7 @@ export async function list(req: Request, res: Response) {
   }
 }
 
+// fetching a single customer by their ID
 export async function getOne(req: Request, res: Response) {
   try {
     const customer = await custService.getCustomer(String(req.params.id));
@@ -62,6 +72,7 @@ export async function getOne(req: Request, res: Response) {
   }
 }
 
+// creating a new customer — all input values are validated through the parse helper functions above
 export async function create(req: Request, res: Response) {
   try {
     const newCust = await custService.createCustomer({
@@ -76,6 +87,7 @@ export async function create(req: Request, res: Response) {
     });
     res.status(201).json(newCust);
   } catch (err: any) {
+    // checking if the error is a known validation error from our parse functions
     if (
       err.message.includes("Customer name") ||
       err.message.includes("percent")
@@ -83,6 +95,7 @@ export async function create(req: Request, res: Response) {
       res.status(400).json({ error: err.message });
       return;
     }
+    // P2002 is Prisma's unique constraint violation — means the phone number is already taken
     if (err.code === "P2002") {
       res.status(409).json({ error: "Phone number already exists" });
       return;
@@ -92,16 +105,19 @@ export async function create(req: Request, res: Response) {
   }
 }
 
+// updating an existing customer — only the fields that are provided in the request body get changed
 export async function update(req: Request, res: Response) {
   try {
     const body = req.body || {};
     const data: any = {};
 
+    // building the update object with only the fields that were actually sent
+    // each field is validated through its respective parse function
     if (body.name !== undefined) {
       data.name = parseCustomerName(body.name);
     }
     if (body.phone !== undefined) {
-      data.phone = parseOptionalText(body.phone) || null;
+      data.phone = parseOptionalText(body.phone) || null; // setting to null if empty so the field gets cleared in the database
     }
     if (body.email !== undefined) {
       data.email = parseOptionalText(body.email) || null;
@@ -145,6 +161,8 @@ export async function update(req: Request, res: Response) {
   }
 }
 
+// deactivating a customer — we soft-delete by setting isActive to false instead of removing the record
+// this way the customer's data is still available for existing invoices and history
 export async function deactivate(req: Request, res: Response) {
   try {
     const customer = await custService.deactivateCustomer(String(req.params.id));

@@ -8,9 +8,9 @@ import {
 
 const router: ReturnType<typeof Router> = Router();
 
-router.use(authGuard);
+router.use(authGuard); // all settings routes require authentication
 
-router.get("/business", getBusinessDefaults);
-router.put("/business", requireRole("ADMIN"), updateBusinessDefaults);
+router.get("/business", getBusinessDefaults); // any authenticated user can view the current business settings
+router.put("/business", requireRole("ADMIN"), updateBusinessDefaults); // only admin can update business-wide defaults
 
 export default router;
