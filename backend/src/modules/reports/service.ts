@@ -12,8 +12,8 @@ import {
 } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
-const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA"];
+const DAY_MS = 24 * 60 * 60 * 1000; // milliseconds in a day — used for calculating date spans
+const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA"]; // all payment methods our system supports
 const INVOICE_PAYMENT_STATUSES: PaymentStatusInvoice[] = [
   "UNPAID",
   "PARTIALLY_PAID",
@@ -21,15 +21,18 @@ const INVOICE_PAYMENT_STATUSES: PaymentStatusInvoice[] = [
   "CANCELLED",
 ];
 
+// defining the shape of filters the frontend sends when requesting analytics data
 export type AnalyticsFilters = {
-  from: string;
-  to: string;
-  cashierId?: string;
-  paymentStatus?: PaymentStatusInvoice;
+  from: string; // YYYY-MM-DD start date
+  to: string; // YYYY-MM-DD end date
+  cashierId?: string; // optional filter by specific cashier
+  paymentStatus?: PaymentStatusInvoice; // optional filter by payment status
 };
 
+// the time granularity for the sales-over-time chart — hour for single day, day for up to 45 days, week for longer
 type BucketGranularity = "hour" | "day" | "week";
 
+// the metrics we track for each time bucket in the sales-over-time chart
 type BucketMetrics = {
   key: string;
   label: string;
@@ -42,6 +45,7 @@ type BucketMetrics = {
   averageBasket: number;
 };
 
+// the shape of each payment method slice in the payment distribution chart
 type PaymentDistributionSlice = {
   method: PaymentMethod;
   amount: number;
@@ -50,18 +54,21 @@ type PaymentDistributionSlice = {
 
 type ReportInvoice = Awaited<ReturnType<typeof getReportInvoices>>[number];
 
+// rounding to 2 decimal places for all currency calculations
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+// formatting a date as "Apr 18" style for the chart x-axis labels
 function formatMonthDay(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     month: "short",
     day: "numeric",
-    timeZone: BUSINESS_TIME_ZONE,
+    timeZone: BUSINESS_TIME_ZONE, // using Nepal timezone so labels match the business day
   }).format(date);
 }
 
+// formatting a date as "3 PM" style for hourly chart labels
 function formatHourLabel(date: Date) {
   return new Intl.DateTimeFormat("en-US", {
     hour: "numeric",
@@ -70,6 +77,8 @@ function formatHourLabel(date: Date) {
   }).format(date);
 }
 
+// determining the chart granularity based on how many days the date range spans
+// a single day gets hourly buckets, up to 45 days gets daily, anything longer gets weekly
 function resolveBucketGranularity(fromDate: Date, toDate: Date): BucketGranularity {
   const spanDays =
     Math.floor(
@@ -83,6 +92,8 @@ function resolveBucketGranularity(fromDate: Date, toDate: Date): BucketGranulari
   return "week";
 }
 
+// pre-creating empty buckets for the entire date range so the chart shows every time period
+// even if there were no invoices in some periods — this gives us a continuous x-axis
 function buildBucketSeed(
   fromDate: Date,
   toDate: Date,
@@ -91,11 +102,12 @@ function buildBucketSeed(
   const buckets: BucketMetrics[] = [];
   const map = new Map<string, BucketMetrics>();
 
+  // for hourly granularity, we create 24 buckets (one per hour of the day)
   if (granularity === "hour") {
     const start = startOfBusinessDay(fromDate);
     for (let hour = 0; hour < 24; hour += 1) {
       const bucketDate = addBusinessHours(start, hour);
-      const key = bucketDate.toISOString().slice(0, 13);
+      const key = bucketDate.toISOString().slice(0, 13); // using ISO date up to hour as the key
       const bucket: BucketMetrics = {
         key,
         label: formatHourLabel(bucketDate),
@@ -115,13 +127,14 @@ function buildBucketSeed(
     return { buckets, map };
   }
 
+  // for daily granularity, we create one bucket per day in the range
   if (granularity === "day") {
     for (
       let bucketDate = startOfBusinessDay(fromDate);
       bucketDate <= startOfBusinessDay(toDate);
       bucketDate = addBusinessDays(bucketDate, 1)
     ) {
-      const key = bucketDate.toISOString().slice(0, 10);
+      const key = bucketDate.toISOString().slice(0, 10); // using just the date as the key
       const bucket: BucketMetrics = {
         key,
         label: formatMonthDay(bucketDate),
@@ -141,6 +154,7 @@ function buildBucketSeed(
     return { buckets, map };
   }
 
+  // for weekly granularity, we start from the beginning of the week and step by 7 days
   for (
     let bucketDate = startOfBusinessWeek(fromDate);
     bucketDate <= startOfBusinessDay(toDate);
@@ -166,8 +180,9 @@ function buildBucketSeed(
   return { buckets, map };
 }
 
+// determining which bucket an invoice date falls into based on the current granularity
 function getBucketKey(date: Date, granularity: BucketGranularity) {
-  const businessDate = toBusinessClock(date);
+  const businessDate = toBusinessClock(date); // converting to Nepal time first
 
   if (granularity === "hour") {
     return businessDate.toISOString().slice(0, 13);
@@ -180,6 +195,7 @@ function getBucketKey(date: Date, granularity: BucketGranularity) {
   return startOfBusinessWeek(businessDate).toISOString().slice(0, 10);
 }
 
+// validating and normalizing the date filters — making sure from <= to and status is valid
 function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
   const fromDate = parseBusinessDate(filters.from, "from");
   const toDate = parseBusinessDate(filters.to, "to");
@@ -204,11 +220,13 @@ function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
     },
     fromDate,
     toDate,
-    startAt: toBusinessRangeStart(fromDate),
-    endAt: toBusinessRangeEnd(toDate),
+    startAt: toBusinessRangeStart(fromDate), // converting to UTC range start for the database query
+    endAt: toBusinessRangeEnd(toDate), // converting to UTC range end for the database query
   };
 }
 
+// fetching all finalized invoices within the date range with their items, payments, cashier, and customer data
+// we include everything here because the analytics report needs to compute metrics from all of this
 async function getReportInvoices(where: Prisma.InvoiceWhereInput) {
   return prisma.invoice.findMany({
     where,
@@ -263,6 +281,7 @@ async function getReportInvoices(where: Prisma.InvoiceWhereInput) {
   });
 }
 
+// building the Prisma where clause for invoice queries based on the analytics filters
 function buildWhereClause({
   startAt,
   endAt,
@@ -273,7 +292,7 @@ function buildWhereClause({
   filters: AnalyticsFilters;
 }): Prisma.InvoiceWhereInput {
   const where: Prisma.InvoiceWhereInput = {
-    status: "FINALIZED",
+    status: "FINALIZED", // only finalized invoices count in analytics
     finalizedAt: {
       gte: startAt,
       lte: endAt,
@@ -291,10 +310,12 @@ function buildWhereClause({
   return where;
 }
 
+// summing the total quantity of all items in a single invoice
 function sumInvoiceItemQty(invoice: ReportInvoice) {
   return invoice.items.reduce((sum, item) => sum + item.qty, 0);
 }
 
+// summing only successful payments for an invoice — pending and failed payments do not count
 function sumSuccessfulPayments(invoice: ReportInvoice) {
   return roundCurrency(
     invoice.payments
@@ -303,12 +324,21 @@ function sumSuccessfulPayments(invoice: ReportInvoice) {
   );
 }
 
+// --
+
+// the main analytics report function — this computes everything the analytics dashboard needs
+// it loops through all finalized invoices in the date range and aggregates data into:
+// - time-series buckets for the sales chart
+// - per-product, per-brand, per-customer, per-cashier breakdowns
+// - payment method distribution for the pie chart
+// - summary totals for the metric cards
 export async function getAnalyticsReport(input: AnalyticsFilters) {
   const normalized = normalizeAnalyticsFilters(input);
   const granularity = resolveBucketGranularity(
     normalized.fromDate,
     normalized.toDate,
   );
+  // creating empty buckets for the entire date range so the chart has a continuous x-axis
   const { buckets, map: bucketMap } = buildBucketSeed(
     normalized.fromDate,
     normalized.toDate,
@@ -323,6 +353,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     }),
   );
 
+  // fetching all active cashiers for the cashier filter dropdown in the frontend
   const availableCashiers = await prisma.user.findMany({
     where: {
       role: "CASHIER",
@@ -335,6 +366,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     },
   });
 
+  // maps for accumulating per-entity metrics as we loop through invoices
   const productMap = new Map<
     string,
     {
@@ -387,6 +419,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       averageBasket: number;
     }
   >();
+  // initializing the payment distribution map with zeros for each supported method
   const paymentMap = new Map<PaymentMethod, PaymentDistributionSlice>(
     PAYMENT_METHODS.map((method) => [
       method,
@@ -398,6 +431,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     ]),
   );
 
+  // summary counters
   let grossSales = 0;
   let discountTotal = 0;
   let netSales = 0;
@@ -411,13 +445,17 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
   let unpaidInvoiceCount = 0;
   let walkInInvoiceCount = 0;
 
+  // looping through every invoice and accumulating metrics
   for (const invoice of invoices) {
+    // using the higher of the stored paidTotal and the actual sum of successful payments
+    // in case they got out of sync at some point
     const successfulPaidTotal = sumSuccessfulPayments(invoice);
     const effectivePaidTotal = roundCurrency(
       Math.max(invoice.paidTotal, successfulPaidTotal),
     );
     const isCancelled = invoice.paymentStatus === "CANCELLED";
 
+    // skipping cancelled invoices from all analytics calculations
     if (isCancelled) {
       cancelledInvoiceCount += 1;
       continue;
@@ -432,13 +470,14 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       Math.max(0, invoice.netTotal - effectivePaidTotal),
     );
     const invoiceItemsSold = sumInvoiceItemQty(invoice);
-    const customerKey = invoice.customer?.id || "__walk_in__";
+    const customerKey = invoice.customer?.id || "__walk_in__"; // walk-in customers (no customer record) are grouped together
     const bucketKey = getBucketKey(
       invoice.finalizedAt || invoice.createdAt,
       granularity,
     );
     const bucket = bucketMap.get(bucketKey);
 
+    // accumulating summary totals
     grossSales += invoice.subTotal;
     discountTotal += invoice.loyaltyDiscountAmount;
     netSales += invoice.netTotal;
@@ -450,6 +489,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       walkInInvoiceCount += 1;
     }
 
+    // adding this invoice's metrics to its time bucket for the chart
     if (bucket) {
       bucket.revenue += invoice.netTotal;
       bucket.collected += effectivePaidTotal;
@@ -459,6 +499,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       bucket.itemsSold += invoiceItemsSold;
     }
 
+    // accumulating per-product and per-brand metrics from the invoice items
     for (const item of invoice.items) {
       const existingProduct = productMap.get(item.productId);
       if (existingProduct) {
@@ -495,8 +536,9 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       }
     }
 
+    // accumulating per-payment-method metrics for the pie chart
     for (const payment of invoice.payments) {
-      if (payment.status !== "SUCCESS") continue;
+      if (payment.status !== "SUCCESS") continue; // only counting successful payments
       const slice = paymentMap.get(payment.method);
       if (!slice) continue;
 
@@ -504,6 +546,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       slice.count += 1;
     }
 
+    // accumulating per-customer metrics
     const existingCustomer = customerMap.get(customerKey);
     if (existingCustomer) {
       existingCustomer.invoiceCount += 1;
@@ -527,6 +570,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       });
     }
 
+    // accumulating per-cashier metrics
     const existingCashier = cashierMap.get(invoice.cashierId);
     if (existingCashier) {
       existingCashier.invoiceCount += 1;
@@ -550,6 +594,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     }
   }
 
+  // rounding all bucket values and computing the average basket size per bucket
   for (const bucket of buckets) {
     bucket.revenue = roundCurrency(bucket.revenue);
     bucket.collected = roundCurrency(bucket.collected);
@@ -559,6 +604,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       bucket.invoices > 0 ? roundCurrency(bucket.revenue / bucket.invoices) : 0;
   }
 
+  // sorting products by revenue to get the top sellers
   const topProducts = Array.from(productMap.values())
     .map((product) => ({
       ...product,
@@ -567,6 +613,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     .sort((a, b) => b.revenue - a.revenue || b.qty - a.qty)
     .slice(0, 10);
 
+  // sorting customers by revenue to get the top customers
   const topCustomers = Array.from(customerMap.values())
     .map((customer) => ({
       ...customer,
@@ -582,6 +629,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     .sort((a, b) => b.revenue - a.revenue || b.invoiceCount - a.invoiceCount)
     .slice(0, 10);
 
+  // sorting cashiers by revenue to show the best performing cashiers
   const cashierPerformance = Array.from(cashierMap.values())
     .map((cashier) => ({
       ...cashier,
@@ -596,6 +644,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     }))
     .sort((a, b) => b.revenue - a.revenue || b.invoiceCount - a.invoiceCount);
 
+  // sorting brands by revenue for the brand performance chart
   const brandPerformance = Array.from(brandMap.values())
     .map((brand) => ({
       ...brand,
@@ -603,6 +652,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     }))
     .sort((a, b) => b.revenue - a.revenue || b.qty - a.qty);
 
+  // building the payment distribution array from our payment method map
   const paymentDistribution = PAYMENT_METHODS.map((method) => {
     const slice = paymentMap.get(method);
     return {
@@ -612,6 +662,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     };
   });
 
+  // returning the complete analytics report — the frontend renders all of this on the dashboard
   return {
     filters: normalized.filters,
     meta: {
@@ -624,7 +675,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
             DAY_MS,
         ) + 1,
     },
-    cashiers: availableCashiers,
+    cashiers: availableCashiers, // for the cashier filter dropdown
     summary: {
       finalizedInvoiceCount: invoices.length,
       invoiceCount: activeInvoiceCount,
@@ -652,31 +703,38 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
       discountRate:
         grossSales > 0 ? roundCurrency((discountTotal / grossSales) * 100) : 0,
     },
-    salesOverTime: buckets,
+    salesOverTime: buckets, // the time-series data for the main chart
     topProducts,
     topCustomers,
     cashierPerformance,
-    paymentDistribution,
+    paymentDistribution, // for the pie chart
     brandPerformance,
   };
 }
 
+// --
+
+// escaping a CSV value by wrapping it in quotes if it contains commas, quotes, or newlines
 function formatCsvValue(value: string | number) {
   const text = String(value);
   if (/[",\r\n]/.test(text)) {
-    return `"${text.replace(/"/g, "\"\"")}"`;
+    return `"${text.replace(/"/g, '""')}"`;
   }
   return text;
 }
 
+// joining an array of values into a single CSV row
 function csvRow(values: Array<string | number>) {
   return values.map(formatCsvValue).join(",");
 }
 
+// exporting the analytics report as a CSV file — generates the same data as getAnalyticsReport
+// and formats it into a multi-section CSV with summary, sales over time, top products, etc.
 export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   const report = await getAnalyticsReport(filters);
   const lines: string[] = [];
 
+  // header section with report metadata
   lines.push(csvRow(["KhataSathi Analytics Export"]));
   lines.push(csvRow(["Generated At", report.meta.generatedAt]));
   lines.push(csvRow(["From", report.filters.from]));
@@ -690,6 +748,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   );
   lines.push("");
 
+  // summary section with all the aggregate metrics
   lines.push(csvRow(["Summary"]));
   lines.push(csvRow(["Metric", "Value"]));
   lines.push(csvRow(["Sales invoices", report.summary.invoiceCount]));
@@ -713,6 +772,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   lines.push(csvRow(["Discount rate (%)", report.summary.discountRate]));
   lines.push("");
 
+  // sales over time section — the same data that powers the main chart
   lines.push(csvRow(["Sales Over Time"]));
   lines.push(
     csvRow([
@@ -742,6 +802,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   }
   lines.push("");
 
+  // top products section
   lines.push(csvRow(["Top Products"]));
   lines.push(csvRow(["Product", "SKU", "Brand", "Quantity", "Revenue", "Invoice Count"]));
   for (const product of report.topProducts) {
@@ -758,6 +819,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   }
   lines.push("");
 
+  // top customers section
   lines.push(csvRow(["Top Customers"]));
   lines.push(
     csvRow([
@@ -789,6 +851,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   }
   lines.push("");
 
+  // cashier performance section
   lines.push(csvRow(["Cashier Performance"]));
   lines.push(
     csvRow([
@@ -818,6 +881,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   }
   lines.push("");
 
+  // payment distribution section
   lines.push(csvRow(["Payment Distribution"]));
   lines.push(csvRow(["Method", "Amount", "Count"]));
   for (const payment of report.paymentDistribution) {
@@ -825,6 +889,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   }
   lines.push("");
 
+  // brand performance section
   lines.push(csvRow(["Brand Performance"]));
   lines.push(csvRow(["Brand", "Quantity", "Revenue", "Invoice Count"]));
   for (const brand of report.brandPerformance) {
@@ -838,9 +903,13 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
     );
   }
 
+  // adding the UTF-8 BOM so Excel opens the CSV with correct encoding
   return `\uFEFF${lines.join("\r\n")}`;
 }
 
+// --
+
+// simplified sales summary — reuses the full analytics report and returns just the totals
 export async function salesSummary(from: string, to: string) {
   const report = await getAnalyticsReport({ from, to });
 
@@ -856,6 +925,7 @@ export async function salesSummary(from: string, to: string) {
   };
 }
 
+// returning the best-selling products ranked by revenue for a given date range
 export async function bestSellers(from: string, to: string, limit = 10) {
   const report = await getAnalyticsReport({ from, to });
   return report.topProducts.slice(0, limit).map((product) => ({
@@ -870,6 +940,7 @@ export async function bestSellers(from: string, to: string, limit = 10) {
   }));
 }
 
+// returning sales performance per cashier for a given date range
 export async function cashierSales(from: string, to: string) {
   const report = await getAnalyticsReport({ from, to });
   return report.cashierPerformance.map((cashier) => ({
