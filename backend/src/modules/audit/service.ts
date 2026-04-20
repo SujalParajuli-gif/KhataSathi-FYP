@@ -13,6 +13,8 @@ interface AuditFilters {
 
 // defining the shape of filters for listing login attempts
 interface LoginAttemptFilters {
+    from?: string;
+    to?: string;
     email?: string;
     success?: boolean; // true = successful logins, false = failed attempts
     page?: number;
@@ -55,7 +57,7 @@ export async function listAuditLogs(filters: AuditFilters) {
 // listing login attempt records with optional filters for email and success/failure
 // the admin uses this to monitor who is trying to access the system and identify suspicious activity
 export async function listLoginAttempts(filters: LoginAttemptFilters) {
-    const { email, success, page = 1, pageSize = 20 } = filters;
+    const { from, to, email, success, page = 1, pageSize = 20 } = filters;
 
     const where: any = {};
     if (email) {
@@ -63,6 +65,11 @@ export async function listLoginAttempts(filters: LoginAttemptFilters) {
     }
     if (typeof success === "boolean") {
         where.success = success; // filtering by whether the login attempt succeeded or failed
+    }
+    if (from || to) {
+        where.createdAt = {};
+        if (from) where.createdAt.gte = new Date(from); // start of the chosen date range
+        if (to) where.createdAt.lte = new Date(to + "T23:59:59.999Z"); // end of day for the chosen to date
     }
 
     const skip = (page - 1) * pageSize;

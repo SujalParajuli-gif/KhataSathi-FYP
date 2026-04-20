@@ -28,6 +28,8 @@ export async function list(req: Request, res: Response) {
 export async function listLoginAttempts(req: Request, res: Response) {
     try {
         const filters = {
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
             email: req.query.email as string | undefined, // optional filter by email
             success:
                 req.query.success === "true"
