@@ -1,8 +1,9 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
 } from "~/components/invoices/InvoiceChips";
+import { ConfirmDialog } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
 import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
 import {
@@ -21,10 +22,13 @@ import type {
 } from "~/lib/invoices";
 import { formatNpr, normalizeInvoice, openInvoicePrint } from "~/lib/invoices";
 
+// we use this helper function to easily join multiple tailwind class strings
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// this function loops through all invoices to calculate totals for the dashboard-style summary cards
+// we filter out cancelled invoices when summing up sales and due amounts so the numbers are accurate
 function calcSummary(invoices: AppInvoice[]) {
   const generated = invoices.length;
   const paid = invoices.filter((invoice) => invoice.status === "Paid").length;
@@ -65,10 +69,13 @@ function calcSummary(invoices: AppInvoice[]) {
   };
 }
 
+// we use this to keep the pagination page number between 1 and the max pages available
 function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+// this builds a short string summarizing the items in the invoice (e.g., "Apple x2 + 3 more")
+// we use it in the invoice list table to show a quick preview without needing too much space
 function getCompactInvoiceSummary(invoice: AppInvoice) {
   const rawItems = (invoice as any)?.items;
 
@@ -105,7 +112,14 @@ function getCompactInvoiceSummary(invoice: AppInvoice) {
 }
 
 type InvoiceEditPaymentMethod = "Cash" | "eSewa";
+type PendingInvoiceAction =
+  | { kind: "cash-payment"; amount: number }
+  | { kind: "esewa-payment"; amount: number }
+  | { kind: "mark-paid"; amount: number }
+  | { kind: "cancel-invoice" }
+  | null;
 
+// this modal handles invoice follow-up actions like adding payments, marking fully paid, and cancelling
 function InvoiceEditModal({
   invoice,
   paymentMethod,
@@ -135,7 +149,7 @@ function InvoiceEditModal({
 
   const paymentLocked =
     invoice.status === "Paid" || invoice.status === "Cancelled";
-  const canSettle = !paymentLocked && invoice.dueAmount > 0;
+  const canSettle = !paymentLocked && invoice.dueAmount > 0; // only unpaid or partial invoices with due left can be updated
 
   return (
     <div className="fixed inset-0 z-[65]">
@@ -306,44 +320,52 @@ function InvoiceEditModal({
   );
 }
 
+// this is the main invoices page
+// here, cashiers and admins can view their generated invoices, search them, and open them to see details or add payments
 export default function CashierInvoicesPage() {
   const authUser = getAuthUser();
-  const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All");
-  const [query, setQuery] = useState("");
-  const [isFilterOpen, setFilterOpen] = useState(false);
-  const [onlyMine, setOnlyMine] = useState(false);
+  const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // active status tab at the top of the page
+  const [query, setQuery] = useState(""); // invoice search text
+  const [isFilterOpen, setFilterOpen] = useState(false); // mobile/tablet filter drawer toggle
+  const [onlyMine, setOnlyMine] = useState(false); // optional filter to show only invoices created by the logged-in cashier
   const [methodFilter, setMethodFilter] = useState<"All" | PaymentMethodLabel>(
     "All",
   );
-  const [invoices, setInvoices] = useState<AppInvoice[]>([]);
-  const [loading, setLoading] = useState(true);
+  const [invoices, setInvoices] = useState<AppInvoice[]>([]); // full normalized invoice list before tab and page slicing
+  const [loading, setLoading] = useState(true); // first-load state for the page
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
-  const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null);
-  const [editInvoice, setEditInvoice] = useState<AppInvoice | null>(null);
+  const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null); // invoice shown in the read-only detail modal
+  const [editInvoice, setEditInvoice] = useState<AppInvoice | null>(null); // invoice currently being edited in the payment modal
   const [editPaymentMethod, setEditPaymentMethod] =
     useState<InvoiceEditPaymentMethod>("Cash");
-  const [paymentAmount, setPaymentAmount] = useState("");
-  const [paymentError, setPaymentError] = useState("");
-  const [savingEdit, setSavingEdit] = useState(false);
+  const [paymentAmount, setPaymentAmount] = useState(""); // amount typed into the edit modal
+  const [paymentError, setPaymentError] = useState(""); // edit modal validation or API error
+  const [savingEdit, setSavingEdit] = useState(false); // blocks repeated edit actions while an invoice update is running
+  const [pendingInvoiceAction, setPendingInvoiceAction] =
+    useState<PendingInvoiceAction>(null); // stores the next payment or cancellation action waiting for confirmation
 
+  // fetching a larger invoice list here lets the page search and filter on the client without constant reloads
   async function loadInvoices() {
     const data = await listInvoicesApi({ pageSize: 100 });
     const raw = Array.isArray(data?.invoices) ? data.invoices : [];
     setInvoices(raw.map(normalizeInvoice));
   }
 
+  // this fetches one full invoice record before showing detailed data in either modal
   async function hydrateInvoice(id: string) {
     const data = await getInvoiceApi(id);
     return normalizeInvoice(data);
   }
 
   useEffect(() => {
+    // loading the invoice list once when the page first opens
     async function load() {
       try {
         await loadInvoices();
       } catch {
+        // this handles when the invoice list request fails, so we fall back to an empty state instead of stale data
         setInvoices([]);
       } finally {
         setLoading(false);
@@ -352,6 +374,8 @@ export default function CashierInvoicesPage() {
     load();
   }, []);
 
+  // computing the list of invoices after applying the search query and filters
+  // we wrap this in useMemo so it only recalculates when the query or invoices change
   const scopedInvoices = useMemo(() => {
     const loweredQuery = query.trim().toLowerCase();
 
@@ -383,7 +407,7 @@ export default function CashierInvoicesPage() {
     );
   }, [activeTab, scopedInvoices]);
 
-  const summary = useMemo(() => calcSummary(scopedInvoices), [scopedInvoices]);
+  const summary = useMemo(() => calcSummary(scopedInvoices), [scopedInvoices]); // summary cards always reflect the current search and filter scope
 
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
@@ -395,11 +419,14 @@ export default function CashierInvoicesPage() {
     return filtered.slice(start, start + pageSize);
   }, [filtered, pageClamped]);
 
+  // fetching the full invoice details when the user clicks to view it
   async function openInvoice(id: string) {
+    // we show the cached preview version first so the modal opens instantly
     const cached = invoices.find((invoice) => invoice.id === id) || null;
     setSelectedInvoiceId(id);
     setDetailInvoice(cached);
 
+    // then we fetch the detailed version from the backend inside a try block
     try {
       const detailed = await hydrateInvoice(id);
       setDetailInvoice(detailed);
@@ -413,6 +440,7 @@ export default function CashierInvoicesPage() {
     setDetailInvoice(null);
   }
 
+  // this opens the edit modal with the invoice's due amount prefilled so cashiers can settle it faster
   function openEditInvoice(invoice: AppInvoice) {
     setEditInvoice(invoice);
     setEditPaymentMethod("Cash");
@@ -420,13 +448,17 @@ export default function CashierInvoicesPage() {
     setPaymentError("");
   }
 
+  // clearing the edit state here makes sure each invoice starts with a clean payment form
   function closeEditInvoice() {
     setEditInvoice(null);
     setEditPaymentMethod("Cash");
     setPaymentAmount("");
     setPaymentError("");
+    setPendingInvoiceAction(null);
   }
 
+  // we use this to validate the payment input before submitting
+  // making sure they typed a number that is greater than 0 and less than or equal to the due amount
   function validatePaymentAmount(invoice: AppInvoice, overrideAmount?: number) {
     const nextAmount = overrideAmount ?? Number(paymentAmount);
 
@@ -449,6 +481,7 @@ export default function CashierInvoicesPage() {
     return nextAmount;
   }
 
+  // reloading both the list and the specific invoice keeps the table and whichever modal is open perfectly in sync
   async function refreshInvoiceState(invoiceId: string) {
     await loadInvoices();
     const updated = await hydrateInvoice(invoiceId);
@@ -460,83 +493,218 @@ export default function CashierInvoicesPage() {
     return updated;
   }
 
-  async function handleAddPayment() {
+  // we validate first, then open a confirmation modal so the cashier can double-check before we save anything
+  function handleAddPayment() {
     if (!editInvoice) return;
 
     const amount = validatePaymentAmount(editInvoice);
     if (amount === null) return;
 
-    try {
-      setSavingEdit(true);
-
-      if (editPaymentMethod === "eSewa") {
-        const paymentIntent = await initiateEsewaPaymentApi({
-          invoiceId: editInvoice.id,
-          amount,
-        });
-
-        submitEsewaForm(paymentIntent);
-        return;
-      }
-
-      await addPaymentApi(editInvoice.id, {
-        method: "CASH",
-        amount,
-        status: "SUCCESS",
-      });
-
-      await refreshInvoiceState(editInvoice.id);
-      closeEditInvoice();
-    } catch (error: any) {
-      setPaymentError(
-        error?.response?.data?.error || "Failed to update invoice.",
-      );
-    } finally {
-      setSavingEdit(false);
-    }
+    setPaymentError("");
+    setPendingInvoiceAction(
+      editPaymentMethod === "eSewa"
+        ? { kind: "esewa-payment", amount }
+        : { kind: "cash-payment", amount },
+    );
   }
 
-  async function handleMarkFullyPaid() {
+  // marking fully paid is also confirmed first because it immediately records the whole remaining due as cash
+  function handleMarkFullyPaid() {
     if (!editInvoice) return;
 
     const amount = validatePaymentAmount(editInvoice, editInvoice.dueAmount);
     if (amount === null) return;
 
+    setPaymentError("");
+    setPendingInvoiceAction({ kind: "mark-paid", amount });
+  }
+
+  // invoice cancellation affects stock and payment state, so we always ask for explicit confirmation first
+  function handleCancelInvoice() {
+    if (!editInvoice) return;
+    setPaymentError("");
+    setPendingInvoiceAction({ kind: "cancel-invoice" });
+  }
+
+  // all confirmed invoice follow-up actions funnel through one executor so success and error handling stay consistent
+  async function confirmPendingInvoiceAction() {
+    if (!editInvoice || !pendingInvoiceAction) return;
+
     try {
       setSavingEdit(true);
+
+      // eSewa uses its existing redirect-based flow after confirmation
+      if (pendingInvoiceAction.kind === "esewa-payment") {
+        const paymentIntent = await initiateEsewaPaymentApi({
+          invoiceId: editInvoice.id,
+          amount: pendingInvoiceAction.amount,
+        });
+
+        setPendingInvoiceAction(null);
+        submitEsewaForm(paymentIntent);
+        return;
+      }
+
+      // cancellations keep their own endpoint because they reverse stock and mark the invoice as cancelled
+      if (pendingInvoiceAction.kind === "cancel-invoice") {
+        await cancelInvoiceApi(editInvoice.id);
+        await refreshInvoiceState(editInvoice.id);
+        closeEditInvoice();
+        return;
+      }
+
+      // both cash actions reuse the same payment endpoint and differ only in which amount was confirmed
       await addPaymentApi(editInvoice.id, {
         method: "CASH",
-        amount,
+        amount: pendingInvoiceAction.amount,
         status: "SUCCESS",
       });
 
       await refreshInvoiceState(editInvoice.id);
       closeEditInvoice();
     } catch (error: any) {
-      setPaymentError(
-        error?.response?.data?.error || "Failed to mark invoice as paid.",
-      );
+      const fallbackMessage =
+        pendingInvoiceAction.kind === "mark-paid"
+          ? "Failed to mark invoice as paid."
+          : pendingInvoiceAction.kind === "cancel-invoice"
+            ? "Failed to cancel invoice."
+            : "Failed to update invoice.";
+
+      setPendingInvoiceAction(null);
+      setPaymentError(error?.response?.data?.error || fallbackMessage);
     } finally {
       setSavingEdit(false);
     }
   }
 
-  async function handleCancelInvoice() {
-    if (!editInvoice) return;
+  const pendingInvoiceActionConfig = useMemo(() => {
+    if (!editInvoice || !pendingInvoiceAction) return null;
 
-    try {
-      setSavingEdit(true);
-      await cancelInvoiceApi(editInvoice.id);
-      await refreshInvoiceState(editInvoice.id);
-      closeEditInvoice();
-    } catch (error: any) {
-      setPaymentError(
-        error?.response?.data?.error || "Failed to cancel invoice.",
-      );
-    } finally {
-      setSavingEdit(false);
+    if (pendingInvoiceAction.kind === "cash-payment") {
+      return {
+        title: "Add this payment?",
+        message:
+          "This cash payment will be recorded immediately on the selected invoice.",
+        confirmLabel: "Add Payment",
+        tone: "primary" as const,
+        icon: "payments",
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Invoice</span>
+              <span className="font-extrabold text-slate-900">
+                {editInvoice.invoiceNo}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Customer</span>
+              <span className="font-extrabold text-slate-900">
+                {editInvoice.customerName}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Amount to add</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(pendingInvoiceAction.amount)}
+              </span>
+            </div>
+          </div>
+        ),
+      };
     }
-  }
+
+    if (pendingInvoiceAction.kind === "esewa-payment") {
+      return {
+        title: "Continue to eSewa?",
+        message:
+          "KhataSathi will create a pending payment and redirect you to the eSewa payment page.",
+        confirmLabel: "Continue to eSewa",
+        tone: "primary" as const,
+        icon: "payments",
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Invoice</span>
+              <span className="font-extrabold text-slate-900">
+                {editInvoice.invoiceNo}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Customer</span>
+              <span className="font-extrabold text-slate-900">
+                {editInvoice.customerName}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>eSewa amount</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(pendingInvoiceAction.amount)}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    if (pendingInvoiceAction.kind === "mark-paid") {
+      return {
+        title: "Mark this invoice fully paid?",
+        message:
+          "The full remaining due will be recorded as a successful cash payment.",
+        confirmLabel: "Mark Fully Paid",
+        tone: "primary" as const,
+        icon: "check_circle",
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Invoice</span>
+              <span className="font-extrabold text-slate-900">
+                {editInvoice.invoiceNo}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Remaining due</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(pendingInvoiceAction.amount)}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    return {
+      title: "Cancel this invoice?",
+      message:
+        "This will cancel the invoice, restore the sold stock, and keep the payment history for audit review.",
+      confirmLabel: "Cancel Invoice",
+      tone: "danger" as const,
+      icon: "warning",
+      details: (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <span>Invoice</span>
+            <span className="font-extrabold text-slate-900">
+              {editInvoice.invoiceNo}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Net total</span>
+            <span className="font-extrabold text-slate-900">
+              {formatNpr(editInvoice.netTotal)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Paid / Due</span>
+            <span className="font-extrabold text-slate-900">
+              {formatNpr(editInvoice.paidAmount)} /{" "}
+              {formatNpr(editInvoice.dueAmount)}
+            </span>
+          </div>
+        </div>
+      ),
+    };
+  }, [editInvoice, pendingInvoiceAction]);
 
   if (loading) {
     return (
@@ -548,6 +716,7 @@ export default function CashierInvoicesPage() {
 
   return (
     <div className="w-full">
+      {/* we keep the date line separate from the cards so the page opens with a quick sense of "today" before the heavier data blocks */}
       <div className="text-[13px] text-[#8C8889] font-bold">
         {new Date().toLocaleDateString(undefined, {
           weekday: "long",
@@ -557,6 +726,7 @@ export default function CashierInvoicesPage() {
         })}
       </div>
 
+      {/* these summary cards give a quick invoice health overview before the user starts filtering the table */}
       <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4 mt-4">
         <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
           <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
@@ -622,6 +792,7 @@ export default function CashierInvoicesPage() {
         </div>
       </div>
 
+      {/* this filter card keeps tabs and search together because both change the same invoice list below */}
       <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div className="min-w-0 flex-1">
@@ -737,6 +908,7 @@ export default function CashierInvoicesPage() {
         ) : null}
       </div>
 
+      {/* the table uses its own card and horizontal overflow because invoice rows carry a lot of fields on one line */}
       <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden ">
         <div className="overflow-x-auto">
           <table className="w-full text-left border-collapse min-w-[800px]">
@@ -965,6 +1137,21 @@ export default function CashierInvoicesPage() {
         onMarkPaid={handleMarkFullyPaid}
         onCancelInvoice={handleCancelInvoice}
       />
+
+      {pendingInvoiceActionConfig ? (
+        <ConfirmDialog
+          open={!!pendingInvoiceActionConfig}
+          title={pendingInvoiceActionConfig.title}
+          message={pendingInvoiceActionConfig.message}
+          confirmLabel={pendingInvoiceActionConfig.confirmLabel}
+          onConfirm={confirmPendingInvoiceAction}
+          onClose={() => setPendingInvoiceAction(null)}
+          tone={pendingInvoiceActionConfig.tone}
+          icon={pendingInvoiceActionConfig.icon}
+          details={pendingInvoiceActionConfig.details}
+          busy={savingEdit}
+        />
+      ) : null}
     </div>
   );
 }

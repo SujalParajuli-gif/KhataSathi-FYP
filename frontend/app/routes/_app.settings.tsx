@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { Link } from "react-router";
 import Icon from "~/components/ui/Icon";
 import {
@@ -58,13 +58,20 @@ type LoginAttemptRow = {
   createdAt: string;
 };
 type BackupResult = { filename?: string; filepath?: string; message?: string };
+type SecurityDateRange = { from: string; to: string };
 
+// this builds our default settings model in memory incase nothing is provided yet
 const INITIAL_DEFAULTS = buildBusinessDefaults(5, 15, 2);
+const INITIAL_SECURITY_RANGE: SecurityDateRange = { from: "", to: "" };
+const AUDIT_LOG_PAGE_SIZE = 5;
+const LOGIN_ATTEMPT_PAGE_SIZE = 5;
 
+// we wrote this to help combine overlapping class names quickly
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// date formatting helpers for standardizing UI layouts
 function formatDateTime(value?: string | null) {
   if (!value) return "Never";
   return new Date(value).toLocaleString(undefined, {
@@ -76,6 +83,7 @@ function formatDateTime(value?: string | null) {
   });
 }
 
+// this gives audit and login rows a shorter "how long ago" label for quick scanning
 function formatRelativeTime(value?: string | null) {
   if (!value) return "Never";
   const diffMinutes = Math.floor(
@@ -88,10 +96,12 @@ function formatRelativeTime(value?: string | null) {
   return `${Math.floor(diffHours / 24)}d ago`;
 }
 
+// settings percentages should always stay inside 0 to 100 so billing math stays valid
 function clampPercent(v: number) {
   return Math.max(0, Math.min(100, v));
 }
 
+// this normalizes the business defaults into the exact shape used by the settings form
 function buildBusinessDefaults(
   defaultLowStock: number,
   wholesaleQtyThreshold: number,
@@ -104,6 +114,7 @@ function buildBusinessDefaults(
   };
 }
 
+// this is the shared card shell used across the settings dashboard sections
 function Card({
   children,
   className,
@@ -123,6 +134,7 @@ function Card({
   );
 }
 
+// this renders the small state badges used for saved/unsaved status and row conditions
 function Pill({
   children,
   tone = "neutral",
@@ -149,6 +161,7 @@ function Pill({
   );
 }
 
+// this is the shared button component used across settings actions and confirmations
 function Button({
   children,
   variant = "secondary",
@@ -186,6 +199,7 @@ function Button({
   );
 }
 
+// this metric card is used for the high-level counts at the top of the settings page
 function Stat({
   label,
   value,
@@ -225,32 +239,124 @@ function Stat({
   );
 }
 
+// keeping pagination inside valid limits prevents the security lists from landing on empty pages
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+// building a small sliding window of page numbers keeps pagination compact even for longer histories
+function buildPageWindow(
+  currentPage: number,
+  totalPages: number,
+  maxVisible = 5,
+) {
+  const safeVisible = Math.max(1, maxVisible);
+  const half = Math.floor(safeVisible / 2);
+  let start = Math.max(1, currentPage - half);
+  let end = Math.min(totalPages, start + safeVisible - 1);
+
+  start = Math.max(1, end - safeVisible + 1);
+
+  return Array.from({ length: end - start + 1 }, (_, index) => start + index);
+}
+
+// this compact pager mirrors the style used in the other admin pages while staying reusable for both security lists
+function PaginationControls({
+  page,
+  totalPages,
+  onPageChange,
+}: {
+  page: number;
+  totalPages: number;
+  onPageChange: (page: number) => void;
+}) {
+  if (totalPages <= 1) return null;
+
+  const pageNumbers = buildPageWindow(page, totalPages);
+
+  return (
+    <div className="mt-4 flex items-center justify-center gap-2">
+      <button
+        type="button"
+        onClick={() => onPageChange(clampPage(page - 1, 1, totalPages))}
+        disabled={page <= 1}
+        className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-white text-[#000000] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
+      >
+        <Icon name="chevron_left" className="text-[18px]" />
+      </button>
+
+      {pageNumbers.map((pageNumber) => {
+        const active = pageNumber === page;
+
+        return (
+          <button
+            key={pageNumber}
+            type="button"
+            onClick={() => onPageChange(pageNumber)}
+            className={cn(
+              "flex h-[32px] min-w-[32px] items-center justify-center rounded-lg border px-2 text-[12px] font-extrabold transition",
+              active
+                ? "border-[#11120d] bg-[#11120d] text-white"
+                : "border-[#CFCFD3] bg-white text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
+            )}
+          >
+            {pageNumber}
+          </button>
+        );
+      })}
+
+      <button
+        type="button"
+        onClick={() => onPageChange(clampPage(page + 1, 1, totalPages))}
+        disabled={page >= totalPages}
+        className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-white text-[#000000] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
+      >
+        <Icon name="chevron_right" className="text-[18px]" />
+      </button>
+    </div>
+  );
+}
+
+// the main settings workspace
+// this handles updating business rules (defaults), managing brand lists, reviewing application audit logs, and running database backups
 export default function SettingsPage() {
-  const [tab, setTab] = useState<TabKey>("overview");
-  const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [brands, setBrands] = useState<Brand[]>([]);
-  const [products, setProducts] = useState<ProductLite[]>([]);
-  const [users, setUsers] = useState<UserLite[]>([]);
-  const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]);
-  const [loginAttempts, setLoginAttempts] = useState<LoginAttemptRow[]>([]);
-  const [brandQuery, setBrandQuery] = useState("");
+  const [tab, setTab] = useState<TabKey>("overview"); // active settings section tab
+  const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
+  const [refreshing, setRefreshing] = useState(false); // lighter refresh state used after saves without showing the full page loader
+  const [brands, setBrands] = useState<Brand[]>([]); // brand records shown in brand management
+  const [products, setProducts] = useState<ProductLite[]>([]); // lightweight product list used for brand stats and low stock stats
+  const [users, setUsers] = useState<UserLite[]>([]); // lightweight staff list used for overview counts
+  const [auditLogs, setAuditLogs] = useState<AuditLogRow[]>([]); // recent audit log rows
+  const [loginAttempts, setLoginAttempts] = useState<LoginAttemptRow[]>([]); // recent login attempts for security review
+  const [securityDateDraft, setSecurityDateDraft] = useState<SecurityDateRange>(
+    INITIAL_SECURITY_RANGE,
+  ); // editable date inputs for the audit tab before the user applies them
+  const [securityDateFilter, setSecurityDateFilter] =
+    useState<SecurityDateRange>(INITIAL_SECURITY_RANGE); // the active date range sent to both audit endpoints
+  const [securityFilterError, setSecurityFilterError] = useState(""); // validation message when the chosen date range is invalid
+  const [securityLoading, setSecurityLoading] = useState(false); // lighter loading state for the audit tab lists
+  const [auditPage, setAuditPage] = useState(1); // current page inside the audit logs list
+  const [loginPage, setLoginPage] = useState(1); // current page inside the login attempts list
+  const [auditTotal, setAuditTotal] = useState(0); // total audit rows matching the current date filter
+  const [loginTotal, setLoginTotal] = useState(0); // total login attempt rows matching the current date filter
+  const [failedLoginCount, setFailedLoginCount] = useState(0); // total failed login attempts for the current date range
+  const [brandQuery, setBrandQuery] = useState(""); // text search for the brands tab
   const [brandFilter, setBrandFilter] = useState<"all" | "active" | "inactive">(
     "all",
   );
-  const [backupBusy, setBackupBusy] = useState(false);
-  const [backupMessage, setBackupMessage] = useState("");
-  const [backupResult, setBackupResult] = useState<BackupResult | null>(null);
-  const [showBackupConfirm, setShowBackupConfirm] = useState(false);
-  const [showBackupSuccess, setShowBackupSuccess] = useState(false);
-  const [showBrandForm, setShowBrandForm] = useState(false);
-  const [editingBrand, setEditingBrand] = useState<Brand | null>(null);
-  const [brandName, setBrandName] = useState("");
-  const [brandActive, setBrandActive] = useState(true);
-  const [brandError, setBrandError] = useState("");
+  const [backupBusy, setBackupBusy] = useState(false); // blocks repeated backup triggers
+  const [backupMessage, setBackupMessage] = useState(""); // latest backup success or error message
+  const [backupResult, setBackupResult] = useState<BackupResult | null>(null); // raw backup result returned by the backend
+  const [showBackupConfirm, setShowBackupConfirm] = useState(false); // confirmation dialog before backup
+  const [showBackupSuccess, setShowBackupSuccess] = useState(false); // success dialog after backup completes
+  const [showBrandForm, setShowBrandForm] = useState(false); // add/edit brand modal toggle
+  const [editingBrand, setEditingBrand] = useState<Brand | null>(null); // current brand being edited, or null for add mode
+  const [brandName, setBrandName] = useState(""); // brand form name field
+  const [brandActive, setBrandActive] = useState(true); // brand form active state field
+  const [brandError, setBrandError] = useState(""); // brand mutation error
   const [pendingBrandDeactivation, setPendingBrandDeactivation] =
     useState<Brand | null>(null);
-  const [pendingBrandSave, setPendingBrandSave] = useState(false);
+  const [pendingBrandSave, setPendingBrandSave] = useState(false); // tells the confirm dialog whether it is finishing a save flow or a direct toggle flow
   const [defaultLowStock, setDefaultLowStock] = useState(
     INITIAL_DEFAULTS.defaultLowStock,
   );
@@ -260,24 +366,83 @@ export default function SettingsPage() {
   const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(
     INITIAL_DEFAULTS.loyaltyDiscountPercent,
   );
-  const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS);
-  const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false);
+  const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
+  const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false); // confirmation dialog before saving business defaults
 
+  // the security lists share one date range filter, so these helpers keep both API payloads consistent
+  function buildSecurityDateParams() {
+    return {
+      ...(securityDateFilter.from ? { from: securityDateFilter.from } : {}),
+      ...(securityDateFilter.to ? { to: securityDateFilter.to } : {}),
+    };
+  }
+
+  async function loadSecurityData() {
+    setSecurityLoading(true);
+
+    try {
+      const dateParams = buildSecurityDateParams();
+      const [auditData, loginData, failedData] = await Promise.allSettled([
+        listAuditLogsApi({
+          ...dateParams,
+          page: auditPage,
+          pageSize: AUDIT_LOG_PAGE_SIZE,
+        }),
+        listLoginAttemptsApi({
+          ...dateParams,
+          page: loginPage,
+          pageSize: LOGIN_ATTEMPT_PAGE_SIZE,
+        }),
+        listLoginAttemptsApi({
+          ...dateParams,
+          success: false,
+          page: 1,
+          pageSize: 1,
+        }),
+      ]);
+
+      if (auditData.status === "fulfilled") {
+        setAuditLogs(Array.isArray(auditData.value?.logs) ? auditData.value.logs : []);
+        setAuditTotal(Number(auditData.value?.total ?? 0));
+      }
+
+      if (loginData.status === "fulfilled") {
+        setLoginAttempts(
+          Array.isArray(loginData.value?.attempts)
+            ? loginData.value.attempts
+            : [],
+        );
+        setLoginTotal(Number(loginData.value?.total ?? 0));
+      }
+
+      if (failedData.status === "fulfilled") {
+        setFailedLoginCount(Number(failedData.value?.total ?? 0));
+      }
+    } finally {
+      setSecurityLoading(false);
+    }
+  }
+
+  async function refreshSettingsData() {
+    await Promise.all([loadData(false), loadSecurityData()]);
+  }
+
+  // fetching all setting data tabs (business rules, users, brands, audits, logs, products) 
+  // at the same time using promise.allSettled so individual failures don't cause the entire panel to crash
   async function loadData(showLoader = true) {
     if (showLoader) setLoading(true);
     else setRefreshing(true);
     try {
-      const [brandData, productData, userData, auditData, loginData, settingsData] =
+      const [brandData, productData, userData, settingsData] =
         await Promise.allSettled([
           listBrandsApi(),
           listProductsApi({ pageSize: 300 }),
           listUsersApi(),
-          listAuditLogsApi({ pageSize: 20 }),
-          listLoginAttemptsApi({ pageSize: 12 }),
           getBusinessSettingsApi(),
         ]);
 
       if (brandData.status === "fulfilled") {
+        // mapping brands into a compact shape keeps the UI layer simple
         const raw = Array.isArray(brandData.value) ? brandData.value : [];
         setBrands(
           raw.map((brand: any) => ({
@@ -288,6 +453,7 @@ export default function SettingsPage() {
         );
       }
       if (productData.status === "fulfilled") {
+        // we only keep the product fields this page actually needs for counts and brand relationships
         const raw = Array.isArray(productData.value?.products)
           ? productData.value.products
           : [];
@@ -305,6 +471,7 @@ export default function SettingsPage() {
         );
       }
       if (userData.status === "fulfilled") {
+        // same idea for users: only keeping the fields required by overview and audit cards
         const raw = Array.isArray(userData.value) ? userData.value : [];
         setUsers(
           raw.map((user: any) => ({
@@ -317,19 +484,8 @@ export default function SettingsPage() {
           })),
         );
       }
-      if (auditData.status === "fulfilled") {
-        setAuditLogs(
-          Array.isArray(auditData.value?.logs) ? auditData.value.logs : [],
-        );
-      }
-      if (loginData.status === "fulfilled") {
-        setLoginAttempts(
-          Array.isArray(loginData.value?.attempts)
-            ? loginData.value.attempts
-            : [],
-        );
-      }
       if (settingsData.status === "fulfilled") {
+        // normalizing defaults here keeps all number fields safe even if the backend returns strings or missing values
         const normalizedSettings = buildBusinessDefaults(
           Number(settingsData.value?.defaultLowStockThreshold ?? 5),
           Number(settingsData.value?.defaultWholesaleQtyThreshold ?? 15),
@@ -350,6 +506,11 @@ export default function SettingsPage() {
     loadData(true);
   }, []);
 
+  useEffect(() => {
+    loadSecurityData();
+  }, [auditPage, loginPage, securityDateFilter.from, securityDateFilter.to]);
+
+  // these brand stats are derived from the current products list so each brand row can show totals without extra API calls
   const brandStats = useMemo(() => {
     const stats: Record<
       string,
@@ -392,6 +553,14 @@ export default function SettingsPage() {
     if (!editingBrand) return [];
     return products.filter((product) => product.brandId === editingBrand.id);
   }, [editingBrand, products]);
+  const auditTotalPages = Math.max(
+    1,
+    Math.ceil(auditTotal / AUDIT_LOG_PAGE_SIZE),
+  );
+  const loginTotalPages = Math.max(
+    1,
+    Math.ceil(loginTotal / LOGIN_ATTEMPT_PAGE_SIZE),
+  );
 
   const lowStockProducts = products.filter(
     (product) =>
@@ -405,14 +574,11 @@ export default function SettingsPage() {
   const activeUsers = users.filter((user) => user.isActive);
   const adminUsers = activeUsers.filter((user) => user.role === "ADMIN");
   const cashierUsers = activeUsers.filter((user) => user.role === "CASHIER");
-  const failedLoginAttempts = loginAttempts.filter(
-    (attempt) => !attempt.success,
-  );
   const normalizedDefaults = buildBusinessDefaults(
     defaultLowStock,
     wholesaleQtyThreshold,
     loyaltyDiscountPercent,
-  );
+  ); // clamping the live form state before we compare or save it
   const defaultsDirty =
     normalizedDefaults.defaultLowStock !== savedDefaults.defaultLowStock ||
     normalizedDefaults.wholesaleQtyThreshold !==
@@ -420,6 +586,7 @@ export default function SettingsPage() {
     normalizedDefaults.loyaltyDiscountPercent !==
       savedDefaults.loyaltyDiscountPercent;
 
+  // form state resetting functions
   function resetBrandForm() {
     setEditingBrand(null);
     setBrandName("");
@@ -440,6 +607,7 @@ export default function SettingsPage() {
     }
     setBrandError("");
 
+    // editing and creating share the same normalized save flow, with forceDeactivate handling the warning-confirm path
     if (editingBrand) {
       await updateBrandApi(editingBrand.id, {
         name: nextName,
@@ -453,9 +621,11 @@ export default function SettingsPage() {
     }
 
     closeBrandForm();
-    await loadData(false);
+    await refreshSettingsData();
   }
 
+  // checks if the user is deactivating a brand that was previously active, 
+  // triggering a warning flow before making changes
   async function saveBrand() {
     try {
       if (editingBrand && editingBrand.active && !brandActive) {
@@ -479,11 +649,14 @@ export default function SettingsPage() {
     if (!brand) return;
 
     try {
+      // this confirm dialog is reused in two cases:
+      // 1. finishing a save where an active brand is being turned inactive
+      // 2. directly toggling an active brand off from the table
       if (pendingBrandSave) {
         await saveBrandCore(true);
       } else {
         await updateBrandApi(brand.id, { isActive: false });
-        await loadData(false);
+        await refreshSettingsData();
       }
     } catch (error: any) {
       setBrandError(
@@ -498,6 +671,7 @@ export default function SettingsPage() {
   }
 
   async function requestToggleBrandStatus(brand: Brand) {
+    // active brands need confirmation before deactivation, but inactive brands can be reactivated immediately
     if (brand.active) {
       setPendingBrandSave(false);
       setPendingBrandDeactivation(brand);
@@ -506,7 +680,7 @@ export default function SettingsPage() {
 
     try {
       await updateBrandApi(brand.id, { isActive: true });
-      await loadData(false);
+      await refreshSettingsData();
     } catch (error: any) {
       setBrandError(
         error?.response?.data?.error ||
@@ -516,6 +690,7 @@ export default function SettingsPage() {
     }
   }
 
+  // triggering a new database backup manually
   async function handleBackup() {
     try {
       setBackupBusy(true);
@@ -526,6 +701,7 @@ export default function SettingsPage() {
       );
       setShowBackupConfirm(false);
       setShowBackupSuccess(true);
+      await refreshSettingsData();
     } catch (error: any) {
       setBackupMessage(
         error?.response?.data?.error || "Failed to trigger backup.",
@@ -535,7 +711,9 @@ export default function SettingsPage() {
     }
   }
 
+  // running the update for business defaults
   async function saveBusinessDefaults() {
+    // sending the normalized defaults avoids saving invalid negative thresholds or percentages above 100
     const updated = await updateBusinessSettingsApi({
       defaultLowStockThreshold: normalizedDefaults.defaultLowStock,
       defaultWholesaleQtyThreshold: normalizedDefaults.wholesaleQtyThreshold,
@@ -557,6 +735,33 @@ export default function SettingsPage() {
     setLoyaltyDiscountPercent(saved.loyaltyDiscountPercent);
     setSavedDefaults(saved);
     setShowDefaultsConfirm(false);
+    await refreshSettingsData();
+  }
+
+  // applying the selected date range updates both security panels together and resets them back to page 1
+  function applySecurityFilters() {
+    if (
+      securityDateDraft.from &&
+      securityDateDraft.to &&
+      securityDateDraft.from > securityDateDraft.to
+    ) {
+      setSecurityFilterError("The from date cannot be after the to date.");
+      return;
+    }
+
+    setSecurityFilterError("");
+    setAuditPage(1);
+    setLoginPage(1);
+    setSecurityDateFilter({ ...securityDateDraft });
+  }
+
+  // clearing the filter returns both lists to their latest records without touching the rest of the page
+  function clearSecurityFilters() {
+    setSecurityFilterError("");
+    setSecurityDateDraft(INITIAL_SECURITY_RANGE);
+    setSecurityDateFilter(INITIAL_SECURITY_RANGE);
+    setAuditPage(1);
+    setLoginPage(1);
   }
 
   if (loading) {
@@ -609,12 +814,13 @@ export default function SettingsPage() {
         />
         <Stat
           label="Failed Logins"
-          value={failedLoginAttempts.length}
+          value={failedLoginCount}
           hint="Recent failed login attempts for admin review"
-          tone={failedLoginAttempts.length > 0 ? "danger" : "neutral"}
+          tone={failedLoginCount > 0 ? "danger" : "neutral"}
         />
       </div>
 
+      {/* these tabs keep the admin tools separated so the page does not feel overloaded all at once */}
       <div className="flex flex-wrap gap-2">
         {(
           [
@@ -642,6 +848,7 @@ export default function SettingsPage() {
 
       {tab === "overview" ? (
         <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+          {/* the overview tab starts with two wider cards because these settings need explanation text as much as input fields */}
           <Card>
             <div className="flex flex-col gap-3 border-b border-[#CFCFD3] px-5 py-4 md:flex-row md:items-center md:justify-between">
               <div>
@@ -757,6 +964,7 @@ export default function SettingsPage() {
 
       {tab === "brands" ? (
         <Card>
+          {/* the brands tab uses one large management surface because search, filters, and the table all belong to the same task */}
           <div className="flex flex-col gap-4 border-b border-slate-100 px-5 py-4 md:flex-row md:items-end md:justify-between">
             <div>
               <div className="text-[15px] font-extrabold text-slate-900">
@@ -882,109 +1090,199 @@ export default function SettingsPage() {
       ) : null}
 
       {tab === "audit" ? (
-        <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-          <Card>
-            <div className="border-b border-slate-100 px-5 py-4">
-              <div className="text-[15px] font-extrabold text-slate-900">
-                Audit logs
-              </div>
-              <div className="mt-1 text-[12px] text-slate-500">
-                Best shown here with actor, action, entity, invoice reference,
-                and when it happened.
-              </div>
+        <div className="space-y-6">
+          <div className="rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-4">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+              Security Filters
             </div>
-            <div className="space-y-3 p-5">
-              {auditLogs.map((log) => (
-                <div
-                  key={log.id}
-                  className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[13px] font-extrabold text-slate-900">
-                        {log.actor?.name || "System"}
-                      </div>
-                      <div className="mt-1 text-[12px] text-slate-500">
-                        {formatDateTime(log.createdAt)}
-                      </div>
-                    </div>
-                    <Pill tone="info">{log.action}</Pill>
-                  </div>
-                  <div className="mt-3 text-[13px] text-slate-600">
-                    {String(log.meta?.invoiceNo || log.entityType)} /{" "}
-                    {log.entityId}
-                  </div>
-                </div>
-              ))}
+            <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+              Filter both audit logs and login attempts by the same created date
+              range.
             </div>
-          </Card>
 
-          <Card>
-            <div className="border-b border-slate-100 px-5 py-4">
-              <div className="text-[15px] font-extrabold text-slate-900">
-                Login attempts
-              </div>
-              <div className="mt-1 text-[12px] text-slate-500">
-                Recommended data: email, success or failure, IP, and exact
-                timestamp.
-              </div>
-            </div>
-            <div className="space-y-3 p-5">
-              {loginAttempts.map((attempt) => (
-                <div
-                  key={attempt.id}
-                  className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
+            <div className="mt-4 grid grid-cols-1 gap-4 xl:flex xl:flex-wrap xl:items-center">
+              <input
+                type="date"
+                value={securityDateDraft.from}
+                onChange={(e) =>
+                  setSecurityDateDraft((current) => ({
+                    ...current,
+                    from: e.target.value,
+                  }))
+                }
+                className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
+              />
+              <input
+                type="date"
+                value={securityDateDraft.to}
+                onChange={(e) =>
+                  setSecurityDateDraft((current) => ({
+                    ...current,
+                    to: e.target.value,
+                  }))
+                }
+                className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
+              />
+              <div className="flex gap-2 xl:w-[190px]">
+                <Button
+                  variant="primary"
+                  icon="filter_alt"
+                  onClick={applySecurityFilters}
                 >
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div>
-                      <div className="text-[13px] font-extrabold text-slate-900">
-                        {attempt.email}
-                      </div>
-                      <div className="mt-1 text-[12px] text-slate-500">
-                        IP: {attempt.ip || "Unavailable"}
-                      </div>
-                    </div>
-                    <Pill tone={attempt.success ? "success" : "danger"}>
-                      {attempt.success ? "Success" : "Failed"}
-                    </Pill>
-                  </div>
-                  <div className="mt-3 text-[12px] font-semibold text-slate-500">
-                    {formatDateTime(attempt.createdAt)}
-                  </div>
-                </div>
-              ))}
-              <div className="rounded-[16px] border border-slate-200 bg-white p-4">
-                <div className="text-[13px] font-extrabold text-slate-900">
-                  Staff snapshot
-                </div>
-                <div className="mt-3 space-y-2">
-                  {users.slice(0, 6).map((user) => (
-                    <div
-                      key={user.id}
-                      className="flex items-center justify-between gap-3 rounded-[14px] border border-slate-200 bg-slate-50/60 px-3 py-2"
-                    >
-                      <div className="min-w-0">
-                        <div className="truncate text-[13px] font-extrabold text-slate-900">
-                          {user.name}
-                        </div>
-                        <div className="truncate text-[12px] text-slate-500">
-                          {user.email}
-                        </div>
-                      </div>
-                      <div className="text-right">
-                        <Pill tone={user.role === "ADMIN" ? "info" : "neutral"}>
-                          {user.role}
-                        </Pill>
-                        <div className="mt-1 text-[11px] font-semibold text-slate-500">
-                          {formatRelativeTime(user.lastLogin)}
-                        </div>
-                      </div>
-                    </div>
-                  ))}
-                </div>
+                  Apply
+                </Button>
+                <Button icon="restart_alt" onClick={clearSecurityFilters}>
+                  Clear
+                </Button>
               </div>
             </div>
-          </Card>
+
+            {securityFilterError ? (
+              <div className="mt-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
+                {securityFilterError}
+              </div>
+            ) : null}
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
+            <Card>
+              <div className="border-b border-slate-100 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[15px] font-extrabold text-slate-900">
+                      Audit logs
+                    </div>
+                    <div className="mt-1 text-[12px] text-slate-500">
+                      Best shown here with actor, action, entity, invoice
+                      reference, and when it happened.
+                    </div>
+                  </div>
+                  <Pill tone="neutral">{auditTotal} total</Pill>
+                </div>
+              </div>
+              <div className="space-y-3 p-5">
+                {auditLogs.map((log) => (
+                  <div
+                    key={log.id}
+                    className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[13px] font-extrabold text-slate-900">
+                          {log.actor?.name || "System"}
+                        </div>
+                        <div className="mt-1 text-[12px] text-slate-500">
+                          {formatDateTime(log.createdAt)}
+                        </div>
+                      </div>
+                      <Pill tone="info">{log.action}</Pill>
+                    </div>
+                    <div className="mt-3 text-[13px] text-slate-600">
+                      {String(log.meta?.invoiceNo || log.entityType)} /{" "}
+                      {log.entityId}
+                    </div>
+                  </div>
+                ))}
+
+                {!securityLoading && auditLogs.length === 0 ? (
+                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[13px] font-semibold text-slate-500">
+                    No audit logs matched the selected date range.
+                  </div>
+                ) : null}
+
+                <PaginationControls
+                  page={auditPage}
+                  totalPages={auditTotalPages}
+                  onPageChange={setAuditPage}
+                />
+              </div>
+            </Card>
+
+            <Card>
+              <div className="border-b border-slate-100 px-5 py-4">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <div className="text-[15px] font-extrabold text-slate-900">
+                      Login attempts
+                    </div>
+                    <div className="mt-1 text-[12px] text-slate-500">
+                      Recommended data: email, success or failure, IP, and exact
+                      timestamp.
+                    </div>
+                  </div>
+                  <Pill tone="neutral">{loginTotal} total</Pill>
+                </div>
+              </div>
+              <div className="space-y-3 p-5">
+                {loginAttempts.map((attempt) => (
+                  <div
+                    key={attempt.id}
+                    className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <div className="text-[13px] font-extrabold text-slate-900">
+                          {attempt.email}
+                        </div>
+                        <div className="mt-1 text-[12px] text-slate-500">
+                          IP: {attempt.ip || "Unavailable"}
+                        </div>
+                      </div>
+                      <Pill tone={attempt.success ? "success" : "danger"}>
+                        {attempt.success ? "Success" : "Failed"}
+                      </Pill>
+                    </div>
+                    <div className="mt-3 text-[12px] font-semibold text-slate-500">
+                      {formatDateTime(attempt.createdAt)}
+                    </div>
+                  </div>
+                ))}
+
+                {!securityLoading && loginAttempts.length === 0 ? (
+                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[13px] font-semibold text-slate-500">
+                    No login attempts matched the selected date range.
+                  </div>
+                ) : null}
+
+                <PaginationControls
+                  page={loginPage}
+                  totalPages={loginTotalPages}
+                  onPageChange={setLoginPage}
+                />
+
+                <div className="rounded-[16px] border border-slate-200 bg-white p-4">
+                  <div className="text-[13px] font-extrabold text-slate-900">
+                    Staff snapshot
+                  </div>
+                  <div className="mt-3 space-y-2">
+                    {users.slice(0, 6).map((user) => (
+                      <div
+                        key={user.id}
+                        className="flex items-center justify-between gap-3 rounded-[14px] border border-slate-200 bg-slate-50/60 px-3 py-2"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-extrabold text-slate-900">
+                            {user.name}
+                          </div>
+                          <div className="truncate text-[12px] text-slate-500">
+                            {user.email}
+                          </div>
+                        </div>
+                        <div className="text-right">
+                          <Pill tone={user.role === "ADMIN" ? "info" : "neutral"}>
+                            {user.role}
+                          </Pill>
+                          <div className="mt-1 text-[11px] font-semibold text-slate-500">
+                            {formatRelativeTime(user.lastLogin)}
+                          </div>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            </Card>
+          </div>
         </div>
       ) : null}
 
