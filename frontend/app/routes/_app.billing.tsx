@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import ProductImage from "~/components/ui/ProductImage";
 import { DialogButton, ModalFrame, SuccessDialog } from "~/components/ui/Modal";
@@ -48,27 +48,106 @@ type CartLine = {
   qty: number;
 };
 
+type StoredBillingCart = {
+  cart: CartLine[];
+  savedAt: string;
+};
+
+const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
+
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// reading the saved billing cart from localStorage lets us restore the cashier's cart after route changes
+// invalid or corrupted payloads are discarded so they do not break the billing screen
+function readStoredBillingCart() {
+  if (typeof window === "undefined") return null;
+
+  try {
+    const raw = window.localStorage.getItem(BILLING_CART_STORAGE_KEY);
+    if (!raw) return null;
+
+    const parsed = JSON.parse(raw) as Partial<StoredBillingCart> | null;
+    if (!parsed || !Array.isArray(parsed.cart)) {
+      window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
+      return null;
+    }
+
+    const normalizedCart = parsed.cart
+      .map((line) => {
+        const productId = String(line?.productId || "").trim();
+        const qty = Math.floor(Number(line?.qty || 0));
+
+        if (!productId || !Number.isFinite(qty) || qty < 1) {
+          return null;
+        }
+
+        return { productId, qty };
+      })
+      .filter(Boolean) as CartLine[];
+
+    if (normalizedCart.length === 0) {
+      window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
+      return null;
+    }
+
+    return {
+      cart: normalizedCart,
+      savedAt:
+        typeof parsed.savedAt === "string"
+          ? parsed.savedAt
+          : new Date().toISOString(),
+    };
+  } catch {
+    window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
+    return null;
+  }
+}
+
+// saving only the cart lines keeps the persisted billing payload small and focused on what the cashier expects to keep
+function writeStoredBillingCart(cart: CartLine[]) {
+  if (typeof window === "undefined") return;
+
+  window.localStorage.setItem(
+    BILLING_CART_STORAGE_KEY,
+    JSON.stringify({
+      cart,
+      savedAt: new Date().toISOString(),
+    } satisfies StoredBillingCart),
+  );
+}
+
+// clearing the stored billing cart is used after successful checkout and whenever the cashier intentionally empties the cart
+function clearStoredBillingCart() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
+}
+
+// we use this to format numbers as Nepalese Rupees (NPR)
+// without this it looks like plain text "1500" instead of "NPR 1,500"
 function formatNpr(n: number) {
   const s = Math.round(n).toString();
   const withComma = s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `NPR ${withComma}`;
 }
 
+// we use this to keep percentages between 0 and 100
+// so an admin can't accidentally type a 200% discount and break the math
 function clampPercent(v: number) {
   if (v < 0) return 0;
   if (v > 100) return 100;
   return v;
 }
 
+// same idea as clampPercent but for random minimums and maximums
 function clampNumber(v: number, min: number, max: number) {
   if (!Number.isFinite(v)) return min;
   return Math.min(max, Math.max(min, v));
 }
 
+// this checks what kind of discount the selected customer gets
+// we prioritize admin wholesale first, then fallback to loyalty
 function getCustomerDiscountMode(c: Customer | null) {
   if (!c) return "NONE" as const;
   if ((c.wholesalePercent || 0) > 0) return "ADMIN_WHOLESALE" as const;
@@ -76,6 +155,11 @@ function getCustomerDiscountMode(c: Customer | null) {
   return "NONE" as const;
 }
 
+// wholesale pricing has two modes that cannot both be active at the same time:
+// 1. customer-level wholesale % — admin assigns a discount percent to the customer
+// 2. qty-based wholesale — the product switches to wholesale price if quantity meets the threshold
+// this function only handles case 2, and it returns false when case 1 is active
+// because both modes applying together would give a double discount
 function shouldUseQuantityWholesalePrice(
   customer: Customer | null,
   product: Product,
@@ -88,6 +172,7 @@ function shouldUseQuantityWholesalePrice(
 }
 
 function getSubtotalDiscountMeta(customer: Customer | null) {
+  // this decides which subtotal-level discount label and helper text should be shown in the billing summary
   const wholesalePercent = clampPercent(customer?.wholesalePercent || 0);
   if (wholesalePercent > 0) {
     return {
@@ -118,6 +203,7 @@ function getSubtotalDiscountMeta(customer: Customer | null) {
   };
 }
 
+// this is the shared button component used across the billing page and payment modal
 function Button({
   children,
   variant = "secondary",
@@ -183,6 +269,7 @@ function Button({
   );
 }
 
+// this is the shared text input used for scanner input, search, and payment amount fields
 function Input({
   value,
   onChange,
@@ -236,6 +323,7 @@ function Input({
           placeholder={placeholder}
           inputMode={inputMode}
           onKeyDown={(e) => {
+            // this handles Enter for fields that should trigger an immediate billing action
             if (e.key === "Enter" && onEnter) onEnter();
           }}
           className="w-full text-[14px] outline-none placeholder:text-slate-400 bg-transparent text-slate-900 font-semibold"
@@ -255,6 +343,7 @@ function Input({
   );
 }
 
+// this renders the small status badges used for customer mode, payment hints, and stock indicators
 function Pill({
   children,
   tone = "neutral",
@@ -283,6 +372,7 @@ function Pill({
   );
 }
 
+// this segmented control is used for payment method and payment status switches inside the modal
 function Segmented({
   value,
   onChange,
@@ -316,20 +406,25 @@ function Segmented({
   );
 }
 
+// the POS billing module
+// we wrote this to handle adding items to a cart, selecting customers, applying discounts, and generating invoices
 export default function BillingPage() {
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [products, setProducts] = useState<Product[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [submitting, setSubmitting] = useState(false);
-  const [showSuccess, setShowSuccess] = useState(false);
+  const [customers, setCustomers] = useState<Customer[]>([]); // full customer list available for billing selection
+  const [products, setProducts] = useState<Product[]>([]); // active product list loaded for cart and search
+  const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
+  const [submitting, setSubmitting] = useState(false); // blocks repeated invoice creation while checkout is running
+  const [showSuccess, setShowSuccess] = useState(false); // controls the success dialog after a bill is created
   const [lastCreatedInvoiceId, setLastCreatedInvoiceId] = useState<
     string | null
-  >(null);
+  >(null); // saved so the success dialog can open the correct invoice for print
 
+  // fetching products and customers when the page first loads
+  // we use Promise.allSettled so one failing API call does not block the other from completing
   useEffect(() => {
     async function load() {
       try {
         async function fetchAllActiveProducts() {
+          // this loops through every products page because the billing screen needs the full active catalog for search and barcode scans
           const pageSize = 300;
           let page = 1;
           let total = 0;
@@ -360,6 +455,7 @@ export default function BillingPage() {
         ]);
 
         if (prodData.status === "fulfilled" && prodData.value) {
+          // mapping the raw API products into the exact shape the billing cart logic expects
           const raw = prodData.value;
           setProducts(
             raw.map((p: any) => ({
@@ -380,6 +476,7 @@ export default function BillingPage() {
         }
 
         if (custData.status === "fulfilled" && custData.value) {
+          // mapping customers into a lighter billing shape keeps the rest of the page simpler
           const raw = Array.isArray(custData.value)
             ? custData.value
             : custData.value.customers || [];
@@ -403,36 +500,40 @@ export default function BillingPage() {
     load();
   }, []);
 
-  const [skuInput, setSkuInput] = useState("");
-  const [productQuery, setProductQuery] = useState("");
-  const [isCustomerSearchOpen, setCustomerSearchOpen] = useState(false);
-  const [customerQuery, setCustomerQuery] = useState("");
+  const [skuInput, setSkuInput] = useState(""); // scanner/manual barcode input
+  const [productQuery, setProductQuery] = useState(""); // text search for the product picker
+  const [isCustomerSearchOpen, setCustomerSearchOpen] = useState(false); // controls the customer search modal/dropdown
+  const [customerQuery, setCustomerQuery] = useState(""); // search text inside the customer picker
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
     null,
   );
-  const [cart, setCart] = useState<CartLine[]>([]);
-  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash");
-  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid");
-  const [paidAmount, setPaidAmount] = useState<string>("");
-  const [paymentError, setPaymentError] = useState("");
-  const [billingError, setBillingError] = useState("");
-  const [showPaymentModal, setShowPaymentModal] = useState(false);
-  const [showEsewaQr, setShowEsewaQr] = useState(true);
+  const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
+  const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash"); // current payment method selected in the modal
+  const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid"); // current paid/partial/unpaid selection
+  const [paidAmount, setPaidAmount] = useState<string>(""); // manual partial payment amount typed by the cashier
+  const [paymentError, setPaymentError] = useState(""); // payment modal validation message
+  const [billingError, setBillingError] = useState(""); // main billing error shown above the cart or form
+  const [showPaymentModal, setShowPaymentModal] = useState(false); // controls the final payment confirmation modal
+  const [showEsewaQr, setShowEsewaQr] = useState(true); // keeps the eSewa QR panel visible when that method is chosen
+  const [cartPersistenceReady, setCartPersistenceReady] = useState(false); // prevents the autosave effect from clearing storage before the first restore pass finishes
 
   const skuRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
 
+  // finding the selected customer object once here keeps discount and label logic simple below
   const selectedCustomer = useMemo(
     () => customers.find((c) => c.id === selectedCustomerId) || null,
     [selectedCustomerId, customers],
   );
 
-  const customerMode = getCustomerDiscountMode(selectedCustomer);
+  const customerMode = getCustomerDiscountMode(selectedCustomer); // quick label for whether this customer uses loyalty, wholesale, or no special rate
   const subtotalDiscountMeta = useMemo(
     () => getSubtotalDiscountMeta(selectedCustomer),
     [selectedCustomer],
   );
 
+  // filtering the customer list based on the search query
+  // we wrap this in useMemo so it only recalculates when the query or customers change
   const customerListFiltered = useMemo(() => {
     const s = customerQuery.trim().toLowerCase();
     if (!s) return customers;
@@ -441,6 +542,7 @@ export default function BillingPage() {
     );
   }, [customers, customerQuery]);
 
+  // filtering the product list based on the search query
   const productListFiltered = useMemo(() => {
     const s = productQuery.trim().toLowerCase();
     if (!s) return products.filter((p) => p.active);
@@ -458,11 +560,62 @@ export default function BillingPage() {
     [productListFiltered, productQuery],
   );
 
+  // this lookup table lets cart calculations find products by id without scanning the full products array every time
   const productsById = useMemo(
     () => new Map(products.map((product) => [product.id, product])),
     [products],
   );
 
+  // restoring the saved cart once on mount keeps billing work intact even after route changes or refreshes
+  useEffect(() => {
+    const storedCart = readStoredBillingCart();
+    if (storedCart?.cart.length) {
+      setCart(storedCart.cart);
+    }
+    setCartPersistenceReady(true);
+  }, []);
+
+  // once the latest product catalog is available, we reconcile the restored cart against active products and current stock
+  useEffect(() => {
+    if (products.length === 0 || cart.length === 0) return;
+
+    const normalizedCart = cart
+      .map((line) => {
+        const product = productsById.get(line.productId);
+        if (!product || !product.active || product.stock <= 0) {
+          return null;
+        }
+
+        const qty = clampNumber(line.qty, 1, product.stock);
+        return { productId: line.productId, qty };
+      })
+      .filter(Boolean) as CartLine[];
+
+    const cartChanged =
+      normalizedCart.length !== cart.length ||
+      normalizedCart.some(
+        (line, index) =>
+          line.productId !== cart[index]?.productId || line.qty !== cart[index]?.qty,
+      );
+
+    if (cartChanged) {
+      setCart(normalizedCart);
+    }
+  }, [cart, products, productsById]);
+
+  // persisting the cart on every cart change makes route changes safe while still clearing storage when the cart is emptied
+  useEffect(() => {
+    if (!cartPersistenceReady) return;
+
+    if (cart.length === 0) {
+      clearStoredBillingCart();
+      return;
+    }
+
+    writeStoredBillingCart(cart);
+  }, [cart, cartPersistenceReady]);
+
+  // joining cart lines with product data here is what gives us unit price, pricing mode, and line totals for each row
   const cartRows = useMemo(() => {
     return cart
       .map((line) => {
@@ -492,8 +645,9 @@ export default function BillingPage() {
     }>;
   }, [cart, productsById, selectedCustomer]);
 
-  const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0);
+  const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0); // total before any customer-level subtotal discount is applied
 
+  // we calculate the subtotal discount amount before grand total
   const subtotalDiscount = useMemo(() => {
     if (subtotalDiscountMeta.percent > 0) {
       return Math.round((subTotal * subtotalDiscountMeta.percent) / 100);
@@ -501,7 +655,7 @@ export default function BillingPage() {
     return 0;
   }, [subTotal, subtotalDiscountMeta.percent]);
 
-  const grandTotal = Math.max(0, subTotal - subtotalDiscount);
+  const grandTotal = Math.max(0, subTotal - subtotalDiscount); // final amount the customer needs to pay, clamped to 0 so it never goes negative
 
   const paidNum = useMemo(() => {
     const n = Number(paidAmount);
@@ -509,6 +663,10 @@ export default function BillingPage() {
     return n;
   }, [paidAmount]);
 
+  // payment status controls the real paid amount:
+  // 1. Paid means the full grand total is treated as received
+  // 2. Unpaid means nothing is received yet
+  // 3. Partial uses the typed amount, clamped so it never goes below 0 or above the grand total
   const effectivePaidAmount =
     paymentStatus === "Paid"
       ? grandTotal
@@ -516,25 +674,29 @@ export default function BillingPage() {
         ? 0
         : clampNumber(paidNum, 0, grandTotal);
 
-  const balanceDue = Math.max(0, grandTotal - effectivePaidAmount);
+  const balanceDue = Math.max(0, grandTotal - effectivePaidAmount); // remaining amount still due after the chosen payment state is applied
 
   const showEsewaDetails =
     paymentMethod === "eSewa" && paymentStatus !== "Unpaid";
 
-  const canConfirm = cartRows.length > 0 && !submitting;
+  const canConfirm = cartRows.length > 0 && !submitting; // final guard for whether checkout can run right now
   const hasBillDraft =
     cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
 
+  // we use this helper so every cart-related validation message goes through one consistent state update
   function showCartIssue(message: string) {
     setBillingError(message);
   }
 
+  // this checks how many units of one product are already in the current cart
   function getCurrentQty(productId: string) {
     return cart.find((line) => line.productId === productId)?.qty || 0;
   }
 
+  // this adds one product into the cart while checking stock, active status, and current quantity first
   function addToCart(productId: string, qty = 1) {
     const product = productsById.get(productId);
+    // this handles when the product is inactive or missing from the lookup table
     if (!product || !product.active) {
       showCartIssue("That product is not available for billing.");
       return;
@@ -545,6 +707,7 @@ export default function BillingPage() {
     }
 
     const currentQty = getCurrentQty(productId);
+    // we block adding more once the cart quantity would pass the live stock count
     if (currentQty >= product.stock) {
       showCartIssue(
         `"${product.name}" has only ${product.stock} item(s) in stock.`,
@@ -552,6 +715,7 @@ export default function BillingPage() {
       return;
     }
 
+    // updating the cart either bumps an existing line or adds a new one for the scanned/searched product
     setCart((prev) => {
       const idx = prev.findIndex((x) => x.productId === productId);
       if (idx >= 0) {
@@ -569,6 +733,8 @@ export default function BillingPage() {
     skuRef.current?.focus();
   }
 
+  // this changes the quantity of an item already in the cart
+  // and validates that we don't exceed the available stock
   function changeQty(productId: string, val: number) {
     const product = productsById.get(productId);
     const maxQty = Math.max(1, product?.stock || 1);
@@ -595,7 +761,8 @@ export default function BillingPage() {
   function addBySku() {
     const s = skuInput.trim();
     if (!s) return;
-    const normalized = s.toLowerCase();
+    const normalized = s.toLowerCase(); // matching in lowercase lets barcode and SKU search stay case-insensitive
+    // searching both SKU and barcode helps the cashier use whichever code is available on the product
     const p = products.find(
       (x) =>
         x.active &&
@@ -610,7 +777,10 @@ export default function BillingPage() {
     }
   }
 
+  // we use this to clear all current cart data when a transaction finishes or is cancelled manually
+  // the stored cart is cleared here too so the next visit starts fresh on purpose
   function resetBill() {
+    clearStoredBillingCart();
     setCart([]);
     setSelectedCustomerId(null);
     setPaymentMethod("Cash");
@@ -628,10 +798,12 @@ export default function BillingPage() {
   }
 
   function openPaymentFlow(nextMethod?: PaymentMethod) {
+    // this handles when someone tries to open payment without any cart lines
     if (cartRows.length === 0) {
       setBillingError("Add at least one product before opening payment.");
       return;
     }
+    // when a shortcut button passes a payment method, we switch the modal into that method before opening it
     if (nextMethod) {
       setPaymentMethod(nextMethod);
       if (nextMethod === "eSewa") setShowEsewaQr(true);
@@ -646,6 +818,7 @@ export default function BillingPage() {
     setPaymentError("");
   }
 
+  // partial payments need extra validation because the cashier types the received amount manually
   function validatePaymentBeforeConfirm() {
     setPaymentError("");
     setBillingError("");
@@ -676,29 +849,36 @@ export default function BillingPage() {
   }
 
   async function confirm() {
+    // stopping here prevents double submits and blocks invalid partial payment states
     if (!canConfirm) return;
     if (!validatePaymentBeforeConfirm()) return;
     setSubmitting(true);
 
     try {
+      // creating the invoice header first gives us the invoice id needed for items, finalize, and payment steps
       const invoiceRes = await createInvoiceApi(
         selectedCustomerId || undefined,
       );
       const invoiceId = invoiceRes.id || invoiceRes.invoice?.id;
 
+      // this handles when the backend does not return a usable invoice id after creation
       if (!invoiceId) {
         setSubmitting(false);
         return;
       }
 
+      // adding each cart line one by one so the backend stores the exact products and quantities in the invoice
       for (const line of cartRows) {
         await addInvoiceItemApi(invoiceId, line.productId, line.qty);
       }
 
+      // finalizing after all items are saved lets the backend calculate totals with the subtotal discount included
       await finalizeInvoiceApi(invoiceId, subtotalDiscount);
 
+      // recording payment only when the invoice is not unpaid and the effective amount is above 0
       if (paymentStatus !== "Unpaid" && effectivePaidAmount > 0) {
         if (paymentMethod === "eSewa") {
+          // for eSewa we ask the backend for a signed payment intent, then hand control to the gateway form
           const paymentIntent = await initiateEsewaPaymentApi({
             invoiceId,
             amount: effectivePaidAmount,
@@ -715,6 +895,7 @@ export default function BillingPage() {
         });
       }
 
+      // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure
       setShowPaymentModal(false);
       resetBill();
 
@@ -726,10 +907,12 @@ export default function BillingPage() {
         err?.response?.data?.error || "Failed to create invoice.",
       );
     } finally {
+      // re-enabling billing actions whether checkout succeeded or failed
       setSubmitting(false);
     }
   }
 
+  // setting up global hotkeys (F2, F4, F5, F9, Enter) so the cashier can work fully via keyboard
   useEffect(() => {
     function isTypingTarget(el: EventTarget | null) {
       if (!(el instanceof HTMLElement)) return false;
@@ -801,10 +984,12 @@ export default function BillingPage() {
 
   return (
     <>
+      {/* this two-panel shell keeps product picking on the left and the live bill summary on the right for fast cashier work */}
       <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800  md:flex-row">
         <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF]">
           <div className="border-b border-[#CFCFD3] bg-[#FFFFFF] px-[20px] py-[20px]">
             <div className="flex flex-col">
+              {/* we keep scanner input and manual search together in the top strip because they are the two fastest ways to add products */}
               <div className="grid grid-cols-12 gap-4 items-start">
                 <div className="col-span-5">
                   <Input
@@ -866,6 +1051,7 @@ export default function BillingPage() {
             </div>
           </div>
 
+          {/* this list area gets a softer gray background so the clickable product cards stand apart from the white header above */}
           <div className="flex-1 overflow-y-auto bg-[rgba(243,244,246,0.55)] p-[20px]">
             <div className="mb-[20px] flex items-center justify-between">
               <h3 className="text-[14px] font-extrabold uppercase  text-[#565449]">
@@ -876,6 +1062,7 @@ export default function BillingPage() {
               </div>
             </div>
 
+            {/* these product cards stay in a compact grid so cashiers can scan quickly without huge vertical gaps */}
             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
               {manualResults.map((p) => {
                 const low =
@@ -1245,7 +1432,7 @@ export default function BillingPage() {
         open={showPaymentModal}
         onClose={closePaymentFlow}
         title="Confirm payment"
-        description="Choose how this bill is being settled without disturbing the main billing screen."
+        description="Products cannot be added after finalizing invoice so verify properly before proceeding to confirm it."
         maxWidthClass="max-w-[720px]"
       >
         <div className="space-y-5">
