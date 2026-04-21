@@ -1,10 +1,13 @@
-﻿import Icon from "~/components/ui/Icon";
+import Icon from "~/components/ui/Icon";
 import type { InvoiceStatusLabel, PaymentMethodLabel } from "~/lib/invoices";
 
+// helper to join CSS class names — filters out falsy values
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+// colored chip that displays the invoice payment status (Paid, Partial, Unpaid, Cancelled)
+// each status gets a different color scheme — green for paid, amber for partial, red for unpaid, gray for cancelled
 export function InvoiceStatusChip({
   status,
   className,
@@ -34,6 +37,8 @@ export function InvoiceStatusChip({
   );
 }
 
+// colored chip that displays the payment method (Cash, eSewa, None)
+// optionally shows an icon next to the label — we use different icons for cash and eSewa
 export function PaymentMethodChip({
   method,
   showIcon = false,

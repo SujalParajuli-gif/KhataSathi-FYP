@@ -1,4 +1,4 @@
-﻿import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Navigate, useNavigate, useParams } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
@@ -7,23 +7,31 @@ import { getAuthUser, isLoggedIn } from "~/lib/auth";
 import type { AppInvoice } from "~/lib/invoices";
 import { formatNpr, getInvoiceReference, normalizeInvoice } from "~/lib/invoices";
 
+// mapping the invoice status to different colors for the print layout
 function statusClass(status: AppInvoice["status"]) {
+  // returning a simple class string here keeps the JSX cleaner when we show the status badge later
   if (status === "Paid") return "bg-emerald-50 text-emerald-700 border-emerald-200";
   if (status === "Partial") return "bg-amber-50 text-amber-800 border-amber-200";
   if (status === "Cancelled") return "bg-slate-100 text-slate-600 border-slate-200";
   return "bg-rose-50 text-rose-700 border-rose-200";
 }
 
+// standalone printable invoice page — designed to look good on A4 paper
+// it uses 'print:' tailwind classes to hide UI buttons when actually printing
 export default function InvoicePrintPage() {
   const { id } = useParams();
   const navigate = useNavigate();
-  const printedRef = useRef(false);
-  const [invoice, setInvoice] = useState<AppInvoice | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
+  const printedRef = useRef(false); // stops the automatic print dialog from opening more than once
+  const [invoice, setInvoice] = useState<AppInvoice | null>(null); // stores the normalized invoice used by the print layout
+  const [loading, setLoading] = useState(true); // tracks the first fetch for the requested invoice
+  const [error, setError] = useState(""); // holds a user-facing message when the invoice cannot be loaded
 
   useEffect(() => {
+    // fetching the full invoice data whenever the route id changes
+    // we keep this inside the page because the print layout needs the normalized invoice shape before rendering
     async function loadInvoice() {
+      // this handles when the route is opened without an invoice id
+      // without this guard, the API call would fail with an invalid path
       if (!id) {
         setError("Invoice not found.");
         setLoading(false);
@@ -33,12 +41,15 @@ export default function InvoicePrintPage() {
       setLoading(true);
       setError("");
       try {
+        // requesting the invoice again from the backend so the print page always shows fresh detail data
         const data = await getInvoiceApi(id);
         setInvoice(normalizeInvoice(data));
       } catch {
+        // this handles when the invoice request fails, like a missing record or a network issue
         setInvoice(null);
         setError("Failed to load invoice for printing.");
       } finally {
+        // ending the loading state after either success or failure
         setLoading(false);
       }
     }
@@ -46,7 +57,10 @@ export default function InvoicePrintPage() {
     loadInvoice();
   }, [id]);
 
+  // triggers the browser's native print dialog automatically once the invoice finishes loading
+  // we add a tiny timeout so React finishes painting the DOM first
   useEffect(() => {
+    // this handles when the invoice is not ready yet or we already opened the print dialog once
     if (!invoice || printedRef.current) return;
 
     printedRef.current = true;
@@ -54,6 +68,7 @@ export default function InvoicePrintPage() {
     return () => window.clearTimeout(timer);
   }, [invoice]);
 
+  // requiring the user to be logged in to view invoices
   if (!isLoggedIn() || !getAuthUser()) {
     return <Navigate to="/login" replace />;
   }
@@ -95,6 +110,7 @@ export default function InvoicePrintPage() {
             <div className="font-semibold text-slate-400">Loading invoice...</div>
           </div>
         ) : error || !invoice ? (
+          /* this handles when the invoice could not be loaded, so we show a centered error message instead of empty markup */
           <div className="flex min-h-[60vh] items-center justify-center px-6 py-16">
             <div className="text-center">
               <div className="text-[16px] font-extrabold text-slate-900">{error}</div>
@@ -192,6 +208,7 @@ export default function InvoicePrintPage() {
                 </div>
 
                 {invoice.payments.length > 0 ? (
+                  /* only showing the payment rows when the invoice actually has recorded payments */
                   <div className="mt-4 overflow-hidden rounded-[14px] border border-slate-200">
                     <table className="w-full">
                       <thead>

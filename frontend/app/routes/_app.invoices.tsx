@@ -111,7 +111,13 @@ function getCompactInvoiceSummary(invoice: AppInvoice) {
   return `${parts[0]} + ${parts.length - 1} more`;
 }
 
+// keeping customer type checks in one place makes the invoice and history filters easier to read
+function getInvoiceCustomerType(invoice: Pick<AppInvoice, "customerId">) {
+  return invoice.customerId ? "Registered" : "Walk-in";
+}
+
 type InvoiceEditPaymentMethod = "Cash" | "eSewa";
+type InvoiceCustomerTypeFilter = "All" | "Walk-in" | "Registered";
 type PendingInvoiceAction =
   | { kind: "cash-payment"; amount: number }
   | { kind: "esewa-payment"; amount: number }
@@ -324,10 +330,14 @@ function InvoiceEditModal({
 // here, cashiers and admins can view their generated invoices, search them, and open them to see details or add payments
 export default function CashierInvoicesPage() {
   const authUser = getAuthUser();
+  const isAdminView = authUser?.role === "admin";
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // active status tab at the top of the page
   const [query, setQuery] = useState(""); // invoice search text
   const [isFilterOpen, setFilterOpen] = useState(false); // mobile/tablet filter drawer toggle
   const [onlyMine, setOnlyMine] = useState(false); // optional filter to show only invoices created by the logged-in cashier
+  const [cashierFilter, setCashierFilter] = useState("All"); // admin-facing cashier selector for narrowing invoices to one cashier
+  const [customerTypeFilter, setCustomerTypeFilter] =
+    useState<InvoiceCustomerTypeFilter>("All"); // lets the page combine cashier and walk-in/registered filters together
   const [methodFilter, setMethodFilter] = useState<"All" | PaymentMethodLabel>(
     "All",
   );
@@ -374,6 +384,22 @@ export default function CashierInvoicesPage() {
     load();
   }, []);
 
+  // deriving the cashier dropdown from the loaded invoice data keeps the filter in sync without extra API calls
+  const cashierOptions = useMemo(() => {
+    const options = new Map<string, string>();
+
+    invoices.forEach((invoice) => {
+      if (!invoice.cashierId) return;
+      if (!options.has(invoice.cashierId)) {
+        options.set(invoice.cashierId, invoice.cashierName);
+      }
+    });
+
+    return Array.from(options.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [invoices]);
+
   // computing the list of invoices after applying the search query and filters
   // we wrap this in useMemo so it only recalculates when the query or invoices change
   const scopedInvoices = useMemo(() => {
@@ -381,7 +407,21 @@ export default function CashierInvoicesPage() {
 
     return invoices
       .filter((invoice) =>
-        onlyMine && authUser?.id ? invoice.cashierId === authUser.id : true,
+        isAdminView
+          ? cashierFilter === "All"
+            ? true
+            : invoice.cashierId === cashierFilter
+          : true,
+      )
+      .filter((invoice) =>
+        !isAdminView && onlyMine && authUser?.id
+          ? invoice.cashierId === authUser.id
+          : true,
+      )
+      .filter((invoice) =>
+        customerTypeFilter === "All"
+          ? true
+          : getInvoiceCustomerType(invoice) === customerTypeFilter,
       )
       .filter((invoice) =>
         methodFilter === "All" ? true : invoice.paymentMethod === methodFilter,
@@ -399,7 +439,16 @@ export default function CashierInvoicesPage() {
           .toLowerCase()
           .includes(loweredQuery);
       });
-  }, [authUser?.id, invoices, methodFilter, onlyMine, query]);
+  }, [
+    authUser?.id,
+    cashierFilter,
+    customerTypeFilter,
+    invoices,
+    isAdminView,
+    methodFilter,
+    onlyMine,
+    query,
+  ]);
 
   const filtered = useMemo(() => {
     return scopedInvoices.filter((invoice) =>
@@ -413,11 +462,25 @@ export default function CashierInvoicesPage() {
   const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
   const [page, setPage] = useState(1);
   const pageClamped = clampPage(page, 1, totalPages);
+  const hasExtraFilters = isAdminView
+    ? cashierFilter !== "All" ||
+      customerTypeFilter !== "All" ||
+      methodFilter !== "All"
+    : onlyMine || customerTypeFilter !== "All" || methodFilter !== "All";
 
   const pageItems = useMemo(() => {
     const start = (pageClamped - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
   }, [filtered, pageClamped]);
+
+  // clearing the secondary filters lets the user get back to the full invoice list quickly without disturbing search or tabs
+  function clearExtraFilters() {
+    setOnlyMine(false);
+    setCashierFilter("All");
+    setCustomerTypeFilter("All");
+    setMethodFilter("All");
+    setPage(1);
+  }
 
   // fetching the full invoice details when the user clicks to view it
   async function openInvoice(id: string) {
@@ -855,30 +918,99 @@ export default function CashierInvoicesPage() {
 
         {isFilterOpen ? (
           <div className="mt-4 rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-4">
-            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
-              Filter Options
-            </div>
-            <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
-              Refine the visible invoices using the current criteria.
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div>
+                <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+                  Filter Options
+                </div>
+                <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+                  Refine the visible invoices using cashier, customer type, and payment method.
+                </div>
+              </div>
+
+              <button
+                type="button"
+                onClick={clearExtraFilters}
+                disabled={!hasExtraFilters}
+                className={cn(
+                  "rounded-[12px] border px-[14px] py-[9px] text-[12px] font-extrabold transition",
+                  hasExtraFilters
+                    ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] hover:bg-[#F3F4F6]"
+                    : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",
+                )}
+              >
+                Clear filters
+              </button>
             </div>
 
             <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
               <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
                 <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
-                  Cashier Match
+                  {isAdminView ? "Cashier" : "Cashier Match"}
                 </div>
-                <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-3 text-[13px] font-bold text-[#000000]">
-                  <input
-                    type="checkbox"
-                    checked={onlyMine}
-                    onChange={(e) => setOnlyMine(e.target.checked)}
-                    className="h-4 w-4 accent-[#000000]"
-                  />
-                  Show only my invoices
-                </label>
+
+                {isAdminView ? (
+                  <select
+                    value={cashierFilter}
+                    onChange={(event) => {
+                      setCashierFilter(event.target.value);
+                      setPage(1);
+                    }}
+                    className="mt-3 h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#000000]"
+                  >
+                    <option value="All">All cashiers</option>
+                    {cashierOptions.map((cashier) => (
+                      <option key={cashier.id} value={cashier.id}>
+                        {cashier.name}
+                      </option>
+                    ))}
+                  </select>
+                ) : (
+                  <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-3 text-[13px] font-bold text-[#000000]">
+                    <input
+                      type="checkbox"
+                      checked={onlyMine}
+                      onChange={(event) => {
+                        setOnlyMine(event.target.checked);
+                        setPage(1);
+                      }}
+                      className="h-4 w-4 accent-[#000000]"
+                    />
+                    Show only my invoices
+                  </label>
+                )}
               </div>
 
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-8">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
+                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                  Customer Type
+                </div>
+                <div className="mt-3 flex gap-2 flex-wrap">
+                  {(["All", "Walk-in", "Registered"] as const).map((type) => {
+                    const active = type === customerTypeFilter;
+                    return (
+                      <button
+                        key={type}
+                        type="button"
+                        onClick={() => {
+                          setCustomerTypeFilter(type);
+                          setPage(1);
+                        }}
+                        className={cn(
+                          "rounded-[12px] border px-[14px] py-[8px] text-[12px] font-extrabold transition",
+                          active
+                            ? "border-[#000000] bg-[#000000] text-[#FFFFFF]"
+                            : "border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
+                        )}
+                      >
+                        {type}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
                 <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
                   Payment Method
                 </div>
@@ -889,7 +1021,10 @@ export default function CashierInvoicesPage() {
                       <button
                         key={method}
                         type="button"
-                        onClick={() => setMethodFilter(method)}
+                        onClick={() => {
+                          setMethodFilter(method);
+                          setPage(1);
+                        }}
                         className={cn(
                           "rounded-[12px] border px-[14px] py-[8px] text-[12px] font-extrabold transition",
                           active
