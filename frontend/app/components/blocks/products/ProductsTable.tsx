@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import ProductImage from "~/components/ui/ProductImage";
 import type { Product } from "~/lib/domain/products/products.types";
@@ -11,6 +11,7 @@ import {
 type ProductStatus = "Active" | "Inactive";
 type StockFlag = "In Stock" | "Low Stock" | "Out of Stock";
 
+// simple card wrapper for the table section
 function Card({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-[14px] border border-[#CFCFD3] bg-white ">
@@ -76,6 +77,8 @@ function IconButton({
   );
 }
 
+// data table for displaying products
+// supports row selection via checkboxes, sorting (conceptually), and pagination controls at the bottom
 export default function ProductsTableCard({
   rows,
   selected,

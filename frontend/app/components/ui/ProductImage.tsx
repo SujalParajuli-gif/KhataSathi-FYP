@@ -11,6 +11,8 @@ type Props = {
   iconClassName?: string;
 };
 
+// resolving the image URL — if it is a relative path (like "/uploads/products/abc.jpg"),
+// we prepend the API base URL so the browser can fetch it from the backend's static file server
 function resolveImageUrl(src?: string | null) {
   if (!src) return "";
   if (
@@ -18,11 +20,13 @@ function resolveImageUrl(src?: string | null) {
     src.startsWith("http://") ||
     src.startsWith("https://")
   ) {
-    return src;
+    return src; // already a full URL, no need to prepend
   }
   return `${API_BASE_URL}${src}`;
 }
 
+// product image component — shows the product's image or a placeholder icon if no image exists
+// works the same way as UserAvatar — tracks broken state and resets when the source changes
 export default function ProductImage({
   src,
   alt,
@@ -34,6 +38,7 @@ export default function ProductImage({
   const imageUrl = resolveImageUrl(src);
   const [broken, setBroken] = useState(false);
 
+  // resetting broken state when the image URL changes (e.g., after uploading a new image)
   useEffect(() => {
     setBroken(false);
   }, [imageUrl]);
@@ -45,7 +50,7 @@ export default function ProductImage({
           src={imageUrl}
           alt={alt}
           className={imgClassName}
-          onError={() => setBroken(true)}
+          onError={() => setBroken(true)} // falling back to the icon if the image fails to load
         />
       ) : (
         <Icon name="inventory_2" sizePx={iconSizePx} className={iconClassName} />

@@ -1,4 +1,4 @@
-﻿import React from "react";
+import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import ProductImage from "~/components/ui/ProductImage";
 import type {
@@ -287,6 +287,8 @@ function Toast({
   );
 }
 
+// this component holds all the modals for the products page (Add, Edit, View, Import, Confirm Delete)
+// it keeps the main Products page cleaner by separating all modal jsx and state wiring into this file
 export default function ProductsModals({
   brands,
   categories,

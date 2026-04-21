@@ -2,6 +2,7 @@ import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import { cn } from "~/lib/domain/products/products.helpers";
 
+// simple card container for the filters section
 function Card({ children }: { children: React.ReactNode }) {
   return (
     <div className="rounded-[14px] border border-[#CFCFD3] bg-white ">
@@ -94,6 +95,8 @@ function Select({
   );
 }
 
+// the main filters component for the products page
+// contains the search bar, action buttons (add, import, activate/deactivate), and the filter dropdowns (brand, category, stock, status)
 export default function ProductsFiltersCard({
   q,
   setQ,
