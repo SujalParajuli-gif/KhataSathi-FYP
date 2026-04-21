@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 import { ConfirmDialog } from "~/components/ui/Modal";
@@ -42,34 +42,43 @@ const DEFAULT_PURCHASE_SUMMARY: PurchaseSummary = {
   purchaseHistoryState: "empty",
 };
 
+// standard tailwind helper
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// forces discount percentages to stay strictly within 0 to 100
+// we don't want admins setting a 200% discount and owing the customer money
 function clampPercent(v: number) {
   if (v < 0) return 0;
   if (v > 100) return 100;
   return v;
 }
 
+// cleanly rounds and formats percentages for UI
 function formatPct(v: number) {
   return `${Math.round(v)}%`;
 }
 
+// helper to quickly check if a customer has an active wholesale rate
 function hasWholesale(c: Customer) {
   return typeof c.adminWholesaleDiscountPercent === "number";
 }
 
+// checks if a customer will actually receive loyalty
+// since wholesale overrides loyalty, being a loyalty member doesn't matter if you have wholesale
 function isEffectiveLoyalty(c: Customer) {
   return c.isLoyalty && !hasWholesale(c);
 }
 
+// determines what string label describes the customer's current discount state
 function getDiscountMode(c: Customer): DiscountMode {
   if (hasWholesale(c)) return "ADMIN_WHOLESALE";
   if (c.isLoyalty) return "LOYALTY";
   return "NONE";
 }
 
+// extracts up to 2 initials from a customer name to put inside the avatar circle
 function getInitials(name: string) {
   return (
     name
@@ -81,21 +90,26 @@ function getInitials(name: string) {
   );
 }
 
+// normalizes the customer API response into a standard array format
 function normalizeCustomerList(data: any) {
   if (Array.isArray(data)) return data;
   if (Array.isArray(data?.customers)) return data.customers;
   return [];
 }
 
+// safely checks if an invoice row was cancelled
 function isInvoiceCancelled(raw: any) {
   const status = String(raw?.paymentStatus || raw?.status || "").toUpperCase();
   return status === "CANCELLED" || status === "CANCELED";
 }
 
+// safely checks if an invoice row completed properly
 function isFinalizedInvoice(raw: any) {
   return String(raw?.status || "").toUpperCase() === "FINALIZED";
 }
 
+// fetches all invoices across the whole database
+// we need this so we can accurately count total purchases per customer without pagination gaps
 async function loadAllInvoices() {
   const all: any[] = [];
   const pageSize = 100;
@@ -117,6 +131,8 @@ async function loadAllInvoices() {
   return all;
 }
 
+// this calculates the "Last Purchase" and "Purchase Count" labels shown on each customer card
+// it ignores cancelled invoices and finds the latest successful transaction
 function buildPurchaseLookup(rawInvoices: any[]) {
   const grouped = new Map<string, any[]>();
 
@@ -192,6 +208,7 @@ function Surface({
   );
 }
 
+// this is the shared button component used for the discounts page actions and modal footer buttons
 function Button({
   children,
   variant = "secondary",
@@ -234,6 +251,7 @@ function Button({
   );
 }
 
+// this is the search box used to filter customers by name, phone, email, and purchase text
 function SearchInput({
   value,
   onChange,
@@ -257,6 +275,7 @@ function SearchInput({
   );
 }
 
+// this wraps standard text input styling for the add/edit customer modal
 function Input({
   value,
   onChange,
@@ -304,6 +323,7 @@ function Input({
   );
 }
 
+// this handles numeric input for discount percentages and keeps the value inside optional min/max limits
 function NumberInput({
   value,
   onChange,
@@ -348,6 +368,7 @@ function NumberInput({
   );
 }
 
+// this is the shared modal wrapper used for creating and editing customer discount profiles
 function ModalShell({
   open,
   title,
@@ -405,6 +426,7 @@ function ModalShell({
   );
 }
 
+// this renders the small rounded badges used throughout the discounts page
 function Pill({
   children,
   tone = "neutral",
@@ -432,6 +454,7 @@ function Pill({
   );
 }
 
+// this shows the customer's current pricing mode at a glance
 function ModeBadge({ customer }: { customer: Customer }) {
   const mode = getDiscountMode(customer);
 
@@ -444,6 +467,7 @@ function ModeBadge({ customer }: { customer: Customer }) {
   return <Pill>Standard billing</Pill>;
 }
 
+// this is the pill-style filter button used above the customer list
 function FilterChip({
   active,
   onClick,
@@ -549,6 +573,7 @@ function StatusBadge({ active }: { active: boolean }) {
   );
 }
 
+// this shows whether the customer currently gets wholesale, loyalty, or no special rule
 function DiscountBadge({ customer }: { customer: Customer }) {
   const mode = getDiscountMode(customer);
 
@@ -575,6 +600,7 @@ function DiscountBadge({ customer }: { customer: Customer }) {
   );
 }
 
+// this keeps the small action buttons in the table layout consistent
 function TableActionButton({
   icon,
   label,
@@ -607,6 +633,7 @@ function TableActionButton({
   );
 }
 
+// this explains the customer's recent purchase history state in a compact badge
 function PurchaseBadge({ customer }: { customer: Customer }) {
   if (customer.purchaseHistoryState === "history") {
     return <Pill tone="sky">{customer.purchaseCount} completed invoices</Pill>;
@@ -617,6 +644,7 @@ function PurchaseBadge({ customer }: { customer: Customer }) {
   return <Pill>No invoice history</Pill>;
 }
 
+// this is the full customer summary card shown in the card layout view
 function CustomerCard({
   customer,
   onEdit,
@@ -757,6 +785,7 @@ function CustomerCard({
   );
 }
 
+// this callout card is used to explain how the billing rules behave
 function RuleCallout({
   icon,
   title,
@@ -799,34 +828,35 @@ function RuleCallout({
 }
 
 export default function DiscountsPage() {
-  const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(2);
-  const [customers, setCustomers] = useState<Customer[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [loadError, setLoadError] = useState("");
-  const [actionError, setActionError] = useState("");
+  const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(2); // saved business-level loyalty percent used for display and comparison
+  const [customers, setCustomers] = useState<Customer[]>([]); // full customer list with derived purchase summary fields
+  const [loading, setLoading] = useState(true); // first-load state for the page
+  const [loadError, setLoadError] = useState(""); // fetch error shown when initial data loading fails
+  const [actionError, setActionError] = useState(""); // mutation error shown near the page actions
 
-  const [query, setQuery] = useState("");
-  const [mode, setMode] = useState<"all" | DiscountMode>("all");
+  const [query, setQuery] = useState(""); // search text for customer filtering
+  const [mode, setMode] = useState<"all" | DiscountMode>("all"); // active pricing-mode filter tab
 
-  const [openEdit, setOpenEdit] = useState(false);
-  const [editingId, setEditingId] = useState<string | null>(null);
+  const [openEdit, setOpenEdit] = useState(false); // controls the create/edit customer modal
+  const [editingId, setEditingId] = useState<string | null>(null); // null means add flow, otherwise edit the matching customer
   const [pendingDeactivateCustomer, setPendingDeactivateCustomer] =
     useState<Customer | null>(null);
-  const [deactivateBusy, setDeactivateBusy] = useState(false);
+  const [deactivateBusy, setDeactivateBusy] = useState(false); // blocks repeated deactivate requests while the confirm dialog is running
 
-  const [fName, setFName] = useState("");
-  const [fPhone, setFPhone] = useState("");
-  const [fEmail, setFEmail] = useState("");
-  const [fIsLoyalty, setFIsLoyalty] = useState(false);
-  const [fWholesaleDiscount, setFWholesaleDiscount] = useState<number | "">("");
-  const [formErrors, setFormErrors] = useState<DiscountFormErrors>({});
-  const [formSubmitError, setFormSubmitError] = useState("");
+  const [fName, setFName] = useState(""); // modal field: customer name
+  const [fPhone, setFPhone] = useState(""); // modal field: phone number
+  const [fEmail, setFEmail] = useState(""); // modal field: optional email
+  const [fIsLoyalty, setFIsLoyalty] = useState(false); // modal field: whether loyalty should stay active
+  const [fWholesaleDiscount, setFWholesaleDiscount] = useState<number | "">(""); // modal field: wholesale percent override
+  const [formErrors, setFormErrors] = useState<DiscountFormErrors>({}); // field-level add/edit validation errors
+  const [formSubmitError, setFormSubmitError] = useState(""); // top-level add/edit mutation error
 
-  const formHasWholesale = typeof fWholesaleDiscount === "number";
+  const formHasWholesale = typeof fWholesaleDiscount === "number"; // used to show when wholesale is overriding loyalty in the form
 
   useEffect(() => {
     let active = true;
 
+    // loading customers, invoices, and business settings together because this page combines all three
     async function load() {
       setLoading(true);
       setLoadError("");
@@ -840,14 +870,15 @@ export default function DiscountsPage() {
 
         if (!active) return;
 
-        const purchaseLookup = buildPurchaseLookup(invoices);
-        const rawCustomers = normalizeCustomerList(customerData);
+        const purchaseLookup = buildPurchaseLookup(invoices); // lets each customer pick up derived purchase labels without rescanning invoices later
+        const rawCustomers = normalizeCustomerList(customerData); // supporting either direct arrays or wrapped API responses
         setLoyaltyDiscountPercent(
           clampPercent(Number(settings?.loyaltyDiscountPercent ?? 2)),
         );
 
         setCustomers(
           rawCustomers.map((customer: any) => {
+            // combining server customer data with our derived purchase summary creates the final page row shape
             const purchaseSummary =
               purchaseLookup.get(customer.id) || DEFAULT_PURCHASE_SUMMARY;
 
@@ -888,6 +919,7 @@ export default function DiscountsPage() {
     const loweredQuery = query.trim().toLowerCase();
 
     return customers.filter((customer) => {
+      // one search input matches against identity fields plus purchase history text
       if (loweredQuery) {
         const haystack = `${customer.name} ${customer.phone} ${
           customer.email || ""
@@ -895,7 +927,7 @@ export default function DiscountsPage() {
         if (!haystack.includes(loweredQuery)) return false;
       }
 
-      const customerMode = getDiscountMode(customer);
+      const customerMode = getDiscountMode(customer); // wholesale, loyalty, or none
       if (mode !== "all" && customerMode !== mode) return false;
 
       return true;
@@ -917,6 +949,7 @@ export default function DiscountsPage() {
     return { total, adminWholesale, loyalty, none };
   }, [customers]);
 
+  // opening edit mode copies the selected customer into the modal fields so the user can adjust the rule safely
   function openEditCustomer(customer: Customer) {
     setEditingId(customer.id);
     setFName(customer.name);
@@ -933,6 +966,7 @@ export default function DiscountsPage() {
     setOpenEdit(true);
   }
 
+  // opening add mode resets every modal field back to a fresh customer state
   function openAddCustomer() {
     setEditingId(null);
     setFName("");
@@ -945,6 +979,7 @@ export default function DiscountsPage() {
     setOpenEdit(true);
   }
 
+  // closing the modal clears any stale validation or submit error from the previous attempt
   function closeEdit() {
     setOpenEdit(false);
     setFormErrors({});
@@ -957,6 +992,7 @@ export default function DiscountsPage() {
     const email = fEmail.trim();
     const nextErrors: DiscountFormErrors = {};
 
+    // these validation checks keep obviously bad customer data from reaching the backend
     if (!name) nextErrors.name = "Customer name is required.";
     if (!phone) nextErrors.phone = "Phone is required.";
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
@@ -1093,6 +1129,7 @@ export default function DiscountsPage() {
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-[#000000]">
       <div className="mx-auto max-w-6xl space-y-9">
+        {/* this header keeps the page title separate from the rule reminder pill so the pricing rule stays visible without feeling heavy */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
             <h1 className="text-[24px] font-extrabold  text-[#000000]">
@@ -1111,6 +1148,7 @@ export default function DiscountsPage() {
           </div>
         </div>
 
+        {/* these metric cards summarize the rule breakdown before the user starts browsing individual customers */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             label="Total Customers"
@@ -1142,6 +1180,7 @@ export default function DiscountsPage() {
           />
         </div>
 
+        {/* this main management card groups filters and customer records into one clear pricing-rules workspace */}
         <div className="overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-white ">
           <div className="flex flex-col gap-4 border-b border-[#CFCFD3] bg-white p-5 xl:flex-row xl:items-center xl:justify-between">
             <div className="hide-scrollbar flex w-full items-center gap-2 overflow-x-auto pb-2 xl:w-auto xl:pb-0">

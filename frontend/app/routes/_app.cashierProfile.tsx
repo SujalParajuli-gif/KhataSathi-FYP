@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import { SuccessDialog } from "~/components/ui/Modal";
 import UserAvatar from "~/components/ui/UserAvatar";
@@ -28,19 +28,23 @@ type CashierProfile = {
 
 const LOCATION_STORAGE_KEY = "khatasathi_cashier_profile_location";
 
+// we use this helper to combine tailwind class names cleanly
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+// pulls the region choice from local storage since it's not saved to the backend yet
 function readStoredLocation() {
   if (typeof window === "undefined") return "Nepal";
   return window.localStorage.getItem(LOCATION_STORAGE_KEY) || "Nepal";
 }
 
+// humanizes the role codes back to readable labels
 function formatRoleLabel(role?: string | null) {
   return String(role || "").toLowerCase() === "admin" ? "Admin" : "Cashier";
 }
 
+// splits a full name string into first and last name so forms can control them independently
 function splitName(name?: string | null) {
   const parts = String(name || "")
     .trim()
@@ -52,11 +56,13 @@ function splitName(name?: string | null) {
   };
 }
 
+// renders standard UI readable dates
 function formatDateTime(value?: string | null) {
   if (!value) return "Not available";
   return new Date(value).toLocaleString();
 }
 
+// takes the ugly raw API user object and standardizes it into our CashierProfile format
 function mapUserToProfile(user: any): CashierProfile {
   const { firstName, lastName } = splitName(user?.name);
   return {
@@ -75,6 +81,7 @@ function mapUserToProfile(user: any): CashierProfile {
   };
 }
 
+// this panel wrapper keeps the profile page cards consistent for both personal and security sections
 function Panel({
   title,
   subtitle,
@@ -106,6 +113,7 @@ function Panel({
   );
 }
 
+// this is the shared action button used for save, discard, and profile actions on the page
 function ActionButton({
   icon,
   label,
@@ -137,6 +145,7 @@ function ActionButton({
   );
 }
 
+// this keeps label and hint formatting consistent across all profile form fields
 function Field({
   label,
   hint,
@@ -163,6 +172,7 @@ function Field({
   );
 }
 
+// this is the shared text input used across personal details and security fields
 function TextInput({
   value,
   onChange,
@@ -203,6 +213,7 @@ function TextInput({
   );
 }
 
+// this wraps the select element so it matches the same visual style as the text inputs
 function SelectInput({
   value,
   onChange,
@@ -229,14 +240,15 @@ function SelectInput({
   );
 }
 
+// handles the main "My Profile" page allowing the currently logged-in cashier or admin to view and edit their details
 export default function CashierProfileSection() {
-  const [tab, setTab] = useState<TabKey>("personal");
-  const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
-  const [uploadingPhoto, setUploadingPhoto] = useState(false);
-  const [error, setError] = useState("");
-  const [successOpen, setSuccessOpen] = useState(false);
-  const [successMessage, setSuccessMessage] = useState("");
+  const [tab, setTab] = useState<TabKey>("personal"); // switches between personal details and password settings
+  const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
+  const [saving, setSaving] = useState(false); // blocks repeated profile saves while an update is running
+  const [uploadingPhoto, setUploadingPhoto] = useState(false); // tracks photo upload progress separately from normal form saves
+  const [error, setError] = useState(""); // shared error message for load/save/upload problems
+  const [successOpen, setSuccessOpen] = useState(false); // controls the success dialog
+  const [successMessage, setSuccessMessage] = useState(""); // success message shown after profile or password update
 
   const [profile, setProfile] = useState<CashierProfile>({
     firstName: "",
@@ -264,13 +276,15 @@ export default function CashierProfileSection() {
     profileImage: null,
     lastLogin: null,
   });
-  const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" });
+  const [pwd, setPwd] = useState({ current: "", next: "", confirm: "" }); // password form state used only in the security tab
 
   useEffect(() => {
+    // loading the current logged-in user's profile details when the page first opens
     async function load() {
       setLoading(true);
       setError("");
       try {
+        // asking the backend for the latest profile data keeps this page aligned with the current auth user
         const data = await getMeApi();
         const nextProfile = mapUserToProfile(data.user || data);
         setProfile(nextProfile);
@@ -287,14 +301,16 @@ export default function CashierProfileSection() {
     load();
   }, []);
 
+  // saving region to localstorage whenever it changes
   useEffect(() => {
     if (typeof window !== "undefined") {
       window.localStorage.setItem(LOCATION_STORAGE_KEY, profile.location);
     }
   }, [profile.location]);
 
+  // dynamically calculating the user's initials for the fallback avatar without storing it in state
   const fullName =
-    `${profile.firstName} ${profile.lastName}`.trim() || "Cashier";
+    `${profile.firstName} ${profile.lastName}`.trim() || "Cashier"; // fallback keeps the avatar initials stable even when the form is still blank
   const initials = useMemo(
     () =>
       fullName
@@ -306,31 +322,38 @@ export default function CashierProfileSection() {
     [fullName],
   );
 
+  // this tells us whether the new password and confirmation disagree
   const isPwdMismatch = useMemo(() => {
     if (!pwd.next || !pwd.confirm) return false;
     return pwd.next !== pwd.confirm;
   }, [pwd.next, pwd.confirm]);
 
+  // comparing the current form to the initial snapshot lets us block empty saves
   const hasProfileChanges = useMemo(
     () => JSON.stringify(profile) !== JSON.stringify(initialProfile),
     [profile, initialProfile],
   );
-  const hasSecurityChanges = Boolean(pwd.current || pwd.next || pwd.confirm);
+  const hasSecurityChanges = Boolean(pwd.current || pwd.next || pwd.confirm); // true when the security tab has any typed input
 
+  // reverts everything back to whatever was saved last
   function discard() {
     setError("");
     setProfile(initialProfile);
     setPwd({ current: "", next: "", confirm: "" });
   }
 
+  // running the update against the server
+  // includes various validation stops to ensure passwords all match and actual changes exist
   async function save() {
     setError("");
 
+    // this handles when the personal tab has nothing new to save
     if (tab === "personal" && !hasProfileChanges) {
       setError("No personal profile changes to save.");
       return;
     }
 
+    // security updates need a stricter set of checks because the backend expects both the current and new password
     if (tab === "security") {
       if (!hasSecurityChanges) {
         setError("Enter a new password before saving security settings.");
@@ -352,6 +375,7 @@ export default function CashierProfileSection() {
 
     setSaving(true);
     try {
+      // only sending the editable profile fields keeps read-only values like email and role out of the update payload
       const payload: any = {
         name: `${profile.firstName} ${profile.lastName}`.trim(),
         phone: profile.phone,
@@ -363,8 +387,10 @@ export default function CashierProfileSection() {
         payload.newPassword = pwd.next;
       }
 
+      // saving either personal details or password through the same profile endpoint
       const res = await updateProfileApi(payload);
       if (res.user) {
+        // syncing auth state after profile changes keeps the header/avatar updated everywhere else in the app
         setAuthUser(res.user);
         window.dispatchEvent(new Event("auth_change"));
         const nextProfile = {
@@ -394,6 +420,7 @@ export default function CashierProfileSection() {
     }
   }
 
+  // this uploads a new profile photo and then refreshes the saved auth user so the rest of the app sees the new image
   async function handlePhotoChange(file?: File | null) {
     if (!file) return;
     setUploadingPhoto(true);
@@ -434,6 +461,7 @@ export default function CashierProfileSection() {
   return (
     <>
       <div className="space-y-5 pb-8 text-slate-900">
+        {/* this layout keeps the account overview in a fixed-feeling side card and leaves the larger area for editable forms */}
         <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
           <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
             <Panel
@@ -441,6 +469,7 @@ export default function CashierProfileSection() {
               subtitle="Photo, contact , and sign-in for this cashier account."
             >
               <div className="space-y-5 px-5 py-5">
+                {/* we center the avatar block here so the page opens with a stronger profile feel before the editable fields start */}
                 <div className="flex flex-col items-center text-center">
                   <UserAvatar
                     src={

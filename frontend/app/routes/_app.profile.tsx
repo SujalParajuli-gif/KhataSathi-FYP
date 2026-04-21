@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useState } from "react";
+import React, { useEffect, useState } from "react";
 import {
   createUserApi,
   getMeApi,
@@ -15,16 +15,19 @@ import UserAvatar from "~/components/ui/UserAvatar";
 import { setAuthUser } from "~/lib/auth";
 import { useMemo } from "react";
 
+// formats the "last login" date, falling back to "Never" if null
 function formatLastLogin(value?: string | null) {
   return value ? new Date(value).toLocaleString() : "Never";
 }
 
+// resolves an API image path to a full URL, or passes it through directly if it's a browser blob
 function resolveImageUrl(path?: string | null) {
   if (!path) return undefined;
   if (path.startsWith("blob:")) return path;
   return `${API_BASE_URL}${path}`;
 }
 
+// simple regex to check if a string looks like an email address
 function isValidEmail(value: string) {
   return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value);
 }
@@ -33,6 +36,7 @@ function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// this lightweight icon helper keeps the older profile UI using one consistent material icon wrapper
 function GIcon({
   name,
   sizePx = 20,
@@ -53,6 +57,7 @@ function GIcon({
   );
 }
 
+// this is the shared card wrapper used throughout the admin profile workspace
 function CardShell({ children }: { children: React.ReactNode }) {
   return (
     <div className="overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-white">
@@ -61,6 +66,7 @@ function CardShell({ children }: { children: React.ReactNode }) {
   );
 }
 
+// this keeps section headings and small subtitles visually consistent
 function SectionTitle({ title, sub }: { title: string; sub?: string }) {
   return (
     <div>
@@ -72,6 +78,7 @@ function SectionTitle({ title, sub }: { title: string; sub?: string }) {
   );
 }
 
+// this is the shared text field used across the admin and cashier management forms
 function TextField({
   label,
   value,
@@ -118,6 +125,7 @@ function TextField({
   );
 }
 
+// this wraps select fields with the same label and error styling as the text fields
 function SelectField({
   label,
   value,
@@ -160,6 +168,7 @@ function SelectField({
   );
 }
 
+// this is the shared button component used across profile actions and modal footers
 function Button({
   variant = "secondary",
   icon,
@@ -198,6 +207,7 @@ function Button({
   );
 }
 
+// this small badge component is used for role, status, and verification labels
 function Badge({
   tone = "slate",
   children,
@@ -219,6 +229,7 @@ function Badge({
   );
 }
 
+// this is the shared modal shell used for add/edit cashier dialogs
 function Modal({
   open,
   title,
@@ -262,6 +273,7 @@ function Modal({
   );
 }
 
+// this handles image preview, upload, and removal controls for admin and cashier profile photos
 function ImageUpload({
   label,
   previewUrl,
@@ -346,11 +358,13 @@ type AdminTabKey = "personal" | "security";
 
 const ADMIN_LOCATION_STORAGE_KEY = "khatasathi_admin_profile_location";
 
+// we keep admin location in local storage for now because it is not persisted by the backend profile endpoint yet
 function readStoredAdminLocation() {
   if (typeof window === "undefined") return "Nepal";
   return window.localStorage.getItem(ADMIN_LOCATION_STORAGE_KEY) || "Nepal";
 }
 
+// we use this because sometimes names come in as one single string, but forms need first/last
 function splitName(name?: string | null) {
   const parts = String(name || "")
     .trim()
@@ -363,6 +377,7 @@ function splitName(name?: string | null) {
   };
 }
 
+// humanizes the database role label
 function formatRoleLabel(role?: string | null) {
   return String(role || "").toLowerCase() === "admin" ? "Admin" : "User";
 }
@@ -372,6 +387,7 @@ function formatDateTime(value?: string | null) {
   return new Date(value).toLocaleString();
 }
 
+// this maps the raw backend user object into the flatter profile state used by the admin page
 function mapUserToAdminProfile(user: any): AdminProfile {
   const { firstName, lastName } = splitName(user?.name);
 
@@ -390,6 +406,7 @@ function mapUserToAdminProfile(user: any): AdminProfile {
   };
 }
 
+// this is the main panel wrapper used in the admin profile screen
 function ProfilePanel({
   title,
   subtitle,
@@ -421,6 +438,7 @@ function ProfilePanel({
   );
 }
 
+// this keeps the admin profile action buttons visually consistent
 function ProfileActionButton({
   icon,
   label,
@@ -452,6 +470,7 @@ function ProfileActionButton({
   );
 }
 
+// this keeps form labels and right-side hints aligned across profile sections
 function ProfileField({
   label,
   hint,
@@ -478,6 +497,7 @@ function ProfileField({
   );
 }
 
+// this is the shared text input used in the admin profile forms
 function ProfileTextInput({
   value,
   onChange,
@@ -518,6 +538,7 @@ function ProfileTextInput({
   );
 }
 
+// this wraps select inputs so they match the admin profile text fields
 function ProfileSelectInput({
   value,
   onChange,
@@ -544,6 +565,8 @@ function ProfileSelectInput({
   );
 }
 
+// the master profile view
+// this shows an admin's personal details alongside a full list of all cashier accounts
 export default function ProfilePage() {
   const [adminProfile, setAdminProfile] = useState<AdminProfile>({
     firstName: "",
@@ -569,31 +592,31 @@ export default function ProfilePage() {
     roleLabel: "Admin",
     lastLogin: null,
   });
-  const [adminTab, setAdminTab] = useState<AdminTabKey>("personal");
+  const [adminTab, setAdminTab] = useState<AdminTabKey>("personal"); // switches between personal info and password settings for the admin
 
   const [adminPhotoUrl, setAdminPhotoUrl] = useState<string | undefined>(
     undefined,
   );
-  const [uploadingAdminPhoto, setUploadingAdminPhoto] = useState(false);
+  const [uploadingAdminPhoto, setUploadingAdminPhoto] = useState(false); // tracks admin photo upload separately from other saves
   const [adminSecurity, setAdminSecurity] = useState({
     current: "",
     next: "",
     confirm: "",
   });
-  const [adminSecurityError, setAdminSecurityError] = useState("");
-  const [savingAdminProfile, setSavingAdminProfile] = useState(false);
-  const [savingAdminPassword, setSavingAdminPassword] = useState(false);
+  const [adminSecurityError, setAdminSecurityError] = useState(""); // validation or API error for admin password changes
+  const [savingAdminProfile, setSavingAdminProfile] = useState(false); // blocks repeated admin profile saves
+  const [savingAdminPassword, setSavingAdminPassword] = useState(false); // blocks repeated admin password saves
 
-  const [cashiers, setCashiers] = useState<Cashier[]>([]);
-  const [loadingCashiers, setLoadingCashiers] = useState(false);
-  const [feedbackOpen, setFeedbackOpen] = useState(false);
-  const [feedbackTitle, setFeedbackTitle] = useState("");
-  const [feedbackMessage, setFeedbackMessage] = useState("");
+  const [cashiers, setCashiers] = useState<Cashier[]>([]); // all cashier accounts shown in the lower management section
+  const [loadingCashiers, setLoadingCashiers] = useState(false); // cashier list loading state
+  const [feedbackOpen, setFeedbackOpen] = useState(false); // controls the shared success/error dialog
+  const [feedbackTitle, setFeedbackTitle] = useState(""); // dialog title
+  const [feedbackMessage, setFeedbackMessage] = useState(""); // dialog message
   const [feedbackTone, setFeedbackTone] = useState<"success" | "error">(
     "success",
   );
 
-  const [addOpen, setAddOpen] = useState(false);
+  const [addOpen, setAddOpen] = useState(false); // controls the add cashier modal
   const [newName, setNewName] = useState("");
   const [newEmail, setNewEmail] = useState("");
   const [newPhone, setNewPhone] = useState("");
@@ -603,7 +626,7 @@ export default function ProfilePage() {
   const [newConfirmPassword, setNewConfirmPassword] = useState("");
   const [newPhotoUrl, setNewPhotoUrl] = useState<string | undefined>(undefined);
   const [newPhotoFile, setNewPhotoFile] = useState<File | null>(null);
-  const [addFormError, setAddFormError] = useState("");
+  const [addFormError, setAddFormError] = useState(""); // top-level add cashier error
   const [addFieldErrors, setAddFieldErrors] = useState({
     name: "",
     email: "",
@@ -611,8 +634,8 @@ export default function ProfilePage() {
     confirmPassword: "",
   });
 
-  const [editOpen, setEditOpen] = useState(false);
-  const [editId, setEditId] = useState<string | null>(null);
+  const [editOpen, setEditOpen] = useState(false); // controls the edit cashier modal
+  const [editId, setEditId] = useState<string | null>(null); // cashier currently being edited
   const [editName, setEditName] = useState("");
   const [editEmail, setEditEmail] = useState("");
   const [editPhone, setEditPhone] = useState("");
@@ -627,7 +650,7 @@ export default function ProfilePage() {
   const [editPhotoFile, setEditPhotoFile] = useState<File | null>(null);
   const [editPhotoRemoved, setEditPhotoRemoved] = useState(false);
   const [editWantsPasswordChange, setEditWantsPasswordChange] = useState(false);
-  const [editFormError, setEditFormError] = useState("");
+  const [editFormError, setEditFormError] = useState(""); // top-level edit cashier error
   const [editFieldErrors, setEditFieldErrors] = useState({
     name: "",
     email: "",
@@ -651,6 +674,7 @@ export default function ProfilePage() {
     };
   }
 
+  // fetching the list of all cashiers currently in the system
   async function loadCashiers() {
     setLoadingCashiers(true);
     try {
@@ -662,6 +686,7 @@ export default function ProfilePage() {
     }
   }
 
+  // syncing auth after admin profile or photo updates keeps the rest of the app header in sync immediately
   async function syncAuth(user: any) {
     setAuthUser({
       id: user.id,
@@ -673,6 +698,7 @@ export default function ProfilePage() {
     window.dispatchEvent(new Event("auth_change"));
   }
 
+  // this opens the shared feedback dialog with either a success or error tone
   function showFeedback(
     tone: "success" | "error",
     title: string,
@@ -685,6 +711,7 @@ export default function ProfilePage() {
   }
 
   useEffect(() => {
+    // loading the admin's own profile plus the cashier list when the page first opens
     async function load() {
       try {
         const data = await getMeApi();
@@ -704,6 +731,7 @@ export default function ProfilePage() {
   }, []);
 
   useEffect(() => {
+    // saving the temporary admin location choice locally until the backend supports this field
     if (typeof window !== "undefined") {
       window.localStorage.setItem(
         ADMIN_LOCATION_STORAGE_KEY,
@@ -712,6 +740,7 @@ export default function ProfilePage() {
     }
   }, [adminProfile.location]);
 
+  // opening the add cashier modal starts from a fully clean form state each time
   function resetAddForm() {
     setNewName("");
     setNewEmail("");
@@ -731,6 +760,7 @@ export default function ProfilePage() {
     });
   }
 
+  // copying the selected cashier into edit state lets the modal work without mutating the original table data
   function openEdit(cashier: Cashier) {
     setEditId(cashier.id);
     setEditName(cashier.name);
@@ -755,6 +785,7 @@ export default function ProfilePage() {
     setEditOpen(true);
   }
 
+  // closing edit clears every temporary field so the next cashier starts fresh
   function closeEdit() {
     setEditOpen(false);
     setEditId(null);
@@ -779,6 +810,7 @@ export default function ProfilePage() {
     });
   }
 
+  // these checks keep invalid cashier creation data from being submitted to the backend
   function validateAddCashier() {
     const nextErrors = {
       name: "",
@@ -803,6 +835,7 @@ export default function ProfilePage() {
     return !Object.values(nextErrors).some(Boolean);
   }
 
+  // edit validation is slightly different because password change is optional here
   function validateEditCashier() {
     const nextErrors = {
       name: "",
@@ -1130,6 +1163,7 @@ export default function ProfilePage() {
 
   return (
     <div className="space-y-5 pb-10 text-slate-900">
+      {/* this split layout gives the admin account card a fixed-feeling side column and leaves the wider area for editable forms and cashier management */}
       <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
         <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
           <ProfilePanel
@@ -1137,6 +1171,7 @@ export default function ProfilePage() {
             subtitle="Photo, contact, and sign-in for this admin account."
           >
             <div className="space-y-5 px-5 py-5">
+              {/* this top block is more profile-like than form-like, so we center it to make the avatar and identity details feel primary */}
               <div className="flex flex-col items-center text-center">
                 <UserAvatar
                   src={resolveImageUrl(adminPhotoUrl)}
