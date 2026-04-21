@@ -63,8 +63,9 @@ type SecurityDateRange = { from: string; to: string };
 // this builds our default settings model in memory incase nothing is provided yet
 const INITIAL_DEFAULTS = buildBusinessDefaults(5, 15, 2);
 const INITIAL_SECURITY_RANGE: SecurityDateRange = { from: "", to: "" };
-const AUDIT_LOG_PAGE_SIZE = 5;
-const LOGIN_ATTEMPT_PAGE_SIZE = 5;
+const AUDIT_LOG_PAGE_SIZE = 8;
+const LOGIN_ATTEMPT_PAGE_SIZE = 8;
+const BRAND_PAGE_SIZE = 10;
 
 // we wrote this to help combine overlapping class names quickly
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -341,9 +342,11 @@ export default function SettingsPage() {
   const [loginTotal, setLoginTotal] = useState(0); // total login attempt rows matching the current date filter
   const [failedLoginCount, setFailedLoginCount] = useState(0); // total failed login attempts for the current date range
   const [brandQuery, setBrandQuery] = useState(""); // text search for the brands tab
+  const [brandSelection, setBrandSelection] = useState("all"); // selected brand row from the dropdown filter inside brand management
   const [brandFilter, setBrandFilter] = useState<"all" | "active" | "inactive">(
     "all",
   );
+  const [brandPage, setBrandPage] = useState(1); // current page inside the brand management table
   const [backupBusy, setBackupBusy] = useState(false); // blocks repeated backup triggers
   const [backupMessage, setBackupMessage] = useState(""); // latest backup success or error message
   const [backupResult, setBackupResult] = useState<BackupResult | null>(null); // raw backup result returned by the backend
@@ -510,6 +513,11 @@ export default function SettingsPage() {
     loadSecurityData();
   }, [auditPage, loginPage, securityDateFilter.from, securityDateFilter.to]);
 
+  // resetting and clamping the brand table page keeps pagination stable when the filter set changes
+  useEffect(() => {
+    setBrandPage(1);
+  }, [brandQuery, brandSelection, brandFilter]);
+
   // these brand stats are derived from the current products list so each brand row can show totals without extra API calls
   const brandStats = useMemo(() => {
     const stats: Record<
@@ -538,6 +546,9 @@ export default function SettingsPage() {
     const query = brandQuery.trim().toLowerCase();
     return brands
       .filter((brand) =>
+        brandSelection === "all" ? true : brand.id === brandSelection,
+      )
+      .filter((brand) =>
         brandFilter === "all"
           ? true
           : brandFilter === "active"
@@ -547,7 +558,15 @@ export default function SettingsPage() {
       .filter((brand) =>
         query ? brand.name.toLowerCase().includes(query) : true,
       );
-  }, [brandFilter, brandQuery, brands]);
+  }, [brandFilter, brandQuery, brandSelection, brands]);
+
+  const brandOptions = useMemo(
+    () =>
+      brands
+        .slice()
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [brands],
+  );
 
   const editingBrandProducts = useMemo(() => {
     if (!editingBrand) return [];
@@ -561,6 +580,15 @@ export default function SettingsPage() {
     1,
     Math.ceil(loginTotal / LOGIN_ATTEMPT_PAGE_SIZE),
   );
+  const brandTotalPages = Math.max(
+    1,
+    Math.ceil(filteredBrands.length / BRAND_PAGE_SIZE),
+  );
+  const brandPageClamped = clampPage(brandPage, 1, brandTotalPages);
+  const pagedBrands = useMemo(() => {
+    const start = (brandPageClamped - 1) * BRAND_PAGE_SIZE;
+    return filteredBrands.slice(start, start + BRAND_PAGE_SIZE);
+  }, [brandPageClamped, filteredBrands]);
 
   const lowStockProducts = products.filter(
     (product) =>
@@ -579,6 +607,10 @@ export default function SettingsPage() {
     wholesaleQtyThreshold,
     loyaltyDiscountPercent,
   ); // clamping the live form state before we compare or save it
+
+  useEffect(() => {
+    setBrandPage((current) => clampPage(current, 1, brandTotalPages));
+  }, [brandTotalPages]);
   const defaultsDirty =
     normalizedDefaults.defaultLowStock !== savedDefaults.defaultLowStock ||
     normalizedDefaults.wholesaleQtyThreshold !==
@@ -976,6 +1008,18 @@ export default function SettingsPage() {
               </div>
             </div>
             <div className="flex items-center gap-3">
+              <select
+                value={brandSelection}
+                onChange={(e) => setBrandSelection(e.target.value)}
+                className="w-[220px] rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-[14px] font-semibold outline-none"
+              >
+                <option value="all">All Brands</option>
+                {brandOptions.map((brand) => (
+                  <option key={brand.id} value={brand.id}>
+                    {brand.name}
+                  </option>
+                ))}
+              </select>
               <input
                 value={brandQuery}
                 onChange={(e) => setBrandQuery(e.target.value)}
@@ -1026,7 +1070,7 @@ export default function SettingsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-slate-100">
-                {filteredBrands.map((brand) => {
+                {pagedBrands.map((brand) => {
                   const stats = brandStats[brand.id] || {
                     total: 0,
                     active: 0,
@@ -1085,45 +1129,52 @@ export default function SettingsPage() {
                 No brands match the current filters.
               </div>
             ) : null}
+            <PaginationControls
+              page={brandPageClamped}
+              totalPages={brandTotalPages}
+              onPageChange={setBrandPage}
+            />
           </div>
         </Card>
       ) : null}
 
       {tab === "audit" ? (
         <div className="space-y-6">
-          <div className="rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-4">
-            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
-              Security Filters
-            </div>
-            <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
-              Filter both audit logs and login attempts by the same created date
-              range.
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-4 xl:flex xl:flex-wrap xl:items-center">
-              <input
-                type="date"
-                value={securityDateDraft.from}
-                onChange={(e) =>
-                  setSecurityDateDraft((current) => ({
-                    ...current,
-                    from: e.target.value,
-                  }))
-                }
-                className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
-              />
-              <input
-                type="date"
-                value={securityDateDraft.to}
-                onChange={(e) =>
-                  setSecurityDateDraft((current) => ({
-                    ...current,
-                    to: e.target.value,
-                  }))
-                }
-                className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
-              />
-              <div className="flex gap-2 xl:w-[190px]">
+          {/* shared date range filter for both audit lists */}
+          <div className="rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-5">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+                  Security Filters
+                </div>
+                <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+                  Filter both audit logs and login attempts by the same created
+                  date range.
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-3">
+                <input
+                  type="date"
+                  value={securityDateDraft.from}
+                  onChange={(e) =>
+                    setSecurityDateDraft((current) => ({
+                      ...current,
+                      from: e.target.value,
+                    }))
+                  }
+                  className="h-[42px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[200px]"
+                />
+                <input
+                  type="date"
+                  value={securityDateDraft.to}
+                  onChange={(e) =>
+                    setSecurityDateDraft((current) => ({
+                      ...current,
+                      to: e.target.value,
+                    }))
+                  }
+                  className="h-[42px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[200px]"
+                />
                 <Button
                   variant="primary"
                   icon="filter_alt"
@@ -1138,151 +1189,224 @@ export default function SettingsPage() {
             </div>
 
             {securityFilterError ? (
-              <div className="mt-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
+              <div className="mt-4 rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
                 {securityFilterError}
               </div>
             ) : null}
           </div>
 
-          <div className="grid grid-cols-1 gap-6 xl:grid-cols-2">
-            <Card>
-              <div className="border-b border-slate-100 px-5 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[15px] font-extrabold text-slate-900">
-                      Audit logs
-                    </div>
-                    <div className="mt-1 text-[12px] text-slate-500">
-                      Best shown here with actor, action, entity, invoice
-                      reference, and when it happened.
-                    </div>
+          {/* audit logs — full width */}
+          <Card>
+            <div className="border-b border-slate-100 px-6 py-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[17px] font-extrabold text-slate-900">
+                    Audit Logs
                   </div>
-                  <Pill tone="neutral">{auditTotal} total</Pill>
+                  <div className="mt-1 text-[13px] text-slate-500">
+                    Actor, action, entity, invoice reference, and timestamp for
+                    every tracked operation.
+                  </div>
                 </div>
+                <Pill tone="neutral">{auditTotal} total</Pill>
               </div>
-              <div className="space-y-3 p-5">
-                {auditLogs.map((log) => (
-                  <div
-                    key={log.id}
-                    className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
-                  >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="text-[13px] font-extrabold text-slate-900">
-                          {log.actor?.name || "System"}
-                        </div>
-                        <div className="mt-1 text-[12px] text-slate-500">
-                          {formatDateTime(log.createdAt)}
-                        </div>
-                      </div>
-                      <Pill tone="info">{log.action}</Pill>
-                    </div>
-                    <div className="mt-3 text-[13px] text-slate-600">
-                      {String(log.meta?.invoiceNo || log.entityType)} /{" "}
-                      {log.entityId}
-                    </div>
-                  </div>
-                ))}
+            </div>
+            <div className="p-6">
+              {securityLoading ? (
+                <div className="flex items-center justify-center py-12 text-[13px] font-semibold text-slate-400">
+                  Loading audit logs…
+                </div>
+              ) : auditLogs.length === 0 ? (
+                <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-10 text-center text-[13px] font-semibold text-slate-500">
+                  No audit logs matched the selected date range.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-[11px] font-extrabold uppercase tracking-wide text-slate-400">
+                        <th className="px-4 py-3">Actor</th>
+                        <th className="px-4 py-3">Action</th>
+                        <th className="px-4 py-3">Reference</th>
+                        <th className="px-4 py-3 text-right">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {auditLogs.map((log) => (
+                        <tr key={log.id} className="hover:bg-slate-50/70">
+                          <td className="px-4 py-3.5">
+                            <div className="text-[14px] font-extrabold text-slate-900">
+                              {log.actor?.name || "System"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <Pill tone="info">{log.action}</Pill>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <div className="text-[13px] font-semibold text-slate-600">
+                              {String(
+                                log.meta?.invoiceNo || log.entityType,
+                              )}{" "}
+                              / {log.entityId}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5 text-right">
+                            <div className="text-[12px] font-semibold text-slate-500">
+                              {formatDateTime(log.createdAt)}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-slate-400">
+                              {formatRelativeTime(log.createdAt)}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
 
-                {!securityLoading && auditLogs.length === 0 ? (
-                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[13px] font-semibold text-slate-500">
-                    No audit logs matched the selected date range.
-                  </div>
-                ) : null}
+              <PaginationControls
+                page={auditPage}
+                totalPages={auditTotalPages}
+                onPageChange={setAuditPage}
+              />
+            </div>
+          </Card>
 
-                <PaginationControls
-                  page={auditPage}
-                  totalPages={auditTotalPages}
-                  onPageChange={setAuditPage}
-                />
-              </div>
-            </Card>
-
-            <Card>
-              <div className="border-b border-slate-100 px-5 py-4">
-                <div className="flex flex-wrap items-center justify-between gap-3">
-                  <div>
-                    <div className="text-[15px] font-extrabold text-slate-900">
-                      Login attempts
-                    </div>
-                    <div className="mt-1 text-[12px] text-slate-500">
-                      Recommended data: email, success or failure, IP, and exact
-                      timestamp.
-                    </div>
+          {/* login attempts — full width */}
+          <Card>
+            <div className="border-b border-slate-100 px-6 py-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div>
+                  <div className="text-[17px] font-extrabold text-slate-900">
+                    Login Attempts
                   </div>
+                  <div className="mt-1 text-[13px] text-slate-500">
+                    Email, success or failure status, IP address, and exact
+                    timestamp for every login.
+                  </div>
+                </div>
+                <div className="flex items-center gap-2">
+                  {failedLoginCount > 0 ? (
+                    <Pill tone="danger">{failedLoginCount} failed</Pill>
+                  ) : null}
                   <Pill tone="neutral">{loginTotal} total</Pill>
                 </div>
               </div>
-              <div className="space-y-3 p-5">
-                {loginAttempts.map((attempt) => (
+            </div>
+            <div className="p-6">
+              {securityLoading ? (
+                <div className="flex items-center justify-center py-12 text-[13px] font-semibold text-slate-400">
+                  Loading login attempts…
+                </div>
+              ) : loginAttempts.length === 0 ? (
+                <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-10 text-center text-[13px] font-semibold text-slate-500">
+                  No login attempts matched the selected date range.
+                </div>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="w-full min-w-[640px] border-collapse text-left">
+                    <thead>
+                      <tr className="border-b border-slate-100 text-[11px] font-extrabold uppercase tracking-wide text-slate-400">
+                        <th className="px-4 py-3">Email</th>
+                        <th className="px-4 py-3">IP Address</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3 text-right">Date</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-slate-100">
+                      {loginAttempts.map((attempt) => (
+                        <tr key={attempt.id} className="hover:bg-slate-50/70">
+                          <td className="px-4 py-3.5">
+                            <div className="text-[14px] font-extrabold text-slate-900">
+                              {attempt.email}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <div className="text-[13px] font-semibold text-slate-500">
+                              {attempt.ip || "Unavailable"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5">
+                            <Pill
+                              tone={
+                                attempt.success ? "success" : "danger"
+                              }
+                            >
+                              {attempt.success ? "Success" : "Failed"}
+                            </Pill>
+                          </td>
+                          <td className="px-4 py-3.5 text-right">
+                            <div className="text-[12px] font-semibold text-slate-500">
+                              {formatDateTime(attempt.createdAt)}
+                            </div>
+                            <div className="mt-0.5 text-[11px] text-slate-400">
+                              {formatRelativeTime(attempt.createdAt)}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              <PaginationControls
+                page={loginPage}
+                totalPages={loginTotalPages}
+                onPageChange={setLoginPage}
+              />
+            </div>
+          </Card>
+
+          {/* staff snapshot — separate standalone card */}
+          <Card>
+            <div className="border-b border-slate-100 px-6 py-5">
+              <div className="text-[17px] font-extrabold text-slate-900">
+                Staff Snapshot
+              </div>
+              <div className="mt-1 text-[13px] text-slate-500">
+                Quick overview of registered staff accounts and their last
+                login activity.
+              </div>
+            </div>
+            <div className="p-6">
+              <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                {users.map((user) => (
                   <div
-                    key={attempt.id}
-                    className="rounded-[16px] border border-slate-200 bg-slate-50/60 p-4"
+                    key={user.id}
+                    className="flex items-center justify-between gap-3 rounded-[14px] border border-slate-200 bg-slate-50/60 px-4 py-3"
                   >
-                    <div className="flex flex-wrap items-center justify-between gap-3">
-                      <div>
-                        <div className="text-[13px] font-extrabold text-slate-900">
-                          {attempt.email}
-                        </div>
-                        <div className="mt-1 text-[12px] text-slate-500">
-                          IP: {attempt.ip || "Unavailable"}
-                        </div>
+                    <div className="min-w-0">
+                      <div className="truncate text-[14px] font-extrabold text-slate-900">
+                        {user.name}
                       </div>
-                      <Pill tone={attempt.success ? "success" : "danger"}>
-                        {attempt.success ? "Success" : "Failed"}
-                      </Pill>
+                      <div className="truncate text-[12px] text-slate-500">
+                        {user.email}
+                      </div>
                     </div>
-                    <div className="mt-3 text-[12px] font-semibold text-slate-500">
-                      {formatDateTime(attempt.createdAt)}
+                    <div className="shrink-0 text-right">
+                      <Pill
+                        tone={
+                          user.role === "ADMIN" ? "info" : "neutral"
+                        }
+                      >
+                        {user.role}
+                      </Pill>
+                      <div className="mt-1 text-[11px] font-semibold text-slate-500">
+                        {formatRelativeTime(user.lastLogin)}
+                      </div>
                     </div>
                   </div>
                 ))}
-
-                {!securityLoading && loginAttempts.length === 0 ? (
-                  <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[13px] font-semibold text-slate-500">
-                    No login attempts matched the selected date range.
-                  </div>
-                ) : null}
-
-                <PaginationControls
-                  page={loginPage}
-                  totalPages={loginTotalPages}
-                  onPageChange={setLoginPage}
-                />
-
-                <div className="rounded-[16px] border border-slate-200 bg-white p-4">
-                  <div className="text-[13px] font-extrabold text-slate-900">
-                    Staff snapshot
-                  </div>
-                  <div className="mt-3 space-y-2">
-                    {users.slice(0, 6).map((user) => (
-                      <div
-                        key={user.id}
-                        className="flex items-center justify-between gap-3 rounded-[14px] border border-slate-200 bg-slate-50/60 px-3 py-2"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-[13px] font-extrabold text-slate-900">
-                            {user.name}
-                          </div>
-                          <div className="truncate text-[12px] text-slate-500">
-                            {user.email}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <Pill tone={user.role === "ADMIN" ? "info" : "neutral"}>
-                            {user.role}
-                          </Pill>
-                          <div className="mt-1 text-[11px] font-semibold text-slate-500">
-                            {formatRelativeTime(user.lastLogin)}
-                          </div>
-                        </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
               </div>
-            </Card>
-          </div>
+              {users.length === 0 ? (
+                <div className="rounded-[16px] border border-dashed border-slate-200 bg-slate-50/60 px-4 py-8 text-center text-[13px] font-semibold text-slate-500">
+                  No staff accounts found.
+                </div>
+              ) : null}
+            </div>
+          </Card>
         </div>
       ) : null}
 

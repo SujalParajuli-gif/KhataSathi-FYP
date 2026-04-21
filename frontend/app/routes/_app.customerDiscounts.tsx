@@ -1,4 +1,4 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import { listCustomersApi, listInvoicesApi } from "~/lib/api/endpoints";
 import { formatDateLabel, formatNpr } from "~/lib/invoices";
@@ -17,23 +17,34 @@ type CustomerDiscount = {
   updatedAtLabel: string;
 };
 
+// tailwind standard joiner
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// makes decimal numbers look nice as percentages (e.g. 15.5 -> 16%)
 function formatPct(n: number) {
   return `${Math.round(n)}%`;
 }
 
+// keeping the page number inside valid limits prevents filter changes from landing on empty pages
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
+// this generates a quick lookup table combining invoices by customer
+// so we don't have to scan the entire invoice array thousands of times for every customer row
 function buildLastPurchaseLookup(invoices: any[]) {
   const lookup = new Map<string, string>();
 
+  // walking through the invoices once and storing the first hit for each customer
+  // this works because the API list is already ordered newest first for this page's use case
   for (const invoice of invoices) {
     const customerId = invoice?.customer?.id || invoice?.customerId;
     if (!customerId || lookup.has(customerId)) continue;
 
-    const amount = Number(invoice?.netTotal || invoice?.total || 0);
-    const createdAt = String(invoice?.createdAt || "");
+    const amount = Number(invoice?.netTotal || invoice?.total || 0); // using net total first because that is the amount the customer actually paid
+    const createdAt = String(invoice?.createdAt || ""); // date label is optional, so we store an empty string if the field is missing
 
     lookup.set(
       customerId,
@@ -46,6 +57,7 @@ function buildLastPurchaseLookup(invoices: any[]) {
   return lookup;
 }
 
+// this small metric card keeps the summary numbers at the top of the page visually consistent
 function StatCard({
   label,
   value,
@@ -99,6 +111,7 @@ function StatCard({
   );
 }
 
+// this renders the shared search input for filtering discount rows by customer details
 function SearchInput({
   value,
   onChange,
@@ -121,6 +134,7 @@ function SearchInput({
   );
 }
 
+// this controls the active discount tab and shows the count inside a small badge when needed
 function TabButton({
   active,
   onClick,
@@ -160,6 +174,7 @@ function TabButton({
   );
 }
 
+// this shows whether the related customer account is still active in the system
 function StatusBadge({ active }: { active: boolean }) {
   return active ? (
     <span className="inline-flex items-center gap-1.5 rounded-full border border-[#9DD8B2] bg-[#EAF8EF] px-2.5 py-1 text-[11px] font-extrabold text-[#179B4D]">
@@ -174,14 +189,19 @@ function StatusBadge({ active }: { active: boolean }) {
   );
 }
 
+// the admin view of all special customer discount rates mapped in the system
+// helps cashiers and admins quickly lookup if someone is a loyalty or wholesale buyer
 export default function CustomerDiscountsPage() {
-  const [rows, setRows] = useState<CustomerDiscount[]>([]);
-  const [query, setQuery] = useState("");
-  const [tab, setTab] = useState<"all" | "wholesale" | "loyalty">("all");
+  const [rows, setRows] = useState<CustomerDiscount[]>([]); // stores the flattened loyalty and wholesale rows shown in the table
+  const [query, setQuery] = useState(""); // keeps the current customer search text
+  const [tab, setTab] = useState<"all" | "wholesale" | "loyalty">("all"); // tracks whether the user is viewing all, wholesale-only, or loyalty-only rows
+  const [page, setPage] = useState(1); // current page for the customer discount table
 
+  // fetching customer data and all recent invoices to calculate the "Last Purchase" values
   useEffect(() => {
     async function load() {
       try {
+        // loading both customers and finalized invoices together because the table needs data from both sources
         const [customerData, invoiceData] = await Promise.all([
           listCustomersApi(),
           listInvoicesApi({ status: "FINALIZED", pageSize: 500 }),
@@ -189,15 +209,20 @@ export default function CustomerDiscountsPage() {
 
         const customers = Array.isArray(customerData)
           ? customerData
-          : customerData?.customers || [];
+          : customerData?.customers || []; // supporting both direct arrays and wrapped API responses
         const invoices = Array.isArray(invoiceData?.invoices)
           ? invoiceData.invoices
-          : [];
-        const lastPurchaseLookup = buildLastPurchaseLookup(invoices);
+          : []; // falling back to an empty list keeps the rest of the mapping code safe
+        const lastPurchaseLookup = buildLastPurchaseLookup(invoices); // this lets each customer row read its last purchase in O(1) time
 
         const mapped: CustomerDiscount[] = [];
 
+        // some customers can appear twice in this final table:
+        // 1. once for loyalty, if they have a loyalty rate
+        // 2. once for wholesale, if they have a wholesale rate
+        // we keep them separate because the page is showing discount rules, not unique customer records
         for (const customer of customers) {
+          // adding a loyalty rule row only when the customer actually has a loyalty percent above 0
           if (customer.loyaltyPercent > 0) {
             mapped.push({
               id: `${customer.id}-loyalty`,
@@ -215,6 +240,7 @@ export default function CustomerDiscountsPage() {
             });
           }
 
+          // adding a wholesale rule row separately because wholesale and loyalty are shown as different rule types in the table
           if (customer.wholesalePercent > 0) {
             mapped.push({
               id: `${customer.id}-wholesale`,
@@ -233,6 +259,7 @@ export default function CustomerDiscountsPage() {
           }
         }
 
+        // replacing the full table data after both API calls and the flattening step finish
         setRows(mapped);
       } catch (err) {
         console.error("Failed to load discount data", err);
@@ -242,15 +269,18 @@ export default function CustomerDiscountsPage() {
     load();
   }, []);
 
+  // filtering the table based on active tabs and search text
   const filtered = useMemo(() => {
     const s = query.trim().toLowerCase();
     return rows.filter((r) => {
+      // matching against a combined string lets one search box cover name, phone, type, and notes together
       const matchesQuery = !s
         ? true
         : `${r.customerName} ${r.phone} ${r.type} ${r.note || ""}`
             .toLowerCase()
             .includes(s);
 
+      // this handles which tab is active so we only keep the discount type the user asked for
       const matchesTab =
         tab === "all"
           ? true
@@ -262,12 +292,30 @@ export default function CustomerDiscountsPage() {
     });
   }, [rows, query, tab]);
 
-  const countWholesale = rows.filter((r) => r.type === "Wholesale %").length;
-  const countLoyalty = rows.filter((r) => r.type === "Loyalty %").length;
+  const pageSize = 10; // keeping the page size aligned with the other admin tables makes scanning easier
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const pageClamped = clampPage(page, 1, totalPages);
+  const pageItems = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, pageClamped]);
+
+  const countWholesale = rows.filter((r) => r.type === "Wholesale %").length; // count badge for the wholesale tab
+  const countLoyalty = rows.filter((r) => r.type === "Loyalty %").length; // count badge for the loyalty tab
+
+  // resetting back to page 1 after changing search or tabs keeps the table from showing empty trailing pages
+  useEffect(() => {
+    setPage(1);
+  }, [query, tab]);
+
+  useEffect(() => {
+    setPage((current) => clampPage(current, 1, totalPages));
+  }, [totalPages]);
 
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-[#000000]">
       <div className="mx-auto max-w-6xl space-y-9">
+        {/* this header keeps the title on one side and the rule reminder pill on the other when there is enough space */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
             <h1 className="text-[24px] font-extrabold  text-[#000000]">
@@ -289,6 +337,7 @@ export default function CustomerDiscountsPage() {
           </div>
         </div>
 
+        {/* the stats row gives a quick summary before the user gets into the full discount table */}
         <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
           <StatCard
             label="Total Customers"
@@ -317,6 +366,7 @@ export default function CustomerDiscountsPage() {
           />
         </div>
 
+        {/* this large card combines tabs, search, and the table so the whole lookup flow feels connected */}
         <div className="overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-white ">
           <div className="flex flex-col items-center justify-between gap-4 border-b border-[#CFCFD3] bg-white p-5 md:flex-row">
             <div className="hide-scrollbar flex w-full items-center gap-2 overflow-x-auto pb-2 md:w-auto md:pb-0">
@@ -367,7 +417,7 @@ export default function CustomerDiscountsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#CFCFD3]/60">
-                {filtered.length === 0 ? (
+                {pageItems.length === 0 ? (
                   <tr>
                     <td colSpan={6} className="py-12 text-center">
                       <div className="flex flex-col items-center justify-center text-[#8C8889]">
@@ -382,7 +432,7 @@ export default function CustomerDiscountsPage() {
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((row) => (
+                  pageItems.map((row) => (
                     <tr
                       key={row.id}
                       className="group transition-colors hover:bg-[#F3F4F6]/70"
@@ -453,13 +503,49 @@ export default function CustomerDiscountsPage() {
 
           <div className="flex items-center justify-between border-t border-[#CFCFD3] bg-[#F3F4F6]/40 px-6 py-4">
             <div className="text-[11px] font-bold text-[#8C8889]">
-              Showing {filtered.length} records
+              Showing {pageItems.length} of {filtered.length} records
             </div>
             <div className="flex gap-1">
-              <button className="flex h-7 w-7 items-center justify-center rounded-md border border-[#CFCFD3] bg-white text-[#8C8889] transition hover:border-[#8C8889] hover:text-[#000000]">
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) => clampPage(current - 1, 1, totalPages))
+                }
+                disabled={pageClamped <= 1}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-[#CFCFD3] bg-white text-[#8C8889] transition hover:border-[#8C8889] hover:text-[#000000] disabled:pointer-events-none disabled:opacity-40"
+              >
                 <Icon name="chevron_left" className="text-[16px]" />
               </button>
-              <button className="flex h-7 w-7 items-center justify-center rounded-md border border-[#CFCFD3] bg-white text-[#8C8889] transition hover:border-[#8C8889] hover:text-[#000000]">
+              {Array.from({ length: totalPages })
+                .slice(0, 8)
+                .map((_, index) => {
+                  const pageNumber = index + 1;
+                  const active = pageNumber === pageClamped;
+
+                  return (
+                    <button
+                      key={pageNumber}
+                      type="button"
+                      onClick={() => setPage(pageNumber)}
+                      className={cn(
+                        "flex h-7 min-w-7 items-center justify-center rounded-md border px-2 text-[11px] font-extrabold transition",
+                        active
+                          ? "border-[#11120d] bg-[#11120d] text-white"
+                          : "border-[#CFCFD3] bg-white text-[#8C8889] hover:border-[#8C8889] hover:text-[#000000]",
+                      )}
+                    >
+                      {pageNumber}
+                    </button>
+                  );
+                })}
+              <button
+                type="button"
+                onClick={() =>
+                  setPage((current) => clampPage(current + 1, 1, totalPages))
+                }
+                disabled={pageClamped >= totalPages}
+                className="flex h-7 w-7 items-center justify-center rounded-md border border-[#CFCFD3] bg-white text-[#8C8889] transition hover:border-[#8C8889] hover:text-[#000000] disabled:pointer-events-none disabled:opacity-40"
+              >
                 <Icon name="chevron_right" className="text-[16px]" />
               </button>
             </div>
