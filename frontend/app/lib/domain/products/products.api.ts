@@ -1,4 +1,4 @@
-﻿import {
+import {
   createProductApi,
   deactivateProductApi,
   getCategoriesApi,
@@ -9,7 +9,10 @@
 } from "~/lib/api/endpoints";
 import type { Product, ProductsQuery, ProductStatus } from "./products.types";
 
+// the raw brand shape from the backend API
 type BackendBrand = { id: string; name: string; isActive?: boolean };
+
+// the raw product shape from the backend API — fields may differ from our frontend Product type
 type BackendProduct = {
   id: string;
   name: string;
@@ -29,8 +32,12 @@ type BackendProduct = {
   isActive: boolean;
 };
 
+// caching brands locally so we can look up brand IDs by name without making extra API calls
 let brandsCache: BackendBrand[] = [];
 
+// converting a backend product into our frontend Product type
+// this maps field names and handles nulls/undefineds so the rest of the frontend
+// does not need to worry about the backend response format
 function toFrontendProduct(product: BackendProduct): Product {
   return {
     id: product.id,
@@ -55,17 +62,21 @@ function toFrontendProduct(product: BackendProduct): Product {
   };
 }
 
+// looking up a brand's ID from the cached list by its display name
 function getBrandIdByName(name?: string): string | undefined {
   if (!name) return undefined;
   return brandsCache.find((brand) => brand.name === name)?.id;
 }
 
+// converting frontend status filter values to the backend's expected "true"/"false" string
 function mapStatusToActive(status?: ProductsQuery["status"]): string | undefined {
   if (status === "active") return "true";
   if (status === "inactive") return "false";
   return undefined;
 }
 
+// filtering products by stock status on the client side
+// the backend does not support all stock filter combinations, so we do this after fetching
 function applyClientSideStockFilter(
   products: Product[],
   stockStatus?: ProductsQuery["stockStatus"],
@@ -84,6 +95,10 @@ function applyClientSideStockFilter(
   }
 }
 
+// --
+
+// fetching products from the backend and applying filters
+// we map the query filters to the backend format, then apply client-side stock filtering
 export async function fetchProducts(q: ProductsQuery) {
   const response = await listProductsApi({
     search: q.q,
@@ -100,6 +115,7 @@ export async function fetchProducts(q: ProductsQuery) {
 
   return {
     items: filtered,
+    // when filtering by stock status, the total is the filtered count (not the backend total)
     total:
       q.stockStatus && q.stockStatus !== "all"
         ? filtered.length
@@ -107,6 +123,8 @@ export async function fetchProducts(q: ProductsQuery) {
   };
 }
 
+// fetching brands and categories for the filter dropdowns
+// we also cache the brands for the brand name to ID lookup used when creating/editing products
 export async function fetchProductsMeta() {
   const [brands, categories] = await Promise.all([
     listBrandsApi(false),
@@ -121,6 +139,7 @@ export async function fetchProductsMeta() {
   };
 }
 
+// converting a frontend Product object back into the format the backend expects for create/update
 function toBackendPayload(product: Omit<Product, "id">) {
   const brandId = getBrandIdByName(product.brand);
   if (!brandId) {
@@ -146,21 +165,25 @@ function toBackendPayload(product: Omit<Product, "id">) {
   };
 }
 
+// creating a new product and returning the frontend-normalized version
 export async function createProduct(product: Omit<Product, "id">) {
   const created = await createProductApi(toBackendPayload(product));
   return toFrontendProduct(created);
 }
 
+// updating an existing product and returning the frontend-normalized version
 export async function updateProduct(id: string, product: Omit<Product, "id">) {
   const updated = await updateProductApi(id, toBackendPayload(product));
   return toFrontendProduct(updated);
 }
 
+// uploading a product image and returning the updated product
 export async function uploadProductImage(id: string, file: File) {
   const updated = await uploadProductImageApi(id, file);
   return toFrontendProduct(updated);
 }
 
+// activating or deactivating a product by its ID
 export async function setProductStatus(id: string, status: ProductStatus) {
   if (status === "Inactive") {
     await deactivateProductApi(id);
@@ -171,6 +194,7 @@ export async function setProductStatus(id: string, status: ProductStatus) {
   return { ok: true };
 }
 
+// bulk updating the status of multiple products at once
 export async function bulkSetStatus(ids: string[], status: ProductStatus) {
   await Promise.all(ids.map((id) => setProductStatus(id, status)));
   return { ok: true };

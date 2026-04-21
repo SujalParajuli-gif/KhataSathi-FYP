@@ -48,6 +48,8 @@ type BulkActionState =
       successMessage: string;
     };
 
+// this normalizes business settings into safe numeric defaults before the product form uses them
+// we added the clamps here so missing or broken settings data does not produce invalid thresholds in the UI
 function normalizeBusinessDefaults(
   settings?: Partial<BusinessSettings> | null,
 ): BusinessSettings {
@@ -67,11 +69,15 @@ function normalizeBusinessDefaults(
   };
 }
 
+// keeping pagination inside valid limits prevents the table from landing on empty pages after filters change
 function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+// this is the main product management page
+// it handles searching, filtering, adding, editing, importing, and soft-deleting product records
 export default function ProductsPage() {
+  // we use this to create a clean form state for new products based on the current brand/category lists and saved defaults
   function buildDefaultProductForm(
     brandOptions: string[],
     categoryOptions: string[],
@@ -102,54 +108,57 @@ export default function ProductsPage() {
     () => normalizeBusinessDefaults(),
   );
 
-  const [products, setProducts] = useState<Product[]>([]);
-  const [total, setTotal] = useState(0);
+  const [products, setProducts] = useState<Product[]>([]); // stores the full fetched product list before table pagination is applied
+  const [total, setTotal] = useState(0); // backend-reported total matching the current filters
 
-  const [q, setQ] = useState("");
-  const [brand, setBrand] = useState("All Brands");
-  const [category, setCategory] = useState("All Categories");
+  const [q, setQ] = useState(""); // text search across product data
+  const [brand, setBrand] = useState("All Brands"); // brand dropdown filter
+  const [category, setCategory] = useState("All Categories"); // category dropdown filter
   const [stockStatus, setStockStatus] = useState<"all" | "in" | "low" | "out">(
     "all",
   );
-  const [status, setStatus] = useState<"all" | "active" | "inactive">("all");
-  const [lowOnly, setLowOnly] = useState(false);
+  const [status, setStatus] = useState<"all" | "active" | "inactive">("all"); // active vs inactive filter
+  const [lowOnly, setLowOnly] = useState(false); // quick toggle for low stock products only
 
-  const [selected, setSelected] = useState<Record<string, boolean>>({});
+  const [selected, setSelected] = useState<Record<string, boolean>>({}); // checkbox state for bulk actions across the current dataset
+  // converting the selection object into an id list makes the bulk action handlers much easier to work with
   const selectedIds = useMemo(
     () => Object.keys(selected).filter((id) => selected[id]),
     [selected],
   );
 
-  const fetchPageSize = 200;
-  const tablePageSize = 10;
-  const [page, setPage] = useState(1);
+  const fetchPageSize = 200; // we keep requesting products in larger chunks so client-side table paging feels instant
+  const tablePageSize = 10; // visible rows per table page
+  const [page, setPage] = useState(1); // current table page
 
-  const [openAddEdit, setOpenAddEdit] = useState(false);
-  const [openImport, setOpenImport] = useState(false);
-  const [openView, setOpenView] = useState(false);
-  const [openConfirmDelete, setOpenConfirmDelete] = useState(false);
-  const [bulkAction, setBulkAction] = useState<BulkActionState>(null);
+  const [openAddEdit, setOpenAddEdit] = useState(false); // controls the create/edit modal
+  const [openImport, setOpenImport] = useState(false); // controls the CSV import modal
+  const [openView, setOpenView] = useState(false); // controls the product detail modal
+  const [openConfirmDelete, setOpenConfirmDelete] = useState(false); // controls the single-product soft delete confirmation
+  const [bulkAction, setBulkAction] = useState<BulkActionState>(null); // stores the current bulk action confirmation content
 
-  const [activeProductId, setActiveProductId] = useState<string | null>(null);
-  const [formErrors, setFormErrors] = useState<ProductFormErrors>({});
-  const [productImageFile, setProductImageFile] = useState<File | null>(null);
-  const [productImagePreview, setProductImagePreview] = useState("");
-  const [importFile, setImportFile] = useState<File | null>(null);
-  const [importBusy, setImportBusy] = useState(false);
-  const [importError, setImportError] = useState("");
-  const [importResult, setImportResult] = useState<CsvImportResult | null>(null);
+  const [activeProductId, setActiveProductId] = useState<string | null>(null); // product currently being viewed, edited, or deleted
+  const [formErrors, setFormErrors] = useState<ProductFormErrors>({}); // field-level validation messages for the product form
+  const [productImageFile, setProductImageFile] = useState<File | null>(null); // uploaded image file waiting to be sent after save
+  const [productImagePreview, setProductImagePreview] = useState(""); // local preview URL or existing product image URL
+  const [importFile, setImportFile] = useState<File | null>(null); // selected CSV file for bulk import
+  const [importBusy, setImportBusy] = useState(false); // disables repeated import submits while upload is running
+  const [importError, setImportError] = useState(""); // import-specific error shown in the modal
+  const [importResult, setImportResult] = useState<CsvImportResult | null>(null); // row-by-row result returned after CSV import completes
 
   const [toast, setToast] = useState<{
     open: boolean;
     kind: ToastKind;
     message: string;
-  }>({ open: false, kind: "info", message: "" });
+  }>({ open: false, kind: "info", message: "" }); // shared toast feedback for all product actions
 
+  // finding the currently active product object once here keeps the modal and action handlers from repeating the same lookup
   const activeProduct = useMemo(
     () => products.find((product) => product.id === activeProductId) || null,
     [products, activeProductId],
   );
 
+  // seeding the form with safe defaults lets the add modal open instantly even before real metadata finishes loading
   const [form, setForm] = useState<Product>(() =>
     buildDefaultProductForm(
       ["All Brands", "CG Foods"],
@@ -158,20 +167,24 @@ export default function ProductsPage() {
     ),
   );
 
+  // this opens the shared toast component with a single helper call
   function toastMsg(kind: ToastKind, message: string) {
     setToast({ open: true, kind, message });
   }
 
+  // resetting form validation before opening a fresh add/edit flow avoids showing stale errors from the previous product
   function clearFormValidation() {
     setFormErrors({});
   }
 
+  // blob preview URLs need manual cleanup, otherwise repeated image changes slowly leak memory in the browser
   function revokePreview(url: string) {
     if (url.startsWith("blob:")) {
       URL.revokeObjectURL(url);
     }
   }
 
+  // this clears the current image selection and safely disposes any old blob preview
   function resetImageState(nextPreview = "") {
     setProductImageFile(null);
     setProductImagePreview((current) => {
@@ -180,6 +193,7 @@ export default function ProductsPage() {
     });
   }
 
+  // clearing every import-related field together makes the CSV modal start from a clean state each time it opens
   function resetImportState() {
     setImportFile(null);
     setImportBusy(false);
@@ -187,6 +201,7 @@ export default function ProductsPage() {
     setImportResult(null);
   }
 
+  // loading product meta and saved business defaults together keeps the filters and form defaults in sync
   async function loadMeta() {
     const [meta, settings] = await Promise.all([
       fetchProductsMeta(),
@@ -197,12 +212,15 @@ export default function ProductsPage() {
     setBusinessDefaults(normalizeBusinessDefaults(settings));
   }
 
+  // this fetches every product page that matches the current filters
+  // we collect them into one array because the UI table uses its own smaller client-side pagination
   async function loadProducts() {
     let nextPage = 1;
     let nextTotal = 0;
     const collected: Product[] = [];
 
     do {
+      // sending the current filter state to the backend for each paged request
       const res = await fetchProducts({
         q: q.trim() || undefined,
         brand: brand === "All Brands" ? undefined : brand,
@@ -215,9 +233,10 @@ export default function ProductsPage() {
       });
 
       collected.push(...res.items);
-      nextTotal = res.total;
+      nextTotal = res.total; // backend tells us how many matching rows exist in total
       nextPage += 1;
 
+      // this handles when the backend returns an empty page early, so we stop instead of looping forever
       if (res.items.length === 0) break;
     } while (collected.length < nextTotal);
 
@@ -226,10 +245,12 @@ export default function ProductsPage() {
   }
 
   React.useEffect(() => {
+    // cleaning up the last blob preview when the component unmounts or the preview url changes
     return () => revokePreview(productImagePreview);
   }, [productImagePreview]);
 
   React.useEffect(() => {
+    // fetching metadata and the initial product list when the page first loads
     (async () => {
       try {
         await loadMeta();
@@ -241,6 +262,7 @@ export default function ProductsPage() {
   }, []);
 
   React.useEffect(() => {
+    // reloading products whenever one of the filter values changes
     (async () => {
       try {
         await loadProducts();
@@ -251,18 +273,20 @@ export default function ProductsPage() {
   }, [q, brand, category, stockStatus, status, lowOnly, fetchPageSize]);
 
   React.useEffect(() => {
+    // sending the table back to page 1 after any filter change avoids landing on empty later pages
     setPage(1);
   }, [q, brand, category, stockStatus, status, lowOnly]);
 
-  const totalPages = Math.max(1, Math.ceil(products.length / tablePageSize));
-  const pageClamped = clampPage(page, 1, totalPages);
+  const totalPages = Math.max(1, Math.ceil(products.length / tablePageSize)); // client-side total page count for the visible table
+  const pageClamped = clampPage(page, 1, totalPages); // protecting against stale page numbers after the dataset changes
   const pageItems = useMemo(() => {
     const start = (pageClamped - 1) * tablePageSize;
     return products.slice(start, start + tablePageSize);
   }, [pageClamped, products, tablePageSize]);
-  const pageStart = products.length === 0 ? 0 : (pageClamped - 1) * tablePageSize;
-  const pageEnd = products.length === 0 ? 0 : pageStart + pageItems.length;
+  const pageStart = products.length === 0 ? 0 : (pageClamped - 1) * tablePageSize; // zero-based starting index for the current page
+  const pageEnd = products.length === 0 ? 0 : pageStart + pageItems.length; // ending index used by the table footer summary
 
+  // this resets every filter control back to its default value
   function clearFilters() {
     setQ("");
     setBrand("All Brands");
@@ -272,6 +296,7 @@ export default function ProductsPage() {
     setLowOnly(false);
   }
 
+  // toggling every checkbox on the current visible page is used by the bulk action buttons above the table
   function toggleAllOnPage(checked: boolean) {
     const next = { ...selected };
     pageItems.forEach((product) => {
@@ -280,10 +305,12 @@ export default function ProductsPage() {
     setSelected(next);
   }
 
+  // this updates one checkbox inside the selected map without losing the rest of the selected rows
   function toggleOne(id: string, checked: boolean) {
     setSelected((prev) => ({ ...prev, [id]: checked }));
   }
 
+  // this opens the add product modal with a brand-new form based on the latest business defaults
   function openAdd() {
     setActiveProductId(null);
     setForm(buildDefaultProductForm(brands, categories, businessDefaults));
@@ -292,6 +319,7 @@ export default function ProductsPage() {
     setOpenAddEdit(true);
   }
 
+  // this opens the edit modal using the selected product's current values
   function openEdit(product: Product) {
     setActiveProductId(product.id);
     setForm({ ...product });
@@ -300,22 +328,27 @@ export default function ProductsPage() {
     setOpenAddEdit(true);
   }
 
+  // this keeps the view modal and edit modal connected so the user can jump straight from one into the other
   function openEditFromView() {
     if (!activeProduct) return;
     setOpenView(false);
     openEdit(activeProduct);
   }
 
+  // storing the product id before opening the view modal lets the shared modal read the right product record
   function openViewProduct(product: Product) {
     setActiveProductId(product.id);
     setOpenView(true);
   }
 
+  // this prepares the single-product soft delete confirmation dialog
   function requestDelete(product: Product) {
     setActiveProductId(product.id);
     setOpenConfirmDelete(true);
   }
 
+  // this handles image uploads inside the add/edit modal
+  // it clears the image, blocks non-image files, and creates a local preview for valid selections
   function handleProductImageChange(file: File | null) {
     if (!file) {
       resetImageState("");
@@ -324,6 +357,7 @@ export default function ProductsPage() {
       return;
     }
 
+    // blocking files that are not images avoids sending invalid uploads to the backend later
     if (!file.type.startsWith("image/")) {
       setFormErrors((prev) => ({
         ...prev,
@@ -332,7 +366,7 @@ export default function ProductsPage() {
       return;
     }
 
-    const nextPreview = URL.createObjectURL(file);
+    const nextPreview = URL.createObjectURL(file); // creating a temporary browser URL so the user can preview the selected image immediately
     setProductImageFile(file);
     setProductImagePreview((current) => {
       revokePreview(current);
@@ -341,6 +375,7 @@ export default function ProductsPage() {
     setFormErrors((prev) => ({ ...prev, image: undefined }));
   }
 
+  // validating the product form before save helps us stop obvious bad data before making any API call
   function validateForm() {
     const errors: ProductFormErrors = {};
 
@@ -372,14 +407,17 @@ export default function ProductsPage() {
       errors.lowStockThreshold = "Stock alert threshold cannot be negative.";
     }
 
-    setFormErrors(errors);
+    setFormErrors(errors); // pushing every collected validation message into state at once
     return Object.keys(errors).length === 0;
   }
 
+  // this saves either a new product or edits an existing one, then optionally uploads its image
   async function saveProduct() {
+    // stopping here keeps invalid form data from reaching the backend
     if (!validateForm()) return;
 
     try {
+      // normalizing user-entered values before save keeps empty strings and default thresholds consistent
       const payload = {
         ...form,
         name: form.name.trim(),
@@ -399,19 +437,23 @@ export default function ProductsPage() {
       };
       delete (payload as any).id;
 
+      // deciding between create and update based on whether a product is currently active in edit mode
       const savedProduct = activeProductId
         ? await updateProduct(activeProductId, payload as any)
         : await createProduct(payload as any);
 
       let imageUploadFailed = false;
+      // uploading the image after the product save gives us the real saved product id to attach it to
       if (productImageFile) {
         try {
           await uploadProductImage(savedProduct.id, productImageFile);
         } catch {
+          // this handles when the image upload fails after the product itself was already saved
           imageUploadFailed = true;
         }
       }
 
+      // resetting the editor state after a successful save keeps the next open modal clean
       setOpenAddEdit(false);
       setActiveProductId(null);
       clearFormValidation();
@@ -419,6 +461,7 @@ export default function ProductsPage() {
       await loadProducts();
       setSelected({});
 
+      // we still show a partial-success message if the product save worked but the image upload did not
       if (imageUploadFailed) {
         toastMsg(
           "danger",
@@ -431,10 +474,12 @@ export default function ProductsPage() {
 
       toastMsg("success", activeProductId ? "Product updated." : "Product added.");
     } catch (error: any) {
+      // this handles any create or update failure from the product API
       toastMsg("danger", error?.message || "Failed to save product.");
     }
   }
 
+  // this bulk action turns every selected product back to Active state
   async function activateSelected() {
     if (selectedIds.length === 0) return;
     try {
@@ -447,6 +492,7 @@ export default function ProductsPage() {
     }
   }
 
+  // this opens the shared bulk confirmation modal for deactivating selected products
   function requestDeactivateSelected() {
     if (selectedIds.length === 0) return;
     setBulkAction({
@@ -464,6 +510,7 @@ export default function ProductsPage() {
     });
   }
 
+  // this opens the same bulk confirmation modal but with softer wording for a soft delete flow
   function requestSoftDeleteSelected() {
     if (selectedIds.length === 0) return;
     setBulkAction({
@@ -481,6 +528,7 @@ export default function ProductsPage() {
     });
   }
 
+  // this runs the inactive bulk status update after the user confirms the current bulk action
   async function confirmBulkAction() {
     if (!bulkAction || selectedIds.length === 0) return;
     if (selectedIds.length === 0) return;
@@ -495,6 +543,7 @@ export default function ProductsPage() {
     }
   }
 
+  // this soft-deletes one product by setting its status to Inactive
   async function confirmDeleteOne() {
     if (!activeProductId) return;
     try {
@@ -508,7 +557,9 @@ export default function ProductsPage() {
     }
   }
 
+  // this uploads the selected CSV file and then reloads the metadata + product list so the page reflects the imported rows
   async function handleImportCsv() {
+    // requiring a file first avoids sending an empty import request
     if (!importFile) {
       setImportError("Choose a CSV file before uploading.");
       return;
@@ -517,12 +568,14 @@ export default function ProductsPage() {
     try {
       setImportBusy(true);
       setImportError("");
+      // sending the CSV file to the backend and storing the per-row result summary it returns
       const result = (await importCsvApi(importFile)) as CsvImportResult;
       setImportResult(result);
       await loadMeta();
       await loadProducts();
       setSelected({});
 
+      // showing different toast messages depending on whether the import fully succeeded, partially succeeded, or failed completely
       if (result.createdCount > 0 && result.errorCount === 0) {
         toastMsg("success", `${result.createdCount} product${result.createdCount === 1 ? "" : "s"} imported.`);
       } else if (result.createdCount > 0) {
@@ -534,6 +587,7 @@ export default function ProductsPage() {
         toastMsg("danger", "No products were imported. Review the row errors.");
       }
     } catch (error: any) {
+      // preferring backend error text here helps the user understand row format issues more clearly
       const message =
         error?.response?.data?.error ||
         error?.message ||
@@ -547,6 +601,7 @@ export default function ProductsPage() {
 
   return (
     <div className="space-y-[14px]">
+      {/* handing all current filter state and bulk action callbacks into the shared filter/header card */}
       <ProductsFiltersCard
         q={q}
         setQ={setQ}
@@ -574,6 +629,7 @@ export default function ProductsPage() {
         onSoftDelete={requestSoftDeleteSelected}
       />
 
+      {/* this table only receives the current client-side page slice, not the full product array */}
       <ProductsTableCard
         rows={pageItems}
         selected={selected}
@@ -590,6 +646,7 @@ export default function ProductsPage() {
         onPageChange={setPage}
       />
 
+      {/* centralizing modal state here keeps add/edit/view/import/delete flows coordinated from one page component */}
       <ProductsModals
         brands={brands}
         categories={categories}
