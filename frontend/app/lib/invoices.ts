@@ -1,6 +1,8 @@
-﻿export type InvoiceStatusLabel = "Paid" | "Partial" | "Unpaid" | "Cancelled";
+// type definitions for invoice display labels
+export type InvoiceStatusLabel = "Paid" | "Partial" | "Unpaid" | "Cancelled";
 export type PaymentMethodLabel = "Cash" | "eSewa" | "None";
 
+// the shape of each item inside an invoice — used for the invoice detail modal
 export type InvoiceItemSummary = {
   id: string;
   name: string;
@@ -11,6 +13,7 @@ export type InvoiceItemSummary = {
   lineTotal: number;
 };
 
+// the shape of each payment recorded against an invoice
 export type InvoicePaymentSummary = {
   id: string;
   method: PaymentMethodLabel;
@@ -21,17 +24,19 @@ export type InvoicePaymentSummary = {
   createdByName?: string;
 };
 
+// the full normalized invoice object used across the frontend
+// we transform the raw API response into this shape so every component works with a consistent format
 export type AppInvoice = {
   id: string;
   invoiceNo: string;
   cashierId?: string;
   customerId?: string | null;
   customerName: string;
-  customerSubtitle: string;
+  customerSubtitle: string; // e.g., "Wholesale customer | 9841234567"
   cashierName: string;
   createdAt: string;
-  createdDateLabel: string;
-  createdTimeLabel: string;
+  createdDateLabel: string; // formatted date like "Apr 18, 2026"
+  createdTimeLabel: string; // formatted time like "02:30 PM"
   status: InvoiceStatusLabel;
   paymentMethod: PaymentMethodLabel;
   subtotal: number;
@@ -40,13 +45,14 @@ export type AppInvoice = {
   paidAmount: number;
   dueAmount: number;
   items: InvoiceItemSummary[];
-  itemSummary: string;
+  itemSummary: string; // short preview like "Product A x2, Product B x1 +3 more"
   payments: InvoicePaymentSummary[];
   cancelledAt?: string;
   cancelledByName?: string;
   cancelledByRole?: string;
 };
 
+// building a descriptive subtitle for the customer — shows wholesale/loyalty status and contact info
 function buildCustomerSubtitle(rawCustomer: any) {
   if (!rawCustomer) return "Walk-in customer";
 
@@ -65,6 +71,9 @@ function buildCustomerSubtitle(rawCustomer: any) {
   return parts.join(" | ") || "Walk-in customer";
 }
 
+// --
+
+// formatting a number as Nepalese Rupees — e.g., "NPR 1,500" or "NPR 1,500.50"
 export function formatNpr(value: number) {
   const normalized = Math.round((Number(value || 0) + Number.EPSILON) * 100) / 100;
   return `NPR ${normalized.toLocaleString(undefined, {
@@ -73,6 +82,7 @@ export function formatNpr(value: number) {
   })}`;
 }
 
+// formatting an ISO date string as a short date label like "Apr 18, 2026"
 export function formatDateLabel(isoDate: string) {
   return new Date(isoDate).toLocaleDateString(undefined, {
     month: "short",
@@ -81,6 +91,7 @@ export function formatDateLabel(isoDate: string) {
   });
 }
 
+// formatting an ISO date string as a time label like "02:30 PM"
 export function formatTimeLabel(isoDate: string) {
   return new Date(isoDate).toLocaleTimeString([], {
     hour: "2-digit",
@@ -88,6 +99,7 @@ export function formatTimeLabel(isoDate: string) {
   });
 }
 
+// formatting a date as a relative time label for alerts — "Just now", "5m ago", "3h ago", or a date
 export function formatAlertTimeLabel(isoDate: string) {
   const date = new Date(isoDate);
   const now = new Date();
@@ -100,12 +112,17 @@ export function formatAlertTimeLabel(isoDate: string) {
   const diffHours = Math.floor(diffMinutes / 60);
   if (diffHours < 24) return `${diffHours}h ago`;
 
+  // for anything older than 24 hours, we show the actual date
   return date.toLocaleDateString(undefined, {
     month: "short",
     day: "2-digit",
   });
 }
 
+// --
+
+// converting the raw payment status from the API into a display-friendly label
+// the backend may send the status directly or we need to check both status and paymentStatus fields
 export function mapInvoiceStatus(rawStatus?: string, rawPaymentStatus?: string): InvoiceStatusLabel {
   const paymentUpper = String(rawPaymentStatus || "").toUpperCase();
   const statusUpper = String(rawStatus || "").toUpperCase();
@@ -117,6 +134,8 @@ export function mapInvoiceStatus(rawStatus?: string, rawPaymentStatus?: string):
   return "Unpaid";
 }
 
+// determining the primary payment method for an invoice
+// we prefer the first successful payment's method, otherwise we fall back to the first payment
 export function mapPaymentMethod(payments: any[]): PaymentMethodLabel {
   if (!payments || payments.length === 0) return "None";
 
@@ -130,6 +149,8 @@ export function mapPaymentMethod(payments: any[]): PaymentMethodLabel {
   return "None";
 }
 
+// building a short text summary of invoice items for list views
+// shows the first 2 items and a "+N more" suffix if there are additional items
 export function buildInvoiceItemSummary(items: InvoiceItemSummary[]) {
   if (items.length === 0) return "No items";
   const preview = items.slice(0, 2).map((item) => `${item.name} x${item.qty}`);
@@ -137,12 +158,19 @@ export function buildInvoiceItemSummary(items: InvoiceItemSummary[]) {
   return moreCount > 0 ? `${preview.join(", ")} +${moreCount} more` : preview.join(", ");
 }
 
+// extracting the payment reference (e.g., eSewa transaction code) from the first payment that has one
 export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
   return invoice.payments.find((payment) => payment.reference)?.reference || "";
 }
 
+// --
+
+// the main normalization function — converts a raw API invoice response into our AppInvoice format
+// this handles all the edge cases where fields might be missing or named differently
 export function normalizeInvoice(raw: any): AppInvoice {
   const createdAt = String(raw.createdAt || new Date().toISOString());
+
+  // normalizing each invoice item — handles different field name patterns from the API
   const items: InvoiceItemSummary[] = (raw.items || []).map((item: any) => ({
     id:
       item.id ||
@@ -157,6 +185,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
         Number(item.qty || 0) * Number(item.appliedUnitPrice || item.unitPrice || 0),
     ),
   }));
+
+  // normalizing each payment record
   const payments: InvoicePaymentSummary[] = (raw.payments || []).map((payment: any) => ({
     id: payment.id || `${payment.method}-${payment.createdAt}`,
     method: mapPaymentMethod([payment]),
@@ -167,6 +197,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
     createdByName: payment.createdBy?.name || undefined,
   }));
 
+  // calculating totals — handling different field names the API might use
   const subtotal =
     Number(raw.subTotal ?? raw.subtotal ?? 0) ||
     items.reduce((sum, item) => sum + item.lineTotal, 0);
@@ -174,6 +205,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
   const netTotal = Number(raw.netTotal ?? raw.total ?? subtotal - discount);
   const paidAmount = Number(raw.paidTotal ?? raw.paidAmount ?? 0);
   const status = mapInvoiceStatus(raw.status, raw.paymentStatus);
+  // if the invoice is cancelled, the due amount is always 0
   const dueAmount =
     status === "Cancelled"
       ? 0
@@ -206,6 +238,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
   };
 }
 
+// opening the printable invoice view in a new browser tab
 export function openInvoicePrint(invoiceId: string) {
   if (typeof window === "undefined") return;
   window.open(`/invoices/${invoiceId}/print`, "_blank", "noopener,noreferrer");

@@ -1,10 +1,11 @@
-﻿import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
 } from "~/components/invoices/InvoiceChips";
 import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
 import Icon from "~/components/ui/Icon";
+import { getAuthUser } from "~/lib/auth";
 import { getInvoiceApi, listInvoicesApi } from "~/lib/api/endpoints";
 import type { AppInvoice, InvoiceStatusLabel } from "~/lib/invoices";
 import {
@@ -13,10 +14,13 @@ import {
   normalizeInvoice,
 } from "~/lib/invoices";
 
+// we use this helper function to easily join multiple tailwind class strings
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// this converts an HTML date picker string (e.g., "2024-03-12") into a local timezone
+// Date object. We added endOfDay boolean so "to date" filters can include all time up to 11:59 PM.
 function buildLocalDateBoundary(value: string, endOfDay = false) {
   if (!value) return null;
 
@@ -34,42 +38,63 @@ function buildLocalDateBoundary(value: string, endOfDay = false) {
   );
 }
 
+// we use this to keep the pagination page number between 1 and the max pages available
 function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+// reusing the same walk-in vs registered rule keeps filtering consistent with the invoice page
+function getInvoiceCustomerType(invoice: Pick<AppInvoice, "customerId">) {
+  return invoice.customerId ? "Registered" : "Walk-in";
+}
+
+type HistoryCustomerTypeFilter = "All" | "Walk-in" | "Registered";
+
+// this handles the "Invoice History" page 
+// where admins and cashiers can browse, filter, search, and review all past invoices in the system
 export default function HistoryPage() {
-  const [invoices, setInvoices] = useState<AppInvoice[]>([]);
-  const [loading, setLoading] = useState(true);
-  const [query, setQuery] = useState("");
-  const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All");
-  const [fromDate, setFromDate] = useState("");
-  const [toDate, setToDate] = useState("");
+  const authUser = getAuthUser();
+  const isAdminView = authUser?.role === "admin";
+  const [invoices, setInvoices] = useState<AppInvoice[]>([]); // stores the normalized invoice list used by all filters and summary cards
+  const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
+  const [query, setQuery] = useState(""); // free text search across invoice number, customer, cashier, items, and reference
+  const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // main status tab selection
+  const [fromDate, setFromDate] = useState(""); // lower date boundary from the filter controls
+  const [toDate, setToDate] = useState(""); // upper date boundary from the filter controls
+  const [cashierFilter, setCashierFilter] = useState("All"); // admin-facing cashier selector for narrowing history records to one cashier
+  const [customerTypeFilter, setCustomerTypeFilter] =
+    useState<HistoryCustomerTypeFilter>("All"); // lets admins combine customer type and cashier filters together
   const [methodFilter, setMethodFilter] = useState<
     "All" | AppInvoice["paymentMethod"]
-  >("All");
-  const [page, setPage] = useState(1);
+  >("All"); // payment method filter from the dropdown
+  const [page, setPage] = useState(1); // current page inside the filtered results list
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
-  const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null);
+  const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null); // invoice shown inside the detail modal
 
+  // fetching all invoices
+  // we do this once so we can easily filter, sort, and search on the client side without needing constant loading states
   async function loadInvoices() {
+    // asking for a larger page size here reduces the chance that history filters miss records because of pagination
     const data = await listInvoicesApi({ pageSize: 100 });
-    const rows = Array.isArray(data?.invoices) ? data.invoices : [];
+    const rows = Array.isArray(data?.invoices) ? data.invoices : []; // keeping a safe empty fallback when the API shape is unexpected
     setInvoices(rows.map(normalizeInvoice));
   }
 
+  // we use this helper to fetch one invoice with its full detail data right before opening the modal
   async function hydrateInvoice(id: string) {
     const data = await getInvoiceApi(id);
     return normalizeInvoice(data);
   }
 
   useEffect(() => {
+    // loading the first invoice batch when the history page opens
     async function load() {
       try {
         await loadInvoices();
       } catch {
+        // this handles when the list request fails, so we fall back to an empty table instead of leaving stale data on screen
         setInvoices([]);
       } finally {
         setLoading(false);
@@ -79,22 +104,54 @@ export default function HistoryPage() {
     load();
   }, []);
 
+  // deriving cashier options from the loaded invoices avoids extra requests while keeping labels accurate
+  const cashierOptions = useMemo(() => {
+    const options = new Map<string, string>();
+
+    invoices.forEach((invoice) => {
+      if (!invoice.cashierId) return;
+      if (!options.has(invoice.cashierId)) {
+        options.set(invoice.cashierId, invoice.cashierName);
+      }
+    });
+
+    return Array.from(options.entries())
+      .map(([id, name]) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [invoices]);
+
+  // filtering the full list of invoices based on the search query, date boundaries, status tab, and payment method selected
+  // we wrap this in useMemo so it only recalculates when one of those pieces of state actually changes
   const filtered = useMemo(() => {
-    const loweredQuery = query.trim().toLowerCase();
-    const fromBoundary = buildLocalDateBoundary(fromDate);
-    const toBoundary = buildLocalDateBoundary(toDate, true);
+    const loweredQuery = query.trim().toLowerCase(); // normalizing search once so we do not repeat trim/lowercase work inside each filter callback
+    const fromBoundary = buildLocalDateBoundary(fromDate); // turning the from date into a real Date object for timestamp comparisons
+    const toBoundary = buildLocalDateBoundary(toDate, true); // end-of-day mode keeps the selected "to" date fully inclusive
 
     return invoices
+      // filtering by status first because it usually removes the biggest chunk of rows
       .filter((invoice) =>
         activeTab === "All" ? true : invoice.status === activeTab,
       )
+      .filter((invoice) =>
+        isAdminView
+          ? cashierFilter === "All"
+            ? true
+            : invoice.cashierId === cashierFilter
+          : true,
+      )
+      .filter((invoice) =>
+        customerTypeFilter === "All"
+          ? true
+          : getInvoiceCustomerType(invoice) === customerTypeFilter,
+      )
+      // then applying the payment method filter if the user chose one
       .filter((invoice) =>
         methodFilter === "All"
           ? true
           : invoice.paymentMethod === methodFilter,
       )
       .filter((invoice) => {
-        const createdAtTime = new Date(invoice.createdAt).getTime();
+        const createdAtTime = new Date(invoice.createdAt).getTime(); // converting invoice time once so both date boundary checks use the same number
         if (fromBoundary && createdAtTime < fromBoundary.getTime()) {
           return false;
         }
@@ -104,8 +161,10 @@ export default function HistoryPage() {
         return true;
       })
       .filter((invoice) => {
+        // when there is no search text, we keep every row that already passed the earlier filters
         if (!loweredQuery) return true;
 
+        // combining searchable text into one string keeps the filter logic short and easy to extend later
         return [
           invoice.invoiceNo,
           invoice.customerName,
@@ -117,27 +176,46 @@ export default function HistoryPage() {
           .toLowerCase()
           .includes(loweredQuery);
       });
-  }, [activeTab, fromDate, invoices, methodFilter, query, toDate]);
+  }, [
+    activeTab,
+    cashierFilter,
+    customerTypeFilter,
+    fromDate,
+    invoices,
+    isAdminView,
+    methodFilter,
+    query,
+    toDate,
+  ]);
 
   const hasExtraFilters =
-    fromDate.length > 0 || toDate.length > 0 || methodFilter !== "All";
+    fromDate.length > 0 ||
+    toDate.length > 0 ||
+    methodFilter !== "All" ||
+    customerTypeFilter !== "All" ||
+    (isAdminView && cashierFilter !== "All"); // decides whether the clear button should be enabled
 
+  // this resets only the secondary filters and leaves the main search + status tab untouched
   function clearExtraFilters() {
     setFromDate("");
     setToDate("");
+    setCashierFilter("All");
+    setCustomerTypeFilter("All");
     setMethodFilter("All");
     setPage(1);
   }
 
-  const pageSize = 10;
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const pageClamped = clampPage(page, 1, totalPages);
+  const pageSize = 10; // keeping the history table short enough to scan without feeling cramped
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize)); // forcing at least 1 page keeps pagination math simple even with zero rows
+  const pageClamped = clampPage(page, 1, totalPages); // protecting against stale page numbers after filters shrink the result set
 
   const pageItems = useMemo(() => {
     const start = (pageClamped - 1) * pageSize;
     return filtered.slice(start, start + pageSize);
   }, [filtered, pageClamped]);
 
+  // these summary values all recalculate from the currently filtered list
+  // that way the cards always match exactly what the table below is showing
   const totalSales = useMemo(
     () =>
       filtered.reduce(
@@ -174,22 +252,29 @@ export default function HistoryPage() {
     [filtered],
   );
 
+  // fetching the full invoice details when the user clicks the "visibility" icon
+  // the main list doesn't have detailed relations, so we fetch it fresh by its ID
   async function openInvoice(id: string) {
+    // start by showing whatever cached basic info we have in the array so the modal opens instantly
     const cached = invoices.find((invoice) => invoice.id === id) || null;
     setSelectedInvoiceId(id);
     setDetailInvoice(cached);
+    // then fetch real data over the network
     try {
       setDetailInvoice(await hydrateInvoice(id));
     } catch {
+      // this handles when the detail fetch fails, and we keep showing the cached invoice preview instead of closing the modal
       setDetailInvoice(cached);
     }
   }
 
+  // closing the detail modal also clears the last selected invoice so the next open starts fresh
   function closeInvoice() {
     setSelectedInvoiceId(null);
     setDetailInvoice(null);
   }
 
+  // this handles when the invoice list is still loading on the first page visit
   if (loading) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
@@ -200,11 +285,13 @@ export default function HistoryPage() {
 
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-[24px] text-[#0F172A]">
+      {/* this page shell keeps the same rounded admin workspace look used by the other protected route screens */}
       <p className="max-w-[720px] text-[13px] font-medium text-slate-500">
         Real invoice records with payment totals, status, method, and
         reference data.
       </p>
 
+      {/* these summary cards use a wide responsive grid so the key totals stay visible before the user starts scrolling the table */}
       <div className="mt-4 grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-7">
         <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5">
           <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
@@ -270,6 +357,7 @@ export default function HistoryPage() {
         </div>
       </div>
 
+      {/* this filter card groups tabs, search, and extra filters into one surface so browsing history feels like a single workflow */}
       <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
         <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
           <div className="min-w-0 flex-1">
@@ -320,7 +408,14 @@ export default function HistoryPage() {
           </div>
         </div>
 
-        <div className="mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto] xl:items-end">
+        <div
+          className={cn(
+            "mt-4 grid grid-cols-1 gap-3 md:grid-cols-2 xl:items-end",
+            isAdminView
+              ? "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]"
+              : "xl:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_minmax(0,1fr)_auto]",
+          )}
+        >
           <label className="space-y-2">
             <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
               From Date
@@ -353,6 +448,49 @@ export default function HistoryPage() {
             />
           </label>
 
+          {isAdminView ? (
+            <label className="space-y-2">
+              <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                Cashier
+              </div>
+              <select
+                value={cashierFilter}
+                onChange={(event) => {
+                  setCashierFilter(event.target.value);
+                  setPage(1);
+                }}
+                className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+              >
+                <option value="All">All Cashiers</option>
+                {cashierOptions.map((cashier) => (
+                  <option key={cashier.id} value={cashier.id}>
+                    {cashier.name}
+                  </option>
+                ))}
+              </select>
+            </label>
+          ) : null}
+
+          <label className="space-y-2">
+            <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+              Customer Type
+            </div>
+            <select
+              value={customerTypeFilter}
+              onChange={(event) => {
+                setCustomerTypeFilter(
+                  event.target.value as HistoryCustomerTypeFilter,
+                );
+                setPage(1);
+              }}
+              className="h-[46px] w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] text-[14px] font-semibold text-[#000000] outline-none focus:border-[#11120D]"
+            >
+              <option value="All">All Customers</option>
+              <option value="Walk-in">Walk-in</option>
+              <option value="Registered">Registered</option>
+            </select>
+          </label>
+
           <label className="space-y-2">
             <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
               Payment Method
@@ -374,13 +512,13 @@ export default function HistoryPage() {
             </select>
           </label>
 
-          <div className="flex items-end">
+          <div className="flex items-end xl:justify-end">
             <button
               type="button"
               onClick={clearExtraFilters}
               disabled={!hasExtraFilters}
               className={cn(
-                "h-[46px] w-full rounded-[14px] border px-4 text-[13px] font-extrabold transition md:w-auto md:min-w-[132px]",
+                "h-[46px] w-full rounded-[14px] border px-4 text-[13px] font-extrabold whitespace-nowrap transition md:w-auto md:min-w-[132px]",
                 hasExtraFilters
                   ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]"
                   : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",

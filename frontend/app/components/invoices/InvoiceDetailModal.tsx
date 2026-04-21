@@ -1,4 +1,4 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
@@ -7,29 +7,36 @@ import Icon from "~/components/ui/Icon";
 import type { AppInvoice } from "~/lib/invoices";
 import { formatNpr, openInvoicePrint } from "~/lib/invoices";
 
+type Props = {
+  open: boolean;
+  invoice: AppInvoice | null;
+  onClose: () => void;
+  // extra actions to show in the summary section (e.g., Pay / Cancel buttons for unpaid invoices)
+  extraActions?: ReactNode;
+};
+
+// the main invoice detail modal — handles showing everything about a specific invoice
+// shows customer info, line items, payment breakdown, cancellation details if any, and overall totals
 export default function InvoiceDetailModal({
   open,
   invoice,
   onClose,
   extraActions,
-}: {
-  open: boolean;
-  invoice: AppInvoice | null;
-  onClose: () => void;
-  extraActions?: ReactNode;
-}) {
-  if (!open || !invoice) return null;
+}: Props) {
+  if (!open || !invoice) return null; // do not render anything when closed or missing data
 
   return (
     <div className="fixed inset-0 z-[60]">
+      {/* modal backdrop — click to close */}
       <button
         type="button"
-        className="absolute inset-0 bg-[rgba(0,0,0,0.3)]"
+        className="absolute inset-0 bg-[rgba(0,0,0,0.3)] backdrop-blur-sm"
         onClick={onClose}
         aria-label="Close"
       />
 
       <div className="absolute left-1/2 top-1/2 max-h-[92vh] w-[980px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[20px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] ">
+        {/* modal header — shows invoice number, customer name, and status */}
         <div className="flex items-start justify-between gap-[12px] border-b-[2px] border-[#E5E7EB] p-[20px]">
           <div>
             <div className="text-[12px] font-bold text-[#8C8889]">Invoice</div>
@@ -57,8 +64,11 @@ export default function InvoiceDetailModal({
           </div>
         </div>
 
+        {/* modal body — grid split into left (items, payments) and right (summary) columns */}
         <div className="grid max-h-[80vh] grid-cols-12 gap-[20px] overflow-y-auto p-[20px]">
+          {/* left column */}
           <div className="col-span-12 space-y-[16px] xl:col-span-7">
+            {/* items table */}
             <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
               <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
                 <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
@@ -103,6 +113,7 @@ export default function InvoiceDetailModal({
               </div>
             </div>
 
+            {/* brief payment summary block */}
             <div className="rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
               <div className="flex items-center justify-between text-[13px]">
                 <span className="font-bold text-[#8C8889]">Payment summary</span>
@@ -131,6 +142,7 @@ export default function InvoiceDetailModal({
               </div>
             </div>
 
+            {/* cancellation details — only shown if the invoice status is Cancelled */}
             {invoice.status === "Cancelled" ? (
               <div className="rounded-[16px] border-[2px] border-rose-200 bg-rose-50 p-[16px]">
                 <div className="text-[12px] font-extrabold uppercase text-rose-700">
@@ -161,6 +173,7 @@ export default function InvoiceDetailModal({
               </div>
             ) : null}
 
+            {/* payment history list */}
             <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
               <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
                 <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
@@ -216,12 +229,14 @@ export default function InvoiceDetailModal({
             </div>
           </div>
 
+          {/* right column — financial summary and actions */}
           <div className="col-span-12 xl:col-span-5">
             <div className="rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] p-[20px]">
               <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
                 Summary
               </div>
 
+              {/* financial totals */}
               <div className="mt-[16px] space-y-[12px] text-[13px]">
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Subtotal</span>
@@ -256,6 +271,7 @@ export default function InvoiceDetailModal({
 
                 <div className="my-[8px] border-t border-dashed border-[#CFCFD3]" />
 
+                {/* customer info card */}
                 <div className="rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]">
                   <div className="text-[12px] font-bold text-[#565449]">
                     Customer
@@ -268,7 +284,9 @@ export default function InvoiceDetailModal({
                   </div>
                 </div>
 
+                {/* modal action buttons */}
                 <div className="mt-[16px] grid grid-cols-1 gap-[12px]">
+                  {/* printing triggers the native browser print dialogue for the invoice */}
                   <button
                     type="button"
                     onClick={() => openInvoicePrint(invoice.id)}
@@ -277,6 +295,7 @@ export default function InvoiceDetailModal({
                     <Icon name="print" />
                     Print Invoice
                   </button>
+                  {/* dynamically rendering extra actions passed from the parent page */}
                   {extraActions}
                 </div>
 
