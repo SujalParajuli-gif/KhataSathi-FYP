@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Area,
   Bar,
@@ -38,6 +38,7 @@ import {
 
 type RangeSelection = AnalyticsRangePreset | "custom";
 
+// mapping payment methods to colors used in the charts
 const PAYMENT_COLORS: Record<AnalyticsPaymentMethod, string> = {
   CASH: "#11120d",
   ESEWA: "#179b4d",
@@ -47,6 +48,7 @@ function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
 }
 
+// we use this helper function to format long big numbers to compact styles (e.g. 1000 = 1k)
 function compact(value: number) {
   return new Intl.NumberFormat(undefined, {
     notation: "compact",
@@ -54,14 +56,17 @@ function compact(value: number) {
   }).format(value);
 }
 
+// formats numbers as percentages
 function pct(value: number) {
   return `${value.toFixed(value % 1 === 0 ? 0 : 1)}%`;
 }
 
+// limits long strings so they don't break the layout, appending "..." if they do
 function shorten(value: string, max = 18) {
   return value.length <= max ? value : `${value.slice(0, max - 3)}...`;
 }
 
+// we check multiple places for an error message so nothing blows up
 function errorMessage(error: any) {
   return (
     error?.response?.data?.error ||
@@ -70,6 +75,7 @@ function errorMessage(error: any) {
   );
 }
 
+// this is the shared card wrapper used across all analytics sections
 function Panel({
   title,
   subtitle,
@@ -101,6 +107,7 @@ function Panel({
   );
 }
 
+// this renders one summary metric card at the top of the analytics page
 function MetricCard({
   title,
   value,
@@ -141,6 +148,7 @@ function MetricCard({
   );
 }
 
+// this is the shared export button used for Excel and CSV actions
 function ActionButton({
   icon,
   label,
@@ -172,6 +180,7 @@ function ActionButton({
   );
 }
 
+// this shows a friendly placeholder when a chart has no records for the current filters
 function EmptyChart({ message }: { message: string }) {
   return (
     <div className="flex h-full min-h-[280px] items-center justify-center rounded-[18px] border border-dashed border-[#CFCFD3] bg-[#F3F4F6]/70 px-4 py-6 text-center text-[13px] font-semibold text-[#8C8889]">
@@ -180,6 +189,8 @@ function EmptyChart({ message }: { message: string }) {
   );
 }
 
+// some chart libraries render badly when the parent size is still 0
+// this wrapper measures the real container first, then injects width and height into the chart element
 function SafeChartFrame({
   className,
   children,
@@ -242,6 +253,8 @@ function SafeChartFrame({
   );
 }
 
+// this handles the main analytics dashboard for admins
+// we built this to show real-time insights based on fetched invoice data
 export default function AnalyticsPage() {
   const initialPreset: AnalyticsRangePreset = "month";
   const [rangeSelection, setRangeSelection] =
@@ -252,15 +265,16 @@ export default function AnalyticsPage() {
   const [filters, setFilters] = useState<AnalyticsFilters>({
     ...getRangeFromPreset(initialPreset),
   });
-  const [report, setReport] = useState<AnalyticsReport | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState("");
-  const [filterError, setFilterError] = useState("");
-  const [exportBusy, setExportBusy] = useState<"" | "excel" | "csv">("");
+  const [report, setReport] = useState<AnalyticsReport | null>(null); // latest analytics payload returned by the backend
+  const [loading, setLoading] = useState(true); // first load and filter-apply loading state
+  const [error, setError] = useState(""); // page-level fetch/export error
+  const [filterError, setFilterError] = useState(""); // validation message for invalid custom date ranges
+  const [exportBusy, setExportBusy] = useState<"" | "excel" | "csv">(""); // tracks which export action is currently running
 
   useEffect(() => {
     let cancelled = false;
 
+    // fetching the analytics report again whenever the applied filters change
     async function load() {
       setLoading(true);
       setError("");
@@ -283,6 +297,8 @@ export default function AnalyticsPage() {
     };
   }, [filters]);
 
+  // pre-computing and sorting the data given by the backend for our charts
+  // this keeps things fast and ensures we only do the heavy lifting when new data arrives
   const salesData = useMemo(() => report?.salesOverTime || [], [report]);
   const paymentData = useMemo(
     () => (report?.paymentDistribution || []).filter((item) => item.amount > 0),
@@ -317,8 +333,9 @@ export default function AnalyticsPage() {
         .map((item) => ({ ...item, label: shorten(item.name, 18) })),
     [report],
   );
-  const hasData = !!report && report.summary.invoiceCount > 0;
+  const hasData = !!report && report.summary.invoiceCount > 0; // used to switch between real charts and empty states
 
+  // setting the draft filters that change as the user interacts with inputs
   function setDraft(
     next: Partial<AnalyticsFilters>,
     nextRange?: RangeSelection,
@@ -328,6 +345,7 @@ export default function AnalyticsPage() {
     setFilterError("");
   }
 
+  // this validates the custom filter state before we commit it as the active analytics query
   function apply(next: AnalyticsFilters) {
     if (!next.from || !next.to)
       return setFilterError("Select both a start and end date.");
@@ -344,6 +362,7 @@ export default function AnalyticsPage() {
     });
   }
 
+  // selecting a preset automatically overrides draft changes and applies new active boundaries immediately
   function pickPreset(preset: AnalyticsRangePreset) {
     const next = { ...draftFilters, ...getRangeFromPreset(preset) };
     setRangeSelection(preset);
@@ -351,6 +370,7 @@ export default function AnalyticsPage() {
     apply(next);
   }
 
+  // export analytics to excel sheet flow
   async function exportExcel() {
     if (!report) return;
     try {
@@ -365,6 +385,7 @@ export default function AnalyticsPage() {
     if (!report) return;
     try {
       setExportBusy("csv");
+      // downloading the raw csv blob from the backend, then saving it with the same filter context as the current report
       const blob = await downloadAnalyticsCsvApi(filters);
       downloadCsvBlob(report, blob);
     } catch (err) {
@@ -400,6 +421,7 @@ export default function AnalyticsPage() {
         }
       >
         <div className="space-y-4 px-5 py-5">
+          {/* these preset chips keep the common date ranges one click away before the user reaches for custom filters */}
           <div className="flex flex-wrap gap-2">
             {(
               ["today", "week", "month", "quarter"] as AnalyticsRangePreset[]
@@ -426,6 +448,7 @@ export default function AnalyticsPage() {
             ))}
           </div>
 
+          {/* the filter row wraps on smaller screens so date and dropdown controls stay usable without shrinking too hard */}
           <div className="grid grid-cols-1 gap-4 xl:flex xl:flex-wrap xl:items-center">
             <input
               type="date"
@@ -535,6 +558,7 @@ export default function AnalyticsPage() {
         </Panel>
       ) : (
         <>
+          {/* these metric cards lead the page because they answer the main business questions before the user studies the charts */}
           <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
             <MetricCard
               title="Net Sales"

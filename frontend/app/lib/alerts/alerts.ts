@@ -1,26 +1,31 @@
-﻿import { listAlertsApi } from "~/lib/api/endpoints";
+import { listAlertsApi } from "~/lib/api/endpoints";
 import { formatAlertTimeLabel } from "~/lib/invoices";
 
+// the alert severity levels — CRITICAL for out of stock, LOW for below threshold, INFO for invoice activity
 export type AppAlertLevel = "CRITICAL" | "LOW" | "INFO";
 export type AppAlertType = "Stock" | "Invoice";
 
+// the shape of each alert used across the frontend
 export type AppAlert = {
-  key: string;
+  key: string; // unique identifier used for read/unread tracking
   title: string;
   message: string;
   level: AppAlertLevel;
   type: AppAlertType;
   createdAt: string;
-  timeLabel: string;
+  timeLabel: string; // human-readable time like "5m ago" or "Apr 18"
   read: boolean;
 };
 
+// mapping each alert type to a Material Symbols icon name
 export function alertIcon(alert: Pick<AppAlert, "type" | "level">) {
   if (alert.type === "Stock") return "inventory_2";
   if (alert.level === "CRITICAL") return "error";
-  return "receipt_long";
+  return "receipt_long"; // default icon for invoice alerts
 }
 
+// returning a set of CSS class names based on the alert type and severity
+// we use different color palettes for critical (red), stock (amber), and info (blue) alerts
 export function alertTone(alert: Pick<AppAlert, "type" | "level">) {
   if (alert.level === "CRITICAL") {
     return {
@@ -48,6 +53,7 @@ export function alertTone(alert: Pick<AppAlert, "type" | "level">) {
     };
   }
 
+  // default blue tones for invoice/info alerts
   return {
     icon: "bg-[#EEF4FF] text-[#2F67D8]",
     unreadDot: "bg-[#2F67D8]",
@@ -60,10 +66,13 @@ export function alertTone(alert: Pick<AppAlert, "type" | "level">) {
   };
 }
 
+// shortcut to get just the icon color classes for an alert
 export function alertColor(alert: Pick<AppAlert, "type" | "level">) {
   return alertTone(alert).icon;
 }
 
+// converting a raw alert object from the API into our AppAlert format
+// we also compute the human-readable time label here
 export function normalizeAlert(raw: any): AppAlert {
   const createdAt = String(raw.createdAt || new Date().toISOString());
   return {
@@ -73,11 +82,12 @@ export function normalizeAlert(raw: any): AppAlert {
     level: raw.level || "INFO",
     type: raw.type || "Invoice",
     createdAt,
-    timeLabel: formatAlertTimeLabel(createdAt),
+    timeLabel: formatAlertTimeLabel(createdAt), // converting ISO date to "5m ago" style label
     read: Boolean(raw.read),
   };
 }
 
+// fetching alerts from the API and normalizing them into AppAlert objects
 export async function fetchAlerts(limit?: number) {
   const response = await listAlertsApi(limit);
   const alerts = Array.isArray(response?.alerts) ? response.alerts : [];

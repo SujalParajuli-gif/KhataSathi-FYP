@@ -1,4 +1,5 @@
-﻿export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
+// the quick date range presets for the analytics filter bar
+export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
 export type AnalyticsPaymentStatus =
   | "UNPAID"
   | "PARTIALLY_PAID"
@@ -7,6 +8,7 @@ export type AnalyticsPaymentStatus =
 export type AnalyticsPaymentMethod = "CASH" | "ESEWA";
 export type AnalyticsBucketGranularity = "hour" | "day" | "week";
 
+// the filters the analytics page sends to the backend
 export type AnalyticsFilters = {
   from: string;
   to: string;
@@ -14,6 +16,7 @@ export type AnalyticsFilters = {
   paymentStatus?: AnalyticsPaymentStatus;
 };
 
+// the summary metrics shown in the top metric cards on the analytics page
 export type AnalyticsSummary = {
   finalizedInvoiceCount: number;
   invoiceCount: number;
@@ -35,6 +38,7 @@ export type AnalyticsSummary = {
   discountRate: number;
 };
 
+// each time bucket in the sales-over-time chart (hourly, daily, or weekly)
 export type AnalyticsBucket = {
   key: string;
   label: string;
@@ -47,6 +51,7 @@ export type AnalyticsBucket = {
   averageBasket: number;
 };
 
+// each product in the top products ranking
 export type AnalyticsTopProduct = {
   productId: string;
   name: string;
@@ -58,6 +63,7 @@ export type AnalyticsTopProduct = {
   invoiceCount: number;
 };
 
+// each customer in the top customers ranking
 export type AnalyticsTopCustomer = {
   customerId: string | null;
   name: string;
@@ -71,6 +77,7 @@ export type AnalyticsTopCustomer = {
   averageBasket: number;
 };
 
+// each cashier's performance data
 export type AnalyticsCashierPerformance = {
   cashierId: string;
   name: string;
@@ -83,12 +90,14 @@ export type AnalyticsCashierPerformance = {
   averageBasket: number;
 };
 
+// each payment method's slice in the payment distribution pie chart
 export type AnalyticsPaymentDistribution = {
   method: AnalyticsPaymentMethod;
   amount: number;
   count: number;
 };
 
+// each brand's performance data
 export type AnalyticsBrandPerformance = {
   brandId: string | null;
   brandName: string;
@@ -97,6 +106,7 @@ export type AnalyticsBrandPerformance = {
   invoiceCount: number;
 };
 
+// the complete analytics report — this is the full response from getAnalyticsReportApi
 export type AnalyticsReport = {
   filters: AnalyticsFilters;
   meta: {
@@ -104,7 +114,7 @@ export type AnalyticsReport = {
     bucketGranularity: AnalyticsBucketGranularity;
     rangeDays: number;
   };
-  cashiers: Array<{ id: string; name: string }>;
+  cashiers: Array<{ id: string; name: string }>; // for the cashier filter dropdown
   summary: AnalyticsSummary;
   salesOverTime: AnalyticsBucket[];
   topProducts: AnalyticsTopProduct[];
@@ -114,6 +124,9 @@ export type AnalyticsReport = {
   brandPerformance: AnalyticsBrandPerformance[];
 };
 
+// --
+
+// converting a Date to a YYYY-MM-DD string for HTML date inputs
 function toDateInputValue(date: Date) {
   const year = date.getFullYear();
   const month = String(date.getMonth() + 1).padStart(2, "0");
@@ -121,6 +134,8 @@ function toDateInputValue(date: Date) {
   return `${year}-${month}-${day}`;
 }
 
+// calculating the from/to dates for each preset range
+// "today" is just today, "week" is the last 7 days, "month" is the last 30, "quarter" is the last 90
 export function getRangeFromPreset(
   preset: AnalyticsRangePreset,
 ): Pick<AnalyticsFilters, "from" | "to"> {
@@ -141,6 +156,7 @@ export function getRangeFromPreset(
   };
 }
 
+// converting analytics filters into URL search params for the API request
 export function serializeAnalyticsFilters(filters: AnalyticsFilters) {
   const params = new URLSearchParams();
   params.set("from", filters.from);
@@ -150,6 +166,7 @@ export function serializeAnalyticsFilters(filters: AnalyticsFilters) {
   return params.toString();
 }
 
+// display-friendly labels for payment statuses
 export function paymentStatusLabel(status: AnalyticsPaymentStatus) {
   if (status === "PAID") return "Paid";
   if (status === "PARTIALLY_PAID") return "Partial";
@@ -157,6 +174,7 @@ export function paymentStatusLabel(status: AnalyticsPaymentStatus) {
   return "Unpaid";
 }
 
+// display-friendly labels for payment methods
 export function paymentMethodLabel(method: AnalyticsPaymentMethod) {
   if (method === "ESEWA") return "eSewa";
   return "Cash";
