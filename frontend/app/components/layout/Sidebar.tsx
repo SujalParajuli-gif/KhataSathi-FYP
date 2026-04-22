@@ -1,4 +1,4 @@
-﻿import { NavLink } from "react-router";
+import { NavLink } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import GIcon from "~/components/ui/GIcon";
 import navData from "~/config/ui.nav.json";
@@ -11,22 +11,28 @@ type Props = {
   onCloseMobile: () => void;
 };
 
+// the sidebar navigation — shows the app's main nav items filtered by the user's role
+// it supports two modes: expanded (showing labels) and collapsed (icon-only)
+// on mobile, it slides in from the left as an overlay
 export default function Sidebar({
   role,
   isMobileOpen,
   isCollapsed,
   onCloseMobile,
 }: Props) {
+  // filtering nav items to only show the ones for the current user's role
   const items = navData.sidebar.items.filter((item) =>
     item.roles.includes(role),
   );
   const sidebarWidthClass = isCollapsed ? "w-[80px]" : "w-[260px]";
 
+  // splitting items into main nav items and bottom section items (profile, logout)
   const mainItems = items.filter((item) => item.section !== "bottom");
   const bottomItems = items.filter((item) => item.section === "bottom");
 
   return (
     <>
+      {/* mobile overlay backdrop — clicking it closes the sidebar */}
       <button
         type="button"
         onClick={onCloseMobile}
@@ -45,9 +51,10 @@ export default function Sidebar({
           sidebarWidthClass,
           "transition-[width,transform] duration-300 ease-in-out",
           isMobileOpen ? "translate-x-0" : "-translate-x-full",
-          "lg:translate-x-0",
+          "lg:translate-x-0", // on desktop, the sidebar is always visible
         ].join(" ")}
       >
+        {/* sidebar header — shows the brand logo (full or icon-only depending on collapse state) */}
         <div className="flex items-center gap-3 overflow-hidden border-b border-[#CFCFD3] px-[16px] py-[24px]">
           {isCollapsed ? (
             <BrandLogo
@@ -59,6 +66,7 @@ export default function Sidebar({
           )}
         </div>
 
+        {/* main section label — only visible when sidebar is expanded */}
         {!isCollapsed && (
           <div className="mb-[8px] px-[24px] pt-[16px]">
             <div className="text-[10px] font-extrabold uppercase  text-[#8C8889]">
@@ -67,14 +75,15 @@ export default function Sidebar({
           </div>
         )}
 
+        {/* main navigation items */}
         <nav className="flex flex-col gap-1 px-3">
           {mainItems.map((item) => (
             <NavLink
               key={item.key}
               to={item.to}
-              end={item.to === "/"}
+              end={item.to === "/"} // exact match for the dashboard route
               onClick={onCloseMobile}
-              title={isCollapsed ? item.label : undefined}
+              title={isCollapsed ? item.label : undefined} // showing tooltip when in collapsed mode
               className={({ isActive }) =>
                 [
                   "group relative flex items-center rounded-[16px] border transition-all duration-200",
@@ -100,6 +109,7 @@ export default function Sidebar({
                     ].join(" ")}
                   />
 
+                  {/* only showing the label text when sidebar is expanded */}
                   {!isCollapsed && (
                     <span className="whitespace-nowrap">{item.label}</span>
                   )}
@@ -109,6 +119,7 @@ export default function Sidebar({
           ))}
         </nav>
 
+        {/* bottom section items (profile, logout) — pinned to the bottom of the sidebar */}
         <div className="absolute bottom-0 left-0 w-full px-[12px] pb-[24px]">
           <div className="mx-[12px] mb-[16px] h-px bg-[#CFCFD3]" />
 
