@@ -1,9 +1,12 @@
-﻿import type { ReactNode } from "react";
+import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 
+// helper to join CSS class names — filters out falsy values like false, null, undefined
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
+
+// --
 
 type ModalFrameProps = {
   open: boolean;
@@ -15,6 +18,8 @@ type ModalFrameProps = {
   maxWidthClass?: string;
 };
 
+// the base modal frame — provides the overlay, centered positioning, header with title, and close button
+// all other dialog components (ConfirmDialog, SuccessDialog, StatusDialog) build on top of this
 export function ModalFrame({
   open,
   title,
@@ -24,10 +29,11 @@ export function ModalFrame({
   onClose,
   maxWidthClass = "max-w-[560px]",
 }: ModalFrameProps) {
-  if (!open) return null;
+  if (!open) return null; // not rendering anything if the modal is closed
 
   return (
     <div className="fixed inset-0 z-[90]">
+      {/* semi-transparent backdrop — clicking it closes the modal */}
       <button
         type="button"
         aria-label="Close dialog overlay"
@@ -42,6 +48,7 @@ export function ModalFrame({
             maxWidthClass,
           )}
         >
+          {/* modal header with title, optional description, and close button */}
           <div className="flex items-start justify-between gap-4 border-b border-[#CFCFD3] px-[24px] py-[20px]">
             <div className="min-w-0">
               <div className="text-[18px] font-extrabold  text-[#000000]">
@@ -64,8 +71,10 @@ export function ModalFrame({
             </button>
           </div>
 
+          {/* modal body content */}
           <div className="px-[24px] py-[20px]">{children}</div>
 
+          {/* optional footer — typically contains action buttons */}
           {footer ? (
             <div className="flex items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-[24px] py-[16px]">
               {footer}
@@ -77,6 +86,8 @@ export function ModalFrame({
   );
 }
 
+// --
+
 type DialogButtonProps = {
   children: ReactNode;
   onClick?: () => void;
@@ -85,6 +96,7 @@ type DialogButtonProps = {
   disabled?: boolean;
 };
 
+// reusable button used inside dialogs — supports primary (dark), secondary (outline), and danger (red) variants
 export function DialogButton({
   children,
   onClick,
@@ -92,6 +104,7 @@ export function DialogButton({
   icon,
   disabled,
 }: DialogButtonProps) {
+  // choosing the color scheme based on the variant
   const toneClass =
     variant === "primary"
       ? "border-[#11120d] bg-[#11120d] text-white hover:border-[#2a2c27] hover:bg-[#2a2c27]"
@@ -116,6 +129,8 @@ export function DialogButton({
   );
 }
 
+// --
+
 type ConfirmDialogProps = {
   open: boolean;
   title: string;
@@ -130,6 +145,8 @@ type ConfirmDialogProps = {
   busy?: boolean;
 };
 
+// confirmation dialog — used for destructive actions like cancelling invoices, deactivating products, etc.
+// shows a warning icon, the message, and confirm/cancel buttons
 export function ConfirmDialog({
   open,
   title,
@@ -166,6 +183,7 @@ export function ConfirmDialog({
           </div>
         </div>
 
+        {/* optional details section — used to show additional context before confirming */}
         {details ? (
           <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.9)] p-[16px] text-[13px] text-[#565449]">
             {details}
@@ -188,6 +206,8 @@ export function ConfirmDialog({
   );
 }
 
+// --
+
 type SuccessDialogProps = {
   open: boolean;
   title: string;
@@ -197,6 +217,7 @@ type SuccessDialogProps = {
   secondaryAction?: ReactNode;
 };
 
+// success dialog — shown after a successful operation like invoice finalization or payment confirmation
 export function SuccessDialog({
   open,
   title,
@@ -229,6 +250,8 @@ export function SuccessDialog({
   );
 }
 
+// --
+
 type StatusDialogProps = {
   open: boolean;
   title: string;
@@ -238,6 +261,8 @@ type StatusDialogProps = {
   tone?: "success" | "error";
 };
 
+// generic status dialog — can show either a success (green) or error (red) status
+// used for showing the result of operations like eSewa payment verification
 export function StatusDialog({
   open,
   title,

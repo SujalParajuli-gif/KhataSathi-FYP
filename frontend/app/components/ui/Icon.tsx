@@ -1,6 +1,8 @@
-﻿type Props = {
-  name: string;
-  sizePx?: number;
+// reusable icon component that renders a Google Material Symbols Rounded icon
+// we use this everywhere in the app instead of importing icon SVGs individually
+type Props = {
+  name: string; // the Material Symbols icon name (e.g., "close", "check_circle")
+  sizePx?: number; // icon size in pixels — defaults to 20px
   className?: string;
 };
 

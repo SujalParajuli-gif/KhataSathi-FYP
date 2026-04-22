@@ -1,5 +1,7 @@
-﻿@import "tailwindcss";
+@import "tailwindcss";
 
+/* we load the variable IBM Plex Sans files so the app can use one main sans family
+   across headings, forms, and content without needing separate font files for each weight */
 @font-face {
   font-family: "IBM Plex Sans";
   src: url("/assets/fonts/IBM_Plex_Sans/IBMPlexSans-VariableFont_wdth,wght.ttf")
@@ -9,6 +11,8 @@
   font-display: swap;
 }
 
+/* this is the italic version of the same sans family
+   we added it so emphasized text still matches the rest of the UI instead of falling back to a browser default italic font */
 @font-face {
   font-family: "IBM Plex Sans";
   src: url("/assets/fonts/IBM_Plex_Sans/IBMPlexSans-Italic-VariableFont_wdth,wght.ttf")
@@ -18,6 +22,8 @@
   font-display: swap;
 }
 
+/* Space Mono is our utility monospace font for invoice numbers, money values, and code-like labels
+   we kept it separate from the main sans font so number-heavy UI parts stand out clearly */
 @font-face {
   font-family: "Space Mono";
   src: url("/assets/fonts/Space_Mono/SpaceMono-Regular.ttf") format("truetype");
@@ -26,6 +32,7 @@
   font-display: swap;
 }
 
+/* this keeps italic monospace text consistent anywhere we use the mono stack */
 @font-face {
   font-family: "Space Mono";
   src: url("/assets/fonts/Space_Mono/SpaceMono-Italic.ttf") format("truetype");
@@ -34,6 +41,7 @@
   font-display: swap;
 }
 
+/* loading the bold mono weight lets totals and invoice references stay visually stronger without fake browser bolding */
 @font-face {
   font-family: "Space Mono";
   src: url("/assets/fonts/Space_Mono/SpaceMono-Bold.ttf") format("truetype");
@@ -42,6 +50,7 @@
   font-display: swap;
 }
 
+/* this is the bold italic mono variant so every common mono text style is available if the UI needs it */
 @font-face {
   font-family: "Space Mono";
   src: url("/assets/fonts/Space_Mono/SpaceMono-BoldItalic.ttf") format("truetype");
@@ -50,6 +59,8 @@
   font-display: swap;
 }
 
+/* these theme variables connect our custom fonts to Tailwind's font-sans and font-mono utilities
+   so components can use Tailwind font classes and still get the project fonts automatically */
 @theme {
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
@@ -58,6 +69,8 @@
     "Liberation Mono", "Courier New", monospace;
 }
 
+/* this sets the base light theme for the whole app
+   we keep the default page background, text color, accent color, and main font here so every route starts from the same visual foundation */
 html,
 body {
   color-scheme: light;
@@ -69,6 +82,8 @@ body {
   color: #000000;
 }
 
+/* form controls do not always inherit fonts the same way across browsers
+   we added this so buttons and inputs match the rest of the UI text automatically */
 button,
 input,
 select,
@@ -76,10 +91,14 @@ textarea {
   font-family: inherit;
 }
 
+/* checkbox accent colors can look browser-default and out of place
+   this keeps them aligned with the black accent used across the rest of the interface */
 input[type="checkbox"] {
   accent-color: #000000;
 }
 
+/* select, date, and number inputs sometimes pick different browser colors on their own
+   we normalize them here so those controls stay readable and match the app's light UI */
 select,
 input[type="date"],
 input[type="number"] {
@@ -88,11 +107,15 @@ input[type="number"] {
   color-scheme: light;
 }
 
+/* browser number inputs usually show spinner controls that made our custom inputs look inconsistent
+   we remove them so quantity and settings fields match the rest of the design */
 input[type="number"] {
   appearance: textfield;
   -moz-appearance: textfield;
 }
 
+/* native select arrows look different in each browser
+   we hide the default arrow and draw a small custom chevron with gradients so every select has the same look */
 select {
   appearance: none;
   -webkit-appearance: none;
@@ -107,14 +130,18 @@ select {
   padding-right: 44px;
 }
 
+/* date inputs need extra right padding so the calendar icon area does not overlap typed text */
 input[type="date"] {
   padding-right: 44px;
 }
 
+/* this tones the browser calendar picker icon so it fits our neutral gray palette better */
 input[type="date"]::-webkit-calendar-picker-indicator {
   filter: invert(42%) sepia(14%) saturate(522%) hue-rotate(176deg) brightness(92%) contrast(84%);
 }
 
+/* WebKit adds inner and outer spin buttons separately from the main number input appearance
+   we remove both here so Chrome-based browsers do not bring those controls back */
 input[type="number"]::-webkit-inner-spin-button,
 input[type="number"]::-webkit-outer-spin-button {
   appearance: none;
@@ -122,11 +149,14 @@ input[type="number"]::-webkit-outer-spin-button {
   margin: 0;
 }
 
+/* this sets a subtle black selection highlight so selected text still feels part of the same color system */
 ::selection {
   background: rgba(0, 0, 0, 0.12);
   color: #000000;
 }
 
+/* Material Symbols are variable icons, so we define their default axes and alignment once here
+   without this, icons can render with inconsistent weight, size behavior, or baseline alignment across the app */
 .material-symbols-rounded {
   font-variation-settings:
     "FILL" 0,
@@ -140,4 +170,3 @@ input[type="number"]::-webkit-outer-spin-button {
   vertical-align: middle;
   flex-shrink: 0;
 }
-
