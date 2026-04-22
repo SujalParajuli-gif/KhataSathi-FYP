@@ -8,14 +8,17 @@ import {
 } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
 
+// utility to cleanly join tailwind classes
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// we use this to keep the current page number inside the valid pagination range
 function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+// this renders one sidebar filter button with its active state and optional count badge
 function FilterCard({
   active,
   title,
@@ -55,6 +58,8 @@ function FilterCard({
   );
 }
 
+// the standalone alerts page — shows a list of system alerts (low stock, invoice updates)
+// connects directly to the global AlertsProvider via useAlerts hook
 export default function AlertsPage() {
   const {
     alerts,
@@ -65,18 +70,22 @@ export default function AlertsPage() {
     markAlertUnread,
     markAllAlertsRead,
   } = useAlerts();
-  const [filterType, setFilterType] = useState<"all" | AppAlertType>("all");
-  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
-  const [page, setPage] = useState(1);
+  const [filterType, setFilterType] = useState<"all" | AppAlertType>("all"); // tracks which alert type tab is active
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false); // lets the user hide alerts that were already seen
+  const [page, setPage] = useState(1); // stores the current alerts page in the list
 
   useEffect(() => {
+    // loading a fresh batch of alerts when the page first opens
+    // we ask for a higher limit here so the user can browse more history without another page-level fetch flow
     refreshAlerts(100);
   }, []);
 
+  // resetting the page back to 1 whenever a filter changes
   useEffect(() => {
     setPage(1);
   }, [filterType, showUnreadOnly]);
 
+  // computing the filtered list of alerts based on current selections
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
       const matchesType =
@@ -86,18 +95,24 @@ export default function AlertsPage() {
     });
   }, [alerts, filterType, showUnreadOnly]);
 
+  // calculating counts for the sidebar filter tabs
   const invoiceCount = alerts.filter(
     (alert) => alert.type === "Invoice",
-  ).length;
-  const stockCount = alerts.filter((alert) => alert.type === "Stock").length;
+  ).length; // counting invoice alerts for the sidebar tab badge
+  const stockCount = alerts.filter((alert) => alert.type === "Stock").length; // counting stock alerts for the sidebar tab badge
+
+  // setting up pagination logic
   const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / pageSize));
   const pageClamped = clampPage(page, 1, totalPages);
+
+  // slicing the filtered array to only show the current page
   const pageItems = useMemo(() => {
     const start = (pageClamped - 1) * pageSize;
     return filteredAlerts.slice(start, start + pageSize);
   }, [filteredAlerts, pageClamped]);
 
+  // this marks one alert as read, and if that request fails we reload the list so the page stays in sync
   async function handleMarkRead(alertKey: string) {
     try {
       await markAlertRead(alertKey);
@@ -106,6 +121,7 @@ export default function AlertsPage() {
     }
   }
 
+  // this does the reverse action so the user can put an alert back into unread state
   async function handleMarkUnread(alertKey: string) {
     try {
       await markAlertUnread(alertKey);
@@ -114,6 +130,8 @@ export default function AlertsPage() {
     }
   }
 
+  // this finds every unread alert and sends them together in one bulk update call
+  // we skip the request completely when there is nothing left to mark
   async function handleMarkAllRead() {
     const unreadKeys = alerts
       .filter((alert) => !alert.read)
@@ -127,6 +145,7 @@ export default function AlertsPage() {
     }
   }
 
+  // this handles when the alert provider is still fetching data for the first render
   if (loading) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
@@ -137,10 +156,13 @@ export default function AlertsPage() {
 
   return (
     <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-slate-900">
+      {/* this top bar keeps the page title and the bulk action button aligned while still wrapping cleanly on smaller screens */}
       <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-extrabold">Alerts</h1>
+            <h1 className="text-2xl font-extrabold">
+              Get Notified About Everything!
+            </h1>
             {unreadCount > 0 ? (
               <span className="rounded-full bg-[#2F67D8] px-2.5 py-1 text-[11px] font-extrabold text-white">
                 {unreadCount} unread
@@ -163,6 +185,7 @@ export default function AlertsPage() {
       </div>
 
       <div className="mt-6 grid grid-cols-12 gap-6">
+        {/* the left column holds filters, and the right column gives more width to the alert cards because message text needs more space */}
         <div className="col-span-12 space-y-4 lg:col-span-3">
           <div className="space-y-2">
             <FilterCard
@@ -222,6 +245,7 @@ export default function AlertsPage() {
 
         <div className="col-span-12 space-y-3 lg:col-span-9">
           {filteredAlerts.length === 0 ? (
+            /* this empty state uses a dashed card so it looks intentionally inactive instead of feeling like missing content */
             <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-[#CFCFD3] bg-white text-slate-400">
               <Icon name="notifications_off" className="text-[40px]" />
               <div className="mt-3 text-[14px] font-semibold">
@@ -230,7 +254,7 @@ export default function AlertsPage() {
             </div>
           ) : (
             pageItems.map((alert) => {
-              const tone = alertTone(alert);
+              const tone = alertTone(alert); // precomputing the alert color set once so the card classes stay readable
 
               return (
                 <div

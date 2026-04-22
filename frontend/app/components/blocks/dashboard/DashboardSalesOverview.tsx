@@ -1,4 +1,4 @@
-﻿import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   Bar,
   CartesianGrid,
@@ -30,6 +30,8 @@ function compact(value: number) {
   }).format(value);
 }
 
+// dynamically resizing the chart frame based on window/parent width changes
+// recharts requires exact pixel dimensions sometimes to behave well in complex flex layouts
 function SafeChartFrame({
   className,
   children,
@@ -92,6 +94,8 @@ function SafeChartFrame({
   );
 }
 
+// the dashboard sales overview component — shows an interactive chart of invoice activity
+// it allows switching between "today", "week", and "month" views
 export default function DashboardSalesOverview({
   range,
   onRangeChange,
@@ -105,6 +109,7 @@ export default function DashboardSalesOverview({
   loading?: boolean;
   error?: string;
 }) {
+  // calculate total sums for the top summary stats row
   const totals = useMemo(() => {
     const totalInvoices = data.reduce((sum, point) => sum + point.invoices, 0);
     const totalItems = data.reduce((sum, point) => sum + point.itemsSold, 0);

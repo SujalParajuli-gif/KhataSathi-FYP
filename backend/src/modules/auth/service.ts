@@ -15,7 +15,7 @@ export async function loginUser(email: string, password: string, ip?: string) {
   // we log the failed attempt and return a generic error so attackers cannot tell if the email exists
   if (!user || !user.isActive) {
     await prisma.loginAttempt.create({ data: { email: normalizedEmail, success: false, ip } });
-    return { success: false, error: "Invalid email or password" };
+    return { success: false, error: "Your account has been deactivated by the administrator." };
   }
 
   const valid = await bcrypt.compare(password, user.passwordHash); // comparing the entered password against the stored hash

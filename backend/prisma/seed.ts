@@ -1,3 +1,4 @@
+/// <reference types="node" />
 import "dotenv/config";
 import { PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
@@ -5,7 +6,7 @@ import bcrypt from "bcryptjs";
 const prisma = new PrismaClient();
 
 async function main() {
-  console.log("🌱 Seeding KhataSathi database...\n");
+  console.log("Seeding KhataSathi database...\n");
 
   const adminPw = await bcrypt.hash("Admin@123", 10);
   const cashierPw = await bcrypt.hash("Cashier@123", 10);
@@ -44,7 +45,7 @@ async function main() {
     },
   });
 
-  console.log("✅ Users seeded:");
+  console.log("Users seeded:");
   console.log("   Admin:   admin@khatasathi.com   / Admin@123");
   console.log("   Cashier: cashier@khatasathi.com / Cashier@123\n");
 
@@ -68,7 +69,7 @@ async function main() {
     });
   }
 
-  console.log(`✅ ${brandNames.length} brands seeded.\n`);
+  console.log(`${brandNames.length} brands seeded.\n`);
 
   const productData = [
     {
@@ -165,7 +166,7 @@ async function main() {
     });
   }
 
-  console.log(`✅ ${productData.length} products seeded.\n`);
+  console.log(`${productData.length} products seeded.\n`);
 
   const customers = [
     {
@@ -205,13 +206,13 @@ async function main() {
     });
   }
 
-  console.log(`✅ ${customers.length} customers seeded.\n`);
-  console.log("🎉 Seeding complete!");
+  console.log(`${customers.length} customers seeded.\n`);
+  console.log("Seeding complete!");
 }
 
 main()
   .catch((e) => {
-    console.error("❌ Seed error:", e);
+    console.error("Seed error:", e);
     process.exit(1);
   })
   .finally(async () => {

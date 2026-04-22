@@ -1,4 +1,4 @@
-﻿import React, { useMemo, useState } from "react";
+import React, { useMemo, useState } from "react";
 import { useNavigate } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
@@ -7,10 +7,12 @@ import type { AuthUser, UserRole } from "~/lib/auth";
 import { isLoggedIn, setAuthUser, setToken } from "~/lib/auth";
 import { loginApi } from "~/lib/api/endpoints";
 
+// helper function to join CSS class names without adding random 'undefined' or 'false' strings to the DOM
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
+// we use this small wrapper to keep label spacing and field layout the same across the login form
 function Field({
   label,
   children,
@@ -32,6 +34,8 @@ function Field({
   );
 }
 
+// this renders the shared text input style used by both email and password fields
+// we added support for left and right slots so icons and the password toggle can reuse the same base input
 function TextInput({
   value,
   onChange,
@@ -67,6 +71,7 @@ function TextInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         onKeyDown={(e) => {
+          // this handles when the user presses Enter inside the input instead of clicking the button
           if (e.key === "Enter" && onEnter) onEnter();
         }}
         className="h-full w-full bg-transparent text-[13px] font-bold text-[#000000] outline-none placeholder:font-medium placeholder:text-[#8C8889]"
@@ -76,6 +81,7 @@ function TextInput({
   );
 }
 
+// this keeps the page buttons visually consistent without repeating the same class setup for each variant
 function Button({
   children,
   variant = "primary",
@@ -93,6 +99,7 @@ function Button({
 }) {
   const baseClass =
     "h-[52px] rounded-[14px] border-2 px-6 text-[13px] font-extrabold transition flex items-center justify-center gap-2 active:scale-95";
+  // storing the variant classes in one object makes it easier to swap button looks without duplicating markup
   const variants = {
     primary:
       "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937]  ",
@@ -119,16 +126,18 @@ function Button({
   );
 }
 
+// this is the main login screen shown to users when they aren't authenticated
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [showPw, setShowPw] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [errorMsg, setErrorMsg] = useState<string | null>(null);
-  const [formData, setFormData] = useState({ email: "", password: "" });
-  const [touched, setTouched] = useState({ email: false, password: false });
+  const [showPw, setShowPw] = useState(false); // toggling password visibility
+  const [loading, setLoading] = useState(false); // stops double submits while the login request is running
+  const [errorMsg, setErrorMsg] = useState<string | null>(null); // stores the latest top-level login error to show above the form
+  const [formData, setFormData] = useState({ email: "", password: "" }); // keeps both login fields in one small state object
+  const [touched, setTouched] = useState({ email: false, password: false }); // tracks whether each field should start showing validation feedback
 
-  const emailValue = formData.email.trim();
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue);
+  const emailValue = formData.email.trim(); // trimming spaces so copied emails do not fail because of accidental whitespace
+  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue); // running a basic email shape check before we allow submit
+  // showing the email message only after the field has been touched so the page does not feel noisy on first load
   const emailError =
     touched.email && !emailValue
       ? "Email is required."
@@ -136,9 +145,11 @@ export default function LoginPage() {
         ? "Please enter a valid email address."
         : "";
   const passwordError =
-    touched.password && !formData.password ? "Password is required." : "";
+    touched.password && !formData.password ? "Password is required." : ""; // password only needs a required check on this screen
 
+  // automatically redirect to the correct dashboard if the user is already logged in securely
   React.useEffect(() => {
+    // this handles when someone manually opens the login page even though a valid session is already stored
     if (isLoggedIn()) {
       const stored = localStorage.getItem("khatasathi_auth_user");
       if (stored) {
@@ -148,6 +159,8 @@ export default function LoginPage() {
     }
   }, [navigate]);
 
+  // only enabling submit when the form is valid and no request is currently in progress
+  // without this, users could click early or submit multiple times while the request is still running
   const canSubmit = useMemo(() => {
     return (
       emailValid &&
@@ -157,11 +170,13 @@ export default function LoginPage() {
     );
   }, [emailValid, emailValue, formData.password, loading]);
 
+  // firing the login request to our API endpoint
   async function onLogin(e?: React.FormEvent) {
     e?.preventDefault();
     setErrorMsg(null);
-    setTouched({ email: true, password: true });
+    setTouched({ email: true, password: true }); // forcing both fields into touched state so validation messages become visible
 
+    // final double check of validation rules incase they bypassed the UI state
     if (!emailValue) return setErrorMsg("Please enter your email.");
     if (!emailValid) return setErrorMsg("Please enter a valid email address.");
     if (!formData.password) return setErrorMsg("Please enter your password.");
@@ -169,9 +184,11 @@ export default function LoginPage() {
     setLoading(true);
 
     try {
+      // sending the login credentials to the backend and waiting for a JWT + user profile in return
       const data = await loginApi(emailValue, formData.password);
       setToken(data.token);
 
+      // storing the normalized auth user shape the rest of the frontend already expects
       const user: AuthUser = {
         id: data.user.id,
         name: data.user.name,
@@ -181,20 +198,26 @@ export default function LoginPage() {
       };
       setAuthUser(user);
 
+      // sending each role to its own starting page right after login succeeds
       navigate(user.role === "cashier" ? "/billing" : "/");
     } catch (err: any) {
+      // this handles when the API rejects the login or the network request fails
+      // we prefer the backend message first so the user sees the real reason when one is available
       const msg =
         err.response?.data?.error ||
         "Login failed. Please check your credentials.";
       setErrorMsg(msg);
     } finally {
+      // re-enabling the form no matter whether the request succeeded or failed
       setLoading(false);
     }
   }
 
   return (
     <div className="min-h-screen w-full overflow-hidden bg-[#EEF2F6] font-sans">
+      {/* this full-screen wrapper gives the login page its soft background and keeps overflow effects clipped inside the viewport */}
       <div className="relative flex min-h-screen items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+        {/* these blurred background shapes keep the login screen from feeling too flat without distracting from the form */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
           <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.95),rgba(238,242,246,0.9)_34%,rgba(226,232,240,0.95)_100%)]" />
           <div className="absolute left-[-8%] top-[-10%] h-[420px] w-[420px] rounded-full bg-white/70 blur-3xl" />
@@ -210,6 +233,7 @@ export default function LoginPage() {
           </div>
         </div>
 
+        {/* this is the main login card, with a tighter form column and a wider visual column on large screens */}
         <div className="relative z-10 w-full max-w-[1240px] overflow-hidden rounded-[28px] border border-[#D9DDE3] bg-white">
           <div className="grid min-h-[720px] lg:grid-cols-[420px_520px] xl:grid-cols-[420px_820px]">
             <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">

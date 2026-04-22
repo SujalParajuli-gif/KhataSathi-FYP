@@ -1,4 +1,4 @@
-﻿import React, { useState, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import CardShell from "~/components/ui/CardShell";
 import GIcon from "~/components/ui/GIcon";
@@ -16,6 +16,7 @@ import {
 } from "~/lib/api/endpoints";
 import { getRangeFromPreset } from "~/lib/reports";
 
+// this type represents one KPI card shown at the top of the dashboard
 type Kpi = {
   iconName: string;
   iconBgClass: string;
@@ -49,6 +50,7 @@ type AlertRow = {
   tag: "CRITICAL" | "LOW" | "INFO" | "SYSTEM";
 };
 
+// this shows the payment status badge used in the recent invoices table
 function StatusPill({ status }: { status: "Paid" | "Partial" | "Unpaid" }) {
   const map = {
     Paid: "bg-emerald-50 text-emerald-700 border-emerald-100",
@@ -65,6 +67,7 @@ function StatusPill({ status }: { status: "Paid" | "Partial" | "Unpaid" }) {
   );
 }
 
+// this renders the small alert severity badge used in the alerts panel
 function AlertsPill({
   label,
 }: {
@@ -86,6 +89,7 @@ function AlertsPill({
   );
 }
 
+// this returns the icon color for each alert severity so the alert rows stay readable at a glance
 function alertIconTone(label: "CRITICAL" | "LOW" | "INFO" | "SYSTEM") {
   const map = {
     CRITICAL: "text-rose-600",
@@ -97,6 +101,7 @@ function alertIconTone(label: "CRITICAL" | "LOW" | "INFO" | "SYSTEM") {
   return map[label];
 }
 
+// this is the secondary action button used for quick dashboard shortcuts
 function GhostButton({
   icon,
   text,
@@ -118,6 +123,7 @@ function GhostButton({
   );
 }
 
+// this is the primary action button used for the main dashboard shortcut
 function PrimaryButton({
   icon = "add",
   text,
@@ -139,36 +145,42 @@ function PrimaryButton({
   );
 }
 
+// formats a number as Nepalese Rupees (NPR) with thousands separators
 function formatNpr(n: number) {
   const s = Math.round(n).toString();
   const withComma = s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
   return `NPR ${withComma}`;
 }
 
+// we use this to get today's date in YYYY-MM-DD format for API range helpers
 function todayIso() {
   return new Date().toISOString().slice(0, 10);
 }
 
+// this gives us a date string a fixed number of days before today
 function daysAgoIso(days: number) {
   const d = new Date();
   d.setDate(d.getDate() - days);
   return d.toISOString().slice(0, 10);
 }
 
+// the main admin dashboard page — shows KPI cards, recent invoices, alerts, and an activity chart
 export default function Dashboard() {
   const navigate = useNavigate();
-  const [kpis, setKpis] = useState<Kpi[]>([]);
-  const [invoices, setInvoices] = useState<InvoiceRow[]>([]);
-  const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]);
-  const [alerts, setAlerts] = useState<AlertRow[]>([]);
+  const [kpis, setKpis] = useState<Kpi[]>([]); // stores the KPI cards shown across the top of the dashboard
+  const [invoices, setInvoices] = useState<InvoiceRow[]>([]); // recent invoice rows for the activity table
+  const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]); // payment overview cards shown beside the invoice table
+  const [alerts, setAlerts] = useState<AlertRow[]>([]); // latest low-stock alert rows shown in the sidebar card
   const [activityData, setActivityData] = useState<DashboardActivityPoint[]>(
     [],
   );
-  const [chartLoading, setChartLoading] = useState(true);
-  const [chartError, setChartError] = useState("");
+  const [chartLoading, setChartLoading] = useState(true); // loading state for the sales activity chart only
+  const [chartError, setChartError] = useState(""); // chart-specific error so the rest of the dashboard can still render
 
-  const [range, setRange] = useState<RangeKey>("today");
+  const [range, setRange] = useState<RangeKey>("today"); // active time range for the chart section
 
+  // fetching all dashboard data in parallel when the page loads
+  // loading chart data separately from the rest of the dashboard lets the range selector update without refetching everything
   useEffect(() => {
     let cancelled = false;
 
@@ -176,6 +188,7 @@ export default function Dashboard() {
       try {
         const weeklyRange = getRangeFromPreset("week");
 
+        // using Promise.allSettled so if one api fails, the others still load
         const [
           salesData,
           analyticsData,
@@ -192,7 +205,7 @@ export default function Dashboard() {
 
         if (cancelled) return;
 
-        const builtKpis: Kpi[] = [];
+        const builtKpis: Kpi[] = []; // collecting cards gradually lets each API contribute whatever data it has
 
         if (salesData.status === "fulfilled" && salesData.value) {
           const s = salesData.value;
@@ -239,6 +252,7 @@ export default function Dashboard() {
                 : undefined,
           });
 
+          // turning the raw low-stock items into lightweight alert rows for the sidebar list
           const builtAlerts: AlertRow[] = lowItems
             .slice(0, 5)
             .map((item: any) => ({
@@ -253,6 +267,7 @@ export default function Dashboard() {
         setKpis(builtKpis);
 
         if (invoiceData.status === "fulfilled" && invoiceData.value) {
+          // mapping the recent invoices into the simplified table shape used by this page
           const raw = invoiceData.value.invoices || [];
           const rows: InvoiceRow[] = raw.map((inv: any) => ({
             invoiceNo: inv.invoiceNo || inv.id,
@@ -271,7 +286,7 @@ export default function Dashboard() {
           setInvoices(rows);
         }
 
-        const builtPayment: PaymentSummaryRow[] = [];
+        const builtPayment: PaymentSummaryRow[] = []; // building the payment summary from analytics first, then falling back to sales summary if needed
         if (
           analyticsData.status === "fulfilled" &&
           analyticsData.value?.summary
@@ -384,8 +399,10 @@ export default function Dashboard() {
 
   return (
     <div className="min-w-0 space-y-[10px] overflow-x-hidden font-sans antialiased text-slate-900 pb-10">
+      {/* this split layout gives most of the width to KPI, invoices, and charts while keeping quick actions and alerts on the side */}
       <div className="space-y-[20px] lg:flex lg:items-start lg:gap-[20px] lg:space-y-0">
         <div className="min-w-0 space-y-[20px] lg:min-w-0 lg:flex-1">
+          {/* the KPI cards use a tight responsive grid so the most important numbers are visible immediately on page load */}
           <div className="grid grid-cols-1 sm:grid-cols-2 xl:grid-cols-4 gap-[16px]">
             {kpis.map((k) => (
               <CardShell key={k.label}>
@@ -426,6 +443,7 @@ export default function Dashboard() {
             ))}
           </div>
 
+          {/* this recent invoices card stays wide and horizontally scrollable because table readability matters more than forcing columns to wrap */}
           <CardShell className="min-w-0">
             <div className="px-[20px] py-[18px] flex items-center justify-between border-b border-[#CFCFD3]/60">
               <SectionTitle title="Recent Invoices" />

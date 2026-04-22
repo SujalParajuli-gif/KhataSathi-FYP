@@ -1,6 +1,7 @@
-﻿import type { AnalyticsReport } from "./reports";
+import type { AnalyticsReport } from "./reports";
 import { paymentMethodLabel, paymentStatusLabel } from "./reports";
 
+// creating a temporary download link and clicking it to trigger a file download in the browser
 function downloadBlob(filename: string, data: BlobPart, mimeType: string) {
   const blob = new Blob([data], { type: mimeType });
   const url = URL.createObjectURL(blob);
@@ -8,13 +9,15 @@ function downloadBlob(filename: string, data: BlobPart, mimeType: string) {
   anchor.href = url;
   anchor.download = filename;
   anchor.click();
-  URL.revokeObjectURL(url);
+  URL.revokeObjectURL(url); // cleaning up the object URL after download to free memory
 }
 
+// generating a base filename from the report date range — used for both Excel and CSV exports
 function buildBaseFilename(report: AnalyticsReport) {
   return `khatasathi-analytics-${report.filters.from}-to-${report.filters.to}`;
 }
 
+// applying header row styling to Excel worksheet rows — bold text with light gray background
 function styleHeaderRow(row: any) {
   row.font = { bold: true, color: { argb: "FF111827" } };
   row.fill = {
@@ -27,12 +30,18 @@ function styleHeaderRow(row: any) {
   };
 }
 
+// --
+
+// generating a multi-sheet Excel workbook from the analytics report data
+// we dynamically import exceljs here so it is only loaded when the user actually clicks "Export Excel"
+// this keeps the initial page load fast since exceljs is a large library
 export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   const ExcelJS = await import("exceljs");
   const workbook = new ExcelJS.Workbook();
   workbook.creator = "KhataSathi";
   workbook.created = new Date();
 
+  // Sheet 1: Summary — report metadata and all aggregate metrics
   const summary = workbook.addWorksheet("Summary");
   summary.columns = [
     { header: "Metric", key: "metric", width: 28 },
@@ -74,6 +83,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     ["Discount rate (%)", report.summary.discountRate],
   ]);
 
+  // Sheet 2: Sales Over Time — the time-series data used for the main chart
   const trend = workbook.addWorksheet("Sales Over Time");
   trend.columns = [
     { header: "Period", key: "label", width: 18 },
@@ -90,6 +100,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     trend.addRow(point);
   });
 
+  // Sheet 3: Top Products — best-selling products by revenue
   const products = workbook.addWorksheet("Top Products");
   products.columns = [
     { header: "Product", key: "name", width: 28 },
@@ -104,6 +115,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     products.addRow(product);
   });
 
+  // Sheet 4: Top Customers — highest-spending customers
   const customers = workbook.addWorksheet("Top Customers");
   customers.columns = [
     { header: "Customer", key: "name", width: 24 },
@@ -121,6 +133,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     customers.addRow(customer);
   });
 
+  // Sheet 5: Cashiers — per-cashier performance breakdown
   const cashiers = workbook.addWorksheet("Cashiers");
   cashiers.columns = [
     { header: "Cashier", key: "name", width: 24 },
@@ -137,6 +150,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     cashiers.addRow(cashier);
   });
 
+  // Sheet 6: Payments — payment method distribution
   const payments = workbook.addWorksheet("Payments");
   payments.columns = [
     { header: "Method", key: "method", width: 16 },
@@ -147,10 +161,11 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   report.paymentDistribution.forEach((payment) => {
     payments.addRow({
       ...payment,
-      method: paymentMethodLabel(payment.method),
+      method: paymentMethodLabel(payment.method), // converting "CASH" to "Cash", "ESEWA" to "eSewa"
     });
   });
 
+  // Sheet 7: Brands — per-brand revenue breakdown
   const brands = workbook.addWorksheet("Brands");
   brands.columns = [
     { header: "Brand", key: "brandName", width: 22 },
@@ -163,6 +178,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     brands.addRow(brand);
   });
 
+  // writing the workbook to a buffer and triggering the browser download
   const buffer = await workbook.xlsx.writeBuffer();
   downloadBlob(
     `${buildBaseFilename(report)}.xlsx`,
@@ -171,6 +187,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   );
 }
 
+// downloading a CSV blob that was received from the backend API
 export function downloadCsvBlob(report: AnalyticsReport, blob: Blob) {
   downloadBlob(`${buildBaseFilename(report)}.csv`, blob, "text/csv;charset=utf-8");
 }

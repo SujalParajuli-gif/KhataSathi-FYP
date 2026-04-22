@@ -226,12 +226,7 @@ function Stat({
         <div className="text-[11px] font-extrabold uppercase  text-slate-400">
           {label}
         </div>
-        <div
-          className={cn(
-            "mt-2 text-[28px] font-extrabold ",
-            valueTone,
-          )}
-        >
+        <div className={cn("mt-2 text-[28px] font-extrabold ", valueTone)}>
           {value}
         </div>
         <div className="mt-2 text-[12px] text-slate-500">{hint}</div>
@@ -405,7 +400,9 @@ export default function SettingsPage() {
       ]);
 
       if (auditData.status === "fulfilled") {
-        setAuditLogs(Array.isArray(auditData.value?.logs) ? auditData.value.logs : []);
+        setAuditLogs(
+          Array.isArray(auditData.value?.logs) ? auditData.value.logs : [],
+        );
         setAuditTotal(Number(auditData.value?.total ?? 0));
       }
 
@@ -430,7 +427,7 @@ export default function SettingsPage() {
     await Promise.all([loadData(false), loadSecurityData()]);
   }
 
-  // fetching all setting data tabs (business rules, users, brands, audits, logs, products) 
+  // fetching all setting data tabs (business rules, users, brands, audits, logs, products)
   // at the same time using promise.allSettled so individual failures don't cause the entire panel to crash
   async function loadData(showLoader = true) {
     if (showLoader) setLoading(true);
@@ -562,9 +559,7 @@ export default function SettingsPage() {
 
   const brandOptions = useMemo(
     () =>
-      brands
-        .slice()
-        .sort((left, right) => left.name.localeCompare(right.name)),
+      brands.slice().sort((left, right) => left.name.localeCompare(right.name)),
     [brands],
   );
 
@@ -656,7 +651,7 @@ export default function SettingsPage() {
     await refreshSettingsData();
   }
 
-  // checks if the user is deactivating a brand that was previously active, 
+  // checks if the user is deactivating a brand that was previously active,
   // triggering a warning flow before making changes
   async function saveBrand() {
     try {
@@ -752,7 +747,9 @@ export default function SettingsPage() {
       loyaltyDiscountPercent: normalizedDefaults.loyaltyDiscountPercent,
     } satisfies Partial<BusinessSettings>);
     const saved = buildBusinessDefaults(
-      Number(updated.defaultLowStockThreshold ?? normalizedDefaults.defaultLowStock),
+      Number(
+        updated.defaultLowStockThreshold ?? normalizedDefaults.defaultLowStock,
+      ),
       Number(
         updated.defaultWholesaleQtyThreshold ??
           normalizedDefaults.wholesaleQtyThreshold,
@@ -910,8 +907,8 @@ export default function SettingsPage() {
                   Stock alert threshold
                 </div>
                 <div className="mt-1 text-[12px] text-[#8C8889]">
-                  Applied automatically when a product uses the business
-                  default stock alert threshold.
+                  Applied automatically when a product uses the business default
+                  stock alert threshold.
                 </div>
                 <input
                   type="number"
@@ -928,8 +925,8 @@ export default function SettingsPage() {
                   Wholesale quantity default
                 </div>
                 <div className="mt-1 text-[12px] text-[#8C8889]">
-                  Applied automatically when a product uses the business
-                  default wholesale threshold.
+                  Applied automatically when a product uses the business default
+                  wholesale threshold.
                 </div>
                 <input
                   type="number"
@@ -972,7 +969,7 @@ export default function SettingsPage() {
                 With Great Power Comes Great Responsibility!
               </div>
               <div className="mt-1 text-[12px] text-slate-500">
-                What Admin can control
+                What Admin can Control/ View
               </div>
             </div>
 
@@ -1141,13 +1138,13 @@ export default function SettingsPage() {
       {tab === "audit" ? (
         <div className="space-y-6">
           {/* shared date range filter for both audit lists */}
-          <div className="rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-5">
+          <div className="rounded-[18px] border border-[#E5E7EB] bg-white p-5">
             <div className="flex flex-wrap items-end justify-between gap-4">
               <div>
-                <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
+                <div className="text-[16px] font-extrabold">
                   Security Filters
                 </div>
-                <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
+                <div className="mt-1 text-[13px] font-medium text-[#8C8889]">
                   Filter both audit logs and login attempts by the same created
                   date range.
                 </div>
@@ -1244,10 +1241,8 @@ export default function SettingsPage() {
                           </td>
                           <td className="px-4 py-3.5">
                             <div className="text-[13px] font-semibold text-slate-600">
-                              {String(
-                                log.meta?.invoiceNo || log.entityType,
-                              )}{" "}
-                              / {log.entityId}
+                              {String(log.meta?.invoiceNo || log.entityType)} /{" "}
+                              {log.entityId}
                             </div>
                           </td>
                           <td className="px-4 py-3.5 text-right">
@@ -1328,11 +1323,7 @@ export default function SettingsPage() {
                             </div>
                           </td>
                           <td className="px-4 py-3.5">
-                            <Pill
-                              tone={
-                                attempt.success ? "success" : "danger"
-                              }
-                            >
+                            <Pill tone={attempt.success ? "success" : "danger"}>
                               {attempt.success ? "Success" : "Failed"}
                             </Pill>
                           </td>
@@ -1366,8 +1357,8 @@ export default function SettingsPage() {
                 Staff Snapshot
               </div>
               <div className="mt-1 text-[13px] text-slate-500">
-                Quick overview of registered staff accounts and their last
-                login activity.
+                Quick overview of registered staff accounts and their last login
+                activity.
               </div>
             </div>
             <div className="p-6">
@@ -1386,11 +1377,7 @@ export default function SettingsPage() {
                       </div>
                     </div>
                     <div className="shrink-0 text-right">
-                      <Pill
-                        tone={
-                          user.role === "ADMIN" ? "info" : "neutral"
-                        }
-                      >
+                      <Pill tone={user.role === "ADMIN" ? "info" : "neutral"}>
                         {user.role}
                       </Pill>
                       <div className="mt-1 text-[11px] font-semibold text-slate-500">
@@ -1687,4 +1674,3 @@ export default function SettingsPage() {
     </div>
   );
 }
-
