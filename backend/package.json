@@ -7,7 +7,10 @@
     "dev": "ts-node-dev --respawn --transpile-only src/server.ts",
     "build": "tsc",
     "start": "node dist/server.js",
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "pnpm build && node --test dist/tests/*.test.js",
+    "import:supplier": "ts-node-dev --transpile-only --exit-child src/scripts/importSupplierProducts.ts",
+    "reset:supplier-catalog": "ts-node-dev --transpile-only --exit-child src/scripts/resetSupplierCatalog.ts",
+    "fulfill:supplier-stock": "ts-node-dev --transpile-only --exit-child src/scripts/fulfillSupplierStock.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {
@@ -24,9 +27,12 @@
     "csv-parse": "^6.1.0",
     "dotenv": "^17.2.3",
     "express": "^5.2.1",
+    "express-rate-limit": "^8.5.2",
+    "helmet": "^8.2.0",
     "jsonwebtoken": "^9.0.3",
     "multer": "^2.0.2",
     "mysql2": "^3.16.0",
+    "pdf-parse": "^2.4.5",
     "zod": "^4.3.6"
   },
   "devDependencies": {

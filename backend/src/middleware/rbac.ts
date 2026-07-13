@@ -21,3 +21,19 @@ export function requireRole(...roles: string[]) {
         next(); // user has the right role, so we let the request continue
     };
 }
+
+export function denyStaff(req: Request, res: Response, next: NextFunction) {
+    if (!req.user) {
+        res.status(401).json({ error: "Not authenticated" });
+        return;
+    }
+
+    if (req.user.role === "STAFF") {
+        res.status(403).json({
+            error: "Staff access is limited to product lookup and own profile",
+        });
+        return;
+    }
+
+    next();
+}

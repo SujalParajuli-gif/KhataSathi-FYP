@@ -1,3 +1,4 @@
+import React, { useEffect } from "react";
 import type { ReactNode } from "react";
 import {
   InvoiceStatusChip,
@@ -5,7 +6,11 @@ import {
 } from "~/components/invoices/InvoiceChips";
 import Icon from "~/components/ui/Icon";
 import type { AppInvoice } from "~/lib/invoices";
-import { formatNpr, openInvoicePrint } from "~/lib/invoices";
+import {
+  formatNpr,
+  openInvoicePrint,
+  openInvoiceReceiptPrint,
+} from "~/lib/invoices";
 
 type Props = {
   open: boolean;
@@ -13,6 +18,10 @@ type Props = {
   onClose: () => void;
   // extra actions to show in the summary section (e.g., Pay / Cancel buttons for unpaid invoices)
   extraActions?: ReactNode;
+  // optional callback for voiding a payment — only shown when provided (admin-only feature)
+  onVoidPayment?: (paymentId: string) => void;
+  // the payment currently being voided — shows a loading state on that specific button
+  voidingPaymentId?: string | null;
 };
 
 // the main invoice detail modal — handles showing everything about a specific invoice
@@ -22,7 +31,19 @@ export default function InvoiceDetailModal({
   invoice,
   onClose,
   extraActions,
+  onVoidPayment,
+  voidingPaymentId,
 }: Props) {
+  useEffect(() => {
+    if (open) {
+      const original = document.body.style.overflow;
+      document.body.style.overflow = "hidden";
+      return () => {
+        document.body.style.overflow = original;
+      };
+    }
+  }, [open]);
+
   if (!open || !invoice) return null; // do not render anything when closed or missing data
 
   return (
@@ -97,6 +118,21 @@ export default function InvoiceDetailModal({
                         <div className="mt-[2px] text-[11px] text-[#8C8889]">
                           {formatNpr(item.unitPrice)} / unit
                         </div>
+                        {item.overrideUnitPrice !== undefined ? (
+                          <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-extrabold text-amber-700">
+                            <span>Price override</span>
+                            {item.originalUnitPrice !== undefined ? (
+                              <span className="font-mono">
+                                from {formatNpr(item.originalUnitPrice)}
+                              </span>
+                            ) : null}
+                          </div>
+                        ) : null}
+                        {item.overrideReason ? (
+                          <div className="mt-1 max-w-[260px] truncate text-[10px] font-semibold text-[#8C8889]">
+                            Reason: {item.overrideReason}
+                          </div>
+                        ) : null}
                       </div>
 
                       <div className="flex shrink-0 items-center gap-[12px]">
@@ -173,6 +209,76 @@ export default function InvoiceDetailModal({
               </div>
             ) : null}
 
+            {invoice.creditNotes.length > 0 ? (
+              <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF]">
+                <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
+                  <div className="text-[12px] font-extrabold uppercase text-[#565449]">
+                    Credit note history
+                  </div>
+                  <div className="text-[12px] font-bold text-[#8C8889]">
+                    {invoice.creditNotes.length} note(s)
+                  </div>
+                </div>
+
+                <div className="divide-y divide-[#E5E7EB]">
+                  {invoice.creditNotes.map((note) => (
+                    <div key={note.id} className="space-y-[10px] px-[16px] py-[12px]">
+                      <div className="flex flex-wrap items-center justify-between gap-[8px]">
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-extrabold text-[#000000]">
+                            {note.creditNoteNo}
+                          </div>
+                          <div className="mt-[2px] text-[11px] font-semibold text-[#8C8889]">
+                            {note.direction === "ORIGINAL"
+                              ? `Replaced by ${note.replacementInvoiceNo || "-"}`
+                              : `Created from ${note.originalInvoiceNo || "-"}`}
+                          </div>
+                        </div>
+                        <div className="rounded-[999px] border border-[#CFCFD3] bg-[#F3F4F6] px-[10px] py-[4px] text-[10px] font-extrabold uppercase text-[#565449]">
+                          {note.direction === "ORIGINAL" ? "Original" : "Replacement"}
+                        </div>
+                      </div>
+
+                      <div className="grid grid-cols-1 gap-[8px] text-[12px] sm:grid-cols-2">
+                        <div className="flex items-center justify-between gap-[8px]">
+                          <span className="font-bold text-[#8C8889]">Original paid</span>
+                          <span className="font-mono font-extrabold text-[#000000]">
+                            {formatNpr(note.originalPaidTotal)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-[8px]">
+                          <span className="font-bold text-[#8C8889]">Credit transferred</span>
+                          <span className="font-mono font-extrabold text-[#000000]">
+                            {formatNpr(note.creditedAmount)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-[8px]">
+                          <span className="font-bold text-[#8C8889]">Replacement total</span>
+                          <span className="font-mono font-extrabold text-[#000000]">
+                            {formatNpr(note.replacementNetTotal)}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between gap-[8px]">
+                          <span className="font-bold text-[#8C8889]">Customer credit</span>
+                          <span className="font-mono font-extrabold text-[#179B4D]">
+                            {formatNpr(note.customerCreditAmount)}
+                          </span>
+                        </div>
+                      </div>
+
+                      <div className="flex flex-wrap items-center justify-between gap-[8px] text-[11px] font-semibold text-[#8C8889]">
+                        <span>{note.reason || "Invoice modified"}</span>
+                        <span>
+                          {note.createdByName || "System"} |{" "}
+                          {new Date(note.createdAt).toLocaleString()}
+                        </span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
             {/* payment history list */}
             <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
               <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
@@ -193,12 +299,23 @@ export default function InvoiceDetailModal({
                   invoice.payments.map((payment) => (
                     <div
                       key={payment.id}
-                      className="grid grid-cols-1 gap-[12px] px-[16px] py-[12px] text-[12px] md:grid-cols-[280px_150px_160px_190px]"
+                      className="grid grid-cols-1 gap-[12px] px-[16px] py-[12px] text-[12px] md:grid-cols-[280px_150px_160px_1fr]"
                     >
                       <div>
                         <div className="font-bold text-[#000000]">
                           <PaymentMethodChip method={payment.method} showIcon />
                         </div>
+                        {payment.kind === "REFUND" ? (
+                          <div
+                            className={`mt-[6px] inline-flex rounded-[8px] border px-[8px] py-[2px] text-[10px] font-extrabold uppercase ${
+                              payment.amount < 0
+                                ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C]"
+                                : "border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D]"
+                            }`}
+                          >
+                            {payment.amount < 0 ? "Refund payout" : "Refund reversal"}
+                          </div>
+                        ) : null}
                         <div className="mt-[4px] text-[#8C8889]">
                           {payment.createdByName || "System"} |{" "}
                           {new Date(payment.createdAt).toLocaleString()}
@@ -206,9 +323,33 @@ export default function InvoiceDetailModal({
                       </div>
                       <div>
                         <div className="font-bold text-[#8C8889]">Amount</div>
-                        <div className="mt-[4px] font-mono font-extrabold text-[#000000]">
+                        <div
+                          className={`mt-[4px] font-mono font-extrabold ${
+                            payment.kind === "REFUND"
+                              ? payment.amount < 0
+                                ? "text-[#BE123C]"
+                                : "text-[#179B4D]"
+                              : "text-[#000000]"
+                          }`}
+                        >
                           {formatNpr(payment.amount)}
                         </div>
+                        {payment.cashTendered !== undefined ? (
+                          <div className="mt-[6px] space-y-1 text-[11px] font-semibold text-[#565449]">
+                            <div>
+                              Tendered:{" "}
+                              <span className="font-mono font-extrabold text-[#000000]">
+                                {formatNpr(payment.cashTendered)}
+                              </span>
+                            </div>
+                            <div>
+                              Change:{" "}
+                              <span className="font-mono font-extrabold text-[#179B4D]">
+                                {formatNpr(payment.changeAmount || 0)}
+                              </span>
+                            </div>
+                          </div>
+                        ) : null}
                       </div>
                       <div>
                         <div className="font-bold text-[#8C8889]">Status</div>
@@ -216,11 +357,27 @@ export default function InvoiceDetailModal({
                           {payment.status}
                         </div>
                       </div>
-                      <div>
-                        <div className="font-bold text-[#8C8889]">Reference</div>
-                        <div className="mt-[4px] break-all font-semibold text-[#000000]">
-                          {payment.reference || "-"}
+                      <div className="flex items-start justify-between gap-[8px]">
+                        <div className="min-w-0">
+                          <div className="font-bold text-[#8C8889]">Reference</div>
+                          <div className="mt-[4px] break-all font-semibold text-[#000000]">
+                            {payment.reference || "-"}
+                          </div>
                         </div>
+                        {/* void button — only shown for successful, non-voided payments when admin */}
+                        {onVoidPayment &&
+                          payment.status === "SUCCESS" &&
+                          payment.kind !== "REFUND" &&
+                          invoice.status !== "Cancelled" ? (
+                          <button
+                            type="button"
+                            disabled={voidingPaymentId === payment.id}
+                            onClick={() => onVoidPayment(payment.id)}
+                            className="mt-[16px] shrink-0 rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] px-[10px] py-[4px] text-[11px] font-extrabold text-[#BE123C] transition hover:bg-rose-100 disabled:opacity-50"
+                          >
+                            {voidingPaymentId === payment.id ? "Voiding..." : "Void"}
+                          </button>
+                        ) : null}
                       </div>
                     </div>
                   ))
@@ -284,6 +441,17 @@ export default function InvoiceDetailModal({
                   </div>
                 </div>
 
+                {invoice.notes ? (
+                  <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8F9FA] p-[12px]">
+                    <div className="text-[12px] font-bold text-[#565449]">
+                      Invoice note
+                    </div>
+                    <div className="mt-[6px] whitespace-pre-wrap text-[12px] font-semibold leading-5 text-[#565449]">
+                      {invoice.notes}
+                    </div>
+                  </div>
+                ) : null}
+
                 {/* modal action buttons */}
                 <div className="mt-[16px] grid grid-cols-1 gap-[12px]">
                   {/* printing triggers the native browser print dialogue for the invoice */}
@@ -294,6 +462,14 @@ export default function InvoiceDetailModal({
                   >
                     <Icon name="print" />
                     Print Invoice
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openInvoiceReceiptPrint(invoice.id)}
+                    className="flex h-[44px] items-center justify-center gap-[8px] rounded-[14px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]"
+                  >
+                    <Icon name="receipt_long" />
+                    Receipt Print
                   </button>
                   {/* dynamically rendering extra actions passed from the parent page */}
                   {extraActions}
@@ -314,4 +490,3 @@ export default function InvoiceDetailModal({
     </div>
   );
 }
-

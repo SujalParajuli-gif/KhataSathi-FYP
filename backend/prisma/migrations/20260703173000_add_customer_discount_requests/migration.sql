@@ -1,0 +1,27 @@
+CREATE TABLE `CustomerDiscountRequest` (
+  `id` VARCHAR(191) NOT NULL,
+  `customerName` VARCHAR(191) NOT NULL,
+  `phone` VARCHAR(191) NOT NULL,
+  `email` VARCHAR(191) NULL,
+  `discountType` VARCHAR(191) NOT NULL,
+  `discountPercent` DOUBLE NOT NULL,
+  `reason` TEXT NULL,
+  `status` ENUM('PENDING', 'APPROVED', 'REJECTED') NOT NULL DEFAULT 'PENDING',
+  `requestedById` VARCHAR(191) NOT NULL,
+  `reviewedById` VARCHAR(191) NULL,
+  `reviewedAt` DATETIME(3) NULL,
+  `adminNote` TEXT NULL,
+  `approvedCustomerId` VARCHAR(191) NULL,
+  `createdAt` DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+  `updatedAt` DATETIME(3) NOT NULL,
+
+  PRIMARY KEY (`id`),
+  INDEX `CustomerDiscountRequest_status_createdAt_idx` (`status`, `createdAt`),
+  INDEX `CustomerDiscountRequest_requestedById_createdAt_idx` (`requestedById`, `createdAt`),
+  INDEX `CustomerDiscountRequest_phone_idx` (`phone`),
+  INDEX `CustomerDiscountRequest_reviewedById_idx` (`reviewedById`),
+  INDEX `CustomerDiscountRequest_approvedCustomerId_idx` (`approvedCustomerId`),
+  CONSTRAINT `CustomerDiscountRequest_requestedById_fkey` FOREIGN KEY (`requestedById`) REFERENCES `User`(`id`) ON DELETE RESTRICT ON UPDATE CASCADE,
+  CONSTRAINT `CustomerDiscountRequest_reviewedById_fkey` FOREIGN KEY (`reviewedById`) REFERENCES `User`(`id`) ON DELETE SET NULL ON UPDATE CASCADE,
+  CONSTRAINT `CustomerDiscountRequest_approvedCustomerId_fkey` FOREIGN KEY (`approvedCustomerId`) REFERENCES `Customer`(`id`) ON DELETE SET NULL ON UPDATE CASCADE
+) DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;

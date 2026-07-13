@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Navigate, useNavigate, useParams } from "react-router";
+import { Navigate, useNavigate, useParams, useSearchParams } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
 import { getInvoiceApi } from "~/lib/api/endpoints";
@@ -16,11 +16,171 @@ function statusClass(status: AppInvoice["status"]) {
   return "bg-rose-50 text-rose-700 border-rose-200";
 }
 
+function formatReceiptQty(value: number) {
+  return Number.isInteger(value)
+    ? value.toLocaleString()
+    : value.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function getReceiptHeightMm(invoice: AppInvoice) {
+  const baseMm = 78;
+  const itemMm = invoice.items.reduce((sum, item) => {
+    const wrappedNameLines = Math.max(1, Math.ceil(item.name.length / 28));
+    return sum + 11 + wrappedNameLines * 4;
+  }, 0);
+  const paymentMm = invoice.payments.length > 0 ? 10 + invoice.payments.length * 8 : 0;
+  const notesMm = invoice.notes ? 12 + Math.ceil(invoice.notes.length / 32) * 4 : 0;
+  return Math.min(600, Math.max(120, Math.ceil(baseMm + itemMm + paymentMm + notesMm)));
+}
+
+function ReceiptPrintLayout({ invoice }: { invoice: AppInvoice }) {
+  const receiptHeightMm = getReceiptHeightMm(invoice);
+
+  return (
+    <div className="mx-auto w-[80mm] bg-white px-2 py-3 font-mono text-[11px] leading-4 text-black print:m-0 print:w-[80mm] print:px-1 print:py-0">
+      <style>{`
+        html, body {
+          background: #fff !important;
+        }
+        @media print {
+          @page { size: 80mm ${receiptHeightMm}mm; margin: 3mm; }
+          html, body, #root {
+            width: 80mm !important;
+            min-height: 0 !important;
+            margin: 0 !important;
+            padding: 0 !important;
+            background: #fff !important;
+          }
+        }
+      `}</style>
+      <div className="text-center">
+        <BrandLogo className="mx-auto h-9 w-[150px]" />
+        <div className="mt-2 text-[13px] font-black">KhataSathi</div>
+        <div className="text-[10px] font-bold">Retail / Wholesale Receipt</div>
+      </div>
+
+      <div className="my-2 border-t border-dashed border-black" />
+
+      <div className="space-y-1">
+        <div className="flex justify-between gap-2">
+          <span>Invoice</span>
+          <span className="text-right font-bold">{invoice.invoiceNo}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span>Date</span>
+          <span className="text-right">{invoice.createdDateLabel} {invoice.createdTimeLabel}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span>Cashier</span>
+          <span className="text-right">{invoice.cashierName}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span>Customer</span>
+          <span className="text-right">{invoice.customerName}</span>
+        </div>
+        <div className="flex justify-between gap-2">
+          <span>Status</span>
+          <span className="text-right font-bold">{invoice.status}</span>
+        </div>
+      </div>
+
+      <div className="my-2 border-t border-dashed border-black" />
+
+      <div className="space-y-2">
+        {invoice.items.map((item) => (
+          <div key={item.id}>
+            <div className="break-words font-bold">{item.name}</div>
+            {item.sku ? <div className="text-[10px]">SKU: {item.sku}</div> : null}
+            <div className="flex justify-between gap-2">
+              <span>
+                {formatReceiptQty(item.qty)} x {formatNpr(item.unitPrice)}
+                {item.overrideUnitPrice !== undefined ? " *" : ""}
+              </span>
+              <span className="font-bold">{formatNpr(item.lineTotal)}</span>
+            </div>
+            {item.overrideUnitPrice !== undefined ? (
+              <div className="text-[10px]">* price override</div>
+            ) : null}
+          </div>
+        ))}
+      </div>
+
+      <div className="my-2 border-t border-dashed border-black" />
+
+      <div className="space-y-1">
+        <div className="flex justify-between">
+          <span>Subtotal</span>
+          <span>{formatNpr(invoice.subtotal)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Discount</span>
+          <span>-{formatNpr(invoice.discount)}</span>
+        </div>
+        <div className="flex justify-between text-[14px] font-black">
+          <span>Total</span>
+          <span>{formatNpr(invoice.netTotal)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Paid</span>
+          <span>{formatNpr(invoice.paidAmount)}</span>
+        </div>
+        <div className="flex justify-between">
+          <span>Due</span>
+          <span>{formatNpr(invoice.dueAmount)}</span>
+        </div>
+      </div>
+
+      {invoice.payments.length > 0 ? (
+        <>
+          <div className="my-2 border-t border-dashed border-black" />
+          <div className="space-y-1">
+            <div className="font-black">Payments</div>
+            {invoice.payments.map((payment) => (
+              <div key={payment.id}>
+                <div className="flex justify-between gap-2">
+                  <span>
+                    {payment.kind === "REFUND" ? "Refund " : ""}
+                    {payment.method}
+                  </span>
+                  <span>{formatNpr(payment.amount)}</span>
+                </div>
+                {payment.cashTendered !== undefined ? (
+                  <div className="text-[10px]">
+                    Tendered {formatNpr(payment.cashTendered)} | Change{" "}
+                    {formatNpr(payment.changeAmount || 0)}
+                  </div>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </>
+      ) : null}
+
+      {invoice.notes ? (
+        <>
+          <div className="my-2 border-t border-dashed border-black" />
+          <div>
+            <div className="font-black">Note</div>
+            <div className="whitespace-pre-wrap break-words">{invoice.notes}</div>
+          </div>
+        </>
+      ) : null}
+
+      <div className="my-2 border-t border-dashed border-black" />
+      <div className="pb-3 text-center text-[10px] font-bold">
+        Thank you for shopping with us.
+      </div>
+    </div>
+  );
+}
+
 // standalone printable invoice page — designed to look good on A4 paper
 // it uses 'print:' tailwind classes to hide UI buttons when actually printing
 export default function InvoicePrintPage() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const printMode = searchParams.get("mode") === "receipt" ? "receipt" : "a4";
   const printedRef = useRef(false); // stops the automatic print dialog from opening more than once
   const [invoice, setInvoice] = useState<AppInvoice | null>(null); // stores the normalized invoice used by the print layout
   const [loading, setLoading] = useState(true); // tracks the first fetch for the requested invoice
@@ -71,6 +231,53 @@ export default function InvoicePrintPage() {
   // requiring the user to be logged in to view invoices
   if (!isLoggedIn() || !getAuthUser()) {
     return <Navigate to="/login" replace />;
+  }
+
+  if (printMode === "receipt") {
+    return (
+      <div className="min-h-screen bg-white p-4 text-black print:min-h-0 print:w-[80mm] print:p-0">
+        <div className="mb-4 flex items-center justify-between gap-3 rounded-[18px] border border-slate-200 bg-white px-4 py-3 text-slate-900 print:hidden">
+          <div>
+            <div className="text-[12px] font-extrabold uppercase text-slate-500">
+              Print Receipt
+            </div>
+            <div className="mt-1 text-[16px] font-extrabold">
+              {invoice?.invoiceNo || "Loading..."}
+            </div>
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => window.print()}
+              className="flex h-[40px] items-center justify-center gap-2 rounded-[12px] bg-slate-900 px-3 text-[12px] font-extrabold text-white hover:bg-slate-800"
+            >
+              <Icon name="print" />
+              Print
+            </button>
+            <button
+              type="button"
+              onClick={() => navigate("/invoices", { replace: true })}
+              className="flex h-[40px] items-center justify-center gap-2 rounded-[12px] border-2 border-slate-200 bg-white px-3 text-[12px] font-extrabold text-slate-700 hover:bg-slate-50"
+            >
+              <Icon name="arrow_back" />
+              Back
+            </button>
+          </div>
+        </div>
+
+        {loading ? (
+          <div className="flex min-h-[220px] items-center justify-center font-semibold text-slate-400 print:hidden">
+            Loading invoice...
+          </div>
+        ) : error || !invoice ? (
+          <div className="flex min-h-[220px] items-center justify-center text-center print:hidden">
+            <div className="text-[16px] font-extrabold text-slate-900">{error}</div>
+          </div>
+        ) : (
+          <ReceiptPrintLayout invoice={invoice} />
+        )}
+      </div>
+    );
   }
 
   return (
@@ -175,6 +382,11 @@ export default function InvoicePrintPage() {
                       </td>
                       <td className="px-4 py-3 text-right font-mono font-semibold text-slate-700">
                         {formatNpr(item.unitPrice)}
+                        {item.overrideUnitPrice !== undefined ? (
+                          <div className="mt-1 text-[10px] font-bold text-amber-700">
+                            Override
+                          </div>
+                        ) : null}
                       </td>
                       <td className="px-4 py-3 text-right font-mono font-extrabold text-slate-900">
                         {formatNpr(item.lineTotal)}
@@ -214,8 +426,10 @@ export default function InvoicePrintPage() {
                       <thead>
                         <tr className="bg-slate-50 text-left text-[10px] font-extrabold uppercase  text-slate-500">
                           <th className="px-3 py-2">Method</th>
-                          <th className="px-3 py-2">Reference</th>
+                          <th className="px-3 py-2">Type / Reference</th>
                           <th className="px-3 py-2 text-right">Amount</th>
+                          <th className="px-3 py-2 text-right">Tendered</th>
+                          <th className="px-3 py-2 text-right">Change</th>
                         </tr>
                       </thead>
                       <tbody>
@@ -223,15 +437,47 @@ export default function InvoicePrintPage() {
                           <tr key={payment.id} className="border-t border-slate-100 text-[12px]">
                             <td className="px-3 py-2 text-slate-700">{payment.method}</td>
                             <td className="px-3 py-2 text-slate-700">
+                              {payment.kind === "REFUND" ? (
+                                <span className="mr-2 font-extrabold text-rose-700">
+                                  Refund
+                                </span>
+                              ) : null}
                               {payment.reference || "-"}
                             </td>
-                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">
+                            <td
+                              className={`px-3 py-2 text-right font-mono font-semibold ${
+                                payment.kind === "REFUND"
+                                  ? "text-rose-700"
+                                  : "text-slate-900"
+                              }`}
+                            >
                               {formatNpr(payment.amount)}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">
+                              {payment.cashTendered !== undefined
+                                ? formatNpr(payment.cashTendered)
+                                : "-"}
+                            </td>
+                            <td className="px-3 py-2 text-right font-mono font-semibold text-slate-900">
+                              {payment.changeAmount !== undefined
+                                ? formatNpr(payment.changeAmount)
+                                : "-"}
                             </td>
                           </tr>
                         ))}
                       </tbody>
                     </table>
+                  </div>
+                ) : null}
+
+                {invoice.notes ? (
+                  <div className="mt-4 rounded-[14px] border border-slate-200 bg-slate-50 p-3">
+                    <div className="text-[11px] font-extrabold uppercase text-slate-500">
+                      Note
+                    </div>
+                    <div className="mt-2 whitespace-pre-wrap text-[12px] font-semibold leading-5 text-slate-700">
+                      {invoice.notes}
+                    </div>
                   </div>
                 ) : null}
               </div>

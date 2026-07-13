@@ -1,7 +1,11 @@
 import type { Prisma, PrismaClient } from "@prisma/client";
+import bcrypt from "bcryptjs";
 import prisma from "../../db/prisma";
 
 const BUSINESS_SETTINGS_ID = 1; // there is only one settings row in the database, always with ID 1
+const OVERRIDE_PIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
+const OVERRIDE_PIN_MAX_FAILURES = 5;
+const OVERRIDE_PIN_LOCKOUT_MS = 10 * 60 * 1000;
 
 // this type allows functions to accept either the main Prisma client or a transaction client
 // so the same function can be used both inside and outside of database transactions
@@ -13,8 +17,21 @@ export type BusinessSettingsSnapshot = {
   defaultLowStockThreshold: number;
   defaultWholesaleQtyThreshold: number;
   loyaltyDiscountPercent: number;
+  returnWindowDays: number;
+  parkedBillExpiryHours: number;
+  draftRequestExpiryMinutes: number;
   createdAt?: Date;
   updatedAt?: Date;
+};
+
+export type OverrideAction =
+  | "PRICE_OVERRIDE"
+  | "MANUAL_DISCOUNT"
+  | "PAYMENT_VOID";
+
+type OverridePolicyRow = BusinessSettingsSnapshot & {
+  overridePinHash?: string | null;
+  overridePinUpdatedAt?: Date | null;
 };
 
 // defining the shape of product threshold fields used when resolving which threshold to apply
@@ -25,16 +42,16 @@ type ProductThresholdShape = {
   usesDefaultLowStockThreshold?: boolean | null;
 };
 
-// normalizing a number to a whole number with a minimum value
+// normalizing a number with a minimum value
 // if the input is not a valid number, we fall back to the provided default
-function normalizeWholeNumber(
+function normalizeDecimalNumber(
   value: number | undefined,
   fallback: number,
   min: number,
 ) {
   const normalized = Number(value ?? fallback);
   if (!Number.isFinite(normalized)) return fallback;
-  return Math.max(min, Math.floor(normalized)); // Math.floor ensures we get a whole number, Math.max ensures minimum
+  return Math.max(min, normalized);
 }
 
 // clamping a percentage value between 0 and 100
@@ -56,19 +73,31 @@ export function normalizeBusinessSettingsInput(data: {
   defaultLowStockThreshold?: number;
   defaultWholesaleQtyThreshold?: number;
   loyaltyDiscountPercent?: number;
+  returnWindowDays?: number;
+  parkedBillExpiryHours?: number;
+  draftRequestExpiryMinutes?: number;
 }) {
   return {
-    defaultLowStockThreshold: normalizeWholeNumber(
+    defaultLowStockThreshold: normalizeDecimalNumber(
       data.defaultLowStockThreshold,
       5,
       0,
     ),
-    defaultWholesaleQtyThreshold: normalizeWholeNumber(
+    defaultWholesaleQtyThreshold: normalizeDecimalNumber(
       data.defaultWholesaleQtyThreshold,
       15,
       1,
     ),
     loyaltyDiscountPercent: clampPercent(data.loyaltyDiscountPercent, 2),
+    returnWindowDays: Math.floor(
+      normalizeDecimalNumber(data.returnWindowDays, 7, 0),
+    ),
+    parkedBillExpiryHours: Math.floor(
+      normalizeDecimalNumber(data.parkedBillExpiryHours, 8, 1),
+    ),
+    draftRequestExpiryMinutes: Math.floor(
+      normalizeDecimalNumber(data.draftRequestExpiryMinutes, 30, 1),
+    ),
   };
 }
 
@@ -78,7 +107,7 @@ export function normalizeBusinessSettingsInput(data: {
 export async function getBusinessSettings(
   client: PrismaLike = prisma,
 ): Promise<BusinessSettingsSnapshot> {
-  return client.businessSettings.upsert({
+  const settings = await client.businessSettings.upsert({
     where: { id: BUSINESS_SETTINGS_ID },
     update: {}, // no changes if it already exists — just return the current data
     create: {
@@ -86,6 +115,10 @@ export async function getBusinessSettings(
       ...normalizeBusinessSettingsInput({}), // creating with default values
     },
   });
+
+  const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
+    settings as OverridePolicyRow;
+  return safe;
 }
 
 // updating the business settings with new values
@@ -95,12 +128,15 @@ export async function updateBusinessSettings(
     defaultLowStockThreshold?: number;
     defaultWholesaleQtyThreshold?: number;
     loyaltyDiscountPercent?: number;
+    returnWindowDays?: number;
+    parkedBillExpiryHours?: number;
+    draftRequestExpiryMinutes?: number;
   },
   client: PrismaLike = prisma,
 ) {
   const normalized = normalizeBusinessSettingsInput(data); // normalizing input before saving
 
-  return client.businessSettings.upsert({
+  const settings = await client.businessSettings.upsert({
     where: { id: BUSINESS_SETTINGS_ID },
     update: normalized,
     create: {
@@ -108,6 +144,263 @@ export async function updateBusinessSettings(
       ...normalized,
     },
   });
+
+  const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
+    settings as OverridePolicyRow;
+  return safe;
+}
+
+function validateOverridePin(pin: unknown) {
+  const normalized = String(pin ?? "").trim();
+  if (!/^\d{4}$/.test(normalized)) {
+    throw new Error("Override PIN must be exactly 4 digits");
+  }
+  return normalized;
+}
+
+export async function getOverridePolicy() {
+  const settings = (await prisma.businessSettings.upsert({
+    where: { id: BUSINESS_SETTINGS_ID },
+    update: {},
+    create: {
+      id: BUSINESS_SETTINGS_ID,
+      ...normalizeBusinessSettingsInput({}),
+    },
+  })) as OverridePolicyRow;
+
+  return {
+    pinConfigured: Boolean(settings.overridePinHash),
+    pinUpdatedAt: settings.overridePinUpdatedAt || null,
+  };
+}
+
+export async function updateOverridePin(pin: unknown, updatedById: string) {
+  const normalizedPin = validateOverridePin(pin);
+  const pinHash = await bcrypt.hash(normalizedPin, 10);
+  const now = new Date();
+  const updated = await prisma.businessSettings.upsert({
+    where: { id: BUSINESS_SETTINGS_ID },
+    update: {
+      overridePinHash: pinHash,
+      overridePinUpdatedAt: now,
+    },
+    create: {
+      id: BUSINESS_SETTINGS_ID,
+      ...normalizeBusinessSettingsInput({}),
+      overridePinHash: pinHash,
+      overridePinUpdatedAt: now,
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorId: updatedById,
+      action: "OVERRIDE_PIN_UPDATED",
+      entityType: "BusinessSettings",
+      entityId: String(BUSINESS_SETTINGS_ID),
+      meta: {
+        pinConfigured: true,
+        pinUpdatedAt: updated.overridePinUpdatedAt,
+      },
+    },
+  }).catch(() => undefined);
+
+  return {
+    pinConfigured: true,
+    pinUpdatedAt: updated.overridePinUpdatedAt,
+  };
+}
+
+function getPrivilegeFieldForAction(action: OverrideAction) {
+  if (action === "PRICE_OVERRIDE") return "canOverrideBillingPrice";
+  if (action === "MANUAL_DISCOUNT") return "canApplyManualDiscount";
+  return "canVoidPayment";
+}
+
+function getOverrideActionLabel(action: OverrideAction) {
+  if (action === "PRICE_OVERRIDE") return "price override";
+  if (action === "MANUAL_DISCOUNT") return "manual discount";
+  return "payment void";
+}
+
+export function buildOverridePinLockedMessage(lockedUntil: Date) {
+  const remainingMs = Math.max(0, lockedUntil.getTime() - Date.now());
+  const remainingMinutes = Math.max(1, Math.ceil(remainingMs / 60_000));
+  return `Too many invalid override PIN attempts. Try again in ${remainingMinutes} minute${remainingMinutes === 1 ? "" : "s"}.`;
+}
+
+async function getActiveOverridePinLock(userId: string) {
+  return prisma.overridePinAttempt.findFirst({
+    where: {
+      userId,
+      success: false,
+      lockedUntil: { gt: new Date() },
+    },
+    orderBy: { lockedUntil: "desc" },
+  });
+}
+
+async function recordOverridePinAttempt(data: {
+  userId: string;
+  action: OverrideAction;
+  success: boolean;
+  failureReason?: string;
+  actorName?: string | null;
+}) {
+  if (data.success) {
+    await prisma.overridePinAttempt.create({
+      data: {
+        userId: data.userId,
+        action: data.action,
+        success: true,
+      },
+    });
+    return null;
+  }
+
+  const now = new Date();
+  const windowStart = new Date(now.getTime() - OVERRIDE_PIN_FAILURE_WINDOW_MS);
+  const recentFailureCount = await prisma.overridePinAttempt.count({
+    where: {
+      userId: data.userId,
+      success: false,
+      createdAt: { gte: windowStart },
+    },
+  });
+  const nextFailureCount = recentFailureCount + 1;
+  const lockedUntil =
+    nextFailureCount >= OVERRIDE_PIN_MAX_FAILURES
+      ? new Date(now.getTime() + OVERRIDE_PIN_LOCKOUT_MS)
+      : null;
+
+  const attempt = await prisma.overridePinAttempt.create({
+    data: {
+      userId: data.userId,
+      action: data.action,
+      success: false,
+      failureReason: data.failureReason?.slice(0, 180) || "INVALID_PIN",
+      lockedUntil,
+    },
+  });
+
+  if (lockedUntil) {
+    await prisma.auditLog.create({
+      data: {
+        actorId: data.userId,
+        action: "OVERRIDE_PIN_LOCKED",
+        entityType: "OverridePinAttempt",
+        entityId: attempt.id,
+        meta: {
+          actorName: data.actorName || null,
+          overrideAction: data.action,
+          actionLabel: getOverrideActionLabel(data.action),
+          failedAttempts: nextFailureCount,
+          windowMinutes: Math.round(OVERRIDE_PIN_FAILURE_WINDOW_MS / 60_000),
+          lockMinutes: Math.round(OVERRIDE_PIN_LOCKOUT_MS / 60_000),
+          lockedUntil,
+        },
+      },
+    }).catch(() => undefined);
+  }
+
+  return lockedUntil;
+}
+
+export async function assertCashierOverrideAllowed(
+  userId: string,
+  action: OverrideAction,
+  pin: unknown,
+  client: PrismaLike = prisma,
+) {
+  const actor = await client.user.findUnique({
+    where: { id: userId },
+    select: {
+      id: true,
+      name: true,
+      role: true,
+      isActive: true,
+      cashierPrivilege: true,
+    },
+  });
+
+  if (!actor || !actor.isActive) {
+    throw new Error("User is not active");
+  }
+
+  if (actor.role === "ADMIN" || actor.role === "MANAGER") {
+    return actor;
+  }
+
+  if (actor.role !== "CASHIER") {
+    throw new Error("Only admin, manager, or cashier users can perform this action");
+  }
+
+  const privilege = actor.cashierPrivilege || normalizeCashierPrivilegeInput({});
+  const privilegeField = getPrivilegeFieldForAction(action);
+  if (!Boolean((privilege as any)[privilegeField])) {
+    throw new Error(
+      `This cashier is not authorized for ${getOverrideActionLabel(action)}.`,
+    );
+  }
+
+  const settings = (await client.businessSettings.upsert({
+    where: { id: BUSINESS_SETTINGS_ID },
+    update: {},
+    create: {
+      id: BUSINESS_SETTINGS_ID,
+      ...normalizeBusinessSettingsInput({}),
+    },
+  })) as OverridePolicyRow;
+
+  if (!settings.overridePinHash) {
+    throw new Error("Override PIN has not been configured by admin.");
+  }
+
+  const activeLock = await getActiveOverridePinLock(userId);
+  if (activeLock?.lockedUntil) {
+    throw new Error(buildOverridePinLockedMessage(activeLock.lockedUntil));
+  }
+
+  let normalizedPin = "";
+  try {
+    normalizedPin = validateOverridePin(pin);
+  } catch (error: any) {
+    const lockedUntil = await recordOverridePinAttempt({
+      userId,
+      action,
+      success: false,
+      failureReason: "INVALID_FORMAT",
+      actorName: actor.name,
+    });
+    if (lockedUntil) {
+      throw new Error(buildOverridePinLockedMessage(lockedUntil));
+    }
+    throw error;
+  }
+
+  const valid = await bcrypt.compare(normalizedPin, settings.overridePinHash);
+  if (!valid) {
+    const lockedUntil = await recordOverridePinAttempt({
+      userId,
+      action,
+      success: false,
+      failureReason: "INVALID_PIN",
+      actorName: actor.name,
+    });
+    if (lockedUntil) {
+      throw new Error(buildOverridePinLockedMessage(lockedUntil));
+    }
+    throw new Error("Invalid override PIN.");
+  }
+
+  await recordOverridePinAttempt({
+    userId,
+    action,
+    success: true,
+    actorName: actor.name,
+  });
+
+  return actor;
 }
 
 // resolving which wholesale quantity threshold to use for a specific product
@@ -122,7 +415,7 @@ export function resolveWholesaleQtyThreshold(
 ) {
   return product.usesDefaultWholesaleQtyThreshold
     ? settings.defaultWholesaleQtyThreshold // use the global default
-    : normalizeWholeNumber(
+    : normalizeDecimalNumber(
         product.wholesaleQtyThreshold,
         settings.defaultWholesaleQtyThreshold,
         1,
@@ -140,7 +433,7 @@ export function resolveLowStockThreshold(
 ) {
   return product.usesDefaultLowStockThreshold
     ? settings.defaultLowStockThreshold
-    : normalizeWholeNumber(
+    : normalizeDecimalNumber(
         product.lowStockThreshold,
         settings.defaultLowStockThreshold,
         0,
@@ -159,4 +452,124 @@ export function applyBusinessThresholds<T extends ProductThresholdShape>(
     wholesaleQtyThreshold: resolveWholesaleQtyThreshold(product, settings),
     lowStockThreshold: resolveLowStockThreshold(product, settings),
   };
+}
+
+export type CashierPrivilegeInput = {
+  canCreateDiscountedCustomer?: boolean;
+  maxCustomerLoyaltyPercent?: number;
+  maxCustomerWholesalePercent?: number;
+  canRequestCustomerDiscount?: boolean;
+  canOverrideBillingPrice?: boolean;
+  canApplyManualDiscount?: boolean;
+  canVoidPayment?: boolean;
+};
+
+function normalizePrivilegePercent(value: unknown, fallback: number) {
+  const normalized = Number(value ?? fallback);
+  if (!Number.isFinite(normalized)) return fallback;
+  if (normalized < 0) return 0;
+  if (normalized > 100) return 100;
+  return normalized;
+}
+
+function normalizeCashierPrivilegeInput(data: CashierPrivilegeInput = {}) {
+  return {
+    canCreateDiscountedCustomer: data.canCreateDiscountedCustomer === true,
+    maxCustomerLoyaltyPercent: normalizePrivilegePercent(
+      data.maxCustomerLoyaltyPercent,
+      5,
+    ),
+    maxCustomerWholesalePercent: normalizePrivilegePercent(
+      data.maxCustomerWholesalePercent,
+      10,
+    ),
+    canRequestCustomerDiscount: data.canRequestCustomerDiscount !== false,
+    canOverrideBillingPrice: data.canOverrideBillingPrice === true,
+    canApplyManualDiscount: data.canApplyManualDiscount === true,
+    canVoidPayment: data.canVoidPayment === true,
+  };
+}
+
+export async function getCashierPrivilege(userId: string) {
+  const existing = await prisma.cashierPrivilege.findUnique({
+    where: { userId },
+  });
+
+  if (existing) return existing;
+
+  return {
+    id: "",
+    userId,
+    ...normalizeCashierPrivilegeInput({}),
+    updatedById: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
+}
+
+export async function listCashierPrivileges() {
+  const cashiers = await prisma.user.findMany({
+    where: { role: "CASHIER" },
+    orderBy: { name: "asc" },
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      isActive: true,
+      cashierPrivilege: true,
+    },
+  });
+
+  return cashiers.map((cashier) => ({
+    ...cashier,
+    privilege: cashier.cashierPrivilege || {
+      id: "",
+      userId: cashier.id,
+      ...normalizeCashierPrivilegeInput({}),
+      updatedById: null,
+      createdAt: null,
+      updatedAt: null,
+    },
+    cashierPrivilege: undefined,
+  }));
+}
+
+export async function updateCashierPrivilege(
+  userId: string,
+  data: CashierPrivilegeInput,
+  updatedById: string,
+) {
+  const cashier = await prisma.user.findFirst({
+    where: { id: userId, role: "CASHIER" },
+    select: { id: true, name: true, email: true },
+  });
+  if (!cashier) {
+    throw new Error("Cashier not found");
+  }
+
+  const normalized = normalizeCashierPrivilegeInput(data);
+
+  const privilege = await prisma.cashierPrivilege.upsert({
+    where: { userId },
+    update: { ...normalized, updatedById },
+    create: { userId, ...normalized, updatedById },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorId: updatedById,
+      action: "CASHIER_PRIVILEGE_UPDATED",
+      entityType: "CashierPrivilege",
+      entityId: privilege.id,
+      meta: {
+        cashierId: cashier.id,
+        cashierName: cashier.name,
+        cashierEmail: cashier.email,
+        privilege: normalized,
+      },
+    },
+  }).catch(() => undefined);
+
+  return { cashier, privilege };
 }

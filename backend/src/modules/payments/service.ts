@@ -1,5 +1,6 @@
 import crypto from "crypto";
 import prisma from "../../db/prisma";
+import { assertCashierOverrideAllowed } from "../settings/service";
 import {
   buildEsewaResultUrl,
   buildEsewaSignature,
@@ -28,6 +29,33 @@ function buildEsewaTransactionUuid() {
   return `esw-${Date.now()}-${crypto.randomBytes(3).toString("hex")}`;
 }
 
+type PaymentLedgerEntry = {
+  id: string;
+  amount: number;
+  status: string;
+  kind?: string | null;
+};
+
+function isChargePayment(payment: { kind?: string | null }) {
+  return String(payment.kind || "CHARGE").toUpperCase() !== "REFUND";
+}
+
+export function getSuccessfulChargePaidTotal(
+  payments: PaymentLedgerEntry[],
+  excludePaymentId?: string,
+) {
+  return roundCurrency(
+    payments
+      .filter(
+        (payment) =>
+          payment.status === "SUCCESS" &&
+          isChargePayment(payment) &&
+          (!excludePaymentId || payment.id !== excludePaymentId),
+      )
+      .reduce((sum, payment) => sum + payment.amount, 0),
+  );
+}
+
 // recalculating the paidTotal and paymentStatus for an invoice based on its successful payments
 // we call this inside a transaction after every payment add, success, or failure
 // so the invoice record always reflects the actual payment state
@@ -41,11 +69,7 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
   }
 
   // summing only the successful payments — pending and failed ones do not count toward the total
-  const paidTotal = roundCurrency(
-    invoice.payments
-      .filter((payment: any) => payment.status === "SUCCESS")
-      .reduce((sum: number, payment: any) => sum + payment.amount, 0),
-  );
+  const paidTotal = getSuccessfulChargePaidTotal(invoice.payments);
 
   // determining the payment status based on how much has been paid vs the net total
   let paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED" =
@@ -71,24 +95,12 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
 // calculating the total already paid by summing only successful payments
 // optionally excluding a specific payment ID — we use this when checking if an eSewa payment
 // would cause overpayment, because the payment itself is already in the database as PENDING
-function getSuccessfulPaidTotal(payments: Array<{ id: string; amount: number; status: string }>, excludePaymentId?: string) {
-  return roundCurrency(
-    payments
-      .filter(
-        (payment) =>
-          payment.status === "SUCCESS" &&
-          (!excludePaymentId || payment.id !== excludePaymentId),
-      )
-      .reduce((sum, payment) => sum + payment.amount, 0),
-  );
-}
-
 // validating that an invoice is in a valid state to accept a new payment
 // we cannot add payments to drafts, cancelled invoices, fully paid invoices, or zero-total ones
 function ensureInvoiceCanAcceptPayment(invoice: {
   status: string;
   paymentStatus: string;
-  payments: Array<{ id: string; amount: number; status: string }>;
+  payments: PaymentLedgerEntry[];
   netTotal: number;
 }) {
   if (invoice.status !== "FINALIZED") {
@@ -228,7 +240,7 @@ export async function addPayment(
 
   // checking for overpayment — the new payment plus what is already paid cannot exceed the net total
   if (status === "SUCCESS") {
-    const currentPaid = getSuccessfulPaidTotal(invoice.payments);
+    const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
 
     if (currentPaid + normalizedAmount > invoice.netTotal) {
       throw new Error(
@@ -287,7 +299,99 @@ export async function addPayment(
 
 // initiating an eSewa online payment — creates a PENDING payment record and returns the
 // form fields the frontend needs to redirect the user to eSewa's payment page
+type InvoiceForPayment = {
+  id: string;
+  invoiceNo: string;
+  status: string;
+  paymentStatus: string;
+  netTotal: number;
+  payments: PaymentLedgerEntry[];
+};
+
+// creates a pending eSewa payment and returns the signed gateway form payload
+// using the caller's transaction client lets checkout commit the invoice and payment intent together
+export async function createEsewaPaymentIntentTx(
+  tx: any,
+  invoice: InvoiceForPayment,
+  amount: number,
+  createdById: string,
+) {
+  const config = getEsewaConfig();
+  ensureInvoiceCanAcceptPayment(invoice);
+
+  const normalizedAmount = roundCurrency(amount);
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error("Payment amount must be greater than zero");
+  }
+
+  const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
+  const remainingDue = roundCurrency(Math.max(0, invoice.netTotal - currentPaid));
+  if (normalizedAmount > remainingDue) {
+    throw new Error("Payment amount cannot exceed the remaining due.");
+  }
+
+  const transactionUuid = buildEsewaTransactionUuid();
+  const payment = await tx.payment.create({
+    data: {
+      invoiceId: invoice.id,
+      method: "ESEWA",
+      amount: normalizedAmount,
+      status: "PENDING",
+      transactionUuid,
+      createdById,
+    },
+  });
+
+  const amountText = formatEsewaAmount(normalizedAmount);
+  const signedFieldNames = ESEWA_SIGNED_FIELD_NAMES.join(",");
+  const fields: EsewaFormFields = {
+    amount: amountText,
+    tax_amount: "0",
+    total_amount: amountText,
+    transaction_uuid: transactionUuid,
+    product_code: config.productCode,
+    product_service_charge: "0",
+    product_delivery_charge: "0",
+    success_url: `${config.backendBaseUrl}/api/payments/esewa/verify/${payment.id}`,
+    failure_url: `${config.backendBaseUrl}/api/payments/esewa/failure/${payment.id}`,
+    signed_field_names: signedFieldNames,
+    signature: "",
+  };
+
+  fields.signature = buildEsewaSignature(
+    fields,
+    ESEWA_SIGNED_FIELD_NAMES,
+    config.secretKey,
+  );
+
+  return {
+    paymentId: payment.id,
+    invoiceId: invoice.id,
+    invoiceNo: invoice.invoiceNo,
+    amount: normalizedAmount,
+    formAction: config.formUrl,
+    fields,
+  };
+}
+
 export async function initiateEsewaPayment(
+  invoiceId: string,
+  amount: number,
+  createdById: string,
+) {
+  return prisma.$transaction(async (tx) => {
+    const invoice = await tx.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { payments: true },
+    });
+
+    if (!invoice) throw new Error("Invoice not found");
+
+    return createEsewaPaymentIntentTx(tx, invoice, amount, createdById);
+  });
+}
+
+async function legacyInitiateEsewaPayment(
   invoiceId: string,
   amount: number,
   createdById: string,
@@ -307,7 +411,7 @@ export async function initiateEsewaPayment(
   }
 
   // making sure the payment amount does not exceed the remaining balance
-  const currentPaid = getSuccessfulPaidTotal(invoice.payments);
+  const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
   const remainingDue = roundCurrency(Math.max(0, invoice.netTotal - currentPaid));
   if (normalizedAmount > remainingDue) {
     throw new Error("Payment amount cannot exceed the remaining due.");
@@ -394,7 +498,7 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
     const actor = await getActorSummaryTx(tx, payment.createdById);
 
     // checking that marking this payment as successful would not cause overpayment
-    const currentPaid = getSuccessfulPaidTotal(payment.invoice.payments, payment.id);
+    const currentPaid = getSuccessfulChargePaidTotal(payment.invoice.payments, payment.id);
     if (currentPaid + payment.amount > payment.invoice.netTotal) {
       throw new Error("Verified eSewa payment would overpay the invoice.");
     }
@@ -711,5 +815,160 @@ export async function listPayments(invoiceId: string) {
     where: { invoiceId },
     include: { createdBy: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" }, // newest payments first
+  });
+}
+
+// voiding a payment — marks a successful payment as failed with void metadata,
+// recomputes the invoice payment status, and creates an audit log entry.
+// this is the safe alternative to cancelling an entire invoice when a single payment was recorded incorrectly.
+export async function cleanupStaleEsewaPayments(maxAgeMinutes = 30) {
+  const cutoff = new Date(Date.now() - maxAgeMinutes * 60 * 1000);
+  const stalePayments = await prisma.payment.findMany({
+    where: {
+      method: "ESEWA",
+      status: "PENDING",
+      createdAt: { lt: cutoff },
+    },
+    include: {
+      invoice: {
+        select: {
+          id: true,
+          invoiceNo: true,
+          paymentStatus: true,
+        },
+      },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+
+  if (stalePayments.length === 0) {
+    return { expired: 0 };
+  }
+
+  return prisma.$transaction(async (tx) => {
+    let expired = 0;
+
+    for (const payment of stalePayments) {
+      const updated = await tx.payment.updateMany({
+        where: {
+          id: payment.id,
+          status: "PENDING",
+          method: "ESEWA",
+        },
+        data: {
+          status: "FAILED",
+          reference: payment.reference || "Expired pending eSewa payment",
+        },
+      });
+
+      if (updated.count === 0) continue;
+      expired += 1;
+
+      const next = await recomputePaymentStatusTx(tx, payment.invoiceId);
+      await tx.auditLog.create({
+        data: {
+          actorId: payment.createdById,
+          action: "ESEWA_PAYMENT_EXPIRED",
+          entityType: "Payment",
+          entityId: payment.id,
+          meta: {
+            invoiceId: payment.invoiceId,
+            invoiceNo: payment.invoice.invoiceNo,
+            amount: payment.amount,
+            previousInvoiceStatus: payment.invoice.paymentStatus,
+            nextInvoiceStatus: next.paymentStatus,
+            maxAgeMinutes,
+          },
+        },
+      });
+    }
+
+    return { expired };
+  });
+}
+
+export async function voidPayment(
+  invoiceId: string,
+  paymentId: string,
+  voidedById: string,
+  overridePin?: string | null,
+) {
+  return prisma.$transaction(async (tx) => {
+    await assertCashierOverrideAllowed(
+      voidedById,
+      "PAYMENT_VOID",
+      overridePin,
+      tx,
+    );
+
+    const payment = await tx.payment.findUnique({
+      where: { id: paymentId },
+      include: {
+        invoice: { select: { id: true, invoiceNo: true, paymentStatus: true, netTotal: true } },
+      },
+    });
+
+    if (!payment) throw new Error("Payment not found");
+    if (payment.invoiceId !== invoiceId) {
+      throw new Error("Payment does not belong to this invoice");
+    }
+    if (payment.status !== "SUCCESS") {
+      throw new Error("Only successful payments can be voided");
+    }
+    if (payment.voidedAt) {
+      throw new Error("Payment has already been voided");
+    }
+    if (payment.invoice.paymentStatus === "CANCELLED") {
+      throw new Error("Cannot void a payment on a cancelled invoice");
+    }
+    if (!isChargePayment(payment)) {
+      throw new Error("Refund ledger entries cannot be voided from the payment correction flow");
+    }
+
+    const actor = await getActorSummaryTx(tx, voidedById);
+
+    // marking the payment as voided — we change the status to FAILED and record who voided it and when
+    await tx.payment.update({
+      where: { id: paymentId },
+      data: {
+        status: "FAILED",
+        voidedAt: new Date(),
+        voidedById,
+      },
+    });
+
+    // recomputing the invoice payment totals now that this payment is no longer counted
+    const next = await recomputePaymentStatusTx(tx, invoiceId);
+
+    await tx.auditLog.create({
+      data: {
+        actorId: voidedById,
+        action: "PAYMENT_VOIDED",
+        entityType: "Payment",
+        entityId: paymentId,
+        meta: {
+          invoiceId,
+          invoiceNo: payment.invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
+          method: payment.method,
+          voidedAmount: payment.amount,
+          reference: payment.reference || null,
+          previousInvoiceStatus: payment.invoice.paymentStatus,
+          nextInvoiceStatus: next.paymentStatus,
+          paidTotal: next.paidTotal,
+          netTotal: next.netTotal,
+          remainingDue: roundCurrency(Math.max(0, next.netTotal - next.paidTotal)),
+        },
+      },
+    });
+
+    return {
+      paymentId,
+      invoiceId,
+      voidedAmount: payment.amount,
+      newPaidTotal: next.paidTotal,
+      newPaymentStatus: next.paymentStatus,
+    };
   });
 }

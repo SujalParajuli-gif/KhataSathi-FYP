@@ -14,7 +14,14 @@ import {
   getLowStockApi,
   listProductsApi,
 } from "~/lib/api/endpoints";
-import { getRangeFromPreset } from "~/lib/reports";
+import { getAuthUser } from "~/lib/auth";
+import {
+  getRangeFromPreset,
+  paymentMethodLabel,
+  type AnalyticsOperations,
+  type AnalyticsReport,
+  type AnalyticsTopProduct,
+} from "~/lib/reports";
 
 // this type represents one KPI card shown at the top of the dashboard
 type Kpi = {
@@ -49,6 +56,8 @@ type AlertRow = {
   icon: string;
   tag: "CRITICAL" | "LOW" | "INFO" | "SYSTEM";
 };
+
+type TopProductsByRange = Record<RangeKey, AnalyticsTopProduct[]>;
 
 // this shows the payment status badge used in the recent invoices table
 function StatusPill({ status }: { status: "Paid" | "Partial" | "Unpaid" }) {
@@ -145,6 +154,44 @@ function PrimaryButton({
   );
 }
 
+function EmptyState({ text }: { text: string }) {
+  return (
+    <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-3 py-4 text-center text-[12px] font-semibold text-slate-400">
+      {text}
+    </div>
+  );
+}
+
+function ManagerListRow({
+  title,
+  detail,
+  value,
+}: {
+  title: string;
+  detail?: string;
+  value?: string;
+}) {
+  return (
+    <div className="flex min-w-0 items-center justify-between gap-3 rounded-xl border border-slate-100 bg-white p-3">
+      <div className="min-w-0">
+        <div className="truncate text-[13px] font-extrabold text-slate-800">
+          {title}
+        </div>
+        {detail ? (
+          <div className="mt-1 truncate text-[11px] font-semibold text-slate-400">
+            {detail}
+          </div>
+        ) : null}
+      </div>
+      {value ? (
+        <div className="shrink-0 text-[13px] font-extrabold text-slate-900">
+          {value}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
 // formats a number as Nepalese Rupees (NPR) with thousands separators
 function formatNpr(n: number) {
   const s = Math.round(n).toString();
@@ -164,13 +211,66 @@ function daysAgoIso(days: number) {
   return d.toISOString().slice(0, 10);
 }
 
+function formatCompactNumber(value: number) {
+  return new Intl.NumberFormat(undefined, {
+    maximumFractionDigits: 1,
+  }).format(Number(value || 0));
+}
+
+function formatShortDateTime(value?: string | null) {
+  if (!value) return "";
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function buildManagerStockAlerts(operations?: AnalyticsOperations) {
+  if (!operations) return [];
+
+  const outOfStock = operations.stock.outOfStockProducts.slice(0, 3).map(
+    (product): AlertRow => ({
+      title: `Out of stock: ${product.name}`,
+      time: product.sku,
+      icon: "error",
+      tag: "CRITICAL",
+    }),
+  );
+  const lowStock = operations.stock.lowStockProducts
+    .filter((product) => product.stock > 0)
+    .slice(0, 3)
+    .map(
+      (product): AlertRow => ({
+        title: `Low stock: ${product.name}`,
+        time: `${formatCompactNumber(product.stock)} left (threshold: ${formatCompactNumber(product.lowStockThreshold)})`,
+        icon: "warning",
+        tag: "LOW",
+      }),
+    );
+
+  return [...outOfStock, ...lowStock].slice(0, 5);
+}
+
 // the main admin dashboard page — shows KPI cards, recent invoices, alerts, and an activity chart
 export default function Dashboard() {
   const navigate = useNavigate();
+  const isManagerDashboard = getAuthUser()?.role === "manager";
   const [kpis, setKpis] = useState<Kpi[]>([]); // stores the KPI cards shown across the top of the dashboard
   const [invoices, setInvoices] = useState<InvoiceRow[]>([]); // recent invoice rows for the activity table
   const [paymentSummary, setPaymentSummary] = useState<PaymentSummaryRow[]>([]); // payment overview cards shown beside the invoice table
   const [alerts, setAlerts] = useState<AlertRow[]>([]); // latest low-stock alert rows shown in the sidebar card
+  const [managerReport, setManagerReport] = useState<AnalyticsReport | null>(
+    null,
+  );
+  const [topProductsByRange, setTopProductsByRange] =
+    useState<TopProductsByRange>({
+      today: [],
+      week: [],
+      month: [],
+    });
+  const [topProductRange, setTopProductRange] = useState<RangeKey>("today");
   const [activityData, setActivityData] = useState<DashboardActivityPoint[]>(
     [],
   );
@@ -186,6 +286,125 @@ export default function Dashboard() {
 
     async function load() {
       try {
+        if (isManagerDashboard) {
+          const todayRange = getRangeFromPreset("today");
+          const weekRange = getRangeFromPreset("week");
+          const monthRange = getRangeFromPreset("month");
+
+          const [todayData, weekData, monthData, invoiceData] =
+            await Promise.allSettled([
+              getAnalyticsReportApi({
+                ...todayRange,
+                includeOperations: true,
+              }),
+              getAnalyticsReportApi(weekRange),
+              getAnalyticsReportApi(monthRange),
+              listInvoicesApi({ page: 1, pageSize: 5 }),
+            ]);
+
+          if (cancelled) return;
+
+          const todayReport =
+            todayData.status === "fulfilled"
+              ? (todayData.value as AnalyticsReport)
+              : null;
+          const weekReport =
+            weekData.status === "fulfilled"
+              ? (weekData.value as AnalyticsReport)
+              : null;
+          const monthReport =
+            monthData.status === "fulfilled"
+              ? (monthData.value as AnalyticsReport)
+              : null;
+          const operations = todayReport?.operations;
+          const pendingRequests =
+            (operations?.discountRequests.pendingCount || 0) +
+            (operations?.returns.pendingCount || 0);
+
+          setManagerReport(todayReport);
+          setTopProductsByRange({
+            today: todayReport?.topProducts || [],
+            week: weekReport?.topProducts || [],
+            month: monthReport?.topProducts || [],
+          });
+          setKpis([
+            {
+              iconName: "payments",
+              iconBgClass: "bg-emerald-50 text-emerald-700",
+              value: formatNpr(todayReport?.summary.netSales || 0),
+              label: "Revenue Today",
+              badgeText: `${todayReport?.summary.invoiceCount || 0} invoices`,
+              badgeIconName: "receipt_long",
+              badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-100",
+            },
+            {
+              iconName: "receipt_long",
+              iconBgClass: "bg-sky-50 text-sky-700",
+              value: String(todayReport?.summary.invoiceCount || 0),
+              label: "Sales Count Today",
+            },
+            {
+              iconName: "pause_circle",
+              iconBgClass: "bg-amber-50 text-amber-700",
+              value: String(operations?.parkedBills.count || 0),
+              label: "Parked Bills",
+            },
+            {
+              iconName: "pending_actions",
+              iconBgClass: "bg-rose-50 text-rose-700",
+              value: String(pendingRequests),
+              label: "Pending Requests",
+              badgeText: pendingRequests > 0 ? "Review" : undefined,
+              badgeIconName: pendingRequests > 0 ? "priority_high" : undefined,
+              badgeClass:
+                pendingRequests > 0
+                  ? "bg-rose-50 text-rose-700 border-rose-100"
+                  : undefined,
+            },
+          ]);
+
+          setPaymentSummary([
+            ...(todayReport?.paymentDistribution || []).map((payment) => ({
+              label: `${paymentMethodLabel(payment.method)} collected`,
+              value: formatNpr(payment.amount),
+              icon: payment.method === "CASH" ? "payments" : "qr_code_2",
+              iconBg:
+                payment.method === "CASH"
+                  ? "bg-[#F3F4F6] text-[#000000]"
+                  : "bg-emerald-100 text-emerald-700",
+            })),
+            {
+              label: "Refunds Today",
+              value: formatNpr(operations?.returns.refundAmount || 0),
+              icon: "assignment_return",
+              iconBg: "bg-[#FFF7E8] text-[#B7791F]",
+            },
+          ]);
+          setAlerts(buildManagerStockAlerts(operations));
+
+          if (invoiceData.status === "fulfilled" && invoiceData.value) {
+            const raw = invoiceData.value.invoices || [];
+            setInvoices(
+              raw.map((inv: any) => ({
+                invoiceNo: inv.invoiceNo || inv.id,
+                customer: inv.customer?.name || "Walk-in",
+                cashier: inv.cashier?.name || "-",
+                date: new Date(inv.createdAt).toLocaleDateString(),
+                total: formatNpr(inv.netTotal || 0),
+                status:
+                  inv.paymentStatus === "PAID" || inv.status === "PAID"
+                    ? "Paid"
+                    : inv.paymentStatus === "PARTIALLY_PAID" ||
+                        inv.status === "PARTIAL"
+                      ? "Partial"
+                      : "Unpaid",
+              })),
+            );
+          }
+
+          return;
+        }
+
         const weeklyRange = getRangeFromPreset("week");
 
         // using Promise.allSettled so if one api fails, the others still load
@@ -272,7 +491,7 @@ export default function Dashboard() {
           const rows: InvoiceRow[] = raw.map((inv: any) => ({
             invoiceNo: inv.invoiceNo || inv.id,
             customer: inv.customer?.name || "Walk-in",
-            cashier: inv.cashier?.name || "—",
+            cashier: inv.cashier?.name || "-",
             date: new Date(inv.createdAt).toLocaleDateString(),
             total: formatNpr(inv.netTotal || 0),
             status:
@@ -346,7 +565,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, []);
+  }, [isManagerDashboard]);
 
   useEffect(() => {
     let cancelled = false;
@@ -503,6 +722,137 @@ export default function Dashboard() {
             loading={chartLoading}
             error={chartError}
           />
+
+          {isManagerDashboard ? (
+            <div className="grid grid-cols-1 gap-[16px] xl:grid-cols-2">
+              <CardShell>
+                <div className="flex items-center justify-between border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Top Products" />
+                  <div className="flex rounded-full border border-[#CFCFD3] bg-white p-1">
+                    {(["today", "week", "month"] as RangeKey[]).map((key) => (
+                      <button
+                        key={key}
+                        type="button"
+                        onClick={() => setTopProductRange(key)}
+                        className={`rounded-full px-3 py-1 text-[11px] font-extrabold capitalize transition ${
+                          topProductRange === key
+                            ? "bg-[#11120d] text-white"
+                            : "text-slate-500 hover:bg-[#F3F4F6]"
+                        }`}
+                      >
+                        {key}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2 p-[20px]">
+                  {topProductsByRange[topProductRange].length === 0 ? (
+                    <EmptyState text="No product sales in this range" />
+                  ) : (
+                    topProductsByRange[topProductRange]
+                      .slice(0, 10)
+                      .map((product) => (
+                        <ManagerListRow
+                          key={product.productId}
+                          title={product.name}
+                          detail={`${product.sku} - ${formatCompactNumber(product.qty)} sold`}
+                          value={formatNpr(product.revenue)}
+                        />
+                      ))
+                  )}
+                </div>
+              </CardShell>
+
+              <CardShell>
+                <div className="border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Cashier Sales Today" />
+                </div>
+                <div className="space-y-2 p-[20px]">
+                  {(managerReport?.cashierPerformance || []).length === 0 ? (
+                    <EmptyState text="No cashier sales today" />
+                  ) : (
+                    (managerReport?.cashierPerformance || [])
+                      .slice(0, 8)
+                      .map((cashier) => (
+                        <ManagerListRow
+                          key={cashier.cashierId}
+                          title={cashier.name}
+                          detail={`${cashier.invoiceCount} invoices - ${formatCompactNumber(cashier.itemsSold)} items`}
+                          value={formatNpr(cashier.revenue)}
+                        />
+                      ))
+                  )}
+                </div>
+              </CardShell>
+
+              <CardShell>
+                <div className="border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Stock Watch" />
+                </div>
+                <div className="space-y-3 p-[20px]">
+                  <div className="grid grid-cols-3 gap-2">
+                    <div className="rounded-xl bg-rose-50 p-3 text-center">
+                      <div className="text-[18px] font-extrabold text-rose-700">
+                        {managerReport?.operations?.stock.outOfStockCount || 0}
+                      </div>
+                      <div className="text-[10px] font-bold uppercase text-rose-500">
+                        Out
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-amber-50 p-3 text-center">
+                      <div className="text-[18px] font-extrabold text-amber-700">
+                        {managerReport?.operations?.stock.lowStockCount || 0}
+                      </div>
+                      <div className="text-[10px] font-bold uppercase text-amber-600">
+                        Low
+                      </div>
+                    </div>
+                    <div className="rounded-xl bg-slate-50 p-3 text-center">
+                      <div className="text-[18px] font-extrabold text-slate-700">
+                        {managerReport?.operations?.stock.slowMovingCount || 0}
+                      </div>
+                      <div className="text-[10px] font-bold uppercase text-slate-500">
+                        Slow
+                      </div>
+                    </div>
+                  </div>
+                  {(managerReport?.operations?.stock.lowStockProducts || [])
+                    .slice(0, 5)
+                    .map((product) => (
+                      <ManagerListRow
+                        key={product.id}
+                        title={product.name}
+                        detail={`${product.sku} - threshold ${formatCompactNumber(product.lowStockThreshold)}`}
+                        value={`${formatCompactNumber(product.stock)} left`}
+                      />
+                    ))}
+                </div>
+              </CardShell>
+
+              <CardShell>
+                <div className="border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Open Cash Drawers" />
+                </div>
+                <div className="space-y-2 p-[20px]">
+                  {(managerReport?.operations?.cashDrawers.openDrawers || [])
+                    .length === 0 ? (
+                    <EmptyState text="No open cash drawers" />
+                  ) : (
+                    (managerReport?.operations?.cashDrawers.openDrawers || [])
+                      .slice(0, 8)
+                      .map((drawer) => (
+                        <ManagerListRow
+                          key={drawer.id}
+                          title={drawer.cashier?.name || "Cashier"}
+                          detail={`Opened ${formatShortDateTime(drawer.openedAt)}`}
+                          value={formatNpr(drawer.expectedTotal || 0)}
+                        />
+                      ))
+                  )}
+                </div>
+              </CardShell>
+            </div>
+          ) : null}
         </div>
 
         <div className="min-w-0 space-y-[20px] lg:w-[340px] lg:flex-none">
@@ -563,6 +913,63 @@ export default function Dashboard() {
               ))}
             </div>
           </CardShell>
+
+          {isManagerDashboard ? (
+            <>
+              <CardShell>
+                <div className="border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Pending Work" />
+                </div>
+                <div className="space-y-2 p-[20px]">
+                  <ManagerListRow
+                    title="Discount Requests"
+                    detail="Waiting for approval"
+                    value={String(
+                      managerReport?.operations?.discountRequests
+                        .pendingCount || 0,
+                    )}
+                  />
+                  <ManagerListRow
+                    title="Return Requests"
+                    detail="Waiting for approval"
+                    value={String(
+                      managerReport?.operations?.returns.pendingCount || 0,
+                    )}
+                  />
+                  <ManagerListRow
+                    title="Parked Bills"
+                    detail="Held billing drafts"
+                    value={String(
+                      managerReport?.operations?.parkedBills.count || 0,
+                    )}
+                  />
+                </div>
+              </CardShell>
+
+              <CardShell>
+                <div className="border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">
+                  <SectionTitle title="Recent Stock Receives" />
+                </div>
+                <div className="space-y-2 p-[20px]">
+                  {(managerReport?.operations?.recentStockReceives || [])
+                    .length === 0 ? (
+                    <EmptyState text="No stock receives in the last 7 days" />
+                  ) : (
+                    (managerReport?.operations?.recentStockReceives || []).map(
+                      (batch) => (
+                        <ManagerListRow
+                          key={batch.id}
+                          title={batch.supplierName}
+                          detail={`${batch.lineCount} lines - ${formatShortDateTime(batch.createdAt)}`}
+                          value={`${formatCompactNumber(batch.totalQty)} units`}
+                        />
+                      ),
+                    )
+                  )}
+                </div>
+              </CardShell>
+            </>
+          ) : null}
 
           <CardShell>
             <div className="flex items-center justify-between border-b border-[#CFCFD3]/60 px-[20px] py-[18px]">

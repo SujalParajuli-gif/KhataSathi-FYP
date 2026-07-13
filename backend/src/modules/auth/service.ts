@@ -2,8 +2,7 @@ import prisma from "../../db/prisma";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { deleteReplacedUpload } from "../../lib/uploads";
-
-const JWT_SECRET = process.env.JWT_SECRET || "fallback-secret"; // pulling secret from env, fallback is only for local dev
+import { JWT_EXPIRES_IN, JWT_SECRET } from "../../config/env";
 
 // handling the login process — verifies credentials, logs the attempt, and issues a JWT token on success
 // we also pass the IP address so every login attempt (successful or not) is recorded with the client's IP
@@ -31,7 +30,9 @@ export async function loginUser(email: string, password: string, ip?: string) {
 
   // creating a JWT with the user's id and role, valid for 8 hours
   // the frontend stores this token and sends it with every API request
-  const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, { expiresIn: "8h" });
+  const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, {
+    expiresIn: JWT_EXPIRES_IN,
+  });
 
   // returning the token and a safe subset of user fields (no passwordHash)
   return {

@@ -47,3 +47,22 @@ export async function listLoginAttempts(req: Request, res: Response) {
         res.status(500).json({ error: "Internal server error" });
     }
 }
+
+// listing business history grouped by category for the History screen tabs
+export async function categorizedHistory(req: Request, res: Response) {
+    try {
+        const filters = {
+            category: req.query.category as string | undefined,
+            from: req.query.from as string | undefined,
+            to: req.query.to as string | undefined,
+            q: req.query.q as string | undefined,
+            page: req.query.page ? Number(req.query.page) : 1,
+            pageSize: req.query.pageSize ? Number(req.query.pageSize) : 30,
+        };
+        const result = await auditService.listCategorizedHistory(filters);
+        res.json(result);
+    } catch (err) {
+        console.error("Categorized history error:", err);
+        res.status(500).json({ error: "Internal server error" });
+    }
+}

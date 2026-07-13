@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
+import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 
 // helper to join CSS class names — filters out falsy values like false, null, undefined
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -16,6 +17,7 @@ type ModalFrameProps = {
   footer?: ReactNode;
   onClose: () => void;
   maxWidthClass?: string;
+  compact?: boolean;
 };
 
 // the base modal frame — provides the overlay, centered positioning, header with title, and close button
@@ -28,7 +30,10 @@ export function ModalFrame({
   footer,
   onClose,
   maxWidthClass = "max-w-[560px]",
+  compact = false,
 }: ModalFrameProps) {
+  useBodyScrollLock(open);
+
   if (!open) return null; // not rendering anything if the modal is closed
 
   return (
@@ -44,18 +49,36 @@ export function ModalFrame({
       <div className="absolute inset-0 flex items-center justify-center p-4">
         <div
           className={cn(
-            "relative w-full overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-[#FFFFFF] ",
+            "relative w-full overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF] ",
+            compact ? "rounded-[18px]" : "rounded-[24px]",
             maxWidthClass,
           )}
         >
           {/* modal header with title, optional description, and close button */}
-          <div className="flex items-start justify-between gap-4 border-b border-[#CFCFD3] px-[24px] py-[20px]">
+          <div
+            className={cn(
+              "flex items-start justify-between gap-4 border-b border-[#CFCFD3]",
+              compact ? "px-[18px] py-[14px]" : "px-[24px] py-[20px]",
+            )}
+          >
             <div className="min-w-0">
-              <div className="text-[18px] font-extrabold  text-[#000000]">
+              <div
+                className={cn(
+                  "font-extrabold text-[#000000]",
+                  compact ? "text-[16px]" : "text-[18px]",
+                )}
+              >
                 {title}
               </div>
               {description ? (
-                <div className="mt-[4px] text-[13px] font-medium leading-[24px] text-[#8C8889]">
+                <div
+                  className={cn(
+                    "mt-[3px] font-medium text-[#8C8889]",
+                    compact
+                      ? "text-[12px] leading-[18px]"
+                      : "text-[13px] leading-[24px]",
+                  )}
+                >
                   {description}
                 </div>
               ) : null}
@@ -64,7 +87,10 @@ export function ModalFrame({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
+              className={cn(
+                "inline-flex shrink-0 items-center justify-center border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]",
+                compact ? "h-[34px] w-[34px] rounded-[12px]" : "h-[40px] w-[40px] rounded-[14px]",
+              )}
               aria-label="Close dialog"
             >
               <Icon name="close" />
@@ -72,7 +98,9 @@ export function ModalFrame({
           </div>
 
           {/* modal body content */}
-          <div className="px-[24px] py-[20px]">{children}</div>
+          <div className={compact ? "px-[18px] py-[14px]" : "px-[24px] py-[20px]"}>
+            {children}
+          </div>
 
           {/* optional footer — typically contains action buttons */}
           {footer ? (
@@ -305,4 +333,3 @@ export function StatusDialog({
     </ModalFrame>
   );
 }
-

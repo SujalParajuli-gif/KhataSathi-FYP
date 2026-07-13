@@ -1,21 +1,368 @@
-import React, { useEffect, useMemo, useRef, useState } from "react";
+import React, {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import Icon from "~/components/ui/Icon";
-import ProductImage from "~/components/ui/ProductImage";
-import { DialogButton, ModalFrame, SuccessDialog } from "~/components/ui/Modal";
+import { useToast } from "~/components/ui/Toast";
 import {
+  ConfirmDialog,
+  DialogButton,
+  ModalFrame,
+  SuccessDialog,
+} from "~/components/ui/Modal";
+import {
+  getMyCashierPrivilegesApi,
   listProductsApi,
+  checkoutInvoiceApi,
   listCustomersApi,
-  createInvoiceApi,
-  addInvoiceItemApi,
-  finalizeInvoiceApi,
-  addPaymentApi,
-  initiateEsewaPaymentApi,
+  authorizePriceOverrideApi,
+  discardParkedDraftApi,
+  listParkedDraftsApi,
+  parkInvoiceDraftApi,
+  resumeParkedDraftApi,
+  type CashierPrivilege,
 } from "~/lib/api/endpoints";
 import { submitEsewaForm } from "~/lib/esewa";
-import { openInvoicePrint } from "~/lib/invoices";
+import { getAuthUser } from "~/lib/auth";
+import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
 
-type PaymentMethod = "Cash" | "eSewa";
+const PRODUCT_REFRESH_INTERVAL_MS = 60_000; // refreshing the product catalog every 60 seconds to prevent stale stock and prices
+const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
+const MANUAL_SEARCH_LIMIT = 12;
+const BILLING_VIEW_SIZE_STORAGE_KEY = "khatasathi:billingViewSize";
+const PRICE_OVERRIDE_REASONS = [
+  "Wrong shelf/tag price",
+  "Customer-specific agreed rate",
+  "Bulk purchase exception",
+  "Damaged item or packaging issue",
+  "Clearance or old stock",
+  "Promotion not configured",
+  "Competitor price match",
+  "Rounding or billing correction",
+  "Supplier printed rate mismatch",
+  "Manager-approved goodwill adjustment",
+  "Other manager-approved correction",
+];
+const BILLING_VIEW_SIZE_OPTIONS = [
+  "85",
+  "90",
+  "95",
+  "100",
+  "105",
+  "110",
+] as const;
+type BillingViewSize = (typeof BILLING_VIEW_SIZE_OPTIONS)[number];
+const BILLING_VIEW_SIZE_LABELS: Record<BillingViewSize, string> = {
+  "85": "85%",
+  "90": "90%",
+  "95": "95%",
+  "100": "100%",
+  "105": "105%",
+  "110": "110%",
+};
+const BILLING_VIEW_DENSITY: Record<
+  BillingViewSize,
+  {
+    scaleLabel: string;
+    topBar: string;
+    searchWidth: string;
+    scanWidth: string;
+    inputHeight: string;
+    topButton: string;
+    tableCols: string;
+    header: string;
+    headerHash: string;
+    headerTitle: string;
+    headerSub: string;
+    row: string;
+    rowMain: string;
+    rowSub: string;
+    qtyControl: string;
+    qtyButton: string;
+    qtyInput: string;
+    rowAction: string;
+    rightPanel: string;
+    rightPanelInner: string;
+    rightTopStack: string;
+    rightCheckoutStack: string;
+    customerCard: string;
+    billSummary: string;
+    billSummaryTitle: string;
+    billSummaryRows: string;
+    statusCard: string;
+    grandCard: string;
+    grandLabel: string;
+    grandTotal: string;
+    payButton: string;
+    secondaryButton: string;
+    footer: string;
+  }
+> = {
+  "85": {
+    scaleLabel: "85%",
+    topBar: "gap-2.5 px-[14px] py-[10px]",
+    searchWidth: "w-[500px] max-w-[38vw]",
+    scanWidth: "w-[255px]",
+    inputHeight: "h-[36px]",
+    topButton:
+      "flex h-[36px] items-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-2.5 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols: "grid-cols-[36px_minmax(200px,1fr)_98px_112px_126px_100px_44px]",
+    header:
+      "gap-2.5 border-b border-[#DADDE3] bg-[#F8FAFC] px-[13px] py-[6px] mt-[2px]",
+    headerHash: "text-center text-[15px] font-extrabold",
+    headerTitle: "text-[13px] font-extrabold leading-4",
+    headerSub: "mt-0.5 text-[10px] font-bold leading-3 text-[#565449]",
+    row: "gap-2 px-[13px] py-[4px]",
+    rowMain: "truncate text-[12px] font-extrabold leading-4 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-3 text-[#565449]",
+    qtyControl: "h-[28px]",
+    qtyButton: "w-[32px] text-[15px]",
+    qtyInput: "w-[46px] text-[12px]",
+    rowAction: "h-[28px] w-[28px]",
+    rightPanel: "w-[340px]",
+    rightPanelInner: "gap-[9px] px-[12px] py-[10px]",
+    rightTopStack: "space-y-[10px] shrink-0",
+    rightCheckoutStack: "mt-auto space-y-[10px]",
+    customerCard: "p-[11px]",
+    billSummary: "py-[16px] px-[18px]",
+    billSummaryTitle: "mb-[8px] text-[15px]",
+    billSummaryRows: "space-y-[8px] text-[14px]",
+    statusCard: "px-[9px] py-[7px]",
+    grandCard: "p-[12px]",
+    grandLabel: "mb-[4px] text-[12px]",
+    grandTotal: "text-[32px]",
+    payButton: "h-[48px] text-[13px]",
+    secondaryButton: "h-[38px] text-[12px]",
+    footer: "px-[16px] py-[6px] text-[10px]",
+  },
+  "90": {
+    scaleLabel: "90%",
+    topBar: "gap-3 px-[16px] py-[12px]",
+    searchWidth: "w-[520px] max-w-[39vw]",
+    scanWidth: "w-[270px]",
+    inputHeight: "h-[38px]",
+    topButton:
+      "flex h-[38px] items-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols:
+      "grid-cols-[38px_minmax(220px,1fr)_104px_118px_132px_106px_46px]",
+    header:
+      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[14px] py-[7px] mt-[2px]",
+    headerHash: "text-center text-[16px] font-extrabold",
+    headerTitle: "text-[13px] font-extrabold leading-4",
+    headerSub: "mt-0.5 text-[10px] font-bold leading-3 text-[#565449]",
+    row: "gap-2 px-[14px] py-[5px]",
+    rowMain: "truncate text-[12px] font-extrabold leading-4 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-3 text-[#565449]",
+    qtyControl: "h-[30px]",
+    qtyButton: "w-[34px] text-[16px]",
+    qtyInput: "w-[48px] text-[12px]",
+    rowAction: "h-[30px] w-[30px]",
+    rightPanel: "w-[350px]",
+    rightPanelInner: "gap-[10px] px-[14px] py-[11px]",
+    rightTopStack: "space-y-[11px] shrink-0",
+    rightCheckoutStack: "mt-auto space-y-[11px]",
+    customerCard: "p-[12px]",
+    billSummary: "py-[18px] px-[20px]",
+    billSummaryTitle: "mb-[9px] text-[16px]",
+    billSummaryRows: "space-y-[9px] text-[15px]",
+    statusCard: "px-[10px] py-[8px]",
+    grandCard: "p-[14px]",
+    grandLabel: "mb-[5px] text-[13px]",
+    grandTotal: "text-[34px]",
+    payButton: "h-[50px] text-[14px]",
+    secondaryButton: "h-[40px] text-[12px]",
+    footer: "px-[18px] py-[7px] text-[11px]",
+  },
+  "95": {
+    scaleLabel: "95%",
+    topBar: "gap-3 px-[16px] py-[12px]",
+    searchWidth: "w-[540px] max-w-[40vw]",
+    scanWidth: "w-[285px]",
+    inputHeight: "h-[39px]",
+    topButton:
+      "flex h-[39px] items-center gap-1.5 rounded-[13px] border border-[#CFCFD3] bg-[#FFFFFF] px-3.5 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols:
+      "grid-cols-[40px_minmax(230px,1fr)_110px_124px_138px_112px_48px]",
+    header:
+      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[8px] mt-[2px]",
+    headerHash: "text-center text-[17px] font-extrabold",
+    headerTitle: "text-[14px] font-extrabold leading-5",
+    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
+    row: "gap-2.5 px-[16px] py-[6px]",
+    rowMain: "truncate text-[12px] font-extrabold leading-5 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-4 text-[#565449]",
+    qtyControl: "h-[32px]",
+    qtyButton: "w-[36px] text-[17px]",
+    qtyInput: "w-[50px] text-[12px]",
+    rowAction: "h-[30px] w-[30px]",
+    rightPanel: "w-[370px]",
+    rightPanelInner: "gap-[12px] px-[16px] py-[12px]",
+    rightTopStack: "space-y-[12px] shrink-0",
+    rightCheckoutStack: "mt-auto space-y-[12px]",
+    customerCard: "p-[13px]",
+    billSummary: "py-[22px] px-[22px]",
+    billSummaryTitle: "mb-[10px] text-[17px]",
+    billSummaryRows: "space-y-[10px] text-[16px]",
+    statusCard: "px-[11px] py-[8px]",
+    grandCard: "p-[16px]",
+    grandLabel: "mb-[5px] text-[14px]",
+    grandTotal: "text-[37px]",
+    payButton: "h-[54px] text-[15px]",
+    secondaryButton: "h-[42px] text-[12px]",
+    footer: "px-[20px] py-[8px] text-[11px]",
+  },
+  "100": {
+    scaleLabel: "100%",
+    topBar: "gap-4 px-[18px] py-[15px]",
+    searchWidth: "w-[560px] max-w-[42vw]",
+    scanWidth: "w-[300px]",
+    inputHeight: "h-[40px]",
+    topButton:
+      "flex h-[40px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols:
+      "grid-cols-[44px_minmax(260px,1fr)_118px_132px_150px_120px_54px]",
+    header:
+      "gap-4 border-b border-[#DADDE3] bg-[#F8FAFC] px-[18px] py-[10px] mt-[3px]",
+    headerHash: "text-center text-[18px] font-extrabold",
+    headerTitle: "text-[15px] font-extrabold leading-5",
+    headerSub: "mt-0.5 text-[12px] font-bold leading-4 text-[#565449]",
+    row: "gap-3 px-[18px] py-[7px]",
+    rowMain: "truncate text-[13px] font-extrabold leading-5 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
+    qtyControl: "h-[34px]",
+    qtyButton: "w-[38px] text-[18px]",
+    qtyInput: "w-[54px] text-[13px]",
+    rowAction: "h-[32px] w-[32px]",
+    rightPanel: "w-[390px]",
+    rightPanelInner: "gap-[14px] px-[20px] py-[15px]",
+    rightTopStack: "space-y-[14px] shrink-0",
+    rightCheckoutStack: "mt-auto space-y-[14px]",
+    customerCard: "p-[14px]",
+    billSummary: "py-[28px] px-[30px]",
+    billSummaryTitle: "mb-[12px] text-[18px]",
+    billSummaryRows: "space-y-[12px] text-[17px]",
+    statusCard: "px-[12px] py-[9px]",
+    grandCard: "p-[18px]",
+    grandLabel: "mb-[6px] text-[15px]",
+    grandTotal: "text-[40px]",
+    payButton: "h-[58px] text-[16px]",
+    secondaryButton: "h-[46px] text-[13px]",
+    footer: "px-[24px] py-[10px] text-[12px]",
+  },
+  "105": {
+    scaleLabel: "105%",
+    topBar: "gap-3 px-[16px] py-[12px]",
+    searchWidth: "w-[560px] max-w-[40vw]",
+    scanWidth: "w-[290px]",
+    inputHeight: "h-[42px]",
+    topButton:
+      "flex h-[42px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3.5 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols:
+      "grid-cols-[42px_minmax(220px,1fr)_108px_122px_142px_112px_48px]",
+    header:
+      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[10px] mt-[3px]",
+    headerHash: "text-center text-[18px] font-extrabold",
+    headerTitle: "text-[15px] font-extrabold leading-5",
+    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
+    row: "gap-2.5 px-[16px] py-[8px]",
+    rowMain: "truncate text-[14px] font-extrabold leading-5 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
+    qtyControl: "h-[36px]",
+    qtyButton: "w-[38px] text-[18px]",
+    qtyInput: "w-[54px] text-[14px]",
+    rowAction: "h-[32px] w-[32px]",
+    rightPanel: "w-[390px]",
+    rightPanelInner: "gap-[13px] px-[18px] py-[14px]",
+    rightTopStack: "space-y-[12px] shrink-0",
+    rightCheckoutStack: "space-y-[12px]",
+    customerCard: "p-[14px]",
+    billSummary: "py-[22px] px-[24px]",
+    billSummaryTitle: "mb-[12px] text-[18px]",
+    billSummaryRows: "space-y-[12px] text-[18px]",
+    statusCard: "px-[12px] py-[9px]",
+    grandCard: "p-[18px]",
+    grandLabel: "mb-[6px] text-[15px]",
+    grandTotal: "text-[42px]",
+    payButton: "h-[58px] text-[16px]",
+    secondaryButton: "h-[46px] text-[13px]",
+    footer: "px-[20px] py-[9px] text-[11px]",
+  },
+  "110": {
+    scaleLabel: "110%",
+    topBar: "gap-3 px-[16px] py-[12px]",
+    searchWidth: "w-[545px] max-w-[38vw]",
+    scanWidth: "w-[275px]",
+    inputHeight: "h-[42px]",
+    topButton:
+      "flex h-[42px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
+    tableCols:
+      "grid-cols-[40px_minmax(200px,1fr)_104px_118px_136px_108px_46px]",
+    header:
+      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[10px] mt-[3px]",
+    headerHash: "text-center text-[18px] font-extrabold",
+    headerTitle: "text-[15px] font-extrabold leading-5",
+    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
+    row: "gap-2 px-[15px] py-[8px]",
+    rowMain: "truncate text-[14px] font-extrabold leading-5 text-[#11120d]",
+    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
+    qtyControl: "h-[36px]",
+    qtyButton: "w-[38px] text-[18px]",
+    qtyInput: "w-[54px] text-[14px]",
+    rowAction: "h-[32px] w-[32px]",
+    rightPanel: "w-[385px]",
+    rightPanelInner: "gap-[12px] px-[17px] py-[13px]",
+    rightTopStack: "space-y-[12px] shrink-0",
+    rightCheckoutStack: "space-y-[12px]",
+    customerCard: "p-[14px]",
+    billSummary: "py-[22px] px-[24px]",
+    billSummaryTitle: "mb-[12px] text-[18px]",
+    billSummaryRows: "space-y-[12px] text-[18px]",
+    statusCard: "px-[12px] py-[9px]",
+    grandCard: "p-[18px]",
+    grandLabel: "mb-[6px] text-[15px]",
+    grandTotal: "text-[42px]",
+    payButton: "h-[58px] text-[16px]",
+    secondaryButton: "h-[46px] text-[13px]",
+    footer: "px-[20px] py-[9px] text-[11px]",
+  },
+};
+
+function readStoredBillingViewSize(): BillingViewSize {
+  if (typeof window === "undefined") return "100";
+  const stored = window.localStorage.getItem(BILLING_VIEW_SIZE_STORAGE_KEY);
+  if (stored === "compact") return "90";
+  if (stored === "normal") return "100";
+  if (stored === "large") return "110";
+  return BILLING_VIEW_SIZE_OPTIONS.includes(stored as BillingViewSize)
+    ? (stored as BillingViewSize)
+    : "100";
+}
+
+type PaymentMethod = "Cash" | "eSewa" | "Split";
 type PaymentStatus = "Paid" | "Partial" | "Unpaid";
+type PendingBillingConfirm = "checkout" | "clear-cart" | "park-cart" | null;
+type SplitPaymentDraft = {
+  id: string;
+  method: "CASH" | "ESEWA";
+  amount: string;
+  tenderedAmount: string;
+};
+type StockConflictReason =
+  | "NOT_FOUND"
+  | "INACTIVE"
+  | "OUT_OF_STOCK"
+  | "INSUFFICIENT_STOCK";
+type StockConflict = {
+  productId: string;
+  productName: string;
+  sku?: string | null;
+  requestedQty: number;
+  availableStock: number;
+  reason: StockConflictReason;
+};
 
 type Customer = {
   id: string;
@@ -33,10 +380,22 @@ type Product = {
   sku: string;
   barcode?: string;
   brand: string;
+  categoryGroup?: string;
+  productCodeVariant?: string;
+  sizeValue?: number | null;
+  sizeUnit?: string;
+  packageQuantity?: number;
+  packageUnit?: string;
+  saleUnit: string;
+  allowFractionalQty: boolean;
+  quantityStep: number;
+  wholesaleEligible: boolean;
   retailPrice: number;
   wholesalePrice: number;
   wholesaleQtyThreshold?: number;
   stock: number;
+  reservedStock?: number;
+  actualStock?: number;
   lowStockThreshold?: number;
   active: boolean;
   imageUrl?: string;
@@ -46,10 +405,50 @@ type Product = {
 type CartLine = {
   productId: string;
   qty: number;
+  overrideUnitPrice?: number;
+  overrideReason?: string;
+  overrideAuthorizationToken?: string;
+};
+
+type ParkedDraft = {
+  id: string;
+  invoiceNo?: string;
+  parkedLabel?: string | null;
+  parkedAt?: string | null;
+  customerId?: string | null;
+  customer?: {
+    id?: string;
+    name?: string;
+    phone?: string;
+  } | null;
+  subTotal?: number;
+  staleWarnings?: ParkedResumeWarning[];
+  items?: Array<{
+    productId: string;
+    qty: number;
+    product?: {
+      id?: string;
+      name?: string;
+      sku?: string;
+    } | null;
+  }>;
+};
+
+type ParkedResumeWarning = {
+  productId: string;
+  productName: string;
+  sku?: string | null;
+  qty: number;
+  parkedUnitPrice: number;
+  currentUnitPrice: number;
+  availableStock: number;
+  warnings: string[];
 };
 
 type StoredBillingCart = {
   cart: CartLine[];
+  activeDraftInvoiceId?: string | null;
+  selectedCustomerId?: string | null;
   savedAt: string;
 };
 
@@ -77,13 +476,37 @@ function readStoredBillingCart() {
     const normalizedCart = parsed.cart
       .map((line) => {
         const productId = String(line?.productId || "").trim();
-        const qty = Math.floor(Number(line?.qty || 0));
+        const qty = normalizeQuantityValue(Number(line?.qty || 0));
 
         if (!productId || !Number.isFinite(qty) || qty < 1) {
           return null;
         }
 
-        return { productId, qty };
+        const overrideUnitPrice =
+          line?.overrideUnitPrice === undefined ||
+          line?.overrideUnitPrice === null
+            ? undefined
+            : Number(line.overrideUnitPrice);
+        const overrideReason =
+          typeof line?.overrideReason === "string"
+            ? line.overrideReason.trim().slice(0, 240)
+            : undefined;
+        const overrideAuthorizationToken =
+          typeof line?.overrideAuthorizationToken === "string"
+            ? line.overrideAuthorizationToken.trim()
+            : undefined;
+
+        return {
+          productId,
+          qty,
+          ...(typeof overrideUnitPrice === "number" &&
+          Number.isFinite(overrideUnitPrice) &&
+          overrideUnitPrice > 0
+            ? { overrideUnitPrice }
+            : {}),
+          ...(overrideReason ? { overrideReason } : {}),
+          ...(overrideAuthorizationToken ? { overrideAuthorizationToken } : {}),
+        };
       })
       .filter(Boolean) as CartLine[];
 
@@ -94,6 +517,14 @@ function readStoredBillingCart() {
 
     return {
       cart: normalizedCart,
+      activeDraftInvoiceId:
+        typeof parsed.activeDraftInvoiceId === "string"
+          ? parsed.activeDraftInvoiceId
+          : null,
+      selectedCustomerId:
+        typeof parsed.selectedCustomerId === "string"
+          ? parsed.selectedCustomerId
+          : null,
       savedAt:
         typeof parsed.savedAt === "string"
           ? parsed.savedAt
@@ -105,14 +536,20 @@ function readStoredBillingCart() {
   }
 }
 
-// saving only the cart lines keeps the persisted billing payload small and focused on what the cashier expects to keep
-function writeStoredBillingCart(cart: CartLine[]) {
+// saving the cart plus its active draft link keeps resumed held bills safe across refreshes
+function writeStoredBillingCart(
+  cart: CartLine[],
+  activeDraftInvoiceId?: string | null,
+  selectedCustomerId?: string | null,
+) {
   if (typeof window === "undefined") return;
 
   window.localStorage.setItem(
     BILLING_CART_STORAGE_KEY,
     JSON.stringify({
       cart,
+      activeDraftInvoiceId: activeDraftInvoiceId || null,
+      selectedCustomerId: selectedCustomerId || null,
       savedAt: new Date().toISOString(),
     } satisfies StoredBillingCart),
   );
@@ -146,6 +583,62 @@ function clampNumber(v: number, min: number, max: number) {
   return Math.min(max, Math.max(min, v));
 }
 
+function normalizeQuantityValue(value: number, fallback = 1) {
+  if (!Number.isFinite(value) || value <= 0) return fallback;
+  return Math.round(value * 1000) / 1000;
+}
+
+function formatQty(value: number) {
+  const rounded = normalizeQuantityValue(value, 0);
+  return Number.isInteger(rounded)
+    ? rounded.toLocaleString()
+    : rounded.toLocaleString(undefined, { maximumFractionDigits: 3 });
+}
+
+function formatQtyWithUnit(value: number, unit?: string) {
+  const label = String(unit || "PIECE").toLowerCase();
+  return `${formatQty(value)} ${label}`;
+}
+
+function getProductQtyStep(product?: Product | null) {
+  if (!product) return 1;
+  const step = Number(product.quantityStep || 1);
+  return product.allowFractionalQty ? normalizeQuantityValue(step, 0.001) : 1;
+}
+
+function getProductMinQty(product?: Product | null) {
+  return getProductQtyStep(product);
+}
+
+function normalizeProductCartQty(product: Product, value: number) {
+  const minQty = getProductMinQty(product);
+  const maxQty = Math.max(minQty, product.stock || minQty);
+  const clamped = clampNumber(
+    normalizeQuantityValue(value, minQty),
+    minQty,
+    maxQty,
+  );
+
+  if (!product.allowFractionalQty) {
+    return Math.max(minQty, Math.min(maxQty, Math.round(clamped)));
+  }
+
+  const step = getProductQtyStep(product);
+  const stepped = Math.round(clamped / step) * step;
+  return normalizeQuantityValue(clampNumber(stepped, minQty, maxQty), minQty);
+}
+
+function formatProductSize(product: Product) {
+  if (
+    !product.sizeValue ||
+    !product.sizeUnit ||
+    product.sizeUnit === "STANDARD"
+  ) {
+    return "";
+  }
+  return `${formatQty(product.sizeValue)} ${product.sizeUnit.toLowerCase()}`;
+}
+
 // this checks what kind of discount the selected customer gets
 // we prioritize admin wholesale first, then fallback to loyalty
 function getCustomerDiscountMode(c: Customer | null) {
@@ -168,6 +661,7 @@ function shouldUseQuantityWholesalePrice(
   const hasCustomerWholesale =
     clampPercent(customer?.wholesalePercent || 0) > 0;
   if (hasCustomerWholesale) return false;
+  if (!product.wholesaleEligible) return false;
   return qty >= Math.max(1, product.wholesaleQtyThreshold || 1);
 }
 
@@ -275,27 +769,33 @@ function Input({
   onChange,
   placeholder,
   leftIcon,
+  rightIcon,
   className,
   autoFocus,
   onEnter,
+  onKeyDown,
   label,
   inputMode,
   inputRef,
   invalid,
   helperText,
+  onBlur,
 }: {
   value: string;
   onChange: (v: string) => void;
   placeholder?: string;
   leftIcon?: string;
+  rightIcon?: string;
   className?: string;
   autoFocus?: boolean;
   onEnter?: () => void;
+  onKeyDown?: React.KeyboardEventHandler<HTMLInputElement>;
   label?: string;
   inputMode?: React.HTMLAttributes<HTMLInputElement>["inputMode"];
   inputRef?: React.RefObject<HTMLInputElement | null>;
   invalid?: boolean;
   helperText?: string;
+  onBlur?: () => void;
 }) {
   return (
     <div className={className}>
@@ -306,7 +806,7 @@ function Input({
       ) : null}
       <div
         className={cn(
-          "flex items-center gap-[10px] rounded-[14px] border bg-white px-[14px] py-[12px] transition",
+          "flex items-center gap-[10px] rounded-[10px] border bg-white px-[14px] py-[8px] transition",
           invalid
             ? "border-rose-300 focus-within:border-rose-400 focus-within:ring-2 focus-within:ring-rose-100"
             : "border-[#CFCFD3] focus-within:border-[#11120d] focus-within:ring-2 focus-within:ring-black/5",
@@ -320,14 +820,21 @@ function Input({
           autoFocus={autoFocus}
           value={value}
           onChange={(e) => onChange(e.target.value)}
+          onBlur={onBlur}
           placeholder={placeholder}
+          aria-label={label || placeholder || "Input"}
           inputMode={inputMode}
           onKeyDown={(e) => {
+            onKeyDown?.(e);
+            if (e.defaultPrevented) return;
             // this handles Enter for fields that should trigger an immediate billing action
             if (e.key === "Enter" && onEnter) onEnter();
           }}
           className="w-full text-[14px] outline-none placeholder:text-slate-400 bg-transparent text-slate-900 font-semibold"
         />
+        {rightIcon ? (
+          <Icon name={rightIcon} className="text-slate-400 transition-colors" />
+        ) : null}
       </div>
       {helperText ? (
         <div
@@ -409,6 +916,46 @@ function Segmented({
 // the POS billing module
 // we wrote this to handle adding items to a cart, selecting customers, applying discounts, and generating invoices
 export default function BillingPage() {
+  const { showToast } = useToast();
+  const currentUser = useMemo(() => getAuthUser(), []);
+  const [billingViewSize, setBillingViewSize] = useState<BillingViewSize>(() =>
+    readStoredBillingViewSize(),
+  );
+  const billingView = BILLING_VIEW_DENSITY[billingViewSize];
+  const isManager = currentUser?.role === "manager";
+  const operatorLabel = currentUser
+    ? `${currentUser.name} (${currentUser.role.toUpperCase()})`
+    : "Unknown operator";
+  const terminalLabel = useMemo(() => {
+    const configuredTerminal = (
+      import.meta.env as Record<string, string | undefined>
+    ).VITE_TERMINAL_LABEL;
+    if (typeof window !== "undefined") {
+      return (
+        window.localStorage.getItem("khatasathi_terminal_label") ||
+        configuredTerminal ||
+        "POS-01"
+      );
+    }
+    return configuredTerminal || "POS-01";
+  }, []);
+
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    window.localStorage.setItem(BILLING_VIEW_SIZE_STORAGE_KEY, billingViewSize);
+  }, [billingViewSize]);
+
+  function stepBillingViewSize(direction: -1 | 1) {
+    setBillingViewSize((current) => {
+      const index = BILLING_VIEW_SIZE_OPTIONS.indexOf(current);
+      const nextIndex = clampNumber(
+        index + direction,
+        0,
+        BILLING_VIEW_SIZE_OPTIONS.length - 1,
+      );
+      return BILLING_VIEW_SIZE_OPTIONS[nextIndex];
+    });
+  }
   const [customers, setCustomers] = useState<Customer[]>([]); // full customer list available for billing selection
   const [products, setProducts] = useState<Product[]>([]); // active product list loaded for cart and search
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
@@ -416,63 +963,152 @@ export default function BillingPage() {
   const [showSuccess, setShowSuccess] = useState(false); // controls the success dialog after a bill is created
   const [lastCreatedInvoiceId, setLastCreatedInvoiceId] = useState<
     string | null
-  >(null); // saved so the success dialog can open the correct invoice for print
+  >(() =>
+    typeof window === "undefined"
+      ? null
+      : window.sessionStorage.getItem(LAST_INVOICE_PRINT_STORAGE_KEY),
+  ); // saved so the cashier can reprint the most recent invoice in this browser session
+  const [parkedDrafts, setParkedDrafts] = useState<ParkedDraft[]>([]); // cashier's held bills that can be resumed later
+  const [showParkedBills, setShowParkedBills] = useState(false); // controls the parked bill drawer/modal
+  const [showShortcutHelp, setShowShortcutHelp] = useState(false);
+  const [parkedBusy, setParkedBusy] = useState(false); // prevents duplicate park/resume/discard requests
+  const [parkedError, setParkedError] = useState(""); // parked bill API or validation errors
+  const [pendingDiscardParked, setPendingDiscardParked] =
+    useState<ParkedDraft | null>(null); // parked bill waiting for discard confirmation
+  const [pendingStaleResume, setPendingStaleResume] =
+    useState<ParkedDraft | null>(null); // parked bill waiting for stale price/stock confirmation
+  const [cashierPrivilege, setCashierPrivilege] =
+    useState<CashierPrivilege | null>(null); // controls cashier-only price override actions
+
+  // this fetches every page of active products because the billing screen needs the full active catalog for search and barcode scans
+  // extracted as a reusable callback so it can also be called by the periodic refresh interval
+  const fetchAllActiveProducts = useCallback(async () => {
+    const pageSize = 300;
+    let page = 1;
+    let total = 0;
+    const collected: any[] = [];
+
+    do {
+      const response = await listProductsApi({
+        page,
+        pageSize,
+        active: "true",
+      });
+      const items = Array.isArray(response?.products) ? response.products : [];
+      collected.push(...items);
+      total = Number(response?.total ?? collected.length);
+      page += 1;
+
+      if (items.length === 0) break;
+    } while (collected.length < total);
+
+    return collected;
+  }, []);
+
+  // mapping the raw API product response into the exact shape the billing cart logic expects
+  const mapRawProducts = useCallback((raw: any[]) => {
+    return raw.map((p: any) => ({
+      id: p.id,
+      name: p.name,
+      sku: p.sku || "",
+      barcode: p.barcode || "",
+      brand: p.brand?.name || "",
+      categoryGroup: p.categoryGroup || p.category || "",
+      productCodeVariant: p.productCodeVariant || "",
+      sizeValue:
+        p.sizeValue === null || p.sizeValue === undefined
+          ? null
+          : Number(p.sizeValue),
+      sizeUnit: p.sizeUnit || "STANDARD",
+      packageQuantity: Number(p.packageQuantity ?? 1),
+      packageUnit: p.packageUnit || "PIECE",
+      saleUnit: p.saleUnit || "PIECE",
+      allowFractionalQty: Boolean(p.allowFractionalQty),
+      quantityStep: Number(p.quantityStep ?? 1),
+      wholesaleEligible: p.wholesaleEligible !== false,
+      retailPrice: p.retailPrice || 0,
+      wholesalePrice: p.wholesalePrice || 0,
+      wholesaleQtyThreshold: p.wholesaleQtyThreshold || 1,
+      stock: Number(p.availableStock ?? p.stock ?? 0),
+      actualStock: Number(p.stock ?? 0),
+      reservedStock: Number(p.reservedStock ?? 0),
+      lowStockThreshold: p.lowStockThreshold || 0,
+      active: p.isActive !== false,
+      imageUrl: p.imageUrl || "",
+    }));
+  }, []);
+
+  const mapRawCustomers = useCallback((raw: any[]) => {
+    return raw.map((c: any) => ({
+      id: c.id,
+      name: c.name,
+      phone: c.phone || "",
+      email: c.email,
+      isLoyalty: (c.loyaltyPercent || 0) > 0,
+      loyaltyPercent: c.loyaltyPercent,
+      wholesalePercent: c.wholesalePercent,
+    }));
+  }, []);
+
+  const normalizeParkedDraft = useCallback((raw: any): ParkedDraft => {
+    return {
+      id: String(raw?.id || ""),
+      invoiceNo: raw?.invoiceNo || "",
+      parkedLabel: raw?.parkedLabel || null,
+      parkedAt: raw?.parkedAt || null,
+      customerId: raw?.customerId || raw?.customer?.id || null,
+      customer: raw?.customer || null,
+      subTotal: Number(raw?.subTotal || 0),
+      staleWarnings: Array.isArray(raw?.staleWarnings)
+        ? raw.staleWarnings.map((warning: any) => ({
+            productId: String(warning?.productId || ""),
+            productName: String(warning?.productName || "Unknown product"),
+            sku: warning?.sku || null,
+            qty: normalizeQuantityValue(Number(warning?.qty || 0), 0),
+            parkedUnitPrice: Number(warning?.parkedUnitPrice || 0),
+            currentUnitPrice: Number(warning?.currentUnitPrice || 0),
+            availableStock: normalizeQuantityValue(
+              Number(warning?.availableStock || 0),
+              0,
+            ),
+            warnings: Array.isArray(warning?.warnings)
+              ? warning.warnings.map((item: unknown) => String(item))
+              : [],
+          }))
+        : [],
+      items: Array.isArray(raw?.items)
+        ? raw.items
+            .map((item: any) => ({
+              productId: String(item?.productId || item?.product?.id || ""),
+              qty: normalizeQuantityValue(Number(item?.qty || 1)),
+              product: item?.product || null,
+            }))
+            .filter((item: { productId: string }) => item.productId)
+        : [],
+    };
+  }, []);
+
+  const loadParkedDrafts = useCallback(async () => {
+    const data = await listParkedDraftsApi();
+    const drafts = Array.isArray(data?.drafts) ? data.drafts : [];
+    setParkedDrafts(drafts.map(normalizeParkedDraft));
+  }, [normalizeParkedDraft]);
 
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
   useEffect(() => {
     async function load() {
       try {
-        async function fetchAllActiveProducts() {
-          // this loops through every products page because the billing screen needs the full active catalog for search and barcode scans
-          const pageSize = 300;
-          let page = 1;
-          let total = 0;
-          const collected: any[] = [];
-
-          do {
-            const response = await listProductsApi({
-              page,
-              pageSize,
-              active: "true",
-            });
-            const items = Array.isArray(response?.products)
-              ? response.products
-              : [];
-            collected.push(...items);
-            total = Number(response?.total ?? collected.length);
-            page += 1;
-
-            if (items.length === 0) break;
-          } while (collected.length < total);
-
-          return collected;
-        }
-
-        const [prodData, custData] = await Promise.allSettled([
-          fetchAllActiveProducts(),
-          listCustomersApi(true),
-        ]);
+        const [prodData, custData, parkedData, privilegeData] =
+          await Promise.allSettled([
+            fetchAllActiveProducts(),
+            listCustomersApi(true),
+            listParkedDraftsApi(),
+            getMyCashierPrivilegesApi(),
+          ]);
 
         if (prodData.status === "fulfilled" && prodData.value) {
-          // mapping the raw API products into the exact shape the billing cart logic expects
-          const raw = prodData.value;
-          setProducts(
-            raw.map((p: any) => ({
-              id: p.id,
-              name: p.name,
-              sku: p.sku || "",
-              barcode: p.barcode || "",
-              brand: p.brand?.name || "",
-              retailPrice: p.retailPrice || 0,
-              wholesalePrice: p.wholesalePrice || 0,
-              wholesaleQtyThreshold: p.wholesaleQtyThreshold || 1,
-              stock: p.stock || 0,
-              lowStockThreshold: p.lowStockThreshold || 0,
-              active: p.isActive !== false,
-              imageUrl: p.imageUrl || "",
-            })),
-          );
+          setProducts(mapRawProducts(prodData.value));
         }
 
         if (custData.status === "fulfilled" && custData.value) {
@@ -480,17 +1116,18 @@ export default function BillingPage() {
           const raw = Array.isArray(custData.value)
             ? custData.value
             : custData.value.customers || [];
-          setCustomers(
-            raw.map((c: any) => ({
-              id: c.id,
-              name: c.name,
-              phone: c.phone || "",
-              email: c.email,
-              isLoyalty: (c.loyaltyPercent || 0) > 0,
-              loyaltyPercent: c.loyaltyPercent,
-              wholesalePercent: c.wholesalePercent,
-            })),
-          );
+          setCustomers(mapRawCustomers(raw));
+        }
+
+        if (parkedData.status === "fulfilled" && parkedData.value) {
+          const drafts = Array.isArray(parkedData.value?.drafts)
+            ? parkedData.value.drafts
+            : [];
+          setParkedDrafts(drafts.map(normalizeParkedDraft));
+        }
+
+        if (privilegeData.status === "fulfilled") {
+          setCashierPrivilege(privilegeData.value.privilege);
         }
       } catch {
       } finally {
@@ -498,27 +1135,115 @@ export default function BillingPage() {
       }
     }
     load();
-  }, []);
+  }, [
+    fetchAllActiveProducts,
+    mapRawCustomers,
+    mapRawProducts,
+    normalizeParkedDraft,
+  ]);
+
+  // silently refreshing the product catalog every 60 seconds so the cashier always sees up-to-date stock and prices
+  // if admin restocks or changes prices while a cashier is billing, this ensures the data stays fresh
+  useEffect(() => {
+    const timer = setInterval(async () => {
+      try {
+        const raw = await fetchAllActiveProducts();
+        setProducts(mapRawProducts(raw));
+      } catch {
+        // silently ignore refresh failures — the next cycle will retry
+      }
+    }, PRODUCT_REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(timer);
+  }, [fetchAllActiveProducts, mapRawProducts]);
 
   const [skuInput, setSkuInput] = useState(""); // scanner/manual barcode input
   const [productQuery, setProductQuery] = useState(""); // text search for the product picker
+  const [manualSearchIndex, setManualSearchIndex] = useState(0);
+  const [openRowActionProductId, setOpenRowActionProductId] = useState<
+    string | null
+  >(null);
   const [isCustomerSearchOpen, setCustomerSearchOpen] = useState(false); // controls the customer search modal/dropdown
   const [customerQuery, setCustomerQuery] = useState(""); // search text inside the customer picker
+  const [customerSearchIndex, setCustomerSearchIndex] = useState(0);
+  const [selectedCartRowIndex, setSelectedCartRowIndex] = useState(-1);
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
     null,
   );
+  const [activeDraftInvoiceId, setActiveDraftInvoiceId] = useState<
+    string | null
+  >(null); // parked draft currently loaded into the billing cart, if any
   const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
+  const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
+    string | null
+  >(null);
+  const [priceOverrideDraftPrice, setPriceOverrideDraftPrice] = useState("");
+  const [priceOverrideDraftReason, setPriceOverrideDraftReason] = useState("");
+  const [priceOverrideDraftPin, setPriceOverrideDraftPin] = useState("");
+  const [priceOverrideError, setPriceOverrideError] = useState("");
+  const [priceOverrideBusy, setPriceOverrideBusy] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash"); // current payment method selected in the modal
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid"); // current paid/partial/unpaid selection
   const [paidAmount, setPaidAmount] = useState<string>(""); // manual partial payment amount typed by the cashier
+  const [cashTendered, setCashTendered] = useState<string>(""); // cash received from customer, used to calculate change
+  const [splitCashAmount, setSplitCashAmount] = useState<string>(""); // cash portion when the bill is split between cash and eSewa
+  const [splitPayments, setSplitPayments] = useState<SplitPaymentDraft[]>([]);
+  const [invoiceNote, setInvoiceNote] = useState("");
   const [paymentError, setPaymentError] = useState(""); // payment modal validation message
   const [billingError, setBillingError] = useState(""); // main billing error shown above the cart or form
+  const [cartIssueMessage, setCartIssueMessage] = useState(""); // short-lived product lookup/cart guidance
+  const [stockRefreshBusy, setStockRefreshBusy] = useState(false); // blocks final confirmation while the latest catalog is being checked
+  const [stockConflicts, setStockConflicts] = useState<StockConflict[]>([]); // product rows that need cashier resolution after stale stock is detected
   const [showPaymentModal, setShowPaymentModal] = useState(false); // controls the final payment confirmation modal
+  const [pendingBillingConfirm, setPendingBillingConfirm] =
+    useState<PendingBillingConfirm>(null); // stores billing actions that need one last confirmation click
   const [showEsewaQr, setShowEsewaQr] = useState(true); // keeps the eSewa QR panel visible when that method is chosen
   const [cartPersistenceReady, setCartPersistenceReady] = useState(false); // prevents the autosave effect from clearing storage before the first restore pass finishes
+  const manualResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const customerResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const cartRowRefs = useRef<Array<HTMLDivElement | null>>([]);
+  const pendingCartFocusProductIdRef = useRef<string | null>(null);
+  const cartAlertMessage = billingError || cartIssueMessage;
+
+  const visibleParkedDrafts = useMemo(() => {
+    if (!activeDraftInvoiceId) return parkedDrafts;
+    return parkedDrafts.filter((draft) => draft.id !== activeDraftInvoiceId);
+  }, [activeDraftInvoiceId, parkedDrafts]);
 
   const skuRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
+  const priceOverridePinRef = useRef<HTMLInputElement | null>(null);
+  const [billClock, setBillClock] = useState(() => new Date());
+
+  useEffect(() => {
+    if (!cartIssueMessage) return undefined;
+    const timer = window.setTimeout(() => setCartIssueMessage(""), 5000);
+    return () => window.clearTimeout(timer);
+  }, [cartIssueMessage]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setBillClock(new Date()), 60_000);
+    return () => window.clearInterval(timer);
+  }, []);
+
+  const billDateLabel = useMemo(
+    () =>
+      billClock.toLocaleDateString(undefined, {
+        year: "numeric",
+        month: "short",
+        day: "numeric",
+      }),
+    [billClock],
+  );
+
+  const billTimeLabel = useMemo(
+    () =>
+      billClock.toLocaleTimeString(undefined, {
+        hour: "2-digit",
+        minute: "2-digit",
+      }),
+    [billClock],
+  );
 
   // finding the selected customer object once here keeps discount and label logic simple below
   const selectedCustomer = useMemo(
@@ -542,6 +1267,64 @@ export default function BillingPage() {
     );
   }, [customers, customerQuery]);
 
+  const customerOptions = useMemo(() => {
+    const opts: Array<
+      { type: "CLEAR" } | { type: "CUSTOMER"; customer: Customer }
+    > = [];
+    if (selectedCustomerId) {
+      opts.push({ type: "CLEAR" });
+    }
+    customerListFiltered.forEach((c) =>
+      opts.push({ type: "CUSTOMER", customer: c }),
+    );
+    return opts;
+  }, [selectedCustomerId, customerListFiltered]);
+
+  useEffect(() => {
+    setCustomerSearchIndex(0);
+  }, [customerQuery, isCustomerSearchOpen]);
+
+  useEffect(() => {
+    customerResultRefs.current.length = customerOptions.length;
+    setCustomerSearchIndex((current) =>
+      customerOptions.length === 0
+        ? 0
+        : Math.min(current, customerOptions.length - 1),
+    );
+  }, [customerOptions.length]);
+
+  useEffect(() => {
+    if (!isCustomerSearchOpen) return;
+    const activeResult = customerResultRefs.current[customerSearchIndex];
+    activeResult?.scrollIntoView({ block: "nearest" });
+  }, [customerSearchIndex, customerOptions.length, isCustomerSearchOpen]);
+
+  function handleCustomerSearchKeyDown(
+    e: React.KeyboardEvent<HTMLInputElement>,
+  ) {
+    if (customerOptions.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setCustomerSearchIndex((prev) =>
+        Math.min(prev + 1, customerOptions.length - 1),
+      );
+    } else if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setCustomerSearchIndex((prev) => Math.max(prev - 1, 0));
+    } else if (e.key === "Enter") {
+      e.preventDefault();
+      const opt = customerOptions[customerSearchIndex];
+      if (!opt) return;
+      if (opt.type === "CLEAR") {
+        setSelectedCustomerId(null);
+      } else {
+        setSelectedCustomerId(opt.customer.id);
+      }
+      setCustomerSearchOpen(false);
+    }
+  }
+
   // filtering the product list based on the search query
   const productListFiltered = useMemo(() => {
     const s = productQuery.trim().toLowerCase();
@@ -549,16 +1332,33 @@ export default function BillingPage() {
     return products.filter(
       (p) =>
         p.active &&
-        `${p.name} ${p.sku} ${p.barcode || ""} ${p.brand}`
+        `${p.name} ${p.sku} ${p.barcode || ""} ${p.brand} ${p.categoryGroup || ""} ${p.productCodeVariant || ""}`
           .toLowerCase()
           .includes(s),
     );
   }, [products, productQuery]);
 
-  const manualResults = useMemo(
-    () => productListFiltered.slice(0, productQuery.trim() ? 40 : 24),
-    [productListFiltered, productQuery],
-  );
+  const manualResults = useMemo(() => {
+    return productListFiltered.slice(0, MANUAL_SEARCH_LIMIT);
+  }, [productListFiltered]);
+
+  useEffect(() => {
+    setManualSearchIndex(0);
+  }, [productQuery]);
+
+  useEffect(() => {
+    manualResultRefs.current.length = manualResults.length;
+    setManualSearchIndex((current) =>
+      manualResults.length === 0
+        ? 0
+        : Math.min(current, manualResults.length - 1),
+    );
+  }, [manualResults.length]);
+
+  useEffect(() => {
+    const activeResult = manualResultRefs.current[manualSearchIndex];
+    activeResult?.scrollIntoView({ block: "nearest" });
+  }, [manualSearchIndex, manualResults.length]);
 
   // this lookup table lets cart calculations find products by id without scanning the full products array every time
   const productsById = useMemo(
@@ -571,6 +1371,8 @@ export default function BillingPage() {
     const storedCart = readStoredBillingCart();
     if (storedCart?.cart.length) {
       setCart(storedCart.cart);
+      setActiveDraftInvoiceId(storedCart.activeDraftInvoiceId || null);
+      setSelectedCustomerId(storedCart.selectedCustomerId || null);
     }
     setCartPersistenceReady(true);
   }, []);
@@ -582,12 +1384,21 @@ export default function BillingPage() {
     const normalizedCart = cart
       .map((line) => {
         const product = productsById.get(line.productId);
-        if (!product || !product.active || product.stock <= 0) {
+        if (
+          !product ||
+          !product.active ||
+          product.stock <= 0 ||
+          product.stock < getProductMinQty(product)
+        ) {
           return null;
         }
 
-        const qty = clampNumber(line.qty, 1, product.stock);
-        return { productId: line.productId, qty };
+        const qty = normalizeProductCartQty(product, line.qty);
+        return {
+          ...line,
+          productId: line.productId,
+          qty,
+        };
       })
       .filter(Boolean) as CartLine[];
 
@@ -595,7 +1406,10 @@ export default function BillingPage() {
       normalizedCart.length !== cart.length ||
       normalizedCart.some(
         (line, index) =>
-          line.productId !== cart[index]?.productId || line.qty !== cart[index]?.qty,
+          line.productId !== cart[index]?.productId ||
+          line.qty !== cart[index]?.qty ||
+          line.overrideUnitPrice !== cart[index]?.overrideUnitPrice ||
+          line.overrideReason !== cart[index]?.overrideReason,
       );
 
     if (cartChanged) {
@@ -603,7 +1417,13 @@ export default function BillingPage() {
     }
   }, [cart, products, productsById]);
 
-  // persisting the cart on every cart change makes route changes safe while still clearing storage when the cart is emptied
+  // Persisting the cart on every cart change makes route changes safe while still clearing storage when the cart is emptied
+  useEffect(() => {
+    if (selectedCartRowIndex >= cart.length) {
+      setSelectedCartRowIndex(cart.length - 1);
+    }
+  }, [cart.length, selectedCartRowIndex]);
+
   useEffect(() => {
     if (!cartPersistenceReady) return;
 
@@ -612,8 +1432,8 @@ export default function BillingPage() {
       return;
     }
 
-    writeStoredBillingCart(cart);
-  }, [cart, cartPersistenceReady]);
+    writeStoredBillingCart(cart, activeDraftInvoiceId, selectedCustomerId);
+  }, [activeDraftInvoiceId, cart, cartPersistenceReady, selectedCustomerId]);
 
   // joining cart lines with product data here is what gives us unit price, pricing mode, and line totals for each row
   const cartRows = useMemo(() => {
@@ -626,11 +1446,24 @@ export default function BillingPage() {
           p,
           line.qty,
         );
-        const unit = useWholesalePrice ? p.wholesalePrice : p.retailPrice;
+        const baseUnitPrice = useWholesalePrice
+          ? p.wholesalePrice
+          : p.retailPrice;
+        const overrideUnitPrice =
+          line.overrideUnitPrice !== undefined &&
+          Number.isFinite(line.overrideUnitPrice) &&
+          line.overrideUnitPrice > 0
+            ? line.overrideUnitPrice
+            : undefined;
+        const unit = overrideUnitPrice ?? baseUnitPrice;
         return {
           ...line,
           product: p,
           unitPrice: unit,
+          baseUnitPrice,
+          overrideUnitPrice,
+          overrideReason: line.overrideReason,
+          overrideAuthorizationToken: line.overrideAuthorizationToken,
           priceType: useWholesalePrice ? "Wholesale" : "Retail",
           lineTotal: unit * line.qty,
         };
@@ -640,12 +1473,86 @@ export default function BillingPage() {
       qty: number;
       product: Product;
       unitPrice: number;
+      baseUnitPrice: number;
+      overrideUnitPrice?: number;
+      overrideReason?: string;
+      overrideAuthorizationToken?: string;
       priceType: "Wholesale" | "Retail";
       lineTotal: number;
     }>;
   }, [cart, productsById, selectedCustomer]);
 
   const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0); // total before any customer-level subtotal discount is applied
+  const priceOverrideRows = cartRows.filter(
+    (row) => row.overrideUnitPrice !== undefined,
+  );
+  const hasPriceOverrides = priceOverrideRows.length > 0;
+  const priceOverrideDifference = priceOverrideRows.reduce(
+    (sum, row) => sum + (row.unitPrice - row.baseUnitPrice) * row.qty,
+    0,
+  );
+  const overrideDiffAbs = Math.abs(priceOverrideDifference);
+  const overrideDiffIsReduction = priceOverrideDifference < 0;
+  const overrideDiffLabel = overrideDiffIsReduction
+    ? "Price reduction"
+    : "Price increase";
+  const overrideDiffDisplay = `${overrideDiffIsReduction ? "-" : "+"}${formatNpr(overrideDiffAbs)}`;
+  const canUsePriceOverride =
+    isManager || cashierPrivilege?.canOverrideBillingPrice === true;
+  const priceOverrideTargetRow = priceOverrideTargetId
+    ? cartRows.find((row) => row.productId === priceOverrideTargetId) || null
+    : null;
+
+  useEffect(() => {
+    cartRowRefs.current.length = cartRows.length;
+    const pendingProductId = pendingCartFocusProductIdRef.current;
+    if (!pendingProductId) return;
+
+    const nextIndex = cartRows.findIndex(
+      (row) => row.productId === pendingProductId,
+    );
+    if (nextIndex >= 0) {
+      setSelectedCartRowIndex(nextIndex);
+      pendingCartFocusProductIdRef.current = null;
+    }
+  }, [cartRows]);
+
+  useEffect(() => {
+    if (selectedCartRowIndex < 0) return;
+    cartRowRefs.current[selectedCartRowIndex]?.scrollIntoView({
+      block: "nearest",
+    });
+  }, [cartRows.length, selectedCartRowIndex]);
+
+  useEffect(() => {
+    if (
+      openRowActionProductId &&
+      !cartRows.some((row) => row.productId === openRowActionProductId)
+    ) {
+      setOpenRowActionProductId(null);
+    }
+  }, [cartRows, openRowActionProductId]);
+
+  useEffect(() => {
+    if (!openRowActionProductId) return undefined;
+
+    function handlePointerDown(event: PointerEvent) {
+      if (!(event.target instanceof Element)) return;
+      if (event.target.closest('[data-row-action-menu-root="true"]')) return;
+      setOpenRowActionProductId(null);
+    }
+
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => document.removeEventListener("pointerdown", handlePointerDown);
+  }, [openRowActionProductId]);
+
+  useEffect(() => {
+    if (!priceOverrideTargetRow) return;
+    const timer = window.setTimeout(() => {
+      priceOverridePinRef.current?.focus();
+    }, 80);
+    return () => window.clearTimeout(timer);
+  }, [priceOverrideTargetRow]);
 
   // we calculate the subtotal discount amount before grand total
   const subtotalDiscount = useMemo(() => {
@@ -654,8 +1561,11 @@ export default function BillingPage() {
     }
     return 0;
   }, [subTotal, subtotalDiscountMeta.percent]);
+  const totalVisibleSavings =
+    subtotalDiscount + (overrideDiffIsReduction ? overrideDiffAbs : 0);
 
-  const grandTotal = Math.max(0, subTotal - subtotalDiscount); // final amount the customer needs to pay, clamped to 0 so it never goes negative
+  const grandTotal = Math.max(0, subTotal - subtotalDiscount); // raw invoice total before cashier-facing NPR rounding
+  const payableTotal = Math.round(grandTotal); // cashier-facing collection amount; keeps total, exact cash, and split suggestions consistent
 
   const paidNum = useMemo(() => {
     const n = Number(paidAmount);
@@ -663,29 +1573,372 @@ export default function BillingPage() {
     return n;
   }, [paidAmount]);
 
+  const cashTenderedNum = useMemo(() => {
+    const n = Number(cashTendered);
+    if (!Number.isFinite(n)) return 0;
+    return n;
+  }, [cashTendered]);
+
+  const normalizedSplitPayments = useMemo(() => {
+    return splitPayments
+      .map((payment) => {
+        const amount = Number(payment.amount);
+        const tenderedAmount = Number(payment.tenderedAmount);
+        return {
+          ...payment,
+          amountNum: Number.isFinite(amount) ? amount : 0,
+          tenderedNum: Number.isFinite(tenderedAmount) ? tenderedAmount : 0,
+        };
+      })
+      .filter((payment) => payment.amountNum > 0);
+  }, [splitPayments]);
+
+  const splitTotal = useMemo(
+    () =>
+      normalizedSplitPayments.reduce(
+        (sum, payment) => sum + payment.amountNum,
+        0,
+      ),
+    [normalizedSplitPayments],
+  );
+
+  const splitCashNum = useMemo(() => {
+    if (normalizedSplitPayments.length > 0) {
+      return normalizedSplitPayments
+        .filter((payment) => payment.method === "CASH")
+        .reduce((sum, payment) => sum + payment.amountNum, 0);
+    }
+    const n = Number(splitCashAmount);
+    if (!Number.isFinite(n)) return 0;
+    return clampNumber(n, 0, payableTotal);
+  }, [splitCashAmount, payableTotal, normalizedSplitPayments]);
+
+  const splitEsewaAmount =
+    normalizedSplitPayments.length > 0
+      ? normalizedSplitPayments
+          .filter((payment) => payment.method === "ESEWA")
+          .reduce((sum, payment) => sum + payment.amountNum, 0)
+      : Math.max(0, payableTotal - splitCashNum);
+  const splitBalance = Math.round((payableTotal - splitTotal) * 100) / 100;
+
   // payment status controls the real paid amount:
   // 1. Paid means the full grand total is treated as received
   // 2. Unpaid means nothing is received yet
   // 3. Partial uses the typed amount, clamped so it never goes below 0 or above the grand total
   const effectivePaidAmount =
-    paymentStatus === "Paid"
-      ? grandTotal
-      : paymentStatus === "Unpaid"
-        ? 0
-        : clampNumber(paidNum, 0, grandTotal);
+    paymentMethod === "Split"
+      ? payableTotal
+      : paymentStatus === "Paid"
+        ? payableTotal
+        : paymentStatus === "Unpaid"
+          ? 0
+          : clampNumber(paidNum, 0, payableTotal);
 
-  const balanceDue = Math.max(0, grandTotal - effectivePaidAmount); // remaining amount still due after the chosen payment state is applied
+  const balanceDue = Math.max(0, payableTotal - effectivePaidAmount); // remaining amount still due after the chosen payment state is applied
+  const cashDueAmount =
+    paymentMethod === "Split"
+      ? splitCashNum
+      : paymentMethod === "Cash" && paymentStatus === "Paid"
+        ? payableTotal
+        : 0;
+  const changeDue =
+    cashDueAmount > 0 ? Math.max(0, cashTenderedNum - cashDueAmount) : 0;
+  const cashShort =
+    cashDueAmount > 0 ? Math.max(0, cashDueAmount - cashTenderedNum) : 0;
 
   const showEsewaDetails =
-    paymentMethod === "eSewa" && paymentStatus !== "Unpaid";
+    (paymentMethod === "eSewa" ||
+      (paymentMethod === "Split" && splitEsewaAmount > 0)) &&
+    paymentStatus !== "Unpaid";
+  const isSplitBalanced = Math.abs(splitBalance) <= 0.01;
+  const paymentStateTitle =
+    paymentMethod === "Split"
+      ? isSplitBalanced
+        ? "Split balanced"
+        : "Split needs review"
+      : paymentStatus === "Unpaid"
+        ? "Saved without payment"
+        : paymentStatus === "Partial"
+          ? "Partial payment"
+          : paymentMethod === "eSewa"
+            ? "eSewa collection"
+            : cashShort > 0
+              ? "Cash short"
+              : changeDue > 0
+                ? "Return change"
+                : "Exact cash ready";
+  const paymentStateDetail =
+    paymentMethod === "Split"
+      ? `Cash ${formatNpr(splitCashNum)} + eSewa ${formatNpr(splitEsewaAmount)}.`
+      : paymentStatus === "Unpaid"
+        ? "No payment recorded now."
+        : paymentStatus === "Partial"
+          ? `Balance due ${formatNpr(balanceDue)}.`
+          : paymentMethod === "eSewa"
+            ? `Collect ${formatNpr(payableTotal)} online.`
+            : cashShort > 0
+              ? `Need ${formatNpr(cashShort)} more.`
+              : changeDue > 0
+                ? `Give ${formatNpr(changeDue)} back.`
+                : `Cash matches ${formatNpr(payableTotal)}.`;
+  const paymentStateTone =
+    paymentMethod === "Cash" && paymentStatus === "Paid" && changeDue > 0
+      ? "success"
+      : paymentMethod === "eSewa" && paymentStatus === "Paid"
+        ? "esewa"
+        : paymentStatus === "Partial" ||
+            paymentStatus === "Unpaid" ||
+            !isSplitBalanced ||
+            cashShort > 0
+          ? "warning"
+          : "info";
 
-  const canConfirm = cartRows.length > 0 && !submitting; // final guard for whether checkout can run right now
+  const canConfirm = cartRows.length > 0 && !submitting && !stockRefreshBusy; // final guard for whether checkout can run right now
   const hasBillDraft =
     cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
 
   // we use this helper so every cart-related validation message goes through one consistent state update
   function showCartIssue(message: string) {
-    setBillingError(message);
+    setCartIssueMessage(message);
+  }
+
+  function clearCartIssue() {
+    setCartIssueMessage("");
+  }
+
+  function openPriceOverride(row: {
+    productId: string;
+    unitPrice: number;
+    overrideReason?: string;
+  }) {
+    if (!canUsePriceOverride) {
+      showToast(
+        "danger",
+        "Admin has not enabled price override for this cashier.",
+      );
+      return;
+    }
+
+    setPriceOverrideTargetId(row.productId);
+    setPriceOverrideDraftPrice(String(row.unitPrice));
+    setPriceOverrideDraftReason(
+      row.overrideReason && PRICE_OVERRIDE_REASONS.includes(row.overrideReason)
+        ? row.overrideReason
+        : row.overrideReason
+          ? "Other manager-approved correction"
+          : "",
+    );
+    setPriceOverrideDraftPin("");
+    setPriceOverrideError("");
+    setBillingError("");
+  }
+
+  function closePriceOverride(force = false) {
+    if (priceOverrideBusy && !force) return;
+    setPriceOverrideTargetId(null);
+    setPriceOverrideDraftPrice("");
+    setPriceOverrideDraftReason("");
+    setPriceOverrideDraftPin("");
+    setPriceOverrideError("");
+  }
+
+  async function applyPriceOverride() {
+    if (!priceOverrideTargetId) return;
+
+    const price = Math.round(Number(priceOverrideDraftPrice) * 100) / 100;
+    const reason = priceOverrideDraftReason.trim();
+    const pin = priceOverrideDraftPin.trim();
+    setPriceOverrideError("");
+
+    if (!Number.isFinite(price) || price <= 0) {
+      setPriceOverrideError("Override price must be greater than zero.");
+      return;
+    }
+    if (!reason) {
+      setPriceOverrideError("Add a reason for the price override.");
+      return;
+    }
+    if (!isManager && !/^\d{4}$/.test(pin)) {
+      setPriceOverrideError("Enter the 4-digit override PIN.");
+      return;
+    }
+
+    if (
+      priceOverrideTargetRow &&
+      Math.abs(price - priceOverrideTargetRow.baseUnitPrice) < 0.001
+    ) {
+      clearPriceOverride(priceOverrideTargetId);
+      closePriceOverride(true);
+      showToast("success", "Price matches the normal rate. Override cleared.");
+      return;
+    }
+
+    try {
+      setPriceOverrideBusy(true);
+      const authorization = await authorizePriceOverrideApi({
+        productId: priceOverrideTargetId,
+        customerId: selectedCustomerId || undefined,
+        qty: priceOverrideTargetRow?.qty || 1,
+        overrideUnitPrice: price,
+        overrideReason: reason.slice(0, 240),
+        pin: isManager ? undefined : pin,
+      });
+
+      setCart((current) =>
+        current.map((line) =>
+          line.productId === priceOverrideTargetId
+            ? {
+                ...line,
+                overrideUnitPrice: authorization.overrideUnitPrice,
+                overrideReason: authorization.overrideReason,
+                overrideAuthorizationToken: authorization.token,
+              }
+            : line,
+        ),
+      );
+      closePriceOverride();
+      showToast(
+        "success",
+        isManager
+          ? "Manager price override applied."
+          : "Price override verified.",
+      );
+    } catch (error: any) {
+      setPriceOverrideError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "Could not verify the override PIN.",
+      );
+      setPriceOverrideDraftPin("");
+      priceOverridePinRef.current?.focus();
+    } finally {
+      setPriceOverrideBusy(false);
+    }
+  }
+
+  function clearPriceOverride(productId: string) {
+    setCart((current) =>
+      current.map((line) => {
+        if (line.productId !== productId) return line;
+        const {
+          overrideUnitPrice: _price,
+          overrideReason: _reason,
+          overrideAuthorizationToken: _token,
+          ...rest
+        } = line;
+        return rest;
+      }),
+    );
+    setBillingError("");
+  }
+
+  function buildStockConflictsFromCart(
+    cartLines: CartLine[],
+    nextProducts: Product[],
+  ) {
+    const nextProductsById = new Map(
+      nextProducts.map((product) => [product.id, product]),
+    );
+    const conflicts: StockConflict[] = [];
+
+    cartLines.forEach((line) => {
+      const product = nextProductsById.get(line.productId);
+
+      if (!product) {
+        conflicts.push({
+          productId: line.productId,
+          productName: "Unknown product",
+          requestedQty: line.qty,
+          availableStock: 0,
+          reason: "NOT_FOUND",
+        });
+        return;
+      }
+
+      if (!product.active) {
+        conflicts.push({
+          productId: line.productId,
+          productName: product.name,
+          sku: product.sku,
+          requestedQty: line.qty,
+          availableStock: 0,
+          reason: "INACTIVE",
+        });
+        return;
+      }
+
+      if (product.stock <= 0) {
+        conflicts.push({
+          productId: line.productId,
+          productName: product.name,
+          sku: product.sku,
+          requestedQty: line.qty,
+          availableStock: 0,
+          reason: "OUT_OF_STOCK",
+        });
+        return;
+      }
+
+      if (line.qty > product.stock) {
+        conflicts.push({
+          productId: line.productId,
+          productName: product.name,
+          sku: product.sku,
+          requestedQty: line.qty,
+          availableStock: product.stock,
+          reason: "INSUFFICIENT_STOCK",
+        });
+      }
+    });
+
+    return conflicts;
+  }
+
+  function normalizeApiStockConflicts(rawConflicts: unknown) {
+    if (!Array.isArray(rawConflicts)) return [];
+
+    return rawConflicts.map((raw: any) => {
+      const fallbackProduct = productsById.get(String(raw?.productId || ""));
+      return {
+        productId: String(raw?.productId || fallbackProduct?.id || ""),
+        productName: String(
+          raw?.productName || fallbackProduct?.name || "Unknown product",
+        ),
+        sku: raw?.sku || fallbackProduct?.sku || null,
+        requestedQty: Math.max(
+          0,
+          normalizeQuantityValue(Number(raw?.requestedQty || 0), 0),
+        ),
+        availableStock: Math.max(
+          0,
+          normalizeQuantityValue(Number(raw?.availableStock || 0), 0),
+        ),
+        reason:
+          raw?.reason === "NOT_FOUND" ||
+          raw?.reason === "INACTIVE" ||
+          raw?.reason === "OUT_OF_STOCK" ||
+          raw?.reason === "INSUFFICIENT_STOCK"
+            ? raw.reason
+            : "INSUFFICIENT_STOCK",
+      } satisfies StockConflict;
+    });
+  }
+
+  function showStockConflicts(nextConflicts: StockConflict[]) {
+    setStockConflicts(nextConflicts);
+    setPendingBillingConfirm(null);
+    setBillingError(
+      nextConflicts.length === 1
+        ? `"${nextConflicts[0].productName}" no longer has enough stock.`
+        : `${nextConflicts.length} cart items need stock review before checkout.`,
+    );
+  }
+
+  async function refreshProductsForCheckout() {
+    const raw = await fetchAllActiveProducts();
+    const mapped = mapRawProducts(raw);
+    setProducts(mapped);
+    return mapped;
   }
 
   // this checks how many units of one product are already in the current cart
@@ -705,57 +1958,178 @@ export default function BillingPage() {
       showCartIssue(`"${product.name}" is out of stock.`);
       return;
     }
+    if (product.stock < getProductMinQty(product)) {
+      showCartIssue(
+        `"${product.name}" has only ${formatQtyWithUnit(product.stock, product.saleUnit)} in stock.`,
+      );
+      return;
+    }
 
+    const stepQty = normalizeProductCartQty(product, qty);
     const currentQty = getCurrentQty(productId);
     // we block adding more once the cart quantity would pass the live stock count
     if (currentQty >= product.stock) {
       showCartIssue(
-        `"${product.name}" has only ${product.stock} item(s) in stock.`,
+        `"${product.name}" has only ${formatQtyWithUnit(product.stock, product.saleUnit)} in stock.`,
       );
       return;
     }
 
     // updating the cart either bumps an existing line or adds a new one for the scanned/searched product
+    pendingCartFocusProductIdRef.current = productId;
     setCart((prev) => {
       const idx = prev.findIndex((x) => x.productId === productId);
       if (idx >= 0) {
         const copy = [...prev];
         copy[idx] = {
           ...copy[idx],
-          qty: Math.min(product.stock, copy[idx].qty + qty),
+          qty: normalizeProductCartQty(product, copy[idx].qty + stepQty),
+          overrideUnitPrice: undefined,
+          overrideReason: undefined,
+          overrideAuthorizationToken: undefined,
         };
         return copy;
       }
-      return [...prev, { productId, qty: Math.min(product.stock, qty) }];
+      return [
+        ...prev,
+        { productId, qty: normalizeProductCartQty(product, stepQty) },
+      ];
     });
     setProductQuery("");
     setBillingError("");
-    skuRef.current?.focus();
+    clearCartIssue();
+    setStockConflicts((current) =>
+      current.filter((conflict) => conflict.productId !== productId),
+    );
+    searchRef.current?.focus();
   }
 
   // this changes the quantity of an item already in the cart
   // and validates that we don't exceed the available stock
   function changeQty(productId: string, val: number) {
     const product = productsById.get(productId);
-    const maxQty = Math.max(1, product?.stock || 1);
+    const maxQty = Math.max(getProductMinQty(product), product?.stock || 1);
     if (product && val > product.stock) {
       showCartIssue(
-        `"${product.name}" has only ${product.stock} item(s) in stock.`,
+        `"${product.name}" has only ${formatQtyWithUnit(product.stock, product.saleUnit)} in stock.`,
       );
     } else {
-      setBillingError("");
+      clearCartIssue();
     }
     setCart((prev) =>
       prev.map((x) =>
         x.productId === productId
-          ? { ...x, qty: clampNumber(val, 1, maxQty) }
+          ? {
+              ...x,
+              qty: product
+                ? normalizeProductCartQty(product, val)
+                : clampNumber(normalizeQuantityValue(val), 1, maxQty),
+              overrideUnitPrice: undefined,
+              overrideReason: undefined,
+              overrideAuthorizationToken: undefined,
+            }
           : x,
       ),
     );
+    const index = cartRows.findIndex((row) => row.productId === productId);
+    if (index >= 0) setSelectedCartRowIndex(index);
+    if (!product || val <= product.stock) {
+      setStockConflicts((current) =>
+        current.filter((conflict) => conflict.productId !== productId),
+      );
+    }
   }
 
   function removeLine(productId: string) {
     setCart((prev) => prev.filter((x) => x.productId !== productId));
+    clearCartIssue();
+    if (priceOverrideTargetId === productId) closePriceOverride();
+    setStockConflicts((current) =>
+      current.filter((conflict) => conflict.productId !== productId),
+    );
+  }
+
+  function applyStockConflictSuggestion(conflict: StockConflict) {
+    if (conflict.availableStock <= 0) {
+      removeLine(conflict.productId);
+      return;
+    }
+
+    const product = productsById.get(conflict.productId);
+    setCart((prev) =>
+      prev.map((line) =>
+        line.productId === conflict.productId
+          ? {
+              ...line,
+              qty: product
+                ? normalizeProductCartQty(
+                    product,
+                    Math.min(line.qty, conflict.availableStock),
+                  )
+                : Math.min(line.qty, conflict.availableStock),
+              overrideUnitPrice: undefined,
+              overrideReason: undefined,
+              overrideAuthorizationToken: undefined,
+            }
+          : line,
+      ),
+    );
+    setStockConflicts((current) =>
+      current.filter((item) => item.productId !== conflict.productId),
+    );
+    setBillingError("");
+  }
+
+  function applyAllStockConflictSuggestions() {
+    const conflictsByProductId = new Map(
+      stockConflicts.map((conflict) => [conflict.productId, conflict]),
+    );
+
+    setCart(
+      (prev) =>
+        prev
+          .map((line) => {
+            const conflict = conflictsByProductId.get(line.productId);
+            if (!conflict) return line;
+            if (conflict.availableStock <= 0) return null;
+            const product = productsById.get(line.productId);
+            return {
+              ...line,
+              qty: product
+                ? normalizeProductCartQty(
+                    product,
+                    Math.min(line.qty, conflict.availableStock),
+                  )
+                : Math.min(line.qty, conflict.availableStock),
+              overrideUnitPrice: undefined,
+              overrideReason: undefined,
+              overrideAuthorizationToken: undefined,
+            };
+          })
+          .filter(Boolean) as CartLine[],
+    );
+    setStockConflicts([]);
+    setBillingError("");
+  }
+
+  async function refreshStockConflictList() {
+    setStockRefreshBusy(true);
+    try {
+      const latestProducts = await refreshProductsForCheckout();
+      const conflicts = buildStockConflictsFromCart(cart, latestProducts);
+      if (conflicts.length > 0) {
+        showStockConflicts(conflicts);
+      } else {
+        setStockConflicts([]);
+        setBillingError("");
+      }
+    } catch {
+      setBillingError(
+        "Could not refresh product stock. Check connection and try again.",
+      );
+    } finally {
+      setStockRefreshBusy(false);
+    }
   }
 
   function addBySku() {
@@ -770,10 +2144,46 @@ export default function BillingPage() {
           (x.barcode || "").toLowerCase() === normalized),
     );
     if (p) {
-      addToCart(p.id, 1);
+      addToCart(p.id, getProductQtyStep(p));
       setSkuInput("");
+      skuRef.current?.focus();
     } else {
       showCartIssue(`No active product found for "${s}".`);
+    }
+  }
+
+  function handleManualSearchKeyDown(e: React.KeyboardEvent<HTMLInputElement>) {
+    if (!productQuery.trim() || manualResults.length === 0) return;
+
+    if (e.key === "ArrowDown") {
+      e.preventDefault();
+      setManualSearchIndex((current) =>
+        Math.min(current + 1, manualResults.length - 1),
+      );
+      return;
+    }
+
+    if (e.key === "ArrowUp") {
+      e.preventDefault();
+      setManualSearchIndex((current) => Math.max(current - 1, 0));
+      return;
+    }
+
+    if (e.key === "Escape") {
+      e.preventDefault();
+      setProductQuery("");
+      return;
+    }
+
+    if (e.key === "Enter") {
+      e.preventDefault();
+      const selected = manualResults[manualSearchIndex];
+      if (!selected) return;
+      if (selected.stock <= 0) {
+        showCartIssue(`"${selected.name}" is out of stock.`);
+        return;
+      }
+      addToCart(selected.id);
     }
   }
 
@@ -782,19 +2192,248 @@ export default function BillingPage() {
   function resetBill() {
     clearStoredBillingCart();
     setCart([]);
+    setActiveDraftInvoiceId(null);
     setSelectedCustomerId(null);
     setPaymentMethod("Cash");
     setPaymentStatus("Paid");
     setPaidAmount("");
+    setCashTendered("");
+    setSplitCashAmount("");
+    setSplitPayments([]);
+    setInvoiceNote("");
     setSkuInput("");
     setProductQuery("");
     setPaymentError("");
     setBillingError("");
+    clearCartIssue();
+    setPriceOverrideDraftPin("");
+    closePriceOverride();
+    setStockConflicts([]);
     setCustomerSearchOpen(false);
     setCustomerQuery("");
     setShowPaymentModal(false);
+    setPendingBillingConfirm(null);
     setShowEsewaQr(true);
     skuRef.current?.focus();
+  }
+
+  function requestResetBill() {
+    if (!hasBillDraft) return;
+    setPendingBillingConfirm("clear-cart");
+  }
+
+  function confirmResetBill() {
+    resetBill();
+  }
+
+  function requestParkBill() {
+    if (cart.length === 0) {
+      setBillingError("Add at least one item before parking this bill.");
+      return;
+    }
+    if (parkedBusy) return;
+    setPendingBillingConfirm("park-cart");
+  }
+
+  function confirmParkBill() {
+    setPendingBillingConfirm(null);
+    void parkCurrentBill("manual");
+  }
+
+  function openHeldBills() {
+    setShowParkedBills(true);
+    setParkedError("");
+    void loadParkedDrafts();
+  }
+
+  function buildParkedBillLabel(kind: "manual" | "auto") {
+    const time = new Date().toLocaleTimeString([], {
+      hour: "2-digit",
+      minute: "2-digit",
+    });
+    if (selectedCustomer?.name) {
+      return `${kind === "auto" ? "Auto-parked" : "Parked"} ${selectedCustomer.name} ${time}`;
+    }
+    return `${kind === "auto" ? "Auto-parked" : "Parked"} bill ${time}`;
+  }
+
+  function getParkedDraftUnitCount(draft: ParkedDraft) {
+    return (draft.items || []).reduce((sum, item) => sum + item.qty, 0);
+  }
+
+  function getParkedDraftTitle(draft: ParkedDraft) {
+    return (
+      draft.parkedLabel ||
+      draft.customer?.name ||
+      draft.invoiceNo ||
+      "Parked bill"
+    );
+  }
+
+  async function loadResumedParkedDraft(resumed: ParkedDraft) {
+    const nextCart = (resumed.items || [])
+      .map((item) => ({
+        productId: item.productId,
+        qty: normalizeQuantityValue(Number(item.qty || 1)),
+      }))
+      .filter((item) => item.productId);
+
+    setCart(nextCart);
+    setActiveDraftInvoiceId(resumed.id);
+    setSelectedCustomerId(resumed.customerId || null);
+    setPaymentMethod("Cash");
+    setPaymentStatus("Paid");
+    setPaidAmount("");
+    setCashTendered("");
+    setSplitCashAmount("");
+    setSplitPayments([]);
+    setInvoiceNote("");
+    setPaymentError("");
+    setBillingError("");
+    setStockConflicts([]);
+    setShowPaymentModal(false);
+    setPendingBillingConfirm(null);
+    setPendingStaleResume(null);
+    setShowParkedBills(false);
+    await loadParkedDrafts();
+    showToast("success", "Parked bill resumed.");
+    searchRef.current?.focus();
+  }
+
+  async function parkCurrentBill(kind: "manual" | "auto" = "manual") {
+    if (cart.length === 0) {
+      setParkedError("Add at least one item before parking this bill.");
+      return null;
+    }
+    if (hasPriceOverrides) {
+      const message =
+        "Remove price overrides before parking this bill. Overrides require final checkout PIN approval.";
+      setParkedError(message);
+      setBillingError(message);
+      return null;
+    }
+
+    const draftToReplaceId = activeDraftInvoiceId;
+    setParkedBusy(true);
+    setParkedError("");
+    setBillingError("");
+
+    try {
+      const parked = await parkInvoiceDraftApi({
+        replaceDraftInvoiceId: draftToReplaceId || undefined,
+        customerId: selectedCustomerId || undefined,
+        label: buildParkedBillLabel(kind),
+        items: cart.map((line) => ({
+          productId: line.productId,
+          qty: line.qty,
+        })),
+      });
+      resetBill();
+      await loadParkedDrafts();
+      showToast(
+        "success",
+        kind === "auto"
+          ? "Current bill auto-parked before switching."
+          : "Bill parked. You can resume it from Held Bills.",
+      );
+      return normalizeParkedDraft(parked);
+    } catch (err: any) {
+      const responseData = err?.response?.data;
+      if (responseData?.code === "STOCK_CONFLICT") {
+        const conflicts = normalizeApiStockConflicts(responseData.conflicts);
+        if (conflicts.length > 0) {
+          showStockConflicts(conflicts);
+          setShowParkedBills(false);
+          return null;
+        }
+      }
+
+      const message =
+        responseData?.error || err?.message || "Failed to park bill.";
+      setParkedError(message);
+      setBillingError(message);
+      return null;
+    } finally {
+      setParkedBusy(false);
+    }
+  }
+
+  async function resumeParkedBill(draft: ParkedDraft) {
+    if (parkedBusy) return;
+
+    setParkedBusy(true);
+    setParkedError("");
+    setBillingError("");
+
+    try {
+      if (cart.length > 0) {
+        const parked = await parkCurrentBill("auto");
+        if (!parked) return;
+      }
+
+      const resumed = normalizeParkedDraft(
+        await resumeParkedDraftApi(draft.id),
+      );
+      if ((resumed.staleWarnings || []).length > 0) {
+        setPendingStaleResume(resumed);
+        setShowParkedBills(false);
+        return;
+      }
+
+      await loadResumedParkedDraft(resumed);
+    } catch (err: any) {
+      const message =
+        err?.response?.data?.error ||
+        err?.message ||
+        "Failed to resume parked bill.";
+      setParkedError(message);
+      setBillingError(message);
+    } finally {
+      setParkedBusy(false);
+    }
+  }
+
+  async function confirmDiscardParkedBill() {
+    if (!pendingDiscardParked || parkedBusy) return;
+
+    setParkedBusy(true);
+    setParkedError("");
+
+    try {
+      await discardParkedDraftApi(pendingDiscardParked.id);
+      setPendingDiscardParked(null);
+      await loadParkedDrafts();
+      showToast("success", "Parked bill discarded.");
+    } catch (err: any) {
+      setParkedError(
+        err?.response?.data?.error ||
+          err?.message ||
+          "Failed to discard parked bill.",
+      );
+    } finally {
+      setParkedBusy(false);
+    }
+  }
+
+  async function discardPendingStaleResume() {
+    if (!pendingStaleResume || parkedBusy) return;
+
+    setParkedBusy(true);
+    setParkedError("");
+    try {
+      await discardParkedDraftApi(pendingStaleResume.id);
+      setPendingStaleResume(null);
+      await loadParkedDrafts();
+      showToast("success", "Stale parked bill discarded.");
+    } catch (err: any) {
+      setParkedError(
+        err?.response?.data?.error ||
+          err?.message ||
+          "Failed to discard parked bill.",
+      );
+    } finally {
+      setParkedBusy(false);
+    }
   }
 
   function openPaymentFlow(nextMethod?: PaymentMethod) {
@@ -807,7 +2446,12 @@ export default function BillingPage() {
     if (nextMethod) {
       setPaymentMethod(nextMethod);
       if (nextMethod === "eSewa") setShowEsewaQr(true);
+      if (nextMethod === "Split") ensureDefaultSplitPayments();
     }
+    if ((nextMethod || paymentMethod) === "Cash" && paymentStatus === "Paid") {
+      setCashTendered(String(payableTotal));
+    }
+    if ((nextMethod || paymentMethod) === "Split") ensureDefaultSplitPayments();
     setBillingError("");
     setPaymentError("");
     setShowPaymentModal(true);
@@ -816,12 +2460,66 @@ export default function BillingPage() {
   function closePaymentFlow() {
     setShowPaymentModal(false);
     setPaymentError("");
+    setPendingBillingConfirm(null);
   }
 
   // partial payments need extra validation because the cashier types the received amount manually
   function validatePaymentBeforeConfirm() {
     setPaymentError("");
     setBillingError("");
+
+    if (paymentMethod === "Split") {
+      if (normalizedSplitPayments.length < 2) {
+        setPaymentError("Split payment needs at least two payment rows.");
+        return false;
+      }
+
+      if (
+        normalizedSplitPayments.filter((row) => row.method === "ESEWA").length >
+        1
+      ) {
+        setPaymentError("Only one eSewa row can be used in one split payment.");
+        return false;
+      }
+
+      if (Math.abs(splitBalance) > 0.01) {
+        setPaymentError(
+          splitBalance > 0
+            ? `Split is short by ${formatNpr(splitBalance)}.`
+            : `Split exceeds total by ${formatNpr(Math.abs(splitBalance))}.`,
+        );
+        return false;
+      }
+
+      const invalidCashRow = normalizedSplitPayments.find(
+        (row) => row.method === "CASH" && row.tenderedNum < row.amountNum,
+      );
+      if (invalidCashRow) {
+        setPaymentError(
+          "Cash tendered cannot be less than its cash split amount.",
+        );
+        return false;
+      }
+
+      if (normalizedSplitPayments.every((row) => row.method !== "CASH")) {
+        setPaymentError("Use eSewa when the full invoice amount is online.");
+        return false;
+      }
+
+      return true;
+    }
+
+    if (paymentMethod === "Cash" && paymentStatus === "Paid") {
+      if (!cashTendered.trim()) {
+        setPaymentError("Enter the cash received from the customer.");
+        return false;
+      }
+      if (cashTenderedNum < payableTotal) {
+        setPaymentError("Cash received is less than the invoice total.");
+        return false;
+      }
+      return true;
+    }
 
     if (paymentStatus !== "Partial") {
       return true;
@@ -840,7 +2538,7 @@ export default function BillingPage() {
       setPaymentError("Payment amount must be greater than 0.");
       return false;
     }
-    if (amount >= grandTotal) {
+    if (amount >= payableTotal) {
       setPaymentError("Use Paid when the full invoice amount is received.");
       return false;
     }
@@ -848,71 +2546,400 @@ export default function BillingPage() {
     return true;
   }
 
-  async function confirm() {
-    // stopping here prevents double submits and blocks invalid partial payment states
+  function renderCashTenderShortcuts() {
+    if (cashDueAmount <= 0) return null;
+    const options = [
+      { label: "Exact", value: cashDueAmount },
+      { label: "NPR 500", value: 500 },
+      { label: "NPR 1,000", value: 1000 },
+      { label: "NPR 5,000", value: 5000 },
+    ];
+
+    return (
+      <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+        {options.map((option) => {
+          const disabled = option.value < cashDueAmount;
+          return (
+            <button
+              key={option.label}
+              type="button"
+              disabled={disabled}
+              onClick={() => {
+                setCashTendered(String(option.value));
+                setPaymentError("");
+                setBillingError("");
+              }}
+              className={cn(
+                "h-[34px] rounded-[11px] border px-3 text-[11px] font-extrabold transition",
+                disabled
+                  ? "cursor-not-allowed border-[#E5E7EB] bg-[#F3F4F6] text-[#C0BDBA]"
+                  : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:border-[#000000] hover:text-[#000000]",
+              )}
+            >
+              {option.label}
+            </button>
+          );
+        })}
+      </div>
+    );
+  }
+
+  function createSplitPaymentDraft(
+    method: SplitPaymentDraft["method"],
+    amount = "",
+  ): SplitPaymentDraft {
+    return {
+      id: `${method}-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      method,
+      amount,
+      tenderedAmount: method === "CASH" ? amount : "",
+    };
+  }
+
+  function ensureDefaultSplitPayments() {
+    const half = payableTotal > 0 ? String(Math.floor(payableTotal / 2)) : "";
+    const remainder =
+      payableTotal > 0
+        ? String(Math.max(0, payableTotal - Number(half || 0)))
+        : "";
+    setSplitPayments((current) =>
+      current.length > 0
+        ? current
+        : [
+            createSplitPaymentDraft("CASH", half),
+            createSplitPaymentDraft("ESEWA", remainder),
+          ],
+    );
+  }
+
+  function updateSplitPayment(
+    id: string,
+    patch: Partial<Omit<SplitPaymentDraft, "id">>,
+  ) {
+    setSplitPayments((current) =>
+      current.map((payment) => {
+        if (payment.id !== id) return payment;
+        const next = { ...payment, ...patch };
+        if (patch.method === "ESEWA") {
+          next.tenderedAmount = "";
+        }
+        return next;
+      }),
+    );
+    setPaymentError("");
+    setBillingError("");
+  }
+
+  function addSplitPayment(method: SplitPaymentDraft["method"]) {
+    setSplitPayments((current) => [
+      ...current,
+      createSplitPaymentDraft(method),
+    ]);
+  }
+
+  function removeSplitPayment(id: string) {
+    setSplitPayments((current) =>
+      current.length <= 1
+        ? current
+        : current.filter((payment) => payment.id !== id),
+    );
+  }
+
+  async function requestCheckoutConfirm() {
     if (!canConfirm) return;
     if (!validatePaymentBeforeConfirm()) return;
-    setSubmitting(true);
 
+    setStockConflicts([]);
+    setStockRefreshBusy(true);
     try {
-      // creating the invoice header first gives us the invoice id needed for items, finalize, and payment steps
-      const invoiceRes = await createInvoiceApi(
-        selectedCustomerId || undefined,
-      );
-      const invoiceId = invoiceRes.id || invoiceRes.invoice?.id;
-
-      // this handles when the backend does not return a usable invoice id after creation
-      if (!invoiceId) {
-        setSubmitting(false);
+      const latestProducts = await refreshProductsForCheckout();
+      const conflicts = buildStockConflictsFromCart(cart, latestProducts);
+      if (conflicts.length > 0) {
+        showStockConflicts(conflicts);
         return;
       }
 
-      // adding each cart line one by one so the backend stores the exact products and quantities in the invoice
-      for (const line of cartRows) {
-        await addInvoiceItemApi(invoiceId, line.productId, line.qty);
+      setPendingBillingConfirm("checkout");
+    } catch {
+      setPaymentError(
+        "Could not refresh product stock. Check connection and try again.",
+      );
+    } finally {
+      setStockRefreshBusy(false);
+    }
+  }
+
+  async function confirmCheckout() {
+    // stopping here prevents double submits and blocks invalid partial payment states
+    if (!canConfirm) return;
+    if (!validatePaymentBeforeConfirm()) return;
+    setPendingBillingConfirm(null);
+    setSubmitting(true);
+
+    try {
+      const checkoutPayments =
+        paymentMethod === "Split"
+          ? normalizedSplitPayments.map((payment) => ({
+              method: payment.method,
+              amount: payment.amountNum,
+              tenderedAmount:
+                payment.method === "CASH" ? payment.tenderedNum : undefined,
+            }))
+          : paymentStatus !== "Unpaid" && effectivePaidAmount > 0
+            ? [
+                {
+                  method: (paymentMethod === "eSewa" ? "ESEWA" : "CASH") as
+                    | "CASH"
+                    | "ESEWA",
+                  amount: effectivePaidAmount,
+                  tenderedAmount:
+                    paymentMethod === "Cash" && paymentStatus === "Paid"
+                      ? cashTenderedNum
+                      : undefined,
+                },
+              ]
+            : [];
+
+      // sending everything to the atomic checkout endpoint so invoice creation, item insertion,
+      // finalization, stock deduction, and payment recording all happen inside one database transaction
+      const result = await checkoutInvoiceApi({
+        draftInvoiceId: activeDraftInvoiceId || undefined,
+        customerId: selectedCustomerId || undefined,
+        discountAmount: subtotalDiscount,
+        notes: invoiceNote.trim() || undefined,
+        items: cartRows.map((line) => ({
+          productId: line.productId,
+          qty: line.qty,
+          overrideUnitPrice: line.overrideUnitPrice,
+          overrideReason: line.overrideReason,
+          overrideAuthorizationToken: line.overrideAuthorizationToken,
+        })),
+        payments: checkoutPayments,
+      });
+
+      const invoiceId = result?.invoice?.id;
+      if (invoiceId) {
+        setLastCreatedInvoiceId(invoiceId);
+        window.sessionStorage.setItem(
+          LAST_INVOICE_PRINT_STORAGE_KEY,
+          invoiceId,
+        );
       }
 
-      // finalizing after all items are saved lets the backend calculate totals with the subtotal discount included
-      await finalizeInvoiceApi(invoiceId, subtotalDiscount);
-
-      // recording payment only when the invoice is not unpaid and the effective amount is above 0
-      if (paymentStatus !== "Unpaid" && effectivePaidAmount > 0) {
-        if (paymentMethod === "eSewa") {
-          // for eSewa we ask the backend for a signed payment intent, then hand control to the gateway form
-          const paymentIntent = await initiateEsewaPaymentApi({
-            invoiceId,
-            amount: effectivePaidAmount,
-          });
-
-          submitEsewaForm(paymentIntent);
-          return;
-        }
-
-        await addPaymentApi(invoiceId, {
-          method: "CASH",
-          amount: effectivePaidAmount,
-          status: "SUCCESS",
-        });
+      // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
+      if (result?.esewaPaymentIntent) {
+        submitEsewaForm(result.esewaPaymentIntent);
+        return;
       }
 
       // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure
       setShowPaymentModal(false);
+      setPriceOverrideDraftPin("");
       resetBill();
+      await loadParkedDrafts();
 
-      setLastCreatedInvoiceId(invoiceId);
       setShowSuccess(true);
     } catch (err: any) {
       console.error("Billing confirm error:", err);
-      setBillingError(
-        err?.response?.data?.error || "Failed to create invoice.",
-      );
+      const responseData = err?.response?.data;
+      if (responseData?.code === "STOCK_CONFLICT") {
+        const conflicts = normalizeApiStockConflicts(responseData.conflicts);
+        if (conflicts.length > 0) {
+          showStockConflicts(conflicts);
+          try {
+            await refreshProductsForCheckout();
+          } catch {
+            // the structured backend conflict is still enough for the cashier to resolve the cart
+          }
+          return;
+        }
+      }
+
+      setBillingError(responseData?.error || "Failed to create invoice.");
     } finally {
       // re-enabling billing actions whether checkout succeeded or failed
       setSubmitting(false);
     }
   }
 
-  // setting up global hotkeys (F2, F4, F5, F9, Enter) so the cashier can work fully via keyboard
+  const pendingBillingConfirmConfig = useMemo(() => {
+    if (!pendingBillingConfirm) return null;
+
+    if (pendingBillingConfirm === "clear-cart") {
+      return {
+        title: "Clear this cart?",
+        message:
+          "This will remove the current billing draft, selected customer, and payment selections from this screen.",
+        confirmLabel: "Clear Cart",
+        tone: "danger" as const,
+        icon: "restart_alt",
+        onConfirm: confirmResetBill,
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Items</span>
+              <span className="font-extrabold text-slate-900">
+                {cartRows.length} line(s),{" "}
+                {formatQty(cartRows.reduce((sum, line) => sum + line.qty, 0))}{" "}
+                total qty
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Customer</span>
+              <span className="font-extrabold text-slate-900">
+                {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Total</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(payableTotal)}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    if (pendingBillingConfirm === "park-cart") {
+      return {
+        title: "Park this bill?",
+        message:
+          "This saves the current cart in Held Bills so you can serve another customer and resume it later.",
+        confirmLabel: "Park Bill",
+        tone: "primary" as const,
+        icon: "local_parking",
+        onConfirm: confirmParkBill,
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Items</span>
+              <span className="font-extrabold text-slate-900">
+                {cartRows.length} line(s),{" "}
+                {formatQty(cartRows.reduce((sum, line) => sum + line.qty, 0))}{" "}
+                total qty
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Customer</span>
+              <span className="font-extrabold text-slate-900">
+                {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Total</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(payableTotal)}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    return {
+      title:
+        paymentMethod === "Split"
+          ? "Confirm split payment?"
+          : paymentStatus === "Unpaid"
+            ? "Create unpaid invoice?"
+            : paymentMethod === "eSewa"
+              ? "Continue to eSewa?"
+              : "Finalize this invoice?",
+      message:
+        paymentMethod === "Split"
+          ? "This will record the cash portion now and send the remaining amount to eSewa."
+          : paymentStatus === "Unpaid"
+            ? "This will create the invoice without recording a payment."
+            : paymentMethod === "eSewa"
+              ? "KhataSathi will create the invoice and send this payment to eSewa."
+              : "This will finalize the invoice and record the selected payment immediately.",
+      confirmLabel:
+        paymentMethod === "Split"
+          ? "Confirm Split"
+          : paymentStatus === "Unpaid"
+            ? "Create Invoice"
+            : paymentMethod === "eSewa"
+              ? "Continue to eSewa"
+              : `Confirm ${formatNpr(effectivePaidAmount)}`,
+      tone: "primary" as const,
+      icon:
+        paymentMethod === "Split"
+          ? "call_split"
+          : paymentStatus === "Unpaid"
+            ? "receipt_long"
+            : paymentMethod === "eSewa"
+              ? "qr_code_2"
+              : "payments",
+      onConfirm: confirmCheckout,
+      details: (
+        <div className="space-y-2">
+          <div className="flex items-center justify-between gap-3">
+            <span>Customer</span>
+            <span className="font-extrabold text-slate-900">
+              {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Invoice total</span>
+            <span className="font-extrabold text-slate-900">
+              {formatNpr(payableTotal)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Collect now</span>
+            <span className="font-extrabold text-slate-900">
+              {paymentMethod === "Split"
+                ? formatNpr(splitCashNum)
+                : formatNpr(effectivePaidAmount)}
+            </span>
+          </div>
+          {paymentMethod === "Split" ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>eSewa amount</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(splitEsewaAmount)}
+              </span>
+            </div>
+          ) : null}
+          {changeDue > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Change due</span>
+              <span className="font-extrabold text-emerald-700">
+                {formatNpr(changeDue)}
+              </span>
+            </div>
+          ) : null}
+          <div className="flex items-center justify-between gap-3">
+            <span>Due after bill</span>
+            <span className="font-extrabold text-slate-900">
+              {formatNpr(balanceDue)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Method</span>
+            <span className="font-extrabold text-slate-900">
+              {paymentStatus === "Unpaid" ? "None" : paymentMethod}
+            </span>
+          </div>
+        </div>
+      ),
+    };
+  }, [
+    balanceDue,
+    changeDue,
+    cartRows,
+    effectivePaidAmount,
+    payableTotal,
+    paymentMethod,
+    paymentStatus,
+    pendingBillingConfirm,
+    selectedCustomer,
+    splitCashNum,
+    splitEsewaAmount,
+  ]);
+
+  // setting up global hotkeys (F2, F3, F4, F5, F6, F9, Enter) so the cashier can work fully via keyboard
   useEffect(() => {
     function isTypingTarget(el: EventTarget | null) {
       if (!(el instanceof HTMLElement)) return false;
@@ -921,7 +2948,25 @@ export default function BillingPage() {
     }
 
     function onKeyDown(e: KeyboardEvent) {
-      if (isTypingTarget(e.target)) return;
+      const isFKey = /^F[2-9]$/.test(e.key);
+      const isTyping = isTypingTarget(e.target);
+
+      // We process F-keys, Esc, and Alt/Shift-modifiers universally.
+      // If none of those, and they are typing, we ignore global hotkeys.
+      const isGlobalAction =
+        isFKey ||
+        e.key === "Escape" ||
+        e.altKey ||
+        (e.shiftKey && e.key === "Enter");
+      if (isTyping && !isGlobalAction) return;
+
+      if (pendingBillingConfirm === "park-cart" && e.key === "Enter") {
+        e.preventDefault();
+        confirmParkBill();
+        return;
+      }
+
+      if (pendingBillingConfirm && e.key !== "Escape") return;
 
       if (e.key === "F2") {
         e.preventDefault();
@@ -943,18 +2988,198 @@ export default function BillingPage() {
         openPaymentFlow("eSewa");
         return;
       }
-      if (e.key === "F9") {
+      if (e.key === "F6") {
         e.preventDefault();
-        resetBill();
+        requestParkBill();
         return;
       }
-      if (e.key === "Enter") {
+      if (e.key === "F9") {
+        e.preventDefault();
+        requestResetBill();
+        return;
+      }
+      if (e.key === "F7") {
+        e.preventDefault();
+        setCustomerSearchOpen(true);
+        return;
+      }
+      if (e.key === "F8") {
+        e.preventDefault();
+        if (
+          selectedCartRowIndex >= 0 &&
+          selectedCartRowIndex < cartRows.length
+        ) {
+          openPriceOverride(cartRows[selectedCartRowIndex]);
+        }
+        return;
+      }
+      if (e.key === "Escape") {
+        e.preventDefault();
+        if (pendingBillingConfirm) {
+          setPendingBillingConfirm(null);
+        } else if (showShortcutHelp) {
+          setShowShortcutHelp(false);
+        } else if (priceOverrideTargetId) {
+          closePriceOverride();
+        } else if (showPaymentModal) {
+          closePaymentFlow();
+        } else if (showParkedBills) {
+          setShowParkedBills(false);
+        } else if (pendingDiscardParked) {
+          setPendingDiscardParked(null);
+        } else if (showSuccess) {
+          setShowSuccess(false);
+        } else if (pendingStaleResume) {
+          setPendingStaleResume(null);
+        } else if (openRowActionProductId) {
+          setOpenRowActionProductId(null);
+        } else if (isCustomerSearchOpen) {
+          setCustomerSearchOpen(false);
+          searchRef.current?.focus();
+        } else if (productQuery.trim()) {
+          setProductQuery("");
+          searchRef.current?.focus();
+        } else {
+          searchRef.current?.focus();
+        }
+        return;
+      }
+      if (pendingBillingConfirm) return;
+      if (e.key === "Enter" && e.shiftKey) {
         if (!canConfirm) return;
         e.preventDefault();
         if (showPaymentModal) {
-          confirm();
+          requestCheckoutConfirm();
         } else {
           openPaymentFlow();
+        }
+        return;
+      }
+
+      // Modifier-based Navigation (Alt Key)
+      if (e.altKey) {
+        const key = e.key.toLowerCase();
+
+        // Cart Navigation
+        if (key === "arrowdown") {
+          e.preventDefault();
+          setSelectedCartRowIndex((prev) =>
+            cartRows.length === 0
+              ? -1
+              : Math.min(Math.max(prev, -1) + 1, cartRows.length - 1),
+          );
+          return;
+        }
+        if (key === "arrowup") {
+          e.preventDefault();
+          setSelectedCartRowIndex((prev) =>
+            cartRows.length === 0 ? -1 : Math.max(prev <= 0 ? 0 : prev - 1, 0),
+          );
+          return;
+        }
+        if (key === "delete" || key === "backspace") {
+          if (
+            selectedCartRowIndex >= 0 &&
+            selectedCartRowIndex < cartRows.length
+          ) {
+            e.preventDefault();
+            const row = cartRows[selectedCartRowIndex];
+            if (row) removeLine(row.productId);
+            return;
+          }
+        }
+        if (e.shiftKey && (key === "+" || key === "=")) {
+          if (
+            selectedCartRowIndex >= 0 &&
+            selectedCartRowIndex < cartRows.length
+          ) {
+            e.preventDefault();
+            const row = cartRows[selectedCartRowIndex];
+            if (row)
+              changeQty(
+                row.productId,
+                row.qty + getProductQtyStep(row.product),
+              );
+            return;
+          }
+        }
+        if (e.shiftKey && (key === "-" || key === "_")) {
+          if (
+            selectedCartRowIndex >= 0 &&
+            selectedCartRowIndex < cartRows.length
+          ) {
+            e.preventDefault();
+            const row = cartRows[selectedCartRowIndex];
+            if (row)
+              changeQty(
+                row.productId,
+                row.qty - getProductQtyStep(row.product),
+              );
+            return;
+          }
+        }
+        if (e.shiftKey && key === "q") {
+          if (
+            selectedCartRowIndex >= 0 &&
+            selectedCartRowIndex < cartRows.length
+          ) {
+            e.preventDefault();
+            const row = cartRows[selectedCartRowIndex];
+            if (row) {
+              const input = document.getElementById(
+                `qty-input-${row.productId}`,
+              ) as HTMLInputElement | null;
+              if (input) {
+                input.focus();
+                input.select();
+              }
+            }
+            return;
+          }
+        }
+        if (key === "p") {
+          if (
+            selectedCartRowIndex >= 0 &&
+            selectedCartRowIndex < cartRows.length
+          ) {
+            e.preventDefault();
+            openPriceOverride(cartRows[selectedCartRowIndex]);
+            return;
+          }
+        }
+        if (!showPaymentModal && key === "h") {
+          e.preventDefault();
+          openHeldBills();
+          return;
+        }
+
+        // Payment Modal Shortcuts
+        if (showPaymentModal) {
+          if (key === "1") {
+            e.preventDefault();
+            setPaymentMethod("Cash");
+            if (paymentStatus === "Paid") setCashTendered(String(payableTotal));
+            return;
+          }
+          if (key === "2") {
+            e.preventDefault();
+            setPaymentMethod("eSewa");
+            setShowEsewaQr(true);
+            return;
+          }
+          if (key === "3") {
+            e.preventDefault();
+            setPaymentMethod("Split");
+            setPaymentStatus("Paid");
+            setShowEsewaQr(true);
+            ensureDefaultSplitPayments();
+            return;
+          }
+          if (key === "a" && paymentMethod === "Split") {
+            e.preventDefault();
+            addSplitPayment("CASH");
+            return;
+          }
         }
       }
     }
@@ -968,13 +3193,27 @@ export default function BillingPage() {
     paymentStatus,
     balanceDue,
     effectivePaidAmount,
+    pendingBillingConfirm,
+    productQuery,
+    isCustomerSearchOpen,
+    openRowActionProductId,
     showEsewaDetails,
     showPaymentModal,
+    showParkedBills,
+    pendingDiscardParked,
+    showSuccess,
+    pendingStaleResume,
+    showEsewaQr,
+    showShortcutHelp,
+    cartRows,
+    selectedCartRowIndex,
+    priceOverrideTargetId,
+    payableTotal,
   ]);
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center h-[90vh]">
+      <div className="flex h-full items-center justify-center">
         <div className="text-slate-400 font-semibold">
           Loading billing data...
         </div>
@@ -984,567 +3223,1359 @@ export default function BillingPage() {
 
   return (
     <>
-      {/* this two-panel shell keeps product picking on the left and the live bill summary on the right for fast cashier work */}
-      <div className="relative flex h-[90vh] w-full flex-col overflow-hidden rounded-[28px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800  md:flex-row">
-        <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF]">
-          <div className="border-b border-[#CFCFD3] bg-[#FFFFFF] px-[20px] py-[20px]">
-            <div className="flex flex-col">
-              {/* we keep scanner input and manual search together in the top strip because they are the two fastest ways to add products */}
-              <div className="grid grid-cols-12 gap-4 items-start">
-                <div className="col-span-5">
-                  <Input
-                    label="Scan SKU / Barcode"
-                    value={skuInput}
-                    onChange={setSkuInput}
-                    placeholder="Barcode / SKU"
-                    leftIcon="qr_code_scanner"
-                    onEnter={addBySku}
-                    className="font-mono"
-                    inputRef={skuRef}
-                    autoFocus
-                  />
+      <div
+        data-billing-view-size={billingViewSize}
+        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800 shadow-sm"
+      >
+        {/* TOP BAR */}
+        <div
+          className={cn(
+            "relative z-50 flex shrink-0 items-center justify-between border-b border-[#CFCFD3] bg-[#FFFFFF]",
+            billingView.topBar,
+          )}
+        >
+          <div className="flex min-w-0 flex-1 items-center gap-3">
+            <div className={cn("relative", billingView.searchWidth)}>
+              <Input
+                value={productQuery}
+                onChange={(value) => {
+                  setProductQuery(value);
+                  clearCartIssue();
+                }}
+                onBlur={clearCartIssue}
+                onKeyDown={handleManualSearchKeyDown}
+                placeholder="Search product name, SKU, brand... (F2)"
+                leftIcon="manage_search"
+                inputRef={searchRef}
+                className={billingView.inputHeight}
+                autoFocus
+              />
+
+              {/* SEARCH AUTOCOMPLETE DROPDOWN */}
+              {productQuery.trim().length > 0 && (
+                <div className="absolute left-0 top-[calc(100%+8px)] z-[60] flex max-h-[62vh] w-[640px] flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)]">
+                  <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
+                        Quick product search
+                      </div>
+                      <div className="mt-0.5 text-[11px] font-bold text-[#565449]">
+                        {productListFiltered.length > MANUAL_SEARCH_LIMIT
+                          ? `${productListFiltered.length} matches. Keep typing to narrow.`
+                          : `${productListFiltered.length} match${productListFiltered.length === 1 ? "" : "es"}. Use arrows and Enter.`}
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      <a
+                        href="/product-lookup"
+                        className="rounded-full border border-[#CFCFD3] bg-white px-2 py-1 text-[11px] font-extrabold text-[#565449] hover:bg-[#F3F4F6]"
+                      >
+                        Product Lookup
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => setProductQuery("")}
+                        className="text-[#8C8889] hover:text-[#000000]"
+                        aria-label="Close product search results"
+                        title="Close search results"
+                      >
+                        <Icon name="close" className="text-[16px]" />
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="flex-1 overflow-y-auto p-2">
+                    {manualResults.length === 0 ? (
+                      <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
+                        No products found. Try another name, SKU, or brand.
+                      </div>
+                    ) : (
+                      manualResults.map((p, resultIndex) => {
+                        const low =
+                          p.stock > 0 &&
+                          p.stock <= Math.max(0, p.lowStockThreshold || 0);
+                        const outOfStock = p.stock <= 0;
+                        const selected = resultIndex === manualSearchIndex;
+                        return (
+                          <button
+                            key={p.id}
+                            ref={(element) => {
+                              manualResultRefs.current[resultIndex] = element;
+                            }}
+                            type="button"
+                            disabled={outOfStock}
+                            onClick={() => addToCart(p.id)}
+                            className={`grid w-full grid-cols-[minmax(0,1fr)_120px] items-center gap-4 rounded-[10px] border px-3 py-2.5 text-left transition ${outOfStock ? "cursor-not-allowed border-transparent bg-[#FAFAFA]" : selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
+                          >
+                            <div className="min-w-0">
+                              <div
+                                className={`flex min-w-0 items-center gap-2 truncate text-[13px] font-extrabold ${outOfStock ? "text-[#8C8889]" : "text-[#11120d]"}`}
+                              >
+                                <span className="truncate">{p.name}</span>
+                                {low && !outOfStock && (
+                                  <span className="shrink-0 rounded-[4px] bg-rose-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-rose-700">
+                                    Low
+                                  </span>
+                                )}
+                                {outOfStock && (
+                                  <span className="shrink-0 rounded-[4px] bg-rose-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-rose-700">
+                                    Out
+                                  </span>
+                                )}
+                              </div>
+                              <div
+                                className={`mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[11px] font-bold ${selected && !outOfStock ? "text-[#334155]" : "text-[#8C8889]"}`}
+                              >
+                                <span>SKU: {p.sku}</span>
+                                <span>|</span>
+                                <span>Brand: {p.brand || "N/A"}</span>
+                              </div>
+                            </div>
+                            <div className="shrink-0 text-right">
+                              <div
+                                className={`font-mono text-[14px] font-extrabold ${outOfStock ? "text-[#8C8889]" : "text-[#11120d]"}`}
+                              >
+                                {formatNpr(p.retailPrice)}
+                              </div>
+                              <div
+                                className={`mt-1 text-[10px] font-extrabold ${outOfStock ? "text-[#BE123C]" : low ? "text-[#EA580C]" : "text-[#179B4D]"}`}
+                              >
+                                {formatQtyWithUnit(p.stock, p.saleUnit)} in
+                                stock
+                              </div>
+                            </div>
+                          </button>
+                        );
+                      })
+                    )}
+                  </div>
+
+                  {productListFiltered.length > MANUAL_SEARCH_LIMIT && (
+                    <div className="border-t border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2 text-[11px] font-semibold text-[#8C8889]">
+                      Showing first {MANUAL_SEARCH_LIMIT}. Type more letters for
+                      faster selection.
+                    </div>
+                  )}
                 </div>
-                <div className="col-span-7">
-                  <Input
-                    label="Manual Search"
-                    value={productQuery}
-                    onChange={setProductQuery}
-                    placeholder="Search product name, SKU, barcode, brand..."
-                    leftIcon="search"
-                    inputRef={searchRef}
-                  />
-                </div>
-              </div>
-              <div className="mt-2 flex justify-end"></div>
+              )}
             </div>
-
-            <div className="mt-4 flex items-center justify-between gap-4 flex-wrap">
-              <div className="flex items-center gap-2 flex-wrap">
-                {selectedCustomer ? (
-                  <Pill tone="purple">
-                    Customer: {selectedCustomer.name.split(" ")[0]}
-                  </Pill>
-                ) : (
-                  <Pill tone="neutral">Guest</Pill>
-                )}
-
-                {customerMode === "ADMIN_WHOLESALE" ? (
-                  <>
-                    <Pill tone="orange">
-                      Wholesale{" "}
-                      {clampPercent(selectedCustomer?.wholesalePercent || 0)}%
-                    </Pill>
-                    <Pill tone="neutral">Qty wholesale disabled</Pill>
-                  </>
-                ) : customerMode === "LOYALTY" ? (
-                  <>
-                    <Pill tone="green">
-                      Loyalty{" "}
-                      {clampPercent(selectedCustomer?.loyaltyPercent || 0)}%
-                    </Pill>
-                    <Pill tone="neutral">Qty wholesale can combine</Pill>
-                  </>
-                ) : (
-                  <Pill tone="neutral">Per-product wholesale pricing</Pill>
-                )}
-              </div>
+            <div className={billingView.scanWidth}>
+              <Input
+                value={skuInput}
+                onChange={(value) => {
+                  setSkuInput(value);
+                  clearCartIssue();
+                }}
+                onBlur={clearCartIssue}
+                placeholder="Scan barcode "
+                leftIcon="qr_code_scanner"
+                onEnter={addBySku}
+                className={cn("font-mono", billingView.inputHeight)}
+                inputRef={skuRef}
+              />
             </div>
           </div>
 
-          {/* this list area gets a softer gray background so the clickable product cards stand apart from the white header above */}
-          <div className="flex-1 overflow-y-auto bg-[rgba(243,244,246,0.55)] p-[20px]">
-            <div className="mb-[20px] flex items-center justify-between">
-              <h3 className="text-[14px] font-extrabold uppercase  text-[#565449]">
-                Manual Add List
-              </h3>
-              <div className="rounded-full border border-[#CFCFD3] bg-[#FFFFFF] px-[12px] py-[6px] text-[12px] font-bold text-[#8C8889]">
-                Showing {manualResults.length} items
+          <div className="flex items-center gap-5 shrink-0">
+            <div className="flex items-center overflow-hidden rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]">
+              <button
+                type="button"
+                onClick={() => stepBillingViewSize(-1)}
+                disabled={billingViewSize === BILLING_VIEW_SIZE_OPTIONS[0]}
+                className={cn(
+                  "flex items-center justify-center border-r border-[#E5E7EB] transition hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-35",
+                  billingView.inputHeight,
+                  billingViewSize === BILLING_VIEW_SIZE_OPTIONS[0]
+                    ? "w-[34px]"
+                    : "w-[36px]",
+                )}
+                title="Make billing view more compact"
+                aria-label="Make billing view more compact"
+              >
+                <Icon name="remove" className="text-[16px]" />
+              </button>
+              <div className="min-w-[86px] px-2 text-center text-[11px] font-extrabold leading-tight">
+                <div className="uppercase text-[#8C8889]">View</div>
+                <div className="text-[#11120d]">{billingView.scaleLabel}</div>
               </div>
+              <button
+                type="button"
+                onClick={() => stepBillingViewSize(1)}
+                disabled={
+                  billingViewSize ===
+                  BILLING_VIEW_SIZE_OPTIONS[
+                    BILLING_VIEW_SIZE_OPTIONS.length - 1
+                  ]
+                }
+                className={cn(
+                  "flex items-center justify-center border-l border-[#E5E7EB] transition hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-35",
+                  billingView.inputHeight,
+                  billingViewSize ===
+                    BILLING_VIEW_SIZE_OPTIONS[
+                      BILLING_VIEW_SIZE_OPTIONS.length - 1
+                    ]
+                    ? "w-[34px]"
+                    : "w-[36px]",
+                )}
+                title="Make billing view larger"
+                aria-label="Make billing view larger"
+              >
+                <Icon name="add" className="text-[16px]" />
+              </button>
             </div>
-
-            {/* these product cards stay in a compact grid so cashiers can scan quickly without huge vertical gaps */}
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 gap-3">
-              {manualResults.map((p) => {
-                const low =
-                  p.stock > 0 &&
-                  p.stock <= Math.max(0, p.lowStockThreshold || 0);
-                const outOfStock = p.stock <= 0;
-                return (
-                  <button
-                    key={p.id}
-                    type="button"
-                    disabled={outOfStock}
-                    onClick={() => addToCart(p.id)}
-                    className={cn(
-                      "flex items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px] text-left transition",
-                      outOfStock
-                        ? "opacity-60 cursor-not-allowed grayscale"
-                        : "hover:border-slate-300 hover:bg-[rgba(243,244,246,0.8)]",
-                    )}
-                  >
-                    <div className="relative flex h-[48px] w-[48px] shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]">
-                      <ProductImage
-                        src={p.imageUrl}
-                        alt={p.name}
-                        className="flex h-full w-full items-center justify-center"
-                        iconClassName="text-[#565449]"
-                      />
-                      <div
-                        className={cn(
-                          "absolute right-1 top-1 h-3 w-3 rounded-full border-2 border-white",
-                          outOfStock
-                            ? "bg-slate-400"
-                            : low
-                              ? "bg-rose-500"
-                              : "bg-emerald-500",
-                        )}
-                      />
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <div className="flex items-center justify-between gap-2 mb-0.5">
-                        <div className="font-extrabold text-slate-800 truncate text-[13px]">
-                          {p.name}
-                        </div>
-                        {low && !outOfStock && <Pill tone="rose">LOW</Pill>}
-                        {outOfStock && <Pill tone="neutral">OUT</Pill>}
-                      </div>
-                      <div className="text-[11px] text-slate-500 truncate font-medium">
-                        {p.brand} | SKU: {p.sku}
-                      </div>
-                      <div className="flex items-center justify-between mt-1.5">
-                        <div className="flex items-center gap-2 text-[10px] text-slate-500 font-semibold">
-                          <span className="bg-slate-100 px-1.5 py-0.5 rounded text-slate-600">
-                            Stock {p.stock}
-                          </span>
-                          <span>
-                            Wholesale &gt;={" "}
-                            {Math.max(1, p.wholesaleQtyThreshold || 1)}
-                          </span>
-                        </div>
-                        <div className="font-mono font-extrabold text-slate-800 text-[13px]">
-                          {formatNpr(p.retailPrice)}
-                        </div>
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-            </div>
-
-            {manualResults.length === 0 ? (
-              <div className="h-[160px] flex items-center justify-center text-slate-400 text-sm font-medium">
-                No items available
-              </div>
-            ) : null}
+            <button
+              type="button"
+              onClick={() =>
+                lastCreatedInvoiceId && openInvoicePrint(lastCreatedInvoiceId)
+              }
+              disabled={!lastCreatedInvoiceId}
+              title={
+                lastCreatedInvoiceId
+                  ? "Reprint the last finalized invoice"
+                  : "No finalized invoice in this session yet"
+              }
+              className={billingView.topButton}
+            >
+              <Icon name="print" className="text-[16px]" />
+              Reprint Last
+            </button>
+            <button
+              type="button"
+              onClick={() =>
+                lastCreatedInvoiceId &&
+                openInvoiceReceiptPrint(lastCreatedInvoiceId)
+              }
+              disabled={!lastCreatedInvoiceId}
+              title={
+                lastCreatedInvoiceId
+                  ? "Print receipt for the last finalized invoice"
+                  : "No finalized invoice in this session yet"
+              }
+              className={billingView.topButton}
+            >
+              <Icon name="receipt_long" className="text-[16px]" />
+              Receipt
+            </button>
+            <button
+              type="button"
+              onClick={openHeldBills}
+              title={
+                visibleParkedDrafts.length > 0
+                  ? `${visibleParkedDrafts.length} held bill(s) available`
+                  : "Open held bills"
+              }
+              className={cn(
+                billingView.topButton,
+                visibleParkedDrafts.length > 0
+                  ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#11120d]"
+                  : "",
+              )}
+            >
+              <Icon name="pending_actions" className="text-[16px]" />
+              Held Bills{" "}
+              {visibleParkedDrafts.length > 0
+                ? `(${visibleParkedDrafts.length})`
+                : ""}
+            </button>
           </div>
         </div>
 
-        <div className="relative z-20 flex w-full flex-col border-l border-[#CFCFD3] bg-[#FFFFFF] md:w-[420px]">
-          <div className="flex-shrink-0 border-b border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
-            {!isCustomerSearchOpen ? (
-              <div className="flex items-center justify-between rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px] transition">
-                <div className="flex items-center gap-3 overflow-hidden">
+        {cartAlertMessage ? (
+          <div className="shrink-0 border-y border-[#FECDD3] bg-[#FFF1F2] px-[22px] py-[9px] text-[13px] font-extrabold text-[#BE123C]">
+            <div className="flex items-center gap-2">
+              <Icon name="error" className="text-[18px]" />
+              <span className="min-w-0 truncate">{cartAlertMessage}</span>
+            </div>
+          </div>
+        ) : null}
+
+        {/* MAIN CONTENT GRID */}
+        <div className="flex flex-1 min-h-0 bg-[#FFFFFF] ">
+          {/* LEFT: CART TABLE */}
+          <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF] ">
+            <div
+              className={cn(
+                "grid items-center text-[#11120d]",
+                billingView.tableCols,
+                billingView.header,
+              )}
+            >
+              <div className={billingView.headerHash}>#</div>
+              <div>
+                <div className={billingView.headerTitle}>Item Name</div>
+                <div className={billingView.headerSub}>SKU / Brand</div>
+              </div>
+              <div className={cn("text-right", billingView.headerTitle)}>
+                Stock
+              </div>
+              <div className="text-right">
+                <div className={billingView.headerTitle}>Unit Price</div>
+                <div className={cn(billingView.headerSub, "text-[10px]")}>
+                  (Retail/Wholesale)
+                </div>
+              </div>
+              <div className={cn("text-center", billingView.headerTitle)}>
+                Quantity
+              </div>
+              <div className={cn("text-right", billingView.headerTitle)}>
+                Total
+              </div>
+              <div aria-hidden="true" />
+            </div>
+
+            <div className="flex-1 overflow-y-auto bg-white">
+              {cartRows.length === 0 ? (
+                <div className="flex h-full flex-col items-center justify-center text-[#8C8889]">
+                  <Icon
+                    name="shopping_cart_checkout"
+                    className="text-6xl mb-4 opacity-20"
+                  />
+                  <div className="text-[16px] font-extrabold">Cart Empty</div>
+                  <div className="text-[13px] font-medium mt-1">
+                    Search products with F2, or scan barcode/SKU with F3.
+                  </div>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#E5E7EB]">
+                  {cartRows.map((row, idx) => {
+                    const qtyStep = getProductQtyStep(row.product);
+                    const minQty = getProductMinQty(row.product);
+                    const qtyMinus = normalizeProductCartQty(
+                      row.product,
+                      row.qty - qtyStep,
+                    );
+                    const qtyPlus = normalizeProductCartQty(
+                      row.product,
+                      row.qty + qtyStep,
+                    );
+                    const low =
+                      row.product.stock > 0 &&
+                      row.product.stock <=
+                        Math.max(0, row.product.lowStockThreshold || 0);
+                    const rowMenuOpen =
+                      openRowActionProductId === row.productId;
+
+                    return (
+                      <div
+                        key={row.productId}
+                        ref={(element) => {
+                          cartRowRefs.current[idx] = element;
+                        }}
+                        role="row"
+                        aria-selected={idx === selectedCartRowIndex}
+                        onClick={() => setSelectedCartRowIndex(idx)}
+                        className={cn(
+                          "grid items-center text-[#11120d] transition",
+                          billingView.tableCols,
+                          billingView.row,
+                          idx === selectedCartRowIndex
+                            ? "bg-[#E8F2FF] shadow-[inset_4px_0_0_0_#2F67D8]"
+                            : "hover:bg-[#F8F9FA]",
+                        )}
+                      >
+                        <div className="text-center text-[13px] font-extrabold">
+                          {idx + 1}
+                        </div>
+
+                        <div className="min-w-0">
+                          <div className={billingView.rowMain}>
+                            {row.product.name}
+                          </div>
+                          <div className={billingView.rowSub}>
+                            SKU: {row.product.sku}{" "}
+                            <span className="mx-1 text-[#8C8889]">/</span>{" "}
+                            Brand: {row.product.brand || "N/A"}
+                          </div>
+                          {row.overrideReason && (
+                            <div className="truncate text-[10px] font-bold text-amber-600 mt-0.5">
+                              Reason: {row.overrideReason}
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="text-right text-[13px]">
+                          <span
+                            className={`font-mono font-extrabold ${low ? "text-[#EA580C]" : "text-[#11120d]"}`}
+                          >
+                            {formatQtyWithUnit(
+                              row.product.stock,
+                              row.product.saleUnit,
+                            )}
+                          </span>
+                          {low && (
+                            <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
+                              Low Stock
+                            </div>
+                          )}
+                        </div>
+
+                        <div className="text-right flex flex-col items-end">
+                          <div className="font-mono text-[14px] font-extrabold text-[#11120d]">
+                            {formatNpr(row.unitPrice)}
+                          </div>
+                          <div className="flex gap-1 mt-1">
+                            {row.overrideUnitPrice !== undefined ? (
+                              <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
+                                Override
+                              </span>
+                            ) : row.priceType === "Wholesale" ? (
+                              <span className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-extrabold text-sky-800 uppercase">
+                                Wholesale
+                              </span>
+                            ) : (
+                              <span className="rounded bg-emerald-100 px-1 py-0.5 text-[9px] font-extrabold text-emerald-800 uppercase">
+                                Retail
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <div className="flex justify-center">
+                          <div
+                            className={cn(
+                              "flex items-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-white",
+                              billingView.qtyControl,
+                            )}
+                          >
+                            <button
+                              type="button"
+                              onClick={() => changeQty(row.productId, qtyMinus)}
+                              disabled={row.qty <= minQty}
+                              className={cn(
+                                "flex h-full items-center justify-center text-[#565449] hover:bg-[#F3F4F6] disabled:opacity-30",
+                                billingView.qtyButton,
+                              )}
+                              title={
+                                row.qty <= minQty
+                                  ? "Minimum quantity reached"
+                                  : "Decrease quantity"
+                              }
+                              aria-label={`Decrease quantity for ${row.product.name}`}
+                            >
+                              -
+                            </button>
+                            <input
+                              id={`qty-input-${row.productId}`}
+                              type="number"
+                              min={minQty}
+                              max={Math.max(minQty, row.product.stock)}
+                              step={qtyStep}
+                              value={row.qty}
+                              onChange={(e) =>
+                                changeQty(
+                                  row.productId,
+                                  Number(e.target.value || minQty),
+                                )
+                              }
+                              className={cn(
+                                "h-full border-x border-[#E5E7EB] bg-transparent text-center font-mono font-extrabold text-[#000000] outline-none",
+                                billingView.qtyInput,
+                              )}
+                              aria-label={`Quantity for ${row.product.name}`}
+                            />
+                            <button
+                              type="button"
+                              onClick={() => changeQty(row.productId, qtyPlus)}
+                              disabled={row.qty >= row.product.stock}
+                              className={cn(
+                                "flex h-full items-center justify-center text-[#565449] hover:bg-[#F3F4F6] disabled:opacity-30",
+                                billingView.qtyButton,
+                              )}
+                              title={
+                                row.qty >= row.product.stock
+                                  ? "No more stock available"
+                                  : "Increase quantity"
+                              }
+                              aria-label={`Increase quantity for ${row.product.name}`}
+                            >
+                              +
+                            </button>
+                          </div>
+                        </div>
+
+                        <div className="text-right font-mono text-[14px] font-extrabold text-[#11120d]">
+                          {formatNpr(row.lineTotal)}
+                        </div>
+
+                        <div
+                          className="relative flex justify-center"
+                          data-row-action-menu-root="true"
+                        >
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedCartRowIndex(idx);
+                              setOpenRowActionProductId(
+                                rowMenuOpen ? null : row.productId,
+                              );
+                            }}
+                            onFocus={() => setSelectedCartRowIndex(idx)}
+                            className={cn(
+                              "flex items-center justify-center rounded-[8px] border transition focus:outline-none focus:ring-2 focus:ring-[#11120d]/20",
+                              billingView.rowAction,
+                              rowMenuOpen
+                                ? "border-[#11120d] bg-[#11120d] text-white"
+                                : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                            )}
+                            title="Item actions"
+                            aria-label={`Open actions for ${row.product.name}`}
+                            aria-expanded={rowMenuOpen}
+                          >
+                            <Icon name="more_vert" className="text-[18px]" />
+                          </button>
+                          {rowMenuOpen ? (
+                            <div className="absolute right-0 top-[calc(100%+6px)] z-[55] w-[168px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white py-1 shadow-[0_14px_30px_-18px_rgba(0,0,0,0.45)]">
+                              {canUsePriceOverride ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenRowActionProductId(null);
+                                    openPriceOverride(row);
+                                  }}
+                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-[#565449] hover:bg-[#F3F4F6] focus:bg-[#F3F4F6] focus:outline-none"
+                                >
+                                  <Icon name="edit" className="text-[15px]" />
+                                  {row.overrideUnitPrice !== undefined
+                                    ? "Edit price"
+                                    : "Override price"}
+                                </button>
+                              ) : null}
+                              {row.overrideUnitPrice !== undefined ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setOpenRowActionProductId(null);
+                                    clearPriceOverride(row.productId);
+                                  }}
+                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-[#B7791F] hover:bg-[#FFF7E8] focus:bg-[#FFF7E8] focus:outline-none"
+                                >
+                                  <Icon name="undo" className="text-[15px]" />
+                                  Clear override
+                                </button>
+                              ) : null}
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenRowActionProductId(null);
+                                  removeLine(row.productId);
+                                }}
+                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-rose-600 hover:bg-rose-50 focus:bg-rose-50 focus:outline-none"
+                              >
+                                <Icon name="delete" className="text-[15px]" />
+                                Remove item
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+
+          {/* RIGHT: SUMMARY PANEL */}
+          <div
+            className={cn(
+              "flex shrink-0 flex-col border-l border-[#CFCFD3] bg-[#F8F9FA]",
+              billingView.rightPanel,
+            )}
+          >
+            <div
+              className={cn(
+                "flex h-full min-h-0 flex-col overflow-y-auto",
+                billingView.rightPanelInner,
+              )}
+            >
+              <div className={billingView.rightTopStack}>
+                {/* Customer Card */}
+                <div
+                  className={cn(
+                    "relative rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    billingView.customerCard,
+                  )}
+                >
+                  <div className="flex items-start justify-between">
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCustomerSearchOpen(!isCustomerSearchOpen)
+                      }
+                      className="flex min-w-0 flex-1 items-center gap-3 rounded-[10px] text-left transition hover:bg-[#F8F9FA] focus:outline-none focus:ring-2 focus:ring-[#11120d]/10"
+                      title="Change customer"
+                    >
+                      <div className="flex h-[40px] w-[40px] items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]">
+                        <Icon name="person" className="text-[19px]" />
+                      </div>
+                      <div className="min-w-0">
+                        <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                          Customer
+                        </div>
+                        <div className="truncate text-[15px] font-extrabold text-[#000000]">
+                          {selectedCustomer
+                            ? selectedCustomer.name
+                            : "Walk-in Customer"}
+                        </div>
+                      </div>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setCustomerSearchOpen(!isCustomerSearchOpen)
+                      }
+                      className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]"
+                      title={
+                        isCustomerSearchOpen
+                          ? "Close customer search"
+                          : "Change customer"
+                      }
+                      aria-label={
+                        isCustomerSearchOpen
+                          ? "Close customer search"
+                          : "Change customer"
+                      }
+                    >
+                      <Icon
+                        name={isCustomerSearchOpen ? "close" : "edit"}
+                        className="text-[18px]"
+                      />
+                    </button>
+                  </div>
+
+                  {isCustomerSearchOpen ? (
+                    <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
+                      <Input
+                        value={customerQuery}
+                        onChange={setCustomerQuery}
+                        onKeyDown={handleCustomerSearchKeyDown}
+                        placeholder="Find customer..."
+                        autoFocus
+                        leftIcon="search"
+                        className="mb-2"
+                      />
+                      <div className="max-h-[240px] overflow-y-auto space-y-1">
+                        {customerOptions.map((opt, index) => {
+                          const selected = index === customerSearchIndex;
+                          if (opt.type === "CLEAR") {
+                            return (
+                              <button
+                                key="clear"
+                                ref={(el) => {
+                                  customerResultRefs.current[index] = el;
+                                }}
+                                type="button"
+                                onClick={() => {
+                                  setSelectedCustomerId(null);
+                                  setCustomerSearchOpen(false);
+                                }}
+                                className={`flex w-full items-center justify-between rounded-[8px] px-3 py-2 text-left text-[13px] font-semibold text-rose-600 transition ${selected ? "bg-rose-100" : "hover:bg-rose-50"}`}
+                              >
+                                Clear Selection
+                              </button>
+                            );
+                          }
+                          const c = opt.customer;
+                          return (
+                            <button
+                              key={c.id}
+                              ref={(el) => {
+                                customerResultRefs.current[index] = el;
+                              }}
+                              type="button"
+                              onClick={() => {
+                                setSelectedCustomerId(c.id);
+                                setCustomerSearchOpen(false);
+                              }}
+                              className={`flex w-full items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px] transition ${selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
+                            >
+                              <span className="font-extrabold text-[#000000]">
+                                {c.name}
+                              </span>
+                              <span className="font-medium text-[#8C8889]">
+                                {c.phone}
+                              </span>
+                            </button>
+                          );
+                        })}
+                        {customerOptions.length === 0 && (
+                          <div className="text-center text-[12px] text-[#8C8889] py-2">
+                            No results
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-3 flex flex-wrap gap-2 border-t border-[#E5E7EB] pt-3">
+                    {selectedCustomer ? (
+                      <>
+                        <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
+                          Customer
+                        </span>
+                        {customerMode === "LOYALTY" && (
+                          <span className="rounded-[8px] bg-emerald-100 text-emerald-800 px-2 py-1 text-[11px] font-extrabold">
+                            Loyalty {selectedCustomer.loyaltyPercent}%
+                          </span>
+                        )}
+                        {customerMode === "ADMIN_WHOLESALE" && (
+                          <span className="rounded-[8px] bg-sky-100 text-sky-800 px-2 py-1 text-[11px] font-extrabold">
+                            Wholesale {selectedCustomer.wholesalePercent}%
+                          </span>
+                        )}
+                      </>
+                    ) : (
+                      <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
+                        Walk-in
+                      </span>
+                    )}
+                    {customerMode === "LOYALTY" && (
+                      <span className="rounded-[8px] bg-indigo-100 text-indigo-800 px-2 py-1 text-[11px] font-extrabold">
+                        Qty eligible
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                {/* Bill Summary */}
+                <div
+                  className={cn(
+                    "rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    billingView.billSummary,
+                  )}
+                >
                   <div
                     className={cn(
-                      "w-11 h-11 rounded-xl flex items-center justify-center text-xl shrink-0 border",
-                      selectedCustomer
-                        ? "border-[#CFCFD3] bg-[#F3F4F6] text-[#000000]"
-                        : "border-[#CFCFD3] bg-[#F3F4F6] text-[#8C8889]",
+                      "flex items-center gap-2 font-extrabold text-[#000000]",
+                      billingView.billSummaryTitle,
                     )}
                   >
-                    <Icon name={selectedCustomer ? "person" : "person_off"} />
+                    <Icon name="receipt_long" className="text-[#2F67D8]" /> Bill
+                    Summary
                   </div>
-                  <div className="min-w-0">
-                    <div className="font-extrabold text-slate-900 truncate text-[15px]">
-                      {selectedCustomer
-                        ? selectedCustomer.name
-                        : "Walk-in Customer"}
-                    </div>
-                    <div className="text-xs text-slate-500 truncate flex items-center gap-2 mt-0.5">
-                      {selectedCustomer
-                        ? selectedCustomer.phone
-                        : "No customer selected"}
-                      {selectedCustomer?.isLoyalty ||
-                      clampPercent(selectedCustomer?.wholesalePercent || 0) >
-                        0 ? (
-                        <Icon
-                          name="verified"
-                          className="text-[13px] text-emerald-500"
-                        />
-                      ) : null}
-                    </div>
-                    <div className="mt-2 flex flex-wrap gap-1.5">
-                      {clampPercent(selectedCustomer?.wholesalePercent || 0) >
-                      0 ? (
-                        <Pill tone="orange">
-                          Wholesale{" "}
-                          {clampPercent(
-                            selectedCustomer?.wholesalePercent || 0,
-                          )}
-                          %
-                        </Pill>
-                      ) : null}
-                      {customerMode === "LOYALTY" ? (
-                        <Pill tone="green">
-                          Loyalty{" "}
-                          {clampPercent(selectedCustomer?.loyaltyPercent || 0)}%
-                        </Pill>
-                      ) : null}
-                      {selectedCustomer?.isLoyalty &&
-                      customerMode === "ADMIN_WHOLESALE" ? (
-                        <Pill tone="neutral">Loyalty overridden</Pill>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-                <div className="flex items-center gap-2 shrink-0">
-                  {selectedCustomer ? (
-                    <Button
-                      size="sm"
-                      variant="ghost"
-                      icon="close"
-                      title="Clear customer"
-                      onClick={() => setSelectedCustomerId(null)}
-                    />
-                  ) : null}
-                  <Button
-                    size="sm"
-                    variant="ghost"
-                    icon="edit"
-                    title="Select customer"
-                    onClick={() => setCustomerSearchOpen(true)}
-                  />
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]">
-                <div className="mb-[12px] flex items-center gap-2">
-                  <Input
-                    value={customerQuery}
-                    onChange={setCustomerQuery}
-                    placeholder="Find customer..."
-                    autoFocus
-                    leftIcon="search"
-                    className="flex-1"
-                  />
-                  <Button
-                    size="sm"
-                    icon="close"
-                    onClick={() => setCustomerSearchOpen(false)}
-                    title="Close"
-                  />
-                </div>
-                <div className="max-h-[160px] overflow-y-auto space-y-1.5">
-                  {customerListFiltered.map((c) => (
-                    <button
-                      key={c.id}
-                      type="button"
-                      onClick={() => {
-                        setSelectedCustomerId(c.id);
-                        setCustomerSearchOpen(false);
-                      }}
-                      className="flex w-full items-center justify-between rounded-xl border border-transparent px-[12px] py-[10px] text-left text-[14px] transition hover:border-[#CFCFD3] hover:bg-[#F3F4F6]"
-                    >
-                      <span className="font-semibold text-slate-800">
-                        {c.name}
-                      </span>
-                      <span className="text-slate-400 font-medium">
-                        {c.phone}
-                      </span>
-                    </button>
-                  ))}
-                  {customerListFiltered.length === 0 ? (
-                    <div className="p-4 text-xs text-slate-400 text-center font-medium">
-                      No results
-                    </div>
-                  ) : null}
-                </div>
-              </div>
-            )}
-          </div>
 
-          <div className="relative flex-1 space-y-2 overflow-y-auto bg-[rgba(243,244,246,0.35)] p-[12px]">
-            {cartRows.length === 0 ? (
-              <div className="absolute inset-0 flex flex-col items-center justify-center text-slate-300 select-none">
-                <Icon
-                  name="receipt_long"
-                  className="text-7xl mb-3 opacity-20"
-                />
-                <p className="font-bold text-[15px]">Ticket Empty</p>
-                <p className="text-xs mt-1">Add items to start billing</p>
-              </div>
-            ) : (
-              cartRows.map((row) => (
-                <div
-                  key={row.productId}
-                  className="flex flex-col gap-2 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]  transition hover:border-slate-300"
-                >
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="flex-1 min-w-0">
-                      <div className="font-extrabold text-slate-800 leading-tight truncate text-[13px]">
-                        {row.product.name}
+                  <div className="mb-3 grid grid-cols-2 gap-2 text-[11px] font-extrabold text-[#565449]">
+                    <div className="rounded-[10px] border border-[#E5E7EB] bg-[#F8F9FA] px-2.5 py-2">
+                      <div className="text-[9px] uppercase tracking-wide text-[#8C8889]">
+                        Date
                       </div>
-                      <div className="flex items-center gap-1.5 flex-wrap text-[10px] text-slate-500 font-medium mt-1">
-                        <span className="rounded border border-[#CFCFD3] bg-[#F3F4F6] px-[6px] py-[2px]">
-                          {formatNpr(row.unitPrice)}/u
+                      <div className="mt-0.5 truncate text-[#11120d]">
+                        {billDateLabel}
+                      </div>
+                    </div>
+                    <div className="rounded-[10px] border border-[#E5E7EB] bg-[#F8F9FA] px-2.5 py-2">
+                      <div className="text-[9px] uppercase tracking-wide text-[#8C8889]">
+                        Time
+                      </div>
+                      <div className="mt-0.5 truncate text-[#11120d]">
+                        {billTimeLabel}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div
+                    className={cn(
+                      "font-semibold text-[#565449]",
+                      billingView.billSummaryRows,
+                    )}
+                  >
+                    <div className="flex justify-between items-center">
+                      <span>Subtotal</span>
+                      <span className="font-mono font-extrabold text-[#000000]">
+                        {formatNpr(subTotal)}
+                      </span>
+                    </div>
+                    {subtotalDiscount > 0 && (
+                      <div className="flex justify-between items-center text-rose-600">
+                        <span>Customer Discount</span>
+                        <span className="font-mono font-extrabold">
+                          (-{formatNpr(subtotalDiscount)})
                         </span>
-                        {row.priceType === "Wholesale" ? (
-                          <span className="font-extrabold text-sky-700 bg-sky-50 px-1.5 py-0.5 rounded border border-sky-200">
-                            WHL
+                      </div>
+                    )}
+                    {hasPriceOverrides && (
+                      <div
+                        className={`flex justify-between items-center ${overrideDiffIsReduction ? "text-rose-600" : "text-amber-600"}`}
+                      >
+                        <span>{overrideDiffLabel}</span>
+                        <span className="font-mono font-extrabold">
+                          {overrideDiffDisplay}
+                        </span>
+                      </div>
+                    )}
+                    {totalVisibleSavings > 0 && (
+                      <div className="flex justify-between items-center text-emerald-700">
+                        <span>Total Savings</span>
+                        <span className="font-mono font-extrabold">
+                          {formatNpr(totalVisibleSavings)}
+                        </span>
+                      </div>
+                    )}
+
+                    <div className="my-[10px] border-t border-dashed border-[#CFCFD3]" />
+
+                    <div className="flex justify-between items-center">
+                      <span>Total Items</span>
+                      <span className="font-mono font-extrabold text-[#000000]">
+                        {cartRows.length}
+                      </span>
+                    </div>
+                    <div className="flex justify-between items-center">
+                      <span>Total Quantity</span>
+                      <span className="font-mono font-extrabold text-[#000000]">
+                        {formatQty(
+                          cartRows.reduce((sum, line) => sum + line.qty, 0),
+                        )}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div className={billingView.rightCheckoutStack}>
+                <div
+                  className={cn(
+                    "rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF]",
+                    billingView.statusCard,
+                  )}
+                >
+                  {cartRows.length === 0 ? (
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-[44px] w-[34px] shrink-0 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#8C8889]">
+                        <Icon name="point_of_sale" className="text-[18px]" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-extrabold text-[#000000]">
+                          No items in bill
+                        </div>
+                        <div className="mt-1 flex flex-wrap gap-1.5">
+                          <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
+                            F2 Product Search
                           </span>
-                        ) : null}
-                        <span>SKU {row.product.sku}</span>
+                          <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
+                            F3 Barcode/SKU
+                          </span>
+                        </div>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => removeLine(row.productId)}
-                      className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-slate-100 text-slate-400 transition hover:bg-rose-100 hover:text-rose-600"
-                      title="Remove"
-                      aria-label="Remove item"
-                    >
-                      <Icon name="close" className="text-[14px]" />
-                    </button>
-                  </div>
-
-                  <div className="flex items-center justify-between mt-1 border-t border-slate-100 pt-2">
-                    <div className="flex items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-[#F3F4F6] p-[4px]">
-                      <button
-                        type="button"
-                        onClick={() => changeQty(row.productId, row.qty - 1)}
-                        disabled={row.qty <= 1}
-                        className="flex h-[24px] w-[24px] items-center justify-center rounded-[6px] border border-[#CFCFD3] bg-[#FFFFFF] text-lg font-medium leading-none  transition hover:text-rose-600 disabled:opacity-40"
-                        aria-label="Decrease quantity"
-                      >
-                        -
-                      </button>
-                      <input
-                        type="number"
-                        min={1}
-                        max={Math.max(1, row.product.stock)}
-                        value={row.qty}
-                        onChange={(e) =>
-                          changeQty(row.productId, Number(e.target.value || 1))
-                        }
-                        className="w-8 bg-transparent text-center text-[13px] font-extrabold text-slate-800 outline-none"
-                        aria-label={`Quantity for ${row.product.name}`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() => changeQty(row.productId, row.qty + 1)}
-                        disabled={row.qty >= row.product.stock}
-                        className="flex h-[24px] w-[24px] items-center justify-center rounded-[6px] border border-[#CFCFD3] bg-[#FFFFFF] text-lg font-medium leading-none  transition hover:text-emerald-600 disabled:opacity-40"
-                        aria-label="Increase quantity"
-                      >
-                        +
-                      </button>
+                  ) : (
+                    <div className="flex items-center gap-3">
+                      <span className="flex h-[44px] w-[34px] shrink-0 items-center justify-center rounded-[10px] bg-[#EAF8EF] text-[#179B4D]">
+                        <Icon name="task_alt" className="text-[18px]" />
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-extrabold text-[#000000]">
+                          Ready for checkout
+                        </div>
+                        <div className="mt-0.5 truncate text-[12px] font-semibold text-[#8C8889]">
+                          {cartRows.length} line(s) |{" "}
+                          {formatQty(
+                            cartRows.reduce((sum, line) => sum + line.qty, 0),
+                          )}{" "}
+                          unit(s) |{" "}
+                          {selectedCustomer
+                            ? selectedCustomer.name
+                            : "Walk-in customer"}
+                        </div>
+                      </div>
                     </div>
-                    <div className="font-mono font-extrabold text-slate-900 text-[14px]">
-                      {formatNpr(row.lineTotal)}
-                    </div>
-                  </div>
+                  )}
                 </div>
-              ))
-            )}
-          </div>
-
-          <div className="flex-shrink-0 bg-white border-t border-slate-200 ">
-            <div className="px-5 pt-4 pb-3 space-y-2 text-sm">
-              <div className="flex justify-between text-slate-500">
-                <span>Subtotal</span>
-                <span className="font-mono font-bold">
-                  {formatNpr(subTotal)}
-                </span>
-              </div>
-              {subtotalDiscount > 0 ? (
-                <div className="flex justify-between text-rose-600">
-                  <span className="flex items-center gap-1 font-bold">
-                    <Icon name="local_offer" className="text-[14px]" />
-                    {subtotalDiscountMeta.label}
-                  </span>
-                  <span className="font-mono font-extrabold">
-                    -{formatNpr(subtotalDiscount)}
-                  </span>
-                </div>
-              ) : null}
-              <div className="border-t border-dashed border-slate-300 my-2" />
-              <div className="flex justify-between items-end">
-                <span className="text-slate-900 font-extrabold text-lg">
-                  Total
-                </span>
-                <span className="font-mono font-extrabold text-3xl text-slate-900 ">
-                  {formatNpr(grandTotal)}
-                </span>
-              </div>
-              {customerMode !== "NONE" ? (
-                <div className="rounded-xl border border-slate-200 bg-slate-50 px-3 py-2 text-[11px] font-semibold text-slate-600">
-                  {subtotalDiscountMeta.helper}
-                </div>
-              ) : null}
-            </div>
-
-            <div className="space-y-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] p-[16px]">
-              {billingError ? (
-                <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[8px] text-[12px] font-semibold text-[#BE123C]">
-                  {billingError}
-                </div>
-              ) : null}
-
-              <div className="flex gap-2">
-                <Button
-                  variant="ghost"
-                  className="flex-1 border border-[#CFCFD3]"
-                  onClick={resetBill}
-                  disabled={!hasBillDraft}
-                  icon="restart_alt"
+                <div
+                  className={cn(
+                    "rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    billingView.grandCard,
+                  )}
                 >
-                  Clear Cart
-                </Button>
-                <Button
-                  variant={paymentMethod === "eSewa" ? "success" : "primary"}
-                  className="flex-[2]"
-                  size="lg"
-                  icon={paymentMethod === "eSewa" ? "qr_code_2" : "payments"}
+                  <div
+                    className={cn(
+                      "font-extrabold uppercase text-[#2F67D8]",
+                      billingView.grandLabel,
+                    )}
+                  >
+                    Grand Total
+                  </div>
+                  <div
+                    className={cn(
+                      "font-mono font-extrabold leading-none text-[#000000]",
+                      billingView.grandTotal,
+                    )}
+                  >
+                    {formatNpr(payableTotal)}
+                  </div>
+                </div>
+
+                <button
+                  type="button"
                   disabled={!canConfirm}
                   onClick={() => openPaymentFlow()}
+                  title={
+                    canConfirm
+                      ? "Open payment"
+                      : "Add at least one item to bill before payment"
+                  }
+                  className={cn(
+                    "flex w-full items-center justify-center gap-2 rounded-[14px] bg-[#11120d] font-extrabold text-white transition hover:bg-[#000000] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
+                    billingView.payButton,
+                  )}
                 >
-                  {paymentMethod === "eSewa"
-                    ? "Continue to eSewa"
-                    : `Pay ${formatNpr(grandTotal)}`}
-                </Button>
-              </div>
+                  <Icon name="payment" className="text-[20px]" /> PAY NOW (Shift
+                  + Enter)
+                </button>
 
-              <div className="flex flex-wrap gap-x-3 gap-y-1 pt-[4px] text-[11px] text-[#8C8889]">
-                <span className="font-semibold">Shortcuts:</span>
-                <span>F2 Search</span>
-                <span>F3 SKU</span>
-                <span>F4 Cash</span>
-                <span>F5 eSewa</span>
-                <span>F9 Reset</span>
-                <span>Enter Pay</span>
+                <div className="grid grid-cols-2 gap-3">
+                  <button
+                    type="button"
+                    disabled={cart.length === 0 || parkedBusy}
+                    onClick={requestParkBill}
+                    title={
+                      cart.length === 0
+                        ? "Add at least one item before parking a bill"
+                        : parkedBusy
+                          ? "Held bill action is already running"
+                          : "Park current bill"
+                    }
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#2F67D8] transition hover:bg-[#F8F9FA] disabled:cursor-not-allowed disabled:opacity-50",
+                      billingView.secondaryButton,
+                    )}
+                  >
+                    <Icon name="local_parking" className="text-[18px]" /> Park
+                    (F6)
+                  </button>
+                  <button
+                    type="button"
+                    disabled={!hasBillDraft}
+                    onClick={requestResetBill}
+                    title={
+                      hasBillDraft
+                        ? "Clear current billing draft"
+                        : "No billing draft to clear"
+                    }
+                    className={cn(
+                      "flex items-center justify-center gap-2 rounded-[12px] border border-rose-200 bg-[#FFF1F2] font-extrabold text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-[#CFCFD3] disabled:bg-[#FFFFFF] disabled:text-[#8C8889] disabled:opacity-50",
+                      billingView.secondaryButton,
+                    )}
+                  >
+                    <Icon name="delete_sweep" className="text-[18px]" /> Clear
+                    (F9)
+                  </button>
+                </div>
               </div>
             </div>
+          </div>
+        </div>
+
+        {/* FOOTER */}
+        <div
+          className={cn(
+            "flex shrink-0 items-center justify-between gap-3 overflow-hidden border-t border-[#CFCFD3] bg-[#F8F9FA] font-extrabold text-[#565449]",
+            billingView.footer,
+          )}
+        >
+          <div className="flex min-w-0 items-center gap-3 whitespace-nowrap">
+            <span>
+              F2 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Search
+            </span>
+            <span>
+              F3 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Scanner
+            </span>
+            <span className="hidden xl:inline">
+              F4 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Cash
+            </span>
+            <span className="hidden xl:inline">
+              F5 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              eSewa
+            </span>
+            <span>
+              F6 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Park
+            </span>
+            <span className="hidden 2xl:inline">
+              F7 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Customer
+            </span>
+            <span className="hidden 2xl:inline">
+              Alt+H <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Held
+            </span>
+            <span>
+              F9 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
+              Clear
+            </span>
+            <span>
+              Shift+Enter{" "}
+              <span className="font-semibold text-[#CFCFD3] mx-1">|</span> Pay
+            </span>
+            <button
+              type="button"
+              onClick={() => setShowShortcutHelp(true)}
+              className="inline-flex items-center gap-1 rounded-[5px] border border-[#CFCFD3] bg-white px-1.5 py-1 text-[10px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] focus:outline-none focus:ring-2 focus:ring-[#11120d]/15"
+            >
+              <Icon name="keyboard" className="text-[14px]" />
+              More shortcuts
+            </button>
+          </div>
+          <div className="hidden min-w-0 shrink items-center gap-4 whitespace-nowrap lg:flex">
+            <span className="max-w-[260px] truncate">
+              Operator: {operatorLabel}
+            </span>
+            <span className="shrink-0">Terminal: {terminalLabel}</span>
           </div>
         </div>
       </div>
 
       <ModalFrame
+        open={showShortcutHelp}
+        onClose={() => setShowShortcutHelp(false)}
+        title="Billing shortcuts"
+        description="Keyboard actions for fast billing."
+        maxWidthClass="max-w-[450px]"
+        compact
+      >
+        <div className="grid gap-2 text-[11px] font-bold text-[#565449] sm:grid-cols-2">
+          {[
+            ["Alt+Up/Down", "Move row"],
+            ["Alt+Del", "Remove row"],
+            ["Alt+Backspace", "Remove row"],
+            ["Alt+Shift++", "Qty up"],
+            ["Alt+Shift+-", "Qty down"],
+            ["Alt+Shift+Q", "Edit qty"],
+            ["Alt+P", "Override"],
+            ["Alt+H", "Held bills"],
+            ["Alt+1/2/3", "Pay method"],
+          ].map(([keys, action]) => (
+            <div
+              key={keys}
+              className="flex h-[36px] items-center justify-between gap-2 rounded-[10px] border border-[#CFCFD3] bg-[#F8F9FA] px-2.5"
+            >
+              <span className="min-w-0 truncate font-mono text-[11px] font-extrabold text-[#11120d]">
+                {keys}
+              </span>
+              <span className="shrink-0 text-right">{action}</span>
+            </div>
+          ))}
+        </div>
+        <div className="mt-3 rounded-[10px] border border-[#CFCFD3] bg-white px-3 py-2 text-[11px] font-semibold leading-[17px] text-[#565449]">
+          Destructive keys use the active row. Esc closes the top panel first,
+          then returns focus to product search.
+        </div>
+      </ModalFrame>
+
+      <ModalFrame
         open={showPaymentModal}
         onClose={closePaymentFlow}
-        title="Confirm payment"
-        description="Products cannot be added after finalizing invoice so verify properly before proceeding to confirm it."
-        maxWidthClass="max-w-[720px]"
+        title="Confirm Payment"
+        description="Verify transaction details before finalizing."
+        maxWidthClass="max-w-[840px]"
+        footer={
+          <div className="flex w-full items-center justify-between gap-4">
+            <button
+              type="button"
+              onClick={closePaymentFlow}
+              className="flex h-[52px] w-[180px] items-center justify-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[15px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6]"
+            >
+              <Icon name="arrow_back" className="text-[20px]" /> Back
+            </button>
+            <button
+              type="button"
+              disabled={!canConfirm || submitting || stockRefreshBusy}
+              onClick={requestCheckoutConfirm}
+              className="flex h-[52px] flex-1 items-center justify-center gap-2 rounded-[14px] bg-[#11120d] text-[16px] font-extrabold text-white transition hover:bg-[#000000] disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              <Icon name="lock" className="text-[18px]" />
+              {submitting
+                ? "Creating..."
+                : stockRefreshBusy
+                  ? "Checking stock..."
+                  : paymentMethod === "Split"
+                    ? "CONFIRM SPLIT PAYMENT (Shift + Enter)"
+                    : paymentStatus === "Partial"
+                      ? "SAVE PARTIAL PAYMENT (Shift + Enter)"
+                      : paymentStatus === "Unpaid"
+                        ? "CREATE UNPAID INVOICE (Shift + Enter)"
+                        : paymentMethod === "eSewa"
+                          ? "CONTINUE TO ESEWA (Shift + Enter)"
+                          : "FINAL CHECKOUT (Shift + Enter)"}
+            </button>
+          </div>
+        }
       >
-        <div className="space-y-5">
+        <div className="space-y-[20px] text-slate-900">
+          {/* Top Info Cards */}
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
-              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                Items
+            <div className="flex min-h-[82px] items-center gap-4 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
+              <div className="flex h-[48px] w-[48px] shrink-0 items-center justify-center rounded-full bg-[#E8F2FF] text-[#2F67D8]">
+                <Icon name="shopping_cart" className="text-[24px]" />
               </div>
-              <div className="mt-[8px] text-[24px] font-extrabold text-[#000000]">
-                {cartRows.length}
-              </div>
-              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
-                {cart.reduce((sum, line) => sum + line.qty, 0)} units in cart
-              </div>
-            </div>
-            <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
-              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                Customer
-              </div>
-              <div className="mt-[8px] text-[16px] font-extrabold text-[#000000]">
-                {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
-              </div>
-              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
-                {selectedCustomer
-                  ? selectedCustomer.phone || "No phone on file"
-                  : "No customer selected"}
+              <div>
+                <div className="text-[16px] font-extrabold">
+                  Items: {cartRows.length}
+                </div>
+                <div className="mt-1 text-[13px] font-semibold text-[#565449]">
+                  Total Qty:{" "}
+                  {formatQty(cart.reduce((sum, line) => sum + line.qty, 0))}
+                </div>
               </div>
             </div>
-            <div className="rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
-              <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                Total
+            <div className="flex min-h-[82px] items-center gap-4 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
+              <div className="flex h-[48px] w-[48px] shrink-0 items-center justify-center rounded-full bg-[#F3F4F6] text-[#2F67D8]">
+                <Icon name="person" className="text-[24px]" />
               </div>
-              <div className="mt-[8px] font-mono text-[24px] font-extrabold text-[#000000]">
-                {formatNpr(grandTotal)}
+              <div className="min-w-0">
+                <div className="text-[13px] font-semibold text-[#565449]">
+                  Customer:
+                </div>
+                <div className="mt-1 w-full truncate text-[16px] font-extrabold">
+                  {selectedCustomer
+                    ? selectedCustomer.name
+                    : "Walk-in Customer"}
+                </div>
               </div>
-              <div className="mt-[4px] text-[12px] font-semibold text-[#8C8889]">
-                Subtotal {formatNpr(subTotal)}
+            </div>
+            <div className="flex min-h-[82px] items-center gap-4 rounded-[14px] border border-[#2F67D8] bg-[#F8FBFF] p-[16px]">
+              <div className="flex h-[48px] w-[48px] shrink-0 items-center justify-center rounded-full bg-[#2F67D8] text-white">
+                <span className="text-[16px] font-extrabold">Rs.</span>
+              </div>
+              <div>
+                <div className="text-[13px] font-semibold text-[#565449]">
+                  Total:
+                </div>
+                <div className="mt-1 font-mono text-[20px] font-extrabold text-[#2F67D8]">
+                  {formatNpr(payableTotal)}
+                </div>
               </div>
             </div>
           </div>
 
-          <div className="grid gap-4 md:grid-cols-[320px_320px]">
-            <div className="space-y-4">
+          <div className="grid items-start gap-5 md:grid-cols-[minmax(0,1fr)_380px]">
+            {/* Left: Inputs */}
+            <div className="space-y-[12px]">
               <div>
-                <div className="mb-[8px] text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                  Payment method
+                <div className="mb-[8px] text-[14px] font-extrabold text-[#000000]">
+                  Payment Method
                 </div>
-                <div className="grid grid-cols-2 gap-3">
+                <div className="grid grid-cols-3 gap-3">
                   <button
                     type="button"
-                    onClick={() => setPaymentMethod("Cash")}
-                    className={cn(
-                      "rounded-[18px] border px-4 py-4 text-left transition",
-                      paymentMethod === "Cash"
-                        ? "border-[#11120d] bg-[#11120d] text-white"
-                        : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
-                    )}
+                    onClick={() => {
+                      setPaymentMethod("Cash");
+                      if (paymentStatus === "Paid")
+                        setCashTendered(String(payableTotal));
+                      setPaymentError("");
+                    }}
+                    className={`relative flex h-[58px] items-center justify-center gap-2 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Cash" ? "border-[#11120d] bg-[#F8F9FA] text-[#11120d]" : "border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"}`}
                   >
-                    <Icon name="payments" />
-                    <div className="mt-3 text-[13px] font-extrabold">Cash</div>
+                    <Icon name="payments" className="text-[24px]" />
+                    <span className="text-[14px] font-extrabold">Cash</span>
+                    {paymentMethod === "Cash" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#11120d] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
                   </button>
                   <button
                     type="button"
                     onClick={() => {
                       setPaymentMethod("eSewa");
                       setShowEsewaQr(true);
+                      setPaymentError("");
                     }}
-                    className={cn(
-                      "rounded-[18px] border px-4 py-4 text-left transition",
-                      paymentMethod === "eSewa"
-                        ? "border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D]"
-                        : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6]",
-                    )}
+                    className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "eSewa" ? "border-[#60bb46] bg-[#f2faf0]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
                   >
-                    <Icon name="qr_code_2" />
-                    <div className="mt-3 text-[13px] font-extrabold">eSewa</div>
+                    <img
+                      src="/assets/images/esewa/logo.png"
+                      alt="eSewa"
+                      className="h-[32px] w-[32px] rounded-full object-contain"
+                    />
+                    <span
+                      className={`text-[13px] font-extrabold ${paymentMethod === "eSewa" ? "text-[#334155]" : "text-[#565449]"}`}
+                    >
+                      eSewa
+                    </span>
+                    {paymentMethod === "eSewa" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#60bb46] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod("Split");
+                      setPaymentStatus("Paid");
+                      setShowEsewaQr(true);
+                      setPaymentError("");
+                      ensureDefaultSplitPayments();
+                    }}
+                    className={`relative flex h-[58px] items-center justify-center gap-2 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Split" ? "border-[#2F67D8] bg-[#F8FBFF] text-[#2F67D8]" : "border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"}`}
+                  >
+                    <Icon name="call_split" className="text-[24px]" />
+                    <span className="text-[14px] font-extrabold">Split</span>
+                    {paymentMethod === "Split" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#2F67D8] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
                   </button>
                 </div>
               </div>
 
-              <div>
-                <div className="mb-2 flex items-center justify-between">
-                  <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                    Payment status
+              {paymentMethod !== "Split" && (
+                <div>
+                  <div className="mb-[5px] text-[14px] font-extrabold text-[#000000]">
+                    Payment Status
                   </div>
-                  {paymentMethod === "eSewa" ? (
-                    <div className="text-[11px] font-bold text-[#8C8889]">
-                      Redirects to the eSewa test payment page
-                    </div>
-                  ) : null}
+                  <div className="flex overflow-hidden rounded-[8px] border border-[#CFCFD3]">
+                    {["Paid", "Partial", "Unpaid"].map((status) => (
+                      <button
+                        key={status}
+                        type="button"
+                        onClick={() => {
+                          const nextStatus = status as PaymentStatus;
+                          setPaymentStatus(nextStatus);
+                          setBillingError("");
+                          if (paymentMethod === "Cash" && nextStatus === "Paid")
+                            setCashTendered(String(payableTotal));
+                          if (nextStatus !== "Partial") {
+                            setPaidAmount("");
+                            setPaymentError("");
+                          }
+                        }}
+                        className={`h-[38px] flex-1 text-[13px] font-extrabold transition ${paymentStatus === status ? "bg-[#11120d] text-white" : "bg-white text-[#565449] hover:bg-[#F3F4F6]"}`}
+                      >
+                        {status}
+                      </button>
+                    ))}
+                  </div>
                 </div>
-                <Segmented
-                  value={paymentStatus}
-                  onChange={(v) => {
-                    setPaymentStatus(v as PaymentStatus);
-                    setBillingError("");
-                    if (v !== "Partial") {
-                      setPaidAmount("");
-                      setPaymentError("");
-                    }
-                  }}
-                  options={[
-                    { value: "Paid", label: "Paid" },
-                    { value: "Partial", label: "Partial" },
-                    { value: "Unpaid", label: "Unpaid" },
-                  ]}
-                />
-              </div>
+              )}
 
-              {paymentStatus === "Partial" ? (
+              {paymentMethod === "Split" ? (
+                <div className="space-y-2">
+                  <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8F9FA] p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div>
+                        <div className="text-[11px] font-extrabold text-[#000000]">
+                          Split payment rows
+                        </div>
+                        <div className="mt-0.5 text-[10px] font-semibold text-[#8C8889]">
+                          Must equal {formatNpr(payableTotal)}.
+                        </div>
+                      </div>
+                      <div
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${isSplitBalanced ? "bg-[#EAF8EF] text-[#179B4D]" : "bg-[#FFF7E8] text-[#B7791F]"}`}
+                      >
+                        {isSplitBalanced
+                          ? "Balanced"
+                          : splitBalance > 0
+                            ? `${formatNpr(splitBalance)} short`
+                            : `${formatNpr(Math.abs(splitBalance))} over`}
+                      </div>
+                    </div>
+                    <div className="mt-2 space-y-2">
+                      {splitPayments.map((row, index) => {
+                        const amountNum = Number(row.amount || 0);
+                        const tenderedNum = Number(row.tenderedAmount || 0);
+                        const rowChange =
+                          row.method === "CASH"
+                            ? Math.max(0, tenderedNum - amountNum)
+                            : 0;
+                        return (
+                          <div
+                            key={row.id}
+                            className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[80px_minmax(0,1fr)_minmax(0,1fr)_32px]"
+                          >
+                            <select
+                              value={row.method}
+                              onChange={(e) =>
+                                updateSplitPayment(row.id, {
+                                  method: e.target
+                                    .value as SplitPaymentDraft["method"],
+                                })
+                              }
+                              className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-extrabold text-[#565449] outline-none"
+                            >
+                              <option value="CASH">Cash</option>
+                              <option value="ESEWA">eSewa</option>
+                            </select>
+                            <input
+                              value={row.amount}
+                              onChange={(e) =>
+                                updateSplitPayment(row.id, {
+                                  amount: e.target.value.replace(/[^\d.]/g, ""),
+                                })
+                              }
+                              inputMode="numeric"
+                              placeholder="Amount"
+                              className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
+                            />
+                            {row.method === "CASH" ? (
+                              <input
+                                value={row.tenderedAmount}
+                                onChange={(e) =>
+                                  updateSplitPayment(row.id, {
+                                    tenderedAmount: e.target.value.replace(
+                                      /[^\d.]/g,
+                                      "",
+                                    ),
+                                  })
+                                }
+                                inputMode="numeric"
+                                placeholder="Tendered"
+                                className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
+                              />
+                            ) : (
+                              <div className="flex h-[32px] items-center rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 text-[10px] font-bold text-[#8C8889]">
+                                Online intent
+                              </div>
+                            )}
+                            <button
+                              type="button"
+                              onClick={() => removeSplitPayment(row.id)}
+                              disabled={splitPayments.length <= 1}
+                              className="flex h-[32px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-white text-[#565449] disabled:opacity-40"
+                            >
+                              <Icon name="close" className="text-[14px]" />
+                            </button>
+                            {row.method === "CASH" && rowChange > 0 && (
+                              <div className="md:col-span-4 text-[10px] font-bold text-[#179B4D]">
+                                Return change {formatNpr(rowChange)} for this
+                                cash row.
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
+                    </div>
+                    <div className="mt-2 flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => addSplitPayment("CASH")}
+                        className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449]"
+                      >
+                        + Cash row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addSplitPayment("ESEWA")}
+                        disabled={splitPayments.some(
+                          (row) => row.method === "ESEWA",
+                        )}
+                        className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449] disabled:opacity-40"
+                      >
+                        + eSewa row
+                      </button>
+                    </div>
+                  </div>
+                </div>
+              ) : paymentStatus === "Partial" ? (
                 <Input
                   label="Amount paid"
+                  autoFocus
                   value={paidAmount}
                   onChange={(v) => {
                     setPaidAmount(v.replace(/[^\d.]/g, ""));
@@ -1557,121 +4588,870 @@ export default function BillingPage() {
                   invalid={!!paymentError}
                   helperText={
                     paymentError ||
-                    `Enter an amount greater than 0 and less than ${formatNpr(grandTotal)}.`
+                    `Enter amount greater than 0 and less than ${formatNpr(payableTotal)}.`
                   }
                 />
+              ) : paymentMethod === "Cash" && paymentStatus === "Paid" ? (
+                <div>
+                  <div className="mb-[8px] text-[14px] font-extrabold text-[#000000]">
+                    Cash Received
+                  </div>
+                  <div className="flex h-[38px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white">
+                    <div className="flex w-[58px] items-center justify-center bg-[#F3F4F6] text-[18px] font-extrabold text-[#565449]">
+                      Rs.
+                    </div>
+                    <input
+                      type="text"
+                      autoFocus
+                      value={cashTendered}
+                      onChange={(e) => {
+                        setCashTendered(e.target.value.replace(/[^\d.]/g, ""));
+                        setPaymentError("");
+                        setBillingError("");
+                      }}
+                      placeholder="0.00"
+                      className="flex-1 px-4 font-mono text-[24px] font-extrabold text-[#000000] outline-none"
+                    />
+                  </div>
+                  <div className="mt-[10px] flex gap-3">
+                    <button
+                      type="button"
+                      title="Tender exact cash due"
+                      onClick={() => {
+                        setCashTendered(String(cashDueAmount));
+                        setPaymentError("");
+                        setBillingError("");
+                      }}
+                      className="h-[28px] flex-1 rounded-[8px] border border-[#11120d] text-[12px] font-extrabold text-[#11120d] transition hover:bg-[#F3F4F6]"
+                    >
+                      Exact
+                    </button>
+                    <button
+                      type="button"
+                      disabled={500 < cashDueAmount}
+                      title={
+                        500 < cashDueAmount
+                          ? "NPR 500 is less than the cash due"
+                          : "Tender NPR 500"
+                      }
+                      onClick={() => {
+                        setCashTendered("500");
+                        setPaymentError("");
+                        setBillingError("");
+                      }}
+                      className="h-[28px] flex-1 rounded-[8px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold text-[#11120d] transition hover:bg-[#F3F4F6] disabled:bg-[#F3F4F6] disabled:opacity-50"
+                    >
+                      Rs. 500
+                    </button>
+                    <button
+                      type="button"
+                      disabled={1000 < cashDueAmount}
+                      title={
+                        1000 < cashDueAmount
+                          ? "NPR 1,000 is less than the cash due"
+                          : "Tender NPR 1,000"
+                      }
+                      onClick={() => {
+                        setCashTendered("1000");
+                        setPaymentError("");
+                        setBillingError("");
+                      }}
+                      className="h-[28px] flex-1 rounded-[8px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold text-[#11120d] transition hover:bg-[#F3F4F6] disabled:bg-[#F3F4F6] disabled:opacity-50"
+                    >
+                      Rs. 1,000
+                    </button>
+                    <button
+                      type="button"
+                      disabled={5000 < cashDueAmount}
+                      title={
+                        5000 < cashDueAmount
+                          ? "NPR 5,000 is less than the cash due"
+                          : "Tender NPR 5,000"
+                      }
+                      onClick={() => {
+                        setCashTendered("5000");
+                        setPaymentError("");
+                        setBillingError("");
+                      }}
+                      className="h-[28px] flex-1 rounded-[8px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold text-[#11120d] transition hover:bg-[#F3F4F6] disabled:bg-[#F3F4F6] disabled:opacity-50"
+                    >
+                      Rs. 5,000
+                    </button>
+                  </div>
+                  {cashShort > 0 && !!cashTendered && (
+                    <div className="mt-1 text-[11px] font-bold text-rose-600">
+                      Need {formatNpr(cashShort)} more cash.
+                    </div>
+                  )}
+                </div>
               ) : null}
 
-              <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px] text-[12px] font-semibold text-[#565449]">
-                {paymentStatus === "Unpaid"
-                  ? "This will create the invoice without adding a payment yet."
-                  : paymentMethod === "eSewa"
-                    ? "Confirm to create the invoice and continue to the eSewa test payment page for this amount."
-                    : "Confirm to finalize the invoice and record the payment immediately."}
+              <div>
+                <div className="mb-[6px] flex items-center justify-between">
+                  <div className="text-[14px] font-extrabold text-[#000000]">
+                    Invoice Note{" "}
+                    <span className="text-[11px] font-semibold text-[#8C8889]">
+                      (Optional)
+                    </span>
+                  </div>
+                  <div className="text-[11px] font-semibold text-[#8C8889]">
+                    {invoiceNote.length} / 120
+                  </div>
+                </div>
+                <input
+                  type="text"
+                  value={invoiceNote}
+                  onChange={(e) => setInvoiceNote(e.target.value.slice(0, 120))}
+                  placeholder="Add a short note for this invoice..."
+                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-medium outline-none transition focus:border-[#11120d]"
+                />
               </div>
             </div>
 
-            <div className="space-y-4">
-              {showEsewaDetails ? (
-                <div className="rounded-[22px] border border-[#9DD8B2] bg-[rgba(234,248,239,0.8)] p-[16px]">
-                  <div className="text-center text-[11px] font-extrabold uppercase  text-[#179B4D]">
-                    Scan To Pay
-                  </div>
-                  {showEsewaQr ? (
-                    <div className="mt-[12px] overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
-                      <img
-                        src="/assets/images/esewa/qr.png"
-                        alt="eSewa QR code"
-                        className="mx-auto h-[280px] w-[280px] max-w-full object-contain"
-                        onError={() => setShowEsewaQr(false)}
-                      />
-                    </div>
-                  ) : (
-                    <div className="mt-[12px] rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] py-[40px] text-center text-[13px] font-semibold text-[#8C8889]">
-                      eSewa QR is unavailable right now, but you can still
-                      continue to the eSewa test page to complete the payment.
-                    </div>
-                  )}
-                  <div className="mt-[16px] rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] px-[16px] py-[12px] text-center">
-                    <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                      Billing amount
-                    </div>
-                    <div className="mt-[8px] font-mono text-[24px] font-extrabold text-[#000000]">
-                      {formatNpr(
-                        paymentStatus === "Partial"
-                          ? effectivePaidAmount
-                          : grandTotal,
-                      )}
-                    </div>
-                  </div>
+            {/* Right: Settlement Summary */}
+            <div className="self-start">
+              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#F8F9FA] p-[18px] py-[30px] shadow-sm">
+                <div className="mb-[15px] text-[17px] font-extrabold text-[#000000]">
+                  Settlement Summary
                 </div>
-              ) : (
-                <div className="rounded-[22px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.75)] p-[16px]">
-                  <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                    Settlement summary
+
+                <div className="space-y-[18px] text-[16px] font-semibold text-[#565449]">
+                  <div className="flex justify-between items-center">
+                    <span>Subtotal</span>
+                    <span className="font-mono text-[#000000]">
+                      {formatNpr(subTotal)}
+                    </span>
                   </div>
-                  <div className="mt-[16px] space-y-[12px] text-[13px] font-semibold text-[#565449]">
-                    <div className="flex items-center justify-between">
-                      <span>Subtotal</span>
-                      <span className="font-mono text-[#000000]">
-                        {formatNpr(subTotal)}
-                      </span>
-                    </div>
-                    <div className="flex items-center justify-between">
+                  {subtotalDiscount > 0 && (
+                    <div className="flex justify-between items-center text-rose-600">
                       <span>Discount</span>
-                      <span className="font-mono text-[#000000]">
+                      <span className="font-mono">
                         -{formatNpr(subtotalDiscount)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span>Collected now</span>
-                      <span className="font-mono text-[#000000]">
+                  )}
+                  {hasPriceOverrides && (
+                    <div
+                      className={`flex justify-between items-center ${overrideDiffIsReduction ? "text-rose-600" : "text-amber-600"}`}
+                    >
+                      <span>{overrideDiffLabel}</span>
+                      <span className="font-mono">{overrideDiffDisplay}</span>
+                    </div>
+                  )}
+
+                  <div className="my-[10px] border-t border-[#CFCFD3]" />
+
+                  <div className="flex justify-between items-center text-[15px] font-extrabold text-[#000000]">
+                    <span>Total</span>
+                    <span className="font-mono">{formatNpr(payableTotal)}</span>
+                  </div>
+
+                  {paymentMethod === "Split" ? (
+                    <>
+                      <div className="flex justify-between items-center text-[#2F67D8]">
+                        <span>Cash collected</span>
+                        <span className="font-mono font-bold">
+                          {formatNpr(splitCashNum)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[#2F67D8]">
+                        <span>eSewa amount</span>
+                        <span className="font-mono font-bold">
+                          {formatNpr(splitEsewaAmount)}
+                        </span>
+                      </div>
+                      <div className="flex justify-between items-center text-[#000000]">
+                        <span>Total collected</span>
+                        <span className="font-mono font-extrabold">
+                          {formatNpr(splitTotal)}
+                        </span>
+                      </div>
+                      {!isSplitBalanced ? (
+                        <div className="flex justify-between items-center text-[#B7791F]">
+                          <span>Split balance</span>
+                          <span className="font-mono font-bold">
+                            {splitBalance > 0
+                              ? `${formatNpr(splitBalance)} short`
+                              : `${formatNpr(Math.abs(splitBalance))} over`}
+                          </span>
+                        </div>
+                      ) : null}
+                    </>
+                  ) : (
+                    <div className="flex justify-between items-center text-[#2F67D8]">
+                      <span>Collected</span>
+                      <span className="font-mono font-bold">
                         {formatNpr(effectivePaidAmount)}
                       </span>
                     </div>
-                    <div className="flex items-center justify-between">
-                      <span>Due after bill</span>
-                      <span className="font-mono text-[#000000]">
-                        {formatNpr(balanceDue)}
-                      </span>
+                  )}
+                </div>
+
+                <div className="mt-[12px] space-y-2">
+                  {paymentMethod === "Cash" && paymentStatus === "Paid" ? (
+                    <div
+                      className={`flex items-center justify-between rounded-[12px] border p-[12px] ${changeDue > 0 ? "bg-[#EAF8EF] border-[#9DD8B2]" : cashShort > 0 ? "bg-[#FFF7E8] border-[#F6D28B]" : "bg-[#FFFFFF] border-[#CFCFD3]"}`}
+                    >
+                      <div
+                        className={`flex items-center gap-2 font-extrabold text-[14px] ${changeDue > 0 ? "text-[#179B4D]" : cashShort > 0 ? "text-[#B7791F]" : "text-[#8C8889]"}`}
+                      >
+                        <span
+                          className={`flex h-[32px] w-[32px] items-center justify-center rounded-[9px] ${changeDue > 0 ? "bg-[#DDF3E6]" : cashShort > 0 ? "bg-[#FFF1D6]" : "bg-[#F3F4F6]"}`}
+                        >
+                          <Icon name="payments" className="text-[18px]" />
+                        </span>
+                        {cashShort > 0 ? "Cash Short" : "Change Due"}
+                      </div>
+                      <div
+                        className={`font-mono text-[21px] font-extrabold ${changeDue > 0 ? "text-[#179B4D]" : cashShort > 0 ? "text-[#B7791F]" : "text-[#8C8889]"}`}
+                      >
+                        {formatNpr(cashShort > 0 ? cashShort : changeDue)}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  {paymentMethod !== "Split" && balanceDue > 0 ? (
+                    <div className="flex items-center justify-between rounded-[12px] border border-[#F6D28B] bg-[#FFF7E8] px-3 py-2.5 text-[13px] font-extrabold text-[#B7791F]">
+                      <span>Balance Due</span>
+                      <span className="font-mono">{formatNpr(balanceDue)}</span>
+                    </div>
+                  ) : null}
+
+                  <div
+                    className={`flex items-center gap-3 rounded-[12px] border px-3 py-2.5 ${
+                      paymentStateTone === "success"
+                        ? "border-[#9DD8B2] bg-[#EAF8EF]"
+                        : paymentStateTone === "warning"
+                          ? "border-[#F6D28B] bg-[#FFF7E8]"
+                          : paymentStateTone === "esewa"
+                            ? "border-[#BDE5B2] bg-[#f2faf0]"
+                            : "border-[#CFCFD3] bg-[#FFFFFF]"
+                    }`}
+                  >
+                    <span
+                      className={`flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-[9px] ${
+                        paymentStateTone === "success"
+                          ? "bg-[#DDF3E6] text-[#179B4D]"
+                          : paymentStateTone === "warning"
+                            ? "bg-[#FFF1D6] text-[#B7791F]"
+                            : paymentStateTone === "esewa"
+                              ? "bg-white text-[#60bb46]"
+                              : "bg-[#E8F2FF] text-[#2F67D8]"
+                      }`}
+                    >
+                      {paymentStateTone === "esewa" ? (
+                        <img
+                          src="/assets/images/esewa/logo.png"
+                          alt="eSewa"
+                          className="h-[22px] w-[22px] object-contain"
+                        />
+                      ) : (
+                        <Icon
+                          name={
+                            paymentMethod === "Split"
+                              ? "call_split"
+                              : paymentStatus === "Unpaid"
+                                ? "receipt_long"
+                                : paymentStatus === "Partial"
+                                  ? "pending_actions"
+                                  : "task_alt"
+                          }
+                          className="text-[18px]"
+                        />
+                      )}
+                    </span>
+                    <div className="min-w-0">
+                      <div className="text-[12px] font-extrabold text-[#000000]">
+                        {paymentStateTitle}
+                      </div>
+                      <div className="mt-0.5 truncate text-[11px] font-semibold text-[#565449]">
+                        {paymentStateDetail}
+                      </div>
                     </div>
                   </div>
                 </div>
-              )}
-
-              {billingError ? (
-                <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[8px] text-[12px] font-semibold text-[#BE123C]">
-                  {billingError}
-                </div>
-              ) : null}
+              </div>
             </div>
           </div>
 
-          <div className="flex items-center justify-end gap-3">
-            <DialogButton onClick={closePaymentFlow}>Back</DialogButton>
+          {paymentError || billingError ? (
+            <div className="rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] px-3 py-2 text-[12px] font-bold text-[#BE123C]">
+              {paymentError || billingError}
+            </div>
+          ) : null}
+        </div>
+      </ModalFrame>
+      <ModalFrame
+        open={!!priceOverrideTargetRow}
+        onClose={closePriceOverride}
+        title={isManager ? "Approve price override" : "Verify price override"}
+        description={
+          isManager
+            ? "Manager approval will be audited before this changed price becomes active."
+            : "Enter the admin PIN before this changed price becomes active in the cart."
+        }
+        maxWidthClass="max-w-[560px]"
+      >
+        {priceOverrideTargetRow ? (
+          <div className="space-y-5">
+            <div className="rounded-[18px] border border-[#CFCFD3] bg-[#F8F9FA] p-4">
+              <div className="flex items-start justify-between gap-4">
+                <div className="min-w-0">
+                  <div className="text-[15px] font-extrabold text-[#000000]">
+                    {priceOverrideTargetRow.product.name}
+                  </div>
+                  <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+                    SKU {priceOverrideTargetRow.product.sku} | Normal{" "}
+                    {formatNpr(priceOverrideTargetRow.baseUnitPrice)}
+                  </div>
+                </div>
+                <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-right">
+                  <div className="text-[10px] font-extrabold uppercase text-slate-400">
+                    Qty
+                  </div>
+                  <div className="font-mono text-[16px] font-extrabold text-[#000000]">
+                    {formatQty(priceOverrideTargetRow.qty)}
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 gap-3 sm:grid-cols-[160px_1fr]">
+              <Input
+                label="New price"
+                value={priceOverrideDraftPrice}
+                onChange={(value) => {
+                  setPriceOverrideDraftPrice(value.replace(/[^\d.]/g, ""));
+                  setPriceOverrideError("");
+                }}
+                placeholder="Sale price"
+                leftIcon="currency_rupee"
+                inputMode="decimal"
+              />
+
+              <div>
+                <label className="mb-2 block text-[11px] font-extrabold uppercase tracking-wide text-[#64748B]">
+                  Reason
+                </label>
+                <div className="relative">
+                  <select
+                    value={priceOverrideDraftReason}
+                    onChange={(event) => {
+                      setPriceOverrideDraftReason(event.target.value);
+                      setPriceOverrideError("");
+                    }}
+                    className="h-[44px] w-full appearance-none rounded-[12px] border border-[#CFCFD3] bg-white px-3 pr-10 text-[13px] font-extrabold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10"
+                    aria-label="Price override reason"
+                  >
+                    <option value="" disabled>
+                      Select valid reason
+                    </option>
+                    {PRICE_OVERRIDE_REASONS.map((reason) => (
+                      <option key={reason} value={reason}>
+                        {reason}
+                      </option>
+                    ))}
+                  </select>
+                  <Icon
+                    name="expand_more"
+                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[18px] text-[#8C8889]"
+                  />
+                </div>
+              </div>
+            </div>
+
+            {isManager ? (
+              <div className="rounded-[18px] border border-sky-200 bg-sky-50 px-4 py-3 text-[12px] font-semibold text-sky-800">
+                This manager override will be logged with the item, old price,
+                new price, quantity, and reason. Checkout will validate the
+                authorization again before final billing.
+              </div>
+            ) : (
+              <>
+                <div className="rounded-[24px] border border-[#E3E6EE] bg-white px-5 py-6 text-center shadow-[0_18px_44px_rgba(15,23,42,0.08)]">
+                  <div className="text-[24px] font-extrabold tracking-normal text-slate-900">
+                    Verification PIN
+                  </div>
+                  <div className="mt-2 text-[13px] font-semibold text-slate-500">
+                    Enter PIN to override the product price.
+                  </div>
+
+                  <div
+                    className="relative mx-auto mt-6 flex max-w-[300px] justify-center gap-3"
+                    onClick={() => priceOverridePinRef.current?.focus()}
+                  >
+                    {Array.from({ length: 4 }).map((_, index) => {
+                      const digit = priceOverrideDraftPin[index] || "";
+                      const active =
+                        priceOverrideDraftPin.length === index ||
+                        (index === 3 && priceOverrideDraftPin.length === 4);
+                      return (
+                        <div
+                          key={index}
+                          className={cn(
+                            "flex h-[58px] w-[50px] items-center justify-center rounded-[14px] border bg-[#F8FAFC] text-[24px] font-extrabold text-slate-900 transition",
+                            active
+                              ? "border-blue-500 ring-4 ring-blue-100"
+                              : "border-[#D7DCE8]",
+                          )}
+                        >
+                          {digit ? "•" : ""}
+                        </div>
+                      );
+                    })}
+                    <input
+                      ref={priceOverridePinRef}
+                      value={priceOverrideDraftPin}
+                      onChange={(event) => {
+                        setPriceOverrideDraftPin(
+                          event.target.value.replace(/\D/g, "").slice(0, 4),
+                        );
+                        setPriceOverrideError("");
+                      }}
+                      inputMode="numeric"
+                      autoComplete="off"
+                      className="absolute inset-0 h-full w-full cursor-text opacity-0"
+                      aria-label="Override PIN"
+                    />
+                  </div>
+
+                  {priceOverrideError ? (
+                    <div className="mx-auto mt-4 max-w-[360px] rounded-[14px] border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-semibold text-rose-700">
+                      {priceOverrideError}
+                    </div>
+                  ) : null}
+                </div>
+              </>
+            )}
+            {isManager && priceOverrideError ? (
+              <div className="rounded-[14px] border border-rose-200 bg-rose-50 px-3 py-2 text-[12px] font-semibold text-rose-700">
+                {priceOverrideError}
+              </div>
+            ) : null}
+
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                {priceOverrideTargetRow.overrideUnitPrice !== undefined ? (
+                  <DialogButton
+                    variant="danger"
+                    icon="undo"
+                    onClick={() => {
+                      clearPriceOverride(priceOverrideTargetRow.productId);
+                      closePriceOverride();
+                    }}
+                  >
+                    Remove override
+                  </DialogButton>
+                ) : null}
+              </div>
+              <div className="flex items-center gap-3">
+                <DialogButton onClick={closePriceOverride}>Cancel</DialogButton>
+                <DialogButton
+                  variant="primary"
+                  icon="verified_user"
+                  onClick={applyPriceOverride}
+                  disabled={priceOverrideBusy}
+                >
+                  {priceOverrideBusy
+                    ? isManager
+                      ? "Approving..."
+                      : "Verifying..."
+                    : isManager
+                      ? "Approve & Apply"
+                      : "Verify & Apply"}
+                </DialogButton>
+              </div>
+            </div>
+          </div>
+        ) : null}
+      </ModalFrame>
+
+      <ModalFrame
+        open={stockConflicts.length > 0}
+        onClose={() => {
+          setStockConflicts([]);
+          setBillingError("");
+        }}
+        title="Stock changed"
+        description="Some cart quantities are no longer available. Adjust them before checkout."
+        maxWidthClass="max-w-[760px]"
+      >
+        <div className="space-y-5">
+          <div className="rounded-[18px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[13px] font-semibold text-[#B7791F]">
+            Another sale or product update changed stock while this bill was
+            open.
+          </div>
+
+          <div className="max-h-[360px] overflow-y-auto rounded-[18px] border border-[#CFCFD3]">
+            <div className="grid grid-cols-[minmax(0,1fr)_120px_120px_160px] gap-3 border-b border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 text-[11px] font-extrabold uppercase text-[#8C8889]">
+              <div>Item</div>
+              <div className="text-right">Requested</div>
+              <div className="text-right">Available</div>
+              <div className="text-right">Action</div>
+            </div>
+
+            <div className="divide-y divide-[#E5E7EB]">
+              {stockConflicts.map((conflict) => {
+                const product = productsById.get(conflict.productId);
+                const unavailable =
+                  conflict.availableStock <= 0 ||
+                  conflict.reason === "NOT_FOUND" ||
+                  conflict.reason === "INACTIVE" ||
+                  conflict.reason === "OUT_OF_STOCK";
+
+                return (
+                  <div
+                    key={conflict.productId}
+                    className="grid grid-cols-[minmax(0,1fr)_120px_120px_160px] items-center gap-3 px-4 py-3 text-[13px]"
+                  >
+                    <div className="min-w-0">
+                      <div className="truncate font-extrabold text-[#000000]">
+                        {conflict.productName}
+                      </div>
+                      <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                        {conflict.sku || product?.sku ? (
+                          <span>SKU {conflict.sku || product?.sku}</span>
+                        ) : null}
+                        <span>
+                          {conflict.reason === "INACTIVE"
+                            ? "Inactive"
+                            : conflict.reason === "NOT_FOUND"
+                              ? "Not found"
+                              : unavailable
+                                ? "Unavailable"
+                                : "Reduce quantity"}
+                        </span>
+                      </div>
+                    </div>
+                    <div className="text-right font-mono font-extrabold text-[#000000]">
+                      {formatQtyWithUnit(
+                        conflict.requestedQty,
+                        product?.saleUnit,
+                      )}
+                    </div>
+                    <div
+                      className={cn(
+                        "text-right font-mono font-extrabold",
+                        unavailable ? "text-[#BE123C]" : "text-[#B7791F]",
+                      )}
+                    >
+                      {formatQtyWithUnit(
+                        conflict.availableStock,
+                        product?.saleUnit,
+                      )}
+                    </div>
+                    <div className="flex justify-end">
+                      <button
+                        type="button"
+                        onClick={() => applyStockConflictSuggestion(conflict)}
+                        className={cn(
+                          "h-[34px] rounded-[12px] border px-3 text-[12px] font-extrabold transition",
+                          unavailable
+                            ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100"
+                            : "border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F] hover:bg-amber-100",
+                        )}
+                      >
+                        {unavailable
+                          ? "Remove"
+                          : `Reduce to ${formatQty(conflict.availableStock)}`}
+                      </button>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+
+          <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
             <DialogButton
-              onClick={confirm}
-              variant={paymentMethod === "eSewa" ? "primary" : "primary"}
-              icon={
-                paymentStatus === "Unpaid"
-                  ? "receipt_long"
-                  : paymentMethod === "eSewa"
-                    ? "qr_code_2"
-                    : "check_circle"
-              }
-              disabled={!canConfirm || submitting}
+              onClick={() => void refreshStockConflictList()}
+              disabled={stockRefreshBusy}
+              icon="sync"
             >
-              {submitting
-                ? "Creating..."
-                : paymentStatus === "Paid"
-                  ? `Pay ${formatNpr(grandTotal)}`
-                  : paymentStatus === "Partial"
-                    ? `Confirm ${formatNpr(effectivePaidAmount)}`
-                    : "Create Unpaid Invoice"}
+              {stockRefreshBusy ? "Refreshing..." : "Refresh Stock"}
+            </DialogButton>
+            <DialogButton
+              onClick={applyAllStockConflictSuggestions}
+              variant="primary"
+              icon="done_all"
+            >
+              Apply Suggestions
             </DialogButton>
           </div>
         </div>
       </ModalFrame>
+
+      <ModalFrame
+        open={showParkedBills}
+        onClose={() => setShowParkedBills(false)}
+        title="Held bills"
+        description="Resume a parked bill or discard old drafts."
+        maxWidthClass="max-w-[720px]"
+        compact
+      >
+        <div className="space-y-3">
+          <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill
+                tone={visibleParkedDrafts.length > 0 ? "orange" : "neutral"}
+              >
+                {visibleParkedDrafts.length} held
+              </Pill>
+              {cart.length > 0 ? (
+                <Pill tone="sky">Current cart auto-parks on resume</Pill>
+              ) : null}
+            </div>
+            <Button
+              size="sm"
+              onClick={() => void loadParkedDrafts()}
+              icon="sync"
+              disabled={parkedBusy}
+            >
+              Refresh
+            </Button>
+          </div>
+
+          {parkedError ? (
+            <div className="rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] px-[10px] py-[7px] text-[12px] font-semibold text-[#BE123C]">
+              {parkedError}
+            </div>
+          ) : null}
+
+          <div className="max-h-[420px] overflow-y-auto rounded-[14px] border border-[#CFCFD3]">
+            {visibleParkedDrafts.length === 0 ? (
+              <div className="flex min-h-[150px] flex-col items-center justify-center px-5 py-8 text-center">
+                <Icon
+                  name="pending_actions"
+                  className="mb-2 text-[36px] text-slate-300"
+                />
+                <div className="text-[14px] font-extrabold text-slate-700">
+                  No held bills
+                </div>
+                <div className="mt-1 text-[12px] font-semibold text-slate-400">
+                  Park the current cart to serve another customer and resume it
+                  later.
+                </div>
+              </div>
+            ) : (
+              <div className="divide-y divide-[#E5E7EB]">
+                {visibleParkedDrafts.map((draft) => {
+                  const units = getParkedDraftUnitCount(draft);
+                  const parkedAt = draft.parkedAt
+                    ? new Date(draft.parkedAt).toLocaleString()
+                    : "Recently parked";
+                  const preview = (draft.items || [])
+                    .slice(0, 2)
+                    .map((item) => item.product?.name || item.productId)
+                    .join(", ");
+
+                  return (
+                    <div
+                      key={draft.id}
+                      className="grid gap-3 px-3 py-3 md:grid-cols-[minmax(0,1fr)_190px]"
+                    >
+                      <div className="min-w-0">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="truncate text-[14px] font-extrabold text-[#000000]">
+                            {getParkedDraftTitle(draft)}
+                          </div>
+                          {draft.invoiceNo ? (
+                            <Pill tone="neutral">{draft.invoiceNo}</Pill>
+                          ) : null}
+                        </div>
+                        <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+                          {draft.customer?.name || "Walk-in Customer"} |{" "}
+                          {parkedAt}
+                        </div>
+                        <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-semibold text-[#565449]">
+                          <span className="rounded-[7px] border border-[#CFCFD3] bg-[#F3F4F6] px-2 py-0.5">
+                            {(draft.items || []).length} line(s)
+                          </span>
+                          <span className="rounded-[7px] border border-[#CFCFD3] bg-[#F3F4F6] px-2 py-0.5">
+                            {formatQty(units)} total qty
+                          </span>
+                          <span className="rounded-[7px] border border-[#CFCFD3] bg-[#F3F4F6] px-2 py-0.5">
+                            {formatNpr(Number(draft.subTotal || 0))}
+                          </span>
+                        </div>
+                        {preview ? (
+                          <div className="mt-1.5 truncate text-[12px] font-medium text-[#8C8889]">
+                            {preview}
+                            {(draft.items || []).length > 2
+                              ? ` + ${(draft.items || []).length - 2} more`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+
+                      <div className="flex items-center justify-end gap-2">
+                        <Button
+                          size="sm"
+                          variant="secondary"
+                          icon="delete"
+                          disabled={parkedBusy}
+                          onClick={() => setPendingDiscardParked(draft)}
+                        >
+                          Discard
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="primary"
+                          icon="open_in_new"
+                          disabled={parkedBusy}
+                          onClick={() => void resumeParkedBill(draft)}
+                        >
+                          Resume
+                        </Button>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        </div>
+      </ModalFrame>
+
+      <ModalFrame
+        open={!!pendingStaleResume}
+        onClose={() => setPendingStaleResume(null)}
+        title="Review held bill changes"
+        description="Prices or available stock changed since this bill was parked."
+        maxWidthClass="max-w-[760px]"
+        footer={
+          <>
+            <DialogButton
+              onClick={() => void discardPendingStaleResume()}
+              variant="danger"
+              icon="delete"
+              disabled={parkedBusy}
+            >
+              Discard Held Bill
+            </DialogButton>
+            <DialogButton
+              onClick={() => {
+                if (pendingStaleResume)
+                  void loadResumedParkedDraft(pendingStaleResume);
+              }}
+              variant="primary"
+              icon="check_circle"
+              disabled={parkedBusy}
+            >
+              Continue With Current Data
+            </DialogButton>
+          </>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-[16px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[13px] font-semibold text-[#B7791F]">
+            Continuing will use the latest product prices and available stock
+            shown in billing. Review any quantity reductions before checkout.
+          </div>
+
+          <div className="max-h-[360px] overflow-y-auto rounded-[18px] border border-[#CFCFD3]">
+            <div className="grid grid-cols-[minmax(0,1fr)_110px_110px_120px] gap-3 border-b border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 text-[11px] font-extrabold uppercase text-[#8C8889]">
+              <div>Item</div>
+              <div className="text-right">Parked</div>
+              <div className="text-right">Current</div>
+              <div className="text-right">Available</div>
+            </div>
+            <div className="divide-y divide-[#E5E7EB]">
+              {(pendingStaleResume?.staleWarnings || []).map((warning) => (
+                <div
+                  key={`${warning.productId}-${warning.warnings.join("-")}`}
+                  className="grid grid-cols-[minmax(0,1fr)_110px_110px_120px] items-center gap-3 px-4 py-3 text-[13px]"
+                >
+                  <div className="min-w-0">
+                    <div className="truncate font-extrabold text-[#000000]">
+                      {warning.productName}
+                    </div>
+                    <div className="mt-1 flex flex-wrap gap-1">
+                      {warning.warnings.map((item) => (
+                        <span
+                          key={item}
+                          className="rounded-full bg-[#E8F2FF] px-2 py-0.5 text-[10px] font-extrabold uppercase text-[#2563EB]"
+                        >
+                          {item}
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  <div className="text-right font-mono font-extrabold text-[#565449]">
+                    {formatNpr(warning.parkedUnitPrice)}
+                  </div>
+                  <div
+                    className={cn(
+                      "text-right font-mono font-extrabold",
+                      warning.currentUnitPrice !== warning.parkedUnitPrice
+                        ? "text-[#B7791F]"
+                        : "text-[#565449]",
+                    )}
+                  >
+                    {formatNpr(warning.currentUnitPrice)}
+                  </div>
+                  <div
+                    className={cn(
+                      "text-right font-mono font-extrabold",
+                      warning.availableStock < warning.qty
+                        ? "text-[#BE123C]"
+                        : "text-[#0F766E]",
+                    )}
+                  >
+                    {formatQty(warning.availableStock)}
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      </ModalFrame>
+
+      {pendingBillingConfirmConfig ? (
+        <ConfirmDialog
+          open={!!pendingBillingConfirmConfig}
+          title={pendingBillingConfirmConfig.title}
+          message={pendingBillingConfirmConfig.message}
+          confirmLabel={pendingBillingConfirmConfig.confirmLabel}
+          onConfirm={pendingBillingConfirmConfig.onConfirm}
+          onClose={() => setPendingBillingConfirm(null)}
+          tone={pendingBillingConfirmConfig.tone}
+          icon={pendingBillingConfirmConfig.icon}
+          details={pendingBillingConfirmConfig.details}
+          busy={submitting || stockRefreshBusy || parkedBusy}
+        />
+      ) : null}
+
+      {pendingDiscardParked ? (
+        <ConfirmDialog
+          open={!!pendingDiscardParked}
+          title="Discard held bill?"
+          message="This parked draft will be permanently removed from Held Bills."
+          confirmLabel="Discard Bill"
+          onConfirm={confirmDiscardParkedBill}
+          onClose={() => setPendingDiscardParked(null)}
+          tone="danger"
+          icon="delete"
+          details={
+            <div className="space-y-2">
+              <div className="flex items-center justify-between gap-3">
+                <span>Bill</span>
+                <span className="font-extrabold text-slate-900">
+                  {getParkedDraftTitle(pendingDiscardParked)}
+                </span>
+              </div>
+              <div className="flex items-center justify-between gap-3">
+                <span>Items</span>
+                <span className="font-extrabold text-slate-900">
+                  {(pendingDiscardParked.items || []).length} line(s),{" "}
+                  {formatQty(getParkedDraftUnitCount(pendingDiscardParked))}{" "}
+                  total qty
+                </span>
+              </div>
+            </div>
+          }
+          busy={parkedBusy}
+        />
+      ) : null}
 
       <SuccessDialog
         open={showSuccess}
@@ -1681,12 +5461,20 @@ export default function BillingPage() {
         actionLabel="Continue Billing"
         secondaryAction={
           lastCreatedInvoiceId ? (
-            <DialogButton
-              onClick={() => openInvoicePrint(lastCreatedInvoiceId)}
-              icon="print"
-            >
-              Print Invoice
-            </DialogButton>
+            <div className="flex flex-wrap gap-2">
+              <DialogButton
+                onClick={() => openInvoicePrint(lastCreatedInvoiceId)}
+                icon="print"
+              >
+                Print Invoice
+              </DialogButton>
+              <DialogButton
+                onClick={() => openInvoiceReceiptPrint(lastCreatedInvoiceId)}
+                icon="receipt_long"
+              >
+                Receipt
+              </DialogButton>
+            </div>
           ) : null
         }
       />

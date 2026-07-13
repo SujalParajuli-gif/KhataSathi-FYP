@@ -4,7 +4,28 @@ import multer from "multer";
 import path from "path";
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
-import { list, getOne, create, update, deactivate, categories, importCsv } from "./controller";
+import {
+  list,
+  getOne,
+  create,
+  update,
+  deactivate,
+  categories,
+  importCsv,
+  importFromDocument,
+  importImage,
+  importPdf,
+  getImportBatch,
+  listImportBatches,
+  deleteImportBatch,
+  importReviewedBatchRows,
+  listImportTemplates,
+  saveImportTemplate,
+  deleteImportTemplate,
+  bulkPriceUpdate,
+  deleteSafety,
+  permanentDelete,
+} from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 
@@ -29,15 +50,28 @@ router.use(authGuard); // all product routes require authentication
 
 router.get("/", list); // listing products with optional filters (search, brand, category, etc.)
 router.get("/categories", categories); // returning all unique product categories
+router.get("/import-batches", requireRole("ADMIN", "MANAGER"), listImportBatches); // recent CSV/PDF/image import batches
+router.get("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), getImportBatch); // returning extracted import rows for review
+router.delete("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), deleteImportBatch); // deleting import review history only, not products
+router.get("/import-templates", requireRole("ADMIN", "MANAGER"), listImportTemplates); // saved supplier column mappings
+router.post("/import-templates", requireRole("ADMIN", "MANAGER"), saveImportTemplate); // create/update supplier import mapping
+router.delete("/import-templates/:id", requireRole("ADMIN", "MANAGER"), deleteImportTemplate); // remove supplier import mapping
+router.post("/", requireRole("ADMIN", "MANAGER"), create); // admin and managers can create new products
+router.post("/bulk-price-update", requireRole("ADMIN", "MANAGER"), bulkPriceUpdate); // audited seasonal/bulk price updates
+router.post("/import-csv", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importCsv); // admin and managers can bulk import products from CSV
+router.post("/import-pdf", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importPdf); // admin and managers can create PDF import previews
+router.post("/import-image", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importImage); // image rate-list import via optional AI parser
+router.post("/import-documents/:documentId", requireRole("ADMIN", "MANAGER"), importFromDocument); // open an import review from an uploaded Documents inbox file
+router.post("/import-batches/:batchId/import", requireRole("ADMIN", "MANAGER"), importReviewedBatchRows); // admin and managers can import reviewed rows
+router.get("/:id/delete-safety", requireRole("ADMIN", "MANAGER"), deleteSafety); // explains whether a product can be permanently deleted
+router.delete("/:id", requireRole("ADMIN"), permanentDelete); // admin-only permanent delete for safe mistake records
 router.get("/:id", getOne); // fetching a single product with its brand info
-router.post("/", requireRole("ADMIN"), create); // only admin can create new products
-router.post("/import-csv", requireRole("ADMIN"), csvUpload.single("file"), importCsv); // only admin can bulk import products from CSV
-router.put("/:id", requireRole("ADMIN"), update); // only admin can edit product info
-router.patch("/:id/deactivate", requireRole("ADMIN"), deactivate); // only admin can deactivate products
+router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can edit product info
+router.patch("/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivate); // admin and managers can deactivate products
 
 // handling product image upload — admin uploads a new product image
 // the handler is inline because it directly uses prisma and file cleanup logic
-router.post("/:id/image", requireRole("ADMIN"), imgUpload.single("image"), async (req, res) => {
+router.post("/:id/image", requireRole("ADMIN", "MANAGER"), imgUpload.single("image"), async (req, res) => {
   try {
     if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
     const imageUrl = `/uploads/products/${req.file.filename}`; // building the public URL for the new image

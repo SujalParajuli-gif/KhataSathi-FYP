@@ -1,5 +1,11 @@
 import { Request, Response } from "express";
 import * as invoiceService from "./service";
+import { formatZodIssues } from "../../lib/requestValidation";
+import {
+  checkoutBodySchema,
+  finalizeBodySchema,
+  priceOverrideAuthorizationBodySchema,
+} from "./validation";
 
 // validating that a value is a positive whole number (at least 1)
 // we use this for quantities and pagination parameters
@@ -29,6 +35,17 @@ function parseOptionalNonNegativeNumber(value: unknown, label: string) {
   return normalized;
 }
 
+function sendStockConflict(res: Response, err: any) {
+  if (!(err instanceof invoiceService.StockConflictError)) return false;
+
+  res.status(409).json({
+    error: err.message,
+    code: err.code,
+    conflicts: err.conflicts,
+  });
+  return true;
+}
+
 // creating a new draft invoice for the current cashier
 // the cashier can optionally link a customer at creation time
 export async function createDraft(req: Request, res: Response) {
@@ -44,6 +61,275 @@ export async function createDraft(req: Request, res: Response) {
       return;
     }
     console.error("Create draft error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// atomic checkout for POS billing: invoice creation, items, finalization, and initial payment in one backend flow
+export async function checkout(req: Request, res: Response) {
+  try {
+    const parsed = checkoutBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid checkout payload",
+        details: formatZodIssues(parsed.error),
+      });
+      return;
+    }
+    const body = parsed.data;
+
+    const result = await invoiceService.checkoutInvoice(req.user!.id, {
+      draftInvoiceId: body.draftInvoiceId,
+      customerId: body.customerId,
+      items: body.items,
+      discountAmount: body.discountAmount,
+      overridePin: body.overridePin,
+      notes: body.notes,
+      payment: body.payment,
+      payments: body.payments,
+    });
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
+
+    if (
+      err.message.includes("Checkout") ||
+      err.message.includes("productId") ||
+      err.message.includes("qty") ||
+      err.message.includes("Payment") ||
+      err.message.includes("payment.method") ||
+      err.message.includes("Discount amount") ||
+      err.message.includes("Customer") ||
+      err.message.includes("Product") ||
+      err.message.includes("stock") ||
+      err.message.includes("Insufficient") ||
+      err.message.includes("empty") ||
+      err.message.includes("Overpayment") ||
+      err.message.includes("Zero-total") ||
+      err.message.includes("Parked bill") ||
+      err.message.includes("draft") ||
+      err.message.includes("checked out") ||
+      err.message.includes("fully paid") ||
+      err.message.includes("cancelled") ||
+      err.message.includes("remaining due") ||
+      err.message.includes("PIN") ||
+      err.message.includes("authorized") ||
+      err.message.includes("not active")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+
+    if (err.message.includes("unique invoice number")) {
+      res.status(409).json({ error: err.message });
+      return;
+    }
+
+    console.error("Checkout error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function authorizePriceOverride(req: Request, res: Response) {
+  try {
+    const parsed = priceOverrideAuthorizationBodySchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid price override payload",
+        details: formatZodIssues(parsed.error),
+      });
+      return;
+    }
+    const body = parsed.data;
+
+    const authorization = await invoiceService.createPriceOverrideAuthorization(
+      req.user!.id,
+      {
+        productId: body.productId,
+        customerId: body.customerId,
+        qty: body.qty,
+        overrideUnitPrice: body.overrideUnitPrice,
+        overrideReason: body.overrideReason,
+        pin: body.pin,
+      },
+    );
+
+    res.status(201).json(authorization);
+  } catch (err: any) {
+    if (
+      err.message.includes("Product") ||
+      err.message.includes("Customer") ||
+      err.message.includes("qty") ||
+      err.message.includes("Quantity") ||
+      err.message.includes("Override") ||
+      err.message.includes("PIN") ||
+      err.message.includes("authorized") ||
+      err.message.includes("inactive") ||
+      err.message.includes("price")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+
+    console.error("Authorize price override error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function park(req: Request, res: Response) {
+  try {
+    const draft = await invoiceService.parkDraft(req.user!.id, {
+      replaceDraftInvoiceId: req.body?.replaceDraftInvoiceId,
+      customerId: req.body?.customerId,
+      label: req.body?.label,
+      items: req.body?.items,
+    });
+    res.status(201).json(draft);
+  } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
+
+    if (
+      err.message.includes("Checkout") ||
+      err.message.includes("productId") ||
+      err.message.includes("qty") ||
+      err.message.includes("Customer") ||
+      err.message.includes("Product") ||
+      err.message.includes("stock") ||
+      err.message.includes("Insufficient")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Park draft error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function listParked(req: Request, res: Response) {
+  try {
+    const drafts = await invoiceService.listParkedDrafts(
+      req.user!.id,
+      req.user!.role,
+    );
+    res.json({ drafts });
+  } catch (err) {
+    console.error("List parked drafts error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function resumeParked(req: Request, res: Response) {
+  try {
+    const draft = await invoiceService.resumeParkedDraft(
+      String(req.params.id),
+      req.user!.id,
+    );
+    res.json(draft);
+  } catch (err: any) {
+    if (
+      err.message.includes("Parked bill") ||
+      err.message.includes("parked draft")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Resume parked draft error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function discardParked(req: Request, res: Response) {
+  try {
+    const result = await invoiceService.discardParkedDraft(
+      String(req.params.id),
+      req.user!.id,
+      req.user!.role,
+    );
+    res.json(result);
+  } catch (err: any) {
+    if (
+      err.message.includes("Parked bill") ||
+      err.message.includes("parked draft")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Discard parked draft error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function transferParked(req: Request, res: Response) {
+  try {
+    const targetCashierId = String(req.body?.cashierId || "").trim();
+    if (!targetCashierId) {
+      res.status(400).json({ error: "cashierId is required" });
+      return;
+    }
+
+    const draft = await invoiceService.transferParkedDraft(
+      String(req.params.id),
+      req.user!.id,
+      targetCashierId,
+    );
+    res.json(draft);
+  } catch (err: any) {
+    if (
+      err.message.includes("Parked bill") ||
+      err.message.includes("parked draft") ||
+      err.message.includes("cashier")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Transfer parked draft error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function modifyFinalized(req: Request, res: Response) {
+  try {
+    const discountAmount = parseOptionalNonNegativeNumber(
+      req.body?.discountAmount,
+      "Discount amount",
+    );
+
+    const result = await invoiceService.modifyFinalizedInvoice(
+      String(req.params.id),
+      req.user!.id,
+      {
+        customerId: req.body?.customerId,
+        discountAmount,
+        overridePin: req.body?.overridePin,
+        reason: req.body?.reason,
+        items: req.body?.items,
+      },
+    );
+
+    res.status(201).json(result);
+  } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
+
+    if (
+      err.message.includes("Invoice") ||
+      err.message.includes("Customer") ||
+      err.message.includes("Product") ||
+      err.message.includes("stock") ||
+      err.message.includes("Insufficient") ||
+      err.message.includes("return/refund") ||
+      err.message.includes("qty") ||
+      err.message.includes("productId") ||
+      err.message.includes("Discount amount") ||
+      err.message.includes("PIN") ||
+      err.message.includes("authorized") ||
+      err.message.includes("not active")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+
+    console.error("Modify finalized invoice error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -191,17 +477,23 @@ export async function finalize(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
     const userId = req.user!.id; // the user performing the finalization — logged in the audit trail
-    const discountAmount = parseOptionalNonNegativeNumber(
-      req.body?.discountAmount,
-      "Discount amount",
-    );
+    const parsed = finalizeBodySchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid invoice finalization payload",
+        details: formatZodIssues(parsed.error),
+      });
+      return;
+    }
     const invoice = await invoiceService.finalizeInvoice(
       invoiceId,
       userId,
-      discountAmount,
+      parsed.data.discountAmount,
     );
     res.json(invoice);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
+
     // checking for various finalization errors — insufficient stock, already finalized, empty invoice, etc.
     if (
       err.message.includes("Discount amount") ||
@@ -231,12 +523,37 @@ export async function cancel(req: Request, res: Response) {
     if (
       err.message.includes("not found") ||
       err.message.includes("finalized") ||
-      err.message.includes("cancelled")
+      err.message.includes("cancelled") ||
+      err.message.includes("return/refund")
     ) {
       res.status(400).json({ error: err.message });
       return;
     }
     console.error("Cancel invoice error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// soft-deleting a cancelled invoice — admin only
+// the invoice record is preserved in the database with a deletedAt timestamp
+// but no longer appears in default invoice listings
+export async function softDelete(req: Request, res: Response) {
+  try {
+    const result = await invoiceService.softDeleteInvoice(
+      String(req.params.id),
+      req.user!.id,
+    );
+    res.json(result);
+  } catch (err: any) {
+    if (
+      err.message.includes("not found") ||
+      err.message.includes("cancelled") ||
+      err.message.includes("deleted")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Soft delete invoice error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

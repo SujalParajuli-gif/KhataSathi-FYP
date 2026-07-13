@@ -11,6 +11,10 @@ import {
   toBusinessRangeStart,
 } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
+import {
+  getBusinessSettings,
+  resolveLowStockThreshold,
+} from "../settings/service";
 
 const DAY_MS = 24 * 60 * 60 * 1000; // milliseconds in a day — used for calculating date spans
 const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA"]; // all payment methods our system supports
@@ -27,6 +31,12 @@ export type AnalyticsFilters = {
   to: string; // YYYY-MM-DD end date
   cashierId?: string; // optional filter by specific cashier
   paymentStatus?: PaymentStatusInvoice; // optional filter by payment status
+};
+
+export type AnalyticsReportOptions = {
+  viewerRole?: string;
+  includeOperations?: boolean;
+  now?: Date;
 };
 
 // the time granularity for the sales-over-time chart — hour for single day, day for up to 45 days, week for longer
@@ -54,9 +64,48 @@ type PaymentDistributionSlice = {
 
 type ReportInvoice = Awaited<ReturnType<typeof getReportInvoices>>[number];
 
+const MANAGER_FORBIDDEN_REPORT_KEYS = new Set([
+  "cost",
+  "billamount",
+  "costprice",
+  "grossprofit",
+  "margin",
+  "markuppercentage",
+  "profit",
+  "profitmargin",
+  "rateperpiece",
+  "suppliercost",
+  "suppliercosthistory",
+]);
+
 // rounding to 2 decimal places for all currency calculations
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+function isManagerRole(role?: string) {
+  return String(role || "").toUpperCase() === "MANAGER";
+}
+
+export function sanitizeManagerAnalyticsReport<T>(value: T): T {
+  if (value === null || value === undefined) return value;
+  if (value instanceof Date) return value;
+  if (Array.isArray(value)) {
+    return value.map((item) => sanitizeManagerAnalyticsReport(item)) as T;
+  }
+  if (typeof value !== "object") return value;
+
+  const next: Record<string, unknown> = {};
+  for (const [key, nestedValue] of Object.entries(value as Record<string, unknown>)) {
+    if (MANAGER_FORBIDDEN_REPORT_KEYS.has(key.toLowerCase())) continue;
+    next[key] = sanitizeManagerAnalyticsReport(nestedValue);
+  }
+
+  return next as T;
+}
+
+function applyRoleReportPolicy<T>(report: T, role?: string) {
+  return isManagerRole(role) ? sanitizeManagerAnalyticsReport(report) : report;
 }
 
 // formatting a date as "Apr 18" style for the chart x-axis labels
@@ -272,6 +321,7 @@ async function getReportInvoices(where: Prisma.InvoiceWhereInput) {
           id: true,
           method: true,
           amount: true,
+          kind: true,
           status: true,
           reference: true,
           createdAt: true,
@@ -310,16 +360,278 @@ function buildWhereClause({
   return where;
 }
 
+function toPublicStockProduct(
+  product: {
+    id: string;
+    name: string;
+    sku: string;
+    stock: number;
+    lowStockThreshold: number;
+    usesDefaultLowStockThreshold?: boolean | null;
+    brand?: { name: string } | null;
+  },
+  settings: Awaited<ReturnType<typeof getBusinessSettings>>,
+) {
+  const lowStockThreshold = resolveLowStockThreshold(product, settings);
+
+  return {
+    id: product.id,
+    name: product.name,
+    sku: product.sku,
+    brandName: product.brand?.name || "Unbranded",
+    stock: product.stock,
+    lowStockThreshold,
+  };
+}
+
+async function getOperationalDashboardMetrics({
+  startAt,
+  endAt,
+  now,
+}: {
+  startAt: Date;
+  endAt: Date;
+  now: Date;
+}) {
+  const slowMovingStartAt = toBusinessRangeStart(
+    addBusinessDays(startOfBusinessDay(now), -13),
+  );
+  const recentStockReceiveStartAt = toBusinessRangeStart(
+    addBusinessDays(startOfBusinessDay(now), -6),
+  );
+  const activeProductWhere = { isActive: true };
+  const slowMovingWhere: Prisma.ProductWhereInput = {
+    isActive: true,
+    invoiceItems: {
+      none: {
+        invoice: {
+          status: "FINALIZED",
+          finalizedAt: { gte: slowMovingStartAt },
+        },
+      },
+    },
+  };
+
+  const [
+    settings,
+    activeProducts,
+    slowMovingProductsRaw,
+    slowMovingCount,
+    openDrawers,
+    parkedBillCount,
+    recentParkedBills,
+    pendingDiscountRequestCount,
+    recentPendingDiscountRequests,
+    returnsInRange,
+    pendingReturnRequestCount,
+    recentStockReceivesRaw,
+  ] = await Promise.all([
+    getBusinessSettings(),
+    prisma.product.findMany({
+      where: activeProductWhere,
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        stock: true,
+        lowStockThreshold: true,
+        usesDefaultLowStockThreshold: true,
+        brand: { select: { name: true } },
+      },
+      orderBy: { stock: "asc" },
+    }),
+    prisma.product.findMany({
+      where: slowMovingWhere,
+      select: {
+        id: true,
+        name: true,
+        sku: true,
+        stock: true,
+        lowStockThreshold: true,
+        usesDefaultLowStockThreshold: true,
+        brand: { select: { name: true } },
+      },
+      orderBy: { updatedAt: "asc" },
+      take: 10,
+    }),
+    prisma.product.count({ where: slowMovingWhere }),
+    prisma.cashDrawer.findMany({
+      where: { status: "OPEN" },
+      select: {
+        id: true,
+        openedAt: true,
+        openingFloat: true,
+        expectedTotal: true,
+        cashSalesTotal: true,
+        cashier: { select: { id: true, name: true } },
+      },
+      orderBy: { openedAt: "desc" },
+    }),
+    prisma.invoice.count({
+      where: {
+        status: "DRAFT",
+        parkedAt: { not: null },
+      },
+    }),
+    prisma.invoice.findMany({
+      where: {
+        status: "DRAFT",
+        parkedAt: { not: null },
+      },
+      select: {
+        id: true,
+        invoiceNo: true,
+        parkedLabel: true,
+        parkedAt: true,
+        netTotal: true,
+        cashier: { select: { id: true, name: true } },
+      },
+      orderBy: { parkedAt: "desc" },
+      take: 5,
+    }),
+    prisma.customerDiscountRequest.count({ where: { status: "PENDING" } }),
+    prisma.customerDiscountRequest.findMany({
+      where: { status: "PENDING" },
+      select: {
+        id: true,
+        customerName: true,
+        discountType: true,
+        discountPercent: true,
+        createdAt: true,
+        requestedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    }),
+    prisma.returnRequest.findMany({
+      where: {
+        createdAt: { gte: startAt, lte: endAt },
+      },
+      select: {
+        id: true,
+        status: true,
+        refundAmount: true,
+        refundMethod: true,
+        createdAt: true,
+        invoice: { select: { id: true, invoiceNo: true } },
+        createdBy: { select: { id: true, name: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    }),
+    prisma.returnRequest.count({ where: { status: "PENDING" } }),
+    prisma.stockReceiveBatch.findMany({
+      where: {
+        createdAt: { gte: recentStockReceiveStartAt },
+      },
+      select: {
+        id: true,
+        supplierName: true,
+        billNumber: true,
+        createdAt: true,
+        createdBy: { select: { id: true, name: true } },
+        transactions: {
+          select: {
+            qtyDelta: true,
+            product: { select: { id: true, name: true, sku: true } },
+          },
+          orderBy: { createdAt: "asc" },
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 5,
+    }),
+  ]);
+
+  const stockProducts = activeProducts.map((product) =>
+    toPublicStockProduct(product, settings),
+  );
+  const lowStockProducts = stockProducts.filter(
+    (product) => product.stock <= product.lowStockThreshold,
+  );
+  const outOfStockProducts = stockProducts.filter((product) => product.stock <= 0);
+  const slowMovingProducts = slowMovingProductsRaw.map((product) =>
+    toPublicStockProduct(product, settings),
+  );
+  const approvedReturns = returnsInRange.filter(
+    (request) => request.status === "APPROVED",
+  );
+
+  return {
+    generatedAt: new Date().toISOString(),
+    stock: {
+      lowStockCount: lowStockProducts.length,
+      outOfStockCount: outOfStockProducts.length,
+      slowMovingCount,
+      lowStockProducts: lowStockProducts.slice(0, 10),
+      outOfStockProducts: outOfStockProducts.slice(0, 10),
+      slowMovingProducts,
+    },
+    cashDrawers: {
+      openCount: openDrawers.length,
+      openDrawers,
+    },
+    parkedBills: {
+      count: parkedBillCount,
+      recent: recentParkedBills,
+    },
+    discountRequests: {
+      pendingCount: pendingDiscountRequestCount,
+      recent: recentPendingDiscountRequests,
+    },
+    returns: {
+      count: returnsInRange.length,
+      pendingCount: pendingReturnRequestCount,
+      approvedCount: approvedReturns.length,
+      refundAmount: roundCurrency(
+        approvedReturns.reduce(
+          (sum, request) => sum + Number(request.refundAmount || 0),
+          0,
+        ),
+      ),
+      recent: returnsInRange.slice(0, 5),
+    },
+    recentStockReceives: recentStockReceivesRaw.map((batch) => ({
+      id: batch.id,
+      supplierName: batch.supplierName,
+      billNumber: batch.billNumber,
+      createdAt: batch.createdAt,
+      createdBy: batch.createdBy,
+      lineCount: batch.transactions.length,
+      totalQty: batch.transactions.reduce(
+        (sum, transaction) => sum + Number(transaction.qtyDelta || 0),
+        0,
+      ),
+      products: batch.transactions.slice(0, 3).map((transaction) => ({
+        id: transaction.product.id,
+        name: transaction.product.name,
+        sku: transaction.product.sku,
+        qty: transaction.qtyDelta,
+      })),
+    })),
+  };
+}
+
 // summing the total quantity of all items in a single invoice
 function sumInvoiceItemQty(invoice: ReportInvoice) {
   return invoice.items.reduce((sum, item) => sum + item.qty, 0);
 }
 
 // summing only successful payments for an invoice — pending and failed payments do not count
+function isSuccessfulChargePayment(payment: {
+  status: string;
+  kind?: string | null;
+}) {
+  return (
+    payment.status === "SUCCESS" &&
+    String(payment.kind || "CHARGE").toUpperCase() !== "REFUND"
+  );
+}
+
 function sumSuccessfulPayments(invoice: ReportInvoice) {
   return roundCurrency(
     invoice.payments
-      .filter((payment) => payment.status === "SUCCESS")
+      .filter(isSuccessfulChargePayment)
       .reduce((sum, payment) => sum + payment.amount, 0),
   );
 }
@@ -332,7 +644,10 @@ function sumSuccessfulPayments(invoice: ReportInvoice) {
 // - per-product, per-brand, per-customer, per-cashier breakdowns
 // - payment method distribution for the pie chart
 // - summary totals for the metric cards
-export async function getAnalyticsReport(input: AnalyticsFilters) {
+export async function getAnalyticsReport(
+  input: AnalyticsFilters,
+  options: AnalyticsReportOptions = {},
+) {
   const normalized = normalizeAnalyticsFilters(input);
   const granularity = resolveBucketGranularity(
     normalized.fromDate,
@@ -538,7 +853,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
 
     // accumulating per-payment-method metrics for the pie chart
     for (const payment of invoice.payments) {
-      if (payment.status !== "SUCCESS") continue; // only counting successful payments
+      if (!isSuccessfulChargePayment(payment)) continue; // only counting successful sale payments
       const slice = paymentMap.get(payment.method);
       if (!slice) continue;
 
@@ -663,7 +978,7 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
   });
 
   // returning the complete analytics report — the frontend renders all of this on the dashboard
-  return {
+  const report = {
     filters: normalized.filters,
     meta: {
       generatedAt: new Date().toISOString(),
@@ -710,6 +1025,22 @@ export async function getAnalyticsReport(input: AnalyticsFilters) {
     paymentDistribution, // for the pie chart
     brandPerformance,
   };
+
+  if (options.includeOperations) {
+    return applyRoleReportPolicy(
+      {
+        ...report,
+        operations: await getOperationalDashboardMetrics({
+          startAt: normalized.startAt,
+          endAt: normalized.endAt,
+          now: options.now || new Date(),
+        }),
+      },
+      options.viewerRole,
+    );
+  }
+
+  return applyRoleReportPolicy(report, options.viewerRole);
 }
 
 // --

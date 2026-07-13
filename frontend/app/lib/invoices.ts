@@ -5,11 +5,17 @@ export type PaymentMethodLabel = "Cash" | "eSewa" | "None";
 // the shape of each item inside an invoice — used for the invoice detail modal
 export type InvoiceItemSummary = {
   id: string;
+  productId?: string;
   name: string;
   sku?: string;
   barcode?: string;
   qty: number;
   unitPrice: number;
+  originalUnitPrice?: number;
+  overrideUnitPrice?: number;
+  overrideReason?: string;
+  overrideByName?: string;
+  overrideAt?: string;
   lineTotal: number;
 };
 
@@ -17,9 +23,30 @@ export type InvoiceItemSummary = {
 export type InvoicePaymentSummary = {
   id: string;
   method: PaymentMethodLabel;
+  kind: "CHARGE" | "REFUND";
   status: string;
   amount: number;
+  cashTendered?: number;
+  changeAmount?: number;
   reference?: string;
+  createdAt: string;
+  createdByName?: string;
+};
+
+export type InvoiceCreditNoteSummary = {
+  id: string;
+  creditNoteNo: string;
+  direction: "ORIGINAL" | "REPLACEMENT";
+  reason?: string;
+  originalInvoiceId?: string;
+  originalInvoiceNo?: string;
+  replacementInvoiceId?: string;
+  replacementInvoiceNo?: string;
+  originalNetTotal: number;
+  originalPaidTotal: number;
+  replacementNetTotal: number;
+  creditedAmount: number;
+  customerCreditAmount: number;
   createdAt: string;
   createdByName?: string;
 };
@@ -44,9 +71,11 @@ export type AppInvoice = {
   netTotal: number;
   paidAmount: number;
   dueAmount: number;
+  notes?: string;
   items: InvoiceItemSummary[];
   itemSummary: string; // short preview like "Product A x2, Product B x1 +3 more"
   payments: InvoicePaymentSummary[];
+  creditNotes: InvoiceCreditNoteSummary[];
   cancelledAt?: string;
   cancelledByName?: string;
   cancelledByRole?: string;
@@ -139,9 +168,14 @@ export function mapInvoiceStatus(rawStatus?: string, rawPaymentStatus?: string):
 export function mapPaymentMethod(payments: any[]): PaymentMethodLabel {
   if (!payments || payments.length === 0) return "None";
 
+  const chargePayments = payments.filter(
+    (payment) => String((payment as any).kind || "CHARGE").toUpperCase() !== "REFUND",
+  );
+  if (chargePayments.length === 0) return "None";
+
   const preferred =
-    payments.find((payment) => String(payment.status || "").toUpperCase() === "SUCCESS") ||
-    payments[0];
+    chargePayments.find((payment) => String(payment.status || "").toUpperCase() === "SUCCESS") ||
+    chargePayments[0];
 
   const upper = String(preferred?.method || "").toUpperCase();
   if (upper === "ESEWA") return "eSewa";
@@ -160,7 +194,11 @@ export function buildInvoiceItemSummary(items: InvoiceItemSummary[]) {
 
 // extracting the payment reference (e.g., eSewa transaction code) from the first payment that has one
 export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
-  return invoice.payments.find((payment) => payment.reference)?.reference || "";
+  return (
+    invoice.payments.find(
+      (payment) => payment.kind !== "REFUND" && payment.reference,
+    )?.reference || ""
+  );
 }
 
 // --
@@ -175,11 +213,23 @@ export function normalizeInvoice(raw: any): AppInvoice {
     id:
       item.id ||
       `${item.productId || item.product?.id || item.product?.sku || item.product?.name}-${item.qty}`,
+    productId: item.productId || item.product?.id || undefined,
     name: item.product?.name || item.name || "Unknown item",
     sku: item.product?.sku || undefined,
     barcode: item.product?.barcode || undefined,
     qty: Number(item.qty || 0),
     unitPrice: Number(item.appliedUnitPrice || item.unitPrice || 0),
+    originalUnitPrice:
+      item.originalUnitPrice === null || item.originalUnitPrice === undefined
+        ? undefined
+        : Number(item.originalUnitPrice || 0),
+    overrideUnitPrice:
+      item.overrideUnitPrice === null || item.overrideUnitPrice === undefined
+        ? undefined
+        : Number(item.overrideUnitPrice || 0),
+    overrideReason: item.overrideReason || undefined,
+    overrideByName: item.overrideBy?.name || undefined,
+    overrideAt: item.overrideAt || undefined,
     lineTotal: Number(
       item.lineTotal ||
         Number(item.qty || 0) * Number(item.appliedUnitPrice || item.unitPrice || 0),
@@ -190,12 +240,77 @@ export function normalizeInvoice(raw: any): AppInvoice {
   const payments: InvoicePaymentSummary[] = (raw.payments || []).map((payment: any) => ({
     id: payment.id || `${payment.method}-${payment.createdAt}`,
     method: mapPaymentMethod([payment]),
+    kind: String(payment.kind || "CHARGE").toUpperCase() === "REFUND" ? "REFUND" : "CHARGE",
     status: String(payment.status || "").toUpperCase() || "PENDING",
     amount: Number(payment.amount || 0),
+    cashTendered:
+      payment.cashTendered === null || payment.cashTendered === undefined
+        ? undefined
+        : Number(payment.cashTendered || 0),
+    changeAmount:
+      payment.changeAmount === null || payment.changeAmount === undefined
+        ? undefined
+        : Number(payment.changeAmount || 0),
     reference: payment.reference || undefined,
     createdAt: String(payment.createdAt || createdAt),
     createdByName: payment.createdBy?.name || undefined,
   }));
+
+  const creditNotesAsOriginal: InvoiceCreditNoteSummary[] = (
+    raw.creditNotesAsOriginal || []
+  ).map((note: any) => {
+    const originalPaidTotal = Number(note.originalPaidTotal || 0);
+    const creditedAmount = Number(note.creditedAmount || 0);
+
+    return {
+      id: note.id || note.creditNoteNo,
+      creditNoteNo: note.creditNoteNo || "Credit note",
+      direction: "ORIGINAL",
+      reason: note.reason || undefined,
+      originalInvoiceId: note.originalInvoiceId || raw.id,
+      originalInvoiceNo: raw.invoiceNo || raw.id,
+      replacementInvoiceId:
+        note.replacementInvoice?.id || note.replacementInvoiceId || undefined,
+      replacementInvoiceNo: note.replacementInvoice?.invoiceNo || undefined,
+      originalNetTotal: Number(note.originalNetTotal || 0),
+      originalPaidTotal,
+      replacementNetTotal: Number(note.replacementNetTotal || 0),
+      creditedAmount,
+      customerCreditAmount: Math.max(0, originalPaidTotal - creditedAmount),
+      createdAt: String(note.createdAt || createdAt),
+      createdByName: note.createdBy?.name || undefined,
+    };
+  });
+  const creditNoteAsReplacement = raw.creditNoteAsReplacement
+    ? (() => {
+        const note = raw.creditNoteAsReplacement;
+        const originalPaidTotal = Number(note.originalPaidTotal || 0);
+        const creditedAmount = Number(note.creditedAmount || 0);
+
+        return {
+          id: note.id || note.creditNoteNo,
+          creditNoteNo: note.creditNoteNo || "Credit note",
+          direction: "REPLACEMENT" as const,
+          reason: note.reason || undefined,
+          originalInvoiceId:
+            note.originalInvoice?.id || note.originalInvoiceId || undefined,
+          originalInvoiceNo: note.originalInvoice?.invoiceNo || undefined,
+          replacementInvoiceId: note.replacementInvoiceId || raw.id,
+          replacementInvoiceNo: raw.invoiceNo || raw.id,
+          originalNetTotal: Number(note.originalNetTotal || 0),
+          originalPaidTotal,
+          replacementNetTotal: Number(note.replacementNetTotal || 0),
+          creditedAmount,
+          customerCreditAmount: Math.max(0, originalPaidTotal - creditedAmount),
+          createdAt: String(note.createdAt || createdAt),
+          createdByName: note.createdBy?.name || undefined,
+        };
+      })()
+    : null;
+  const creditNotes = [
+    ...creditNotesAsOriginal,
+    ...(creditNoteAsReplacement ? [creditNoteAsReplacement] : []),
+  ];
 
   // calculating totals — handling different field names the API might use
   const subtotal =
@@ -229,9 +344,11 @@ export function normalizeInvoice(raw: any): AppInvoice {
     netTotal,
     paidAmount,
     dueAmount,
+    notes: raw.notes || undefined,
     items,
     itemSummary: buildInvoiceItemSummary(items),
     payments,
+    creditNotes,
     cancelledAt: raw.cancelledAt || undefined,
     cancelledByName: raw.cancelledBy?.name || undefined,
     cancelledByRole: raw.cancelledBy?.role || undefined,
@@ -244,3 +361,11 @@ export function openInvoicePrint(invoiceId: string) {
   window.open(`/invoices/${invoiceId}/print`, "_blank", "noopener,noreferrer");
 }
 
+export function openInvoiceReceiptPrint(invoiceId: string) {
+  if (typeof window === "undefined") return;
+  window.open(
+    `/invoices/${invoiceId}/print?mode=receipt`,
+    "_blank",
+    "noopener,noreferrer",
+  );
+}

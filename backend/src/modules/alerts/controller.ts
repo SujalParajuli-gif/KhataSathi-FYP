@@ -1,12 +1,20 @@
 import { Request, Response } from "express";
-import { listAlerts, markAsRead, markAllAsRead, getReadAlerts, markAsUnread } from "./service";
+import {
+  deleteAlert,
+  getReadAlerts,
+  listAlerts,
+  markAllAsRead,
+  markAsRead,
+  markAsUnread,
+  resolveAlert,
+} from "./service";
 
 // fetching active alerts for the current user
 // the alert list depends on the user's role — admin sees all alerts, cashier sees only relevant ones
 export async function list(req: Request, res: Response) {
   try {
     const limit = req.query.limit ? Number(req.query.limit) : 20; // how many alerts to return, defaults to 20
-    const alerts = await listAlerts(req.user!.id, req.user!.role as "ADMIN" | "CASHIER", limit);
+    const alerts = await listAlerts(req.user!.id, req.user!.role as "ADMIN" | "MANAGER" | "CASHIER", limit);
     res.json({ alerts });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -54,6 +62,30 @@ export async function markUnread(req: Request, res: Response) {
     const { alertKey } = req.body;
     if (!alertKey) return res.status(400).json({ error: "alertKey is required" });
     await markAsUnread(req.user!.id, alertKey);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// resolving an alert hides it from the active feed once the user has handled it
+export async function resolve(req: Request, res: Response) {
+  try {
+    const { alertKey } = req.body;
+    if (!alertKey) return res.status(400).json({ error: "alertKey is required" });
+    await resolveAlert(req.user!.id, alertKey);
+    res.json({ success: true });
+  } catch (err: any) {
+    res.status(500).json({ error: err.message });
+  }
+}
+
+// dismissing an alert hides it and keeps a 30-day purge marker
+export async function dismiss(req: Request, res: Response) {
+  try {
+    const { alertKey } = req.body;
+    if (!alertKey) return res.status(400).json({ error: "alertKey is required" });
+    await deleteAlert(req.user!.id, alertKey);
     res.json({ success: true });
   } catch (err: any) {
     res.status(500).json({ error: err.message });

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
+import PaginationBar from "~/components/ui/PaginationBar";
 import {
   alertColor,
   alertIcon,
@@ -69,15 +70,18 @@ export default function AlertsPage() {
     markAlertRead,
     markAlertUnread,
     markAllAlertsRead,
+    resolveAlert,
+    dismissAlert,
   } = useAlerts();
   const [filterType, setFilterType] = useState<"all" | AppAlertType>("all"); // tracks which alert type tab is active
   const [showUnreadOnly, setShowUnreadOnly] = useState(false); // lets the user hide alerts that were already seen
   const [page, setPage] = useState(1); // stores the current alerts page in the list
+  const [pageSize, setPageSize] = useState(20);
 
   useEffect(() => {
     // loading a fresh batch of alerts when the page first opens
     // we ask for a higher limit here so the user can browse more history without another page-level fetch flow
-    refreshAlerts(100);
+    refreshAlerts(500);
   }, []);
 
   // resetting the page back to 1 whenever a filter changes
@@ -96,13 +100,15 @@ export default function AlertsPage() {
   }, [alerts, filterType, showUnreadOnly]);
 
   // calculating counts for the sidebar filter tabs
-  const invoiceCount = alerts.filter(
-    (alert) => alert.type === "Invoice",
-  ).length; // counting invoice alerts for the sidebar tab badge
-  const stockCount = alerts.filter((alert) => alert.type === "Stock").length; // counting stock alerts for the sidebar tab badge
+  const typeFilters: AppAlertType[] = ["Invoice", "Stock", "Product", "Return", "Payment", "System"];
+  const typeCounts = useMemo(() => {
+    return typeFilters.reduce<Record<AppAlertType, number>>((acc, type) => {
+      acc[type] = alerts.filter((alert) => alert.type === type).length;
+      return acc;
+    }, {} as Record<AppAlertType, number>);
+  }, [alerts]);
 
   // setting up pagination logic
-  const pageSize = 10;
   const totalPages = Math.max(1, Math.ceil(filteredAlerts.length / pageSize));
   const pageClamped = clampPage(page, 1, totalPages);
 
@@ -110,14 +116,16 @@ export default function AlertsPage() {
   const pageItems = useMemo(() => {
     const start = (pageClamped - 1) * pageSize;
     return filteredAlerts.slice(start, start + pageSize);
-  }, [filteredAlerts, pageClamped]);
+  }, [filteredAlerts, pageClamped, pageSize]);
+  const pageStart = filteredAlerts.length === 0 ? 0 : (pageClamped - 1) * pageSize;
+  const pageEnd = filteredAlerts.length === 0 ? 0 : pageStart + pageItems.length;
 
   // this marks one alert as read, and if that request fails we reload the list so the page stays in sync
   async function handleMarkRead(alertKey: string) {
     try {
       await markAlertRead(alertKey);
     } catch {
-      await refreshAlerts(100);
+      await refreshAlerts(500);
     }
   }
 
@@ -126,7 +134,7 @@ export default function AlertsPage() {
     try {
       await markAlertUnread(alertKey);
     } catch {
-      await refreshAlerts(100);
+      await refreshAlerts(500);
     }
   }
 
@@ -141,7 +149,7 @@ export default function AlertsPage() {
     try {
       await markAllAlertsRead(unreadKeys);
     } catch {
-      await refreshAlerts(100);
+      await refreshAlerts(500);
     }
   }
 
@@ -197,15 +205,18 @@ export default function AlertsPage() {
             <FilterCard
               active={filterType === "Invoice"}
               title="Invoice"
-              count={invoiceCount}
+              count={typeCounts.Invoice}
               onClick={() => setFilterType("Invoice")}
             />
-            <FilterCard
-              active={filterType === "Stock"}
-              title="Stock"
-              count={stockCount}
-              onClick={() => setFilterType("Stock")}
-            />
+            {typeFilters.filter((type) => type !== "Invoice").map((type) => (
+              <FilterCard
+                key={type}
+                active={filterType === type}
+                title={type}
+                count={typeCounts[type]}
+                onClick={() => setFilterType(type)}
+              />
+            ))}
           </div>
 
           <div className="rounded-[18px] border border-[#CFCFD3] bg-white p-4 ">
@@ -321,6 +332,20 @@ export default function AlertsPage() {
                             Mark as read
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => resolveAlert(alert.key)}
+                          className="text-[12px] font-extrabold text-emerald-700 hover:text-emerald-900"
+                        >
+                          Resolve
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => dismissAlert(alert.key)}
+                          className="text-[12px] font-extrabold text-slate-500 hover:text-slate-800"
+                        >
+                          Dismiss
+                        </button>
                       </div>
                     </div>
                   </div>
@@ -330,50 +355,21 @@ export default function AlertsPage() {
           )}
 
           {filteredAlerts.length > 0 ? (
-            <div className="flex items-center justify-center gap-2 rounded-[18px] border border-[#CFCFD3] bg-white p-4">
-              <button
-                type="button"
-                onClick={() =>
-                  setPage((current) => clampPage(current - 1, 1, totalPages))
-                }
-                className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
-              >
-                <Icon name="chevron_left" className="text-[18px]" />
-              </button>
-
-              {Array.from({ length: totalPages })
-                .slice(0, 8)
-                .map((_, index) => {
-                  const pageNumber = index + 1;
-                  const active = pageNumber === pageClamped;
-
-                  return (
-                    <button
-                      key={pageNumber}
-                      type="button"
-                      onClick={() => setPage(pageNumber)}
-                      className={cn(
-                        "h-[32px] w-[32px] rounded-lg border text-[12px] font-extrabold transition",
-                        active
-                          ? "border-[#11120d] bg-[#11120d] text-white"
-                          : "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
-                      )}
-                    >
-                      {pageNumber}
-                    </button>
-                  );
-                })}
-
-              <button
-                type="button"
-                onClick={() =>
-                  setPage((current) => clampPage(current + 1, 1, totalPages))
-                }
-                className="flex h-[32px] w-[32px] items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
-              >
-                <Icon name="chevron_right" className="text-[18px]" />
-              </button>
-            </div>
+            <PaginationBar
+              page={pageClamped}
+              totalPages={totalPages}
+              total={filteredAlerts.length}
+              start={pageStart}
+              end={pageEnd}
+              label="alerts"
+              pageSize={pageSize}
+              onPageChange={setPage}
+              onPageSizeChange={(nextPageSize) => {
+                setPageSize(nextPageSize);
+                setPage(1);
+              }}
+              className="rounded-[18px] border border-[#CFCFD3]"
+            />
           ) : null}
         </div>
       </div>

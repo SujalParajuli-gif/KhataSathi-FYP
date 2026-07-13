@@ -1,5 +1,5 @@
 // the two user roles our app supports — admin has full access, cashier is limited to billing
-export type UserRole = "admin" | "cashier";
+export type UserRole = "admin" | "manager" | "cashier" | "staff";
 
 // the user object we store in localStorage after login
 export type AuthUser = {
@@ -17,7 +17,16 @@ const TOKEN_KEY = "khatasathi_token";
 // normalizing the role string — the backend returns "ADMIN"/"CASHIER" in uppercase
 // but we use lowercase in the frontend for consistency
 function normalizeRole(role?: string | null): UserRole {
-  return String(role || "").toLowerCase() === "cashier" ? "cashier" : "admin";
+  const normalized = String(role || "").toLowerCase();
+  if (
+    normalized === "cashier" ||
+    normalized === "manager" ||
+    normalized === "admin" ||
+    normalized === "staff"
+  ) {
+    return normalized;
+  }
+  return "admin";
 }
 
 // getting the JWT token from localStorage — returns null if not logged in or during SSR

@@ -7,9 +7,11 @@ import {
   type ReactNode,
 } from "react";
 import {
+  dismissAlertApi,
   markAlertReadApi,
   markAlertUnreadApi,
   markAllAlertsReadApi,
+  resolveAlertApi,
 } from "~/lib/api/endpoints";
 import { fetchAlerts, type AppAlert } from "~/lib/alerts/alerts";
 
@@ -22,6 +24,8 @@ type AlertsContextValue = {
   markAlertRead: (alertKey: string) => Promise<void>;
   markAlertUnread: (alertKey: string) => Promise<void>;
   markAllAlertsRead: (alertKeys?: string[]) => Promise<void>;
+  resolveAlert: (alertKey: string) => Promise<void>;
+  dismissAlert: (alertKey: string) => Promise<void>;
 };
 
 const AlertsContext = createContext<AlertsContextValue | null>(null);
@@ -102,6 +106,26 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
     }
   }
 
+  async function resolveAlert(alertKey: string) {
+    setAlerts((current) => current.filter((alert) => alert.key !== alertKey));
+
+    try {
+      await resolveAlertApi(alertKey);
+    } catch {
+      await refreshAlerts();
+    }
+  }
+
+  async function dismissAlert(alertKey: string) {
+    setAlerts((current) => current.filter((alert) => alert.key !== alertKey));
+
+    try {
+      await dismissAlertApi(alertKey);
+    } catch {
+      await refreshAlerts();
+    }
+  }
+
   // computing the unread count for the bell icon badge
   const unreadCount = alerts.filter((alert) => !alert.read).length;
 
@@ -115,6 +139,8 @@ export function AlertsProvider({ children }: { children: ReactNode }) {
         markAlertRead,
         markAlertUnread,
         markAllAlertsRead,
+        resolveAlert,
+        dismissAlert,
       }}
     >
       {children}
@@ -130,4 +156,3 @@ export function useAlerts() {
   }
   return context;
 }
-
