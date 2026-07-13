@@ -41,7 +41,11 @@ function readStoredLocation() {
 
 // humanizes the role codes back to readable labels
 function formatRoleLabel(role?: string | null) {
-  return String(role || "").toLowerCase() === "admin" ? "Admin" : "Cashier";
+  const normalized = String(role || "").toLowerCase();
+  if (normalized === "admin") return "Admin";
+  if (normalized === "manager") return "Manager";
+  if (normalized === "staff") return "Staff";
+  return "Cashier";
 }
 
 // splits a full name string into first and last name so forms can control them independently
@@ -202,6 +206,7 @@ function TextInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
+        aria-label={placeholder || "Text input"}
         disabled={disabled}
         className={cn(
           "w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-slate-400",
@@ -228,6 +233,7 @@ function SelectInput({
       <select
         value={value}
         onChange={(e) => onChange(e.target.value)}
+        aria-label="Select an option"
         className="w-full appearance-none bg-transparent text-[14px] font-semibold text-slate-900 outline-none"
       >
         {options.map((option) => (

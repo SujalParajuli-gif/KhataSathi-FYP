@@ -12,16 +12,30 @@ export type ThresholdMode = "default" | "custom";
 export type Product = {
   id: string;
   name: string;
+  productName?: string;
   sku: string;
   barcode?: string;
   imageUrl?: string;
 
   brand: string; // brand name (not the ID — we resolve it when saving)
   category: string;
+  categoryGroup?: string;
+  vendorSource?: string;
+  productCodeVariant?: string;
+  sizeValue?: number | null;
+  sizeUnit: string;
+  ratePerPiece: number;
+  packageQuantity: number;
+  packageUnit: string;
+  saleUnit: string;
+  allowFractionalQty: boolean;
+  quantityStep: number;
+  wholesaleEligible: boolean;
+  sourceCitation?: string;
 
   retailPrice: number;
   wholesalePrice: number;
-  thresholdQty: number; // wholesale quantity threshold — above this qty, wholesale pricing kicks in
+  thresholdQty: number; // qty wholesale threshold: above this qty, wholesale pricing kicks in
   thresholdQtyMode: ThresholdMode;
 
   stock: number;
@@ -45,4 +59,3 @@ export type ProductsQuery = {
   page?: number;
   pageSize?: number;
 };
-

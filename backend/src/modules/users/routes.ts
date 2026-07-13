@@ -18,15 +18,16 @@ const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // li
 const router = Router();
 
 router.use(authGuard); // all user management routes require authentication
-router.use(requireRole("ADMIN")); // only admin can manage users (cashiers)
 
-router.get("/", userController.list); // listing all users, optionally filtered by role
-router.post("/", userController.create); // creating a new user (cashier account)
-router.put("/:id", userController.update); // updating an existing user's info
+router.get("/", requireRole("ADMIN"), userController.list); // only admin can view user management list
+router.post("/", requireRole("ADMIN"), userController.create); // only admin can create new users
+router.get("/:id/delete-safety", requireRole("ADMIN"), userController.deleteSafety); // explains whether a staff account can be permanently deleted
+router.delete("/:id", requireRole("ADMIN"), userController.permanentDelete); // admin-only permanent delete for safe demo/mistake accounts
+router.put("/:id", requireRole("ADMIN"), userController.update); // only admin can update user info
 
 // handling user photo upload — admin can upload a photo for any user
 // the handler is defined inline because it is simple and only used by this route
-router.post("/:id/photo", upload.single("photo"), async (req, res) => {
+router.post("/:id/photo", requireRole("ADMIN"), upload.single("photo"), async (req, res) => {
   try {
     if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
     const photoUrl = `/uploads/${req.file.filename}`; // building the public URL for the uploaded file

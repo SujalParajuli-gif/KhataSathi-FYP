@@ -24,6 +24,7 @@ import {
   downloadCsvBlob,
   exportAnalyticsWorkbook,
 } from "~/lib/analyticsExport";
+import { getAuthUser } from "~/lib/auth";
 import { formatNpr } from "~/lib/invoices";
 import {
   getRangeFromPreset,
@@ -256,6 +257,7 @@ function SafeChartFrame({
 // this handles the main analytics dashboard for admins
 // we built this to show real-time insights based on fetched invoice data
 export default function AnalyticsPage() {
+  const isManager = getAuthUser()?.role === "manager";
   const initialPreset: AnalyticsRangePreset = "month";
   const [rangeSelection, setRangeSelection] =
     useState<RangeSelection>(initialPreset);
@@ -401,6 +403,7 @@ export default function AnalyticsPage() {
         title="Analytics"
         subtitle="Real revenue, collections, discounts, customer, brand, and cashier performance from finalized invoices."
         actions={
+          isManager ? undefined : (
           <div className="flex flex-wrap gap-2">
             <ActionButton
               icon="table_view"
@@ -418,6 +421,7 @@ export default function AnalyticsPage() {
               primary
             />
           </div>
+          )
         }
       >
         <div className="space-y-4 px-5 py-5">
@@ -452,18 +456,21 @@ export default function AnalyticsPage() {
           <div className="grid grid-cols-1 gap-4 xl:flex xl:flex-wrap xl:items-center">
             <input
               type="date"
+              aria-label="From date"
               value={draftFilters.from}
               onChange={(e) => setDraft({ from: e.target.value }, "custom")}
               className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
             />
             <input
               type="date"
+              aria-label="To date"
               value={draftFilters.to}
               onChange={(e) => setDraft({ to: e.target.value }, "custom")}
               className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
             />
             <select
               value={draftFilters.cashierId || ""}
+              aria-label="Select cashier"
               onChange={(e) =>
                 setDraft({ cashierId: e.target.value || undefined })
               }
@@ -478,6 +485,7 @@ export default function AnalyticsPage() {
             </select>
             <select
               value={draftFilters.paymentStatus || ""}
+              aria-label="Select payment status"
               onChange={(e) =>
                 setDraft({
                   paymentStatus:

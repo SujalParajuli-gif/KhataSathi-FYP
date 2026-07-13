@@ -16,7 +16,8 @@
                 "icon": "home",
                 "to": "/",
                 "roles": [
-                    "admin"
+                    "admin",
+                    "manager"
                 ]
             },
             {
@@ -26,7 +27,21 @@
                 "icon": "point_of_sale",
                 "to": "/billing",
                 "roles": [
+                    "manager",
                     "cashier"
+                ]
+            },
+            {
+                "key": "product-lookup",
+                "label": "Product Lookup",
+                "pageTitle": "Product Lookup",
+                "icon": "search",
+                "to": "/product-lookup",
+                "roles": [
+                    "admin",
+                    "manager",
+                    "cashier",
+                    "staff"
                 ]
             },
             {
@@ -37,8 +52,32 @@
                 "to": "/invoices",
                 "roles": [
                     "admin",
+                    "manager",
                     "cashier"
                 ]
+            },
+            {
+                "key": "documents",
+                "label": "Documents",
+                "pageTitle": "Document Storage",
+                "icon": "folder_open",
+                "to": "/documents",
+                "roles": [
+                    "admin",
+                    "manager"
+                ],
+                "section": "bottom"
+            },
+            {
+                "key": "bin",
+                "label": "Bin",
+                "pageTitle": "Bin",
+                "icon": "delete",
+                "to": "/bin",
+                "roles": [
+                    "admin"
+                ],
+                "section": "bottom"
             },
             {
                 "key": "analytics",
@@ -47,7 +86,8 @@
                 "icon": "analytics",
                 "to": "/analytics",
                 "roles": [
-                    "admin"
+                    "admin",
+                    "manager"
                 ]
             },
             {
@@ -57,7 +97,8 @@
                 "icon": "inventory_2",
                 "to": "/products",
                 "roles": [
-                    "admin"
+                    "admin",
+                    "manager"
                 ]
             },
             {
@@ -67,7 +108,8 @@
                 "icon": "percent",
                 "to": "/discounts",
                 "roles": [
-                    "admin"
+                    "admin",
+                    "manager"
                 ]
             },
             {
@@ -78,6 +120,7 @@
                 "to": "/history",
                 "roles": [
                     "admin",
+                    "manager",
                     "cashier"
                 ]
             },
@@ -89,7 +132,19 @@
                 "to": "/alerts",
                 "roles": [
                     "admin",
+                    "manager",
                     "cashier"
+                ]
+            },
+            {
+                "key": "requests",
+                "label": "Requests",
+                "pageTitle": "Request Hub",
+                "icon": "pending_actions",
+                "to": "/requests",
+                "roles": [
+                    "admin",
+                    "manager"
                 ]
             },
             {
@@ -131,7 +186,9 @@
                 "icon": "person",
                 "to": "/cashier-profile",
                 "roles": [
-                    "cashier"
+                    "manager",
+                    "cashier",
+                    "staff"
                 ],
                 "section": "bottom"
             },
@@ -143,7 +200,9 @@
                 "to": "/logout",
                 "roles": [
                     "admin",
-                    "cashier"
+                    "manager",
+                    "cashier",
+                    "staff"
                 ],
                 "danger": true,
                 "section": "bottom"

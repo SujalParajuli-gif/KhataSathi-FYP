@@ -2,16 +2,20 @@ import React, { useEffect, useState } from "react";
 import {
   createUserApi,
   getMeApi,
+  getUserDeleteSafetyApi,
   listUsersApi,
+  permanentlyDeleteUserApi,
   updateProfileApi,
   updateUserApi,
   uploadProfilePhotoApi,
   uploadUserPhotoApi,
+  type UserDeleteSafety,
 } from "~/lib/api/endpoints";
 import { API_BASE_URL } from "~/lib/api/baseUrl";
-import { ConfirmDialog, StatusDialog } from "~/components/ui/Modal";
+import { ConfirmDialog, DialogButton, ModalFrame, StatusDialog } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
 import UserAvatar from "~/components/ui/UserAvatar";
+import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import { setAuthUser } from "~/lib/auth";
 import { useMemo } from "react";
 
@@ -104,6 +108,7 @@ function TextField({
       <input
         type={type}
         value={value}
+        aria-label={label}
         placeholder={placeholder}
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.value)}
@@ -146,6 +151,7 @@ function SelectField({
       </div>
       <select
         value={value}
+        aria-label={label}
         onChange={(event) => onChange(event.target.value)}
         className={[
           "w-full rounded-[12px] border bg-white px-3 py-2.5",
@@ -212,13 +218,15 @@ function Badge({
   tone = "slate",
   children,
 }: {
-  tone?: "slate" | "green";
+  tone?: "slate" | "green" | "blue";
   children: React.ReactNode;
 }) {
   const cls =
     tone === "green"
       ? "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
-      : "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]";
+      : tone === "blue"
+        ? "bg-[#EAF2FF] text-[#2563EB] border-[#BFDBFE]"
+        : "bg-[#F3F4F6] text-[#565449] border-[#CFCFD3]";
 
   return (
     <span
@@ -241,6 +249,8 @@ function Modal({
   children: React.ReactNode;
   onClose: () => void;
 }) {
+  useBodyScrollLock(open);
+
   if (!open) return null;
 
   return (
@@ -347,6 +357,7 @@ type Cashier = {
   name: string;
   email: string;
   phone: string;
+  role: "MANAGER" | "CASHIER" | "STAFF";
   gender?: string | null;
   address?: string | null;
   active: boolean;
@@ -379,7 +390,12 @@ function splitName(name?: string | null) {
 
 // humanizes the database role label
 function formatRoleLabel(role?: string | null) {
-  return String(role || "").toLowerCase() === "admin" ? "Admin" : "User";
+  const normalized = String(role || "").toLowerCase();
+  if (normalized === "admin") return "Admin";
+  if (normalized === "manager") return "Manager";
+  if (normalized === "cashier") return "Cashier";
+  if (normalized === "staff") return "Staff";
+  return "User";
 }
 
 function formatDateTime(value?: string | null) {
@@ -527,6 +543,7 @@ function ProfileTextInput({
         value={value}
         onChange={(event) => onChange(event.target.value)}
         placeholder={placeholder}
+        aria-label={placeholder || "Text input"}
         disabled={disabled}
         className={cn(
           "w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-slate-400",
@@ -543,16 +560,19 @@ function ProfileSelectInput({
   value,
   onChange,
   options,
+  ariaLabel,
 }: {
   value: string;
   onChange: (value: string) => void;
   options: string[];
+  ariaLabel?: string;
 }) {
   return (
     <div className="rounded-[14px] border border-slate-200 bg-white px-4 py-3 transition focus-within:border-slate-900">
       <select
         value={value}
         onChange={(event) => onChange(event.target.value)}
+        aria-label={ariaLabel || "Select an option"}
         className="w-full appearance-none bg-transparent text-[14px] font-semibold text-slate-900 outline-none"
       >
         {options.map((option) => (
@@ -609,6 +629,7 @@ export default function ProfilePage() {
 
   const [cashiers, setCashiers] = useState<Cashier[]>([]); // all cashier accounts shown in the lower management section
   const [loadingCashiers, setLoadingCashiers] = useState(false); // cashier list loading state
+  const [currentAdminId, setCurrentAdminId] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false); // controls the shared success/error dialog
   const [feedbackTitle, setFeedbackTitle] = useState(""); // dialog title
   const [feedbackMessage, setFeedbackMessage] = useState(""); // dialog message
@@ -622,6 +643,7 @@ export default function ProfilePage() {
   const [newPhone, setNewPhone] = useState("");
   const [newGender, setNewGender] = useState("");
   const [newAddress, setNewAddress] = useState("");
+  const [newRole, setNewRole] = useState<"MANAGER" | "CASHIER" | "STAFF">("CASHIER");
   const [newPassword, setNewPassword] = useState("");
   const [newConfirmPassword, setNewConfirmPassword] = useState("");
   const [newPhotoUrl, setNewPhotoUrl] = useState<string | undefined>(undefined);
@@ -641,6 +663,7 @@ export default function ProfilePage() {
   const [editPhone, setEditPhone] = useState("");
   const [editGender, setEditGender] = useState("");
   const [editAddress, setEditAddress] = useState("");
+  const [editRole, setEditRole] = useState<"MANAGER" | "CASHIER" | "STAFF">("CASHIER");
   const [editNewPassword, setEditNewPassword] = useState("");
   const [editConfirmPassword, setEditConfirmPassword] = useState("");
   const [editActive, setEditActive] = useState(true);
@@ -659,6 +682,13 @@ export default function ProfilePage() {
   });
   const [pendingDeactivateCashier, setPendingDeactivateCashier] =
     useState<Cashier | null>(null);
+  const [pendingDeleteCashier, setPendingDeleteCashier] =
+    useState<Cashier | null>(null);
+  const [deleteSafety, setDeleteSafety] = useState<UserDeleteSafety | null>(
+    null,
+  );
+  const [deleteSafetyLoading, setDeleteSafetyLoading] = useState(false);
+  const [deletingCashier, setDeletingCashier] = useState(false);
 
   function mapCashier(user: any): Cashier {
     return {
@@ -666,6 +696,7 @@ export default function ProfilePage() {
       name: user.name || "Unknown",
       email: user.email || "",
       phone: user.phone || "",
+      role: user.role === "MANAGER" || user.role === "STAFF" ? user.role : "CASHIER",
       gender: user.gender || null,
       address: user.address || null,
       active: user.isActive !== false,
@@ -678,9 +709,15 @@ export default function ProfilePage() {
   async function loadCashiers() {
     setLoadingCashiers(true);
     try {
-      const users = await listUsersApi({ role: "CASHIER" });
+      const users = await listUsersApi();
       const rows = Array.isArray(users) ? users : users?.users || [];
-      setCashiers(rows.map(mapCashier));
+      setCashiers(
+        rows
+          .filter((user: any) =>
+            user.role === "CASHIER" || user.role === "MANAGER" || user.role === "STAFF"
+          )
+          .map(mapCashier),
+      );
     } finally {
       setLoadingCashiers(false);
     }
@@ -716,6 +753,7 @@ export default function ProfilePage() {
       try {
         const data = await getMeApi();
         const user = data.user || data;
+        setCurrentAdminId(user.id || null);
         const nextAdminProfile = mapUserToAdminProfile(user);
         setAdminProfile(nextAdminProfile);
         setAdminInitialProfile(nextAdminProfile);
@@ -747,6 +785,7 @@ export default function ProfilePage() {
     setNewPhone("");
     setNewGender("");
     setNewAddress("");
+    setNewRole("CASHIER");
     setNewPassword("");
     setNewConfirmPassword("");
     setNewPhotoUrl(undefined);
@@ -768,6 +807,7 @@ export default function ProfilePage() {
     setEditPhone(cashier.phone);
     setEditGender(cashier.gender || "");
     setEditAddress(cashier.address || "");
+    setEditRole(cashier.role);
     setEditNewPassword("");
     setEditConfirmPassword("");
     setEditActive(cashier.active);
@@ -794,6 +834,7 @@ export default function ProfilePage() {
     setEditPhone("");
     setEditGender("");
     setEditAddress("");
+    setEditRole("CASHIER");
     setEditNewPassword("");
     setEditConfirmPassword("");
     setEditActive(true);
@@ -878,7 +919,7 @@ export default function ProfilePage() {
         gender: newGender || undefined,
         address: newAddress.trim() || undefined,
         password: newPassword,
-        role: "CASHIER",
+        role: newRole,
         isActive: true,
       });
 
@@ -891,10 +932,10 @@ export default function ProfilePage() {
       resetAddForm();
       showFeedback(
         "success",
-        "Cashier added",
+        `${formatRoleLabel(newRole)} added`,
         newPhotoFile
-          ? "The cashier account and profile photo have been added successfully."
-          : "The cashier account has been added successfully.",
+          ? "The staff account and profile photo have been added successfully."
+          : "The staff account has been added successfully.",
       );
     } catch (error: any) {
       console.error(error);
@@ -920,6 +961,7 @@ export default function ProfilePage() {
         phone: editPhone.trim(),
         gender: editGender || null,
         address: editAddress.trim(),
+        role: editRole,
         isActive: editActive,
         ...(wantsPasswordChange
           ? {
@@ -938,23 +980,23 @@ export default function ProfilePage() {
       closeEdit();
       showFeedback(
         "success",
-        wantsPasswordChange ? "Password updated" : "Cashier updated",
+        wantsPasswordChange ? "Password updated" : "Staff updated",
         wantsPasswordChange
-          ? "The cashier password has been updated successfully."
+          ? "The staff password has been updated successfully."
           : editPhotoRemoved
-            ? "The cashier profile has been updated and the photo has been removed."
+            ? "The staff profile has been updated and the photo has been removed."
             : editPhotoFile
-              ? "The cashier profile and photo have been updated successfully."
-              : "The cashier profile has been updated successfully.",
+              ? "The staff profile and photo have been updated successfully."
+              : "The staff profile has been updated successfully.",
       );
     } catch (error: any) {
       console.error(error);
       const message =
         error.response?.data?.error ||
         error?.message ||
-        "Error updating cashier.";
+        "Error updating staff.";
       setEditFormError(message);
-      showFeedback("error", "Could not update cashier", message);
+      showFeedback("error", "Could not update staff", message);
     }
   }
 
@@ -968,20 +1010,28 @@ export default function ProfilePage() {
     }
 
     try {
+      if (cashier.active) {
+        showFeedback(
+          "success",
+          "Already active",
+          `${cashier.name} is already active. No changes were made.`,
+        );
+        return;
+      }
       await updateUserApi(id, { isActive: true });
       await loadCashiers();
       showFeedback(
         "success",
-        "Cashier activated",
-        "The cashier account has been activated successfully.",
+        "Staff activated",
+        "The staff account has been activated successfully.",
       );
     } catch (error: any) {
       showFeedback(
         "error",
-        "Could not activate cashier",
+        "Could not activate staff",
         error?.response?.data?.error ||
           error?.message ||
-          "Failed to activate the cashier account.",
+          "Failed to activate the staff account.",
       );
     }
   }
@@ -990,22 +1040,91 @@ export default function ProfilePage() {
     if (!pendingDeactivateCashier) return;
 
     try {
+      if (!pendingDeactivateCashier.active) {
+        showFeedback(
+          "success",
+          "Already inactive",
+          `${pendingDeactivateCashier.name} is already inactive. No changes were made.`,
+        );
+        setPendingDeactivateCashier(null);
+        return;
+      }
       await updateUserApi(pendingDeactivateCashier.id, { isActive: false });
       await loadCashiers();
       showFeedback(
         "success",
-        "Cashier deactivated",
-        "The cashier account has been deactivated successfully.",
+        "Staff deactivated",
+        "The staff account has been deactivated successfully.",
       );
       setPendingDeactivateCashier(null);
     } catch (error: any) {
       showFeedback(
         "error",
-        "Could not deactivate cashier",
+        "Could not deactivate staff",
         error?.response?.data?.error ||
           error?.message ||
-          "Failed to deactivate the cashier account.",
+          "Failed to deactivate the staff account.",
       );
+    }
+  }
+
+  async function openDeleteCashier(cashier: Cashier) {
+    setPendingDeleteCashier(cashier);
+    setDeleteSafety(null);
+    setDeleteSafetyLoading(true);
+
+    try {
+      const safety = await getUserDeleteSafetyApi(cashier.id);
+      setDeleteSafety(safety);
+    } catch (error: any) {
+      setPendingDeleteCashier(null);
+      showFeedback(
+        "error",
+        "Could not check delete safety",
+        error?.response?.data?.error ||
+          error?.message ||
+          "The staff account could not be checked for permanent delete.",
+      );
+    } finally {
+      setDeleteSafetyLoading(false);
+    }
+  }
+
+  function closeDeleteCashier() {
+    if (deletingCashier) return;
+    setPendingDeleteCashier(null);
+    setDeleteSafety(null);
+    setDeleteSafetyLoading(false);
+  }
+
+  async function confirmPermanentDeleteCashier() {
+    if (!pendingDeleteCashier || !deleteSafety?.canPermanentDelete) return;
+
+    setDeletingCashier(true);
+    try {
+      const result = await permanentlyDeleteUserApi(pendingDeleteCashier.id);
+      await loadCashiers();
+      showFeedback(
+        "success",
+        "Staff deleted",
+        result?.message ||
+          `${pendingDeleteCashier.name} was permanently deleted because no history was found.`,
+      );
+      setPendingDeleteCashier(null);
+      setDeleteSafety(null);
+      setDeleteSafetyLoading(false);
+    } catch (error: any) {
+      const nextSafety = error?.response?.data?.safety;
+      if (nextSafety) setDeleteSafety(nextSafety);
+      showFeedback(
+        "error",
+        "Permanent delete blocked",
+        error?.response?.data?.error ||
+          error?.message ||
+          "This staff account has history and should be deactivated instead.",
+      );
+    } finally {
+      setDeletingCashier(false);
     }
   }
 
@@ -1532,8 +1651,8 @@ export default function ProfilePage() {
       <CardShell>
         <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] px-[16px] py-[14px]">
           <SectionTitle
-            title="Manage cashiers"
-            sub="Create, edit, activate/deactivate, and review cashier accounts."
+            title="Manage staff"
+            sub="Create, edit, activate/deactivate, and review cashier or manager accounts."
           />
 
           <Button
@@ -1544,17 +1663,18 @@ export default function ProfilePage() {
               setAddOpen(true);
             }}
           >
-            Add cashier
+            Add staff
           </Button>
         </div>
 
         <div className="p-[12px] overflow-x-auto">
-          <table className="w-full min-w-[860px] text-left">
+          <table className="w-full min-w-[980px] text-left">
             <thead>
               <tr className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                <th className="px-3 py-3">Cashier</th>
+                <th className="px-3 py-3">Staff</th>
                 <th className="px-3 py-3">Email</th>
                 <th className="px-3 py-3">Phone</th>
+                <th className="px-3 py-3">Role</th>
                 <th className="px-3 py-3">Last login</th>
                 <th className="px-3 py-3">Status</th>
                 <th className="px-3 py-3 text-right">Action</th>
@@ -1565,19 +1685,19 @@ export default function ProfilePage() {
               {loadingCashiers ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-3 py-8 text-center text-[#8C8889]"
                   >
-                    Loading cashier accounts...
+                    Loading staff accounts...
                   </td>
                 </tr>
               ) : cashiers.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={6}
+                    colSpan={7}
                     className="px-3 py-8 text-center text-[#8C8889]"
                   >
-                    No cashier accounts found.
+                    No staff accounts found.
                   </td>
                 </tr>
               ) : (
@@ -1614,6 +1734,11 @@ export default function ProfilePage() {
 
                     <td className="px-3 py-3">{cashier.email}</td>
                     <td className="px-3 py-3">{cashier.phone || "—"}</td>
+                    <td className="px-3 py-3">
+                      <Badge tone={cashier.role === "MANAGER" ? "blue" : cashier.role === "STAFF" ? "green" : "slate"}>
+                        {formatRoleLabel(cashier.role)}
+                      </Badge>
+                    </td>
                     <td className="px-3 py-3 text-[#8C8889]">
                       {cashier.lastLogin}
                     </td>
@@ -1641,6 +1766,15 @@ export default function ProfilePage() {
                         >
                           {cashier.active ? "Deactivate" : "Activate"}
                         </Button>
+
+                        <Button
+                          variant="danger"
+                          icon="delete_forever"
+                          disabled={cashier.id === currentAdminId}
+                          onClick={() => openDeleteCashier(cashier)}
+                        >
+                          Delete
+                        </Button>
                       </div>
                     </td>
                   </tr>
@@ -1653,7 +1787,7 @@ export default function ProfilePage() {
 
       <Modal
         open={addOpen}
-        title="Add cashier"
+        title="Add staff"
         onClose={() => {
           setAddOpen(false);
           resetAddForm();
@@ -1661,7 +1795,7 @@ export default function ProfilePage() {
       >
         <div className="space-y-4">
           <ImageUpload
-            label="Cashier photo"
+            label="Staff photo"
             previewUrl={resolveImageUrl(newPhotoUrl)}
             onPick={(file) => {
               setNewPhotoFile(file);
@@ -1709,6 +1843,18 @@ export default function ProfilePage() {
             onChange={setNewAddress}
             placeholder="e.g., Baneshwor, Kathmandu"
           />
+          <SelectField
+            label="Role"
+            value={newRole}
+            onChange={(value) =>
+              setNewRole(value === "MANAGER" || value === "STAFF" ? value : "CASHIER")
+            }
+            options={[
+              { value: "CASHIER", label: "Cashier" },
+              { value: "MANAGER", label: "Manager" },
+              { value: "STAFF", label: "Staff" },
+            ]}
+          />
           <TextField
             label="Password"
             value={newPassword}
@@ -1747,10 +1893,10 @@ export default function ProfilePage() {
         </div>
       </Modal>
 
-      <Modal open={editOpen} title="Edit cashier" onClose={closeEdit}>
+      <Modal open={editOpen} title="Edit staff" onClose={closeEdit}>
         <div className="space-y-4">
           <ImageUpload
-            label="Cashier photo"
+            label="Staff photo"
             previewUrl={resolveImageUrl(editPhotoUrl)}
             onPick={(file) => {
               setEditPhotoFile(file);
@@ -1791,6 +1937,18 @@ export default function ProfilePage() {
             label="Address"
             value={editAddress}
             onChange={setEditAddress}
+          />
+          <SelectField
+            label="Role"
+            value={editRole}
+            onChange={(value) =>
+              setEditRole(value === "MANAGER" || value === "STAFF" ? value : "CASHIER")
+            }
+            options={[
+              { value: "CASHIER", label: "Cashier" },
+              { value: "MANAGER", label: "Manager" },
+              { value: "STAFF", label: "Staff" },
+            ]}
           />
           <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
             <div className="flex items-center justify-between gap-3">
@@ -1870,8 +2028,8 @@ export default function ProfilePage() {
 
       <ConfirmDialog
         open={!!pendingDeactivateCashier}
-        title="Deactivate cashier account?"
-        message="This cashier will no longer be able to sign in or access billing features until the account is reactivated."
+        title="Deactivate staff account?"
+        message="This staff member will no longer be able to sign in until the account is reactivated."
         confirmLabel="Deactivate Account"
         onConfirm={confirmDeactivateCashier}
         onClose={() => setPendingDeactivateCashier(null)}
@@ -1886,6 +2044,130 @@ export default function ProfilePage() {
           ) : null
         }
       />
+
+      <ModalFrame
+        open={!!pendingDeleteCashier}
+        title="Delete staff account"
+        description={
+          pendingDeleteCashier
+            ? `${pendingDeleteCashier.name} (${pendingDeleteCashier.email})`
+            : undefined
+        }
+        onClose={closeDeleteCashier}
+        maxWidthClass="max-w-[560px]"
+        footer={
+          <div className="flex flex-wrap items-center justify-end gap-2">
+            <DialogButton onClick={closeDeleteCashier} disabled={deletingCashier}>
+              Cancel
+            </DialogButton>
+
+            {deleteSafety &&
+            !deleteSafety.canPermanentDelete &&
+            pendingDeleteCashier?.active ? (
+              <DialogButton
+                variant="secondary"
+                icon="block"
+                onClick={() => {
+                  const cashier = pendingDeleteCashier;
+                  closeDeleteCashier();
+                  setPendingDeactivateCashier(cashier);
+                }}
+                disabled={deletingCashier}
+              >
+                Set Inactive
+              </DialogButton>
+            ) : null}
+
+            {deleteSafety?.canPermanentDelete ? (
+              <DialogButton
+                variant="danger"
+                icon="delete_forever"
+                onClick={confirmPermanentDeleteCashier}
+                disabled={deletingCashier}
+              >
+                {deletingCashier ? "Deleting..." : "Delete Forever"}
+              </DialogButton>
+            ) : null}
+          </div>
+        }
+      >
+        {deleteSafetyLoading ? (
+          <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 text-[13px] font-semibold text-[#565449]">
+            Checking account history...
+          </div>
+        ) : deleteSafety?.canPermanentDelete ? (
+          <div className="space-y-3">
+            <div className="rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3">
+              <div className="text-[12px] font-extrabold uppercase text-emerald-700">
+                Safe to permanently delete
+              </div>
+              <div className="mt-1 text-[13px] font-semibold leading-6 text-emerald-800">
+                {deleteSafety.safeReason}
+              </div>
+            </div>
+
+            {deleteSafety.supportCleanup.length > 0 ? (
+              <div className="rounded-[14px] border border-[#CFCFD3] bg-white px-4 py-3">
+                <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
+                  Also removed with this account
+                </div>
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {deleteSafety.supportCleanup.map((item) => (
+                    <span
+                      key={item.label}
+                      className="rounded-full border border-[#CFCFD3] bg-[#F3F4F6] px-3 py-1 text-[12px] font-bold text-[#565449]"
+                    >
+                      {item.count} {item.label}
+                    </span>
+                  ))}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="text-[13px] font-medium leading-6 text-[#565449]">
+              This action is only for demo or mistakenly created staff accounts
+              with no business history. It cannot be undone.
+            </div>
+          </div>
+        ) : deleteSafety ? (
+          <div className="space-y-3">
+            <div className="rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3">
+              <div className="text-[12px] font-extrabold uppercase text-amber-700">
+                Permanent delete is blocked
+              </div>
+              <div className="mt-1 text-[13px] font-semibold leading-6 text-amber-800">
+                This account has history that should stay attached to reports,
+                invoices, documents, or security records.
+              </div>
+            </div>
+
+            <div className="max-h-[220px] overflow-auto rounded-[14px] border border-[#CFCFD3] bg-white">
+              {deleteSafety.references.map((item) => (
+                <div
+                  key={item.label}
+                  className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] px-4 py-3 last:border-b-0"
+                >
+                  <span className="text-[13px] font-semibold text-[#565449]">
+                    {item.label}
+                  </span>
+                  <span className="rounded-full bg-[#F3F4F6] px-2 py-1 text-[12px] font-extrabold text-[#000000]">
+                    {item.count}
+                  </span>
+                </div>
+              ))}
+            </div>
+
+            <div className="text-[13px] font-medium leading-6 text-[#565449]">
+              Use Set Inactive to remove this staff member from login and daily
+              work while preserving history.
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-[14px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+            The account history could not be loaded. Try again before deleting.
+          </div>
+        )}
+      </ModalFrame>
 
       <StatusDialog
         open={feedbackOpen}

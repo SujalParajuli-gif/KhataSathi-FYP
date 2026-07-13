@@ -1,7 +1,10 @@
 import { Request, Response } from "express";
+import fs from "fs/promises";
 import { parse } from "csv-parse";
+import { PDFParse } from "pdf-parse";
 import { Readable } from "stream";
 import * as productService from "./service";
+import * as documentService from "../documents/service";
 
 // validating that a required text field is present and not just whitespace
 function parseRequiredText(value: unknown, label: string) {
@@ -118,10 +121,32 @@ export async function create(req: Request, res: Response) {
   try {
     const product = await productService.createProduct({
       name: parseRequiredText(req.body.name, "name"),
+      productName: parseOptionalText(req.body.productName),
       sku: parseRequiredText(req.body.sku, "sku"),
       barcode: parseOptionalText(req.body.barcode),
       brandId: parseRequiredText(req.body.brandId, "brandId"),
       category: parseOptionalText(req.body.category),
+      categoryGroup: parseOptionalText(req.body.categoryGroup),
+      vendorSource: parseOptionalText(req.body.vendorSource),
+      productCodeVariant: parseOptionalText(req.body.productCodeVariant),
+      sizeValue: parseOptionalNumber(req.body.sizeValue, "sizeValue", { min: 0 }),
+      sizeUnit: parseOptionalText(req.body.sizeUnit),
+      ratePerPiece: parseOptionalNumber(req.body.ratePerPiece, "ratePerPiece", {
+        min: 0,
+      }),
+      packageQuantity: parseOptionalNumber(
+        req.body.packageQuantity,
+        "packageQuantity",
+        { min: 0 },
+      ),
+      packageUnit: parseOptionalText(req.body.packageUnit),
+      saleUnit: parseOptionalText(req.body.saleUnit),
+      allowFractionalQty: parseOptionalBoolean(req.body.allowFractionalQty),
+      quantityStep: parseOptionalNumber(req.body.quantityStep, "quantityStep", {
+        min: 0.001,
+      }),
+      wholesaleEligible: parseOptionalBoolean(req.body.wholesaleEligible),
+      sourceCitation: parseOptionalText(req.body.sourceCitation),
       retailPrice: parseRequiredNumber(req.body.retailPrice, "retailPrice", {
         min: 0.01, // price must be at least 0.01
       }),
@@ -188,6 +213,9 @@ export async function update(req: Request, res: Response) {
     if (body.name !== undefined) {
       data.name = parseRequiredText(body.name, "name");
     }
+    if (body.productName !== undefined) {
+      data.productName = parseOptionalText(body.productName) || null;
+    }
     if (body.sku !== undefined) {
       data.sku = parseRequiredText(body.sku, "sku");
     }
@@ -199,6 +227,53 @@ export async function update(req: Request, res: Response) {
     }
     if (body.category !== undefined) {
       data.category = parseOptionalText(body.category) || null;
+    }
+    if (body.categoryGroup !== undefined) {
+      data.categoryGroup = parseOptionalText(body.categoryGroup) || null;
+    }
+    if (body.vendorSource !== undefined) {
+      data.vendorSource = parseOptionalText(body.vendorSource) || null;
+    }
+    if (body.productCodeVariant !== undefined) {
+      data.productCodeVariant = parseOptionalText(body.productCodeVariant) || null;
+    }
+    if (body.sizeValue !== undefined) {
+      data.sizeValue = parseOptionalNumber(body.sizeValue, "sizeValue", { min: 0 }) ?? null;
+    }
+    if (body.sizeUnit !== undefined) {
+      data.sizeUnit = parseOptionalText(body.sizeUnit) || "STANDARD";
+    }
+    if (body.ratePerPiece !== undefined) {
+      data.ratePerPiece = parseOptionalNumber(body.ratePerPiece, "ratePerPiece", {
+        min: 0,
+      });
+    }
+    if (body.packageQuantity !== undefined) {
+      data.packageQuantity = parseOptionalNumber(
+        body.packageQuantity,
+        "packageQuantity",
+        { min: 0 },
+      );
+    }
+    if (body.packageUnit !== undefined) {
+      data.packageUnit = parseOptionalText(body.packageUnit) || "PIECE";
+    }
+    if (body.saleUnit !== undefined) {
+      data.saleUnit = parseOptionalText(body.saleUnit) || "PIECE";
+    }
+    if (body.allowFractionalQty !== undefined) {
+      data.allowFractionalQty = parseBooleanValue(body.allowFractionalQty);
+    }
+    if (body.quantityStep !== undefined) {
+      data.quantityStep = parseOptionalNumber(body.quantityStep, "quantityStep", {
+        min: 0.001,
+      });
+    }
+    if (body.wholesaleEligible !== undefined) {
+      data.wholesaleEligible = parseBooleanValue(body.wholesaleEligible);
+    }
+    if (body.sourceCitation !== undefined) {
+      data.sourceCitation = parseOptionalText(body.sourceCitation) || null;
     }
     if (body.retailPrice !== undefined) {
       data.retailPrice = parseOptionalNumber(body.retailPrice, "retailPrice", {
@@ -246,7 +321,10 @@ export async function update(req: Request, res: Response) {
       data.isActive = parseBooleanValue(body.isActive);
     }
 
-    const product = await productService.updateProduct(productId, data);
+    const product = await productService.updateProduct(productId, data, {
+      id: req.user!.id,
+      role: req.user!.role,
+    });
     res.json(product);
   } catch (err: any) {
     if (
@@ -277,14 +355,51 @@ export async function update(req: Request, res: Response) {
 export async function deactivate(req: Request, res: Response) {
   try {
     const productId = String(req.params.id);
-    const product = await productService.deactivateProduct(productId);
-    res.json(product);
+    const result = await productService.deactivateProduct(productId, req.user!.id);
+    res.json(result);
   } catch (err: any) {
     if (err.code === "P2025") {
       res.status(404).json({ error: "Product not found" });
       return;
     }
     console.error("Deactivate product error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function deleteSafety(req: Request, res: Response) {
+  try {
+    const productId = String(req.params.id);
+    const safety = await productService.getProductDeleteSafety(productId);
+    res.json(safety);
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+    console.error("Product delete safety error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function permanentDelete(req: Request, res: Response) {
+  try {
+    const productId = String(req.params.id);
+    const result = await productService.permanentlyDeleteProduct(productId, req.user!.id);
+    res.json(result);
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+    if (err.code === "PRODUCT_DELETE_BLOCKED") {
+      res.status(409).json({
+        error: err.message,
+        safety: err.safety,
+      });
+      return;
+    }
+    console.error("Permanent product delete error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -302,7 +417,7 @@ export async function categories(req: Request, res: Response) {
 }
 
 // handling bulk product import from a CSV file
-// the file is uploaded in memory (not saved to disk), then parsed and processed row by row
+// the file is uploaded in memory and converted into a review batch before any products are inserted
 export async function importCsv(req: Request, res: Response) {
   try {
     const file = req.file;
@@ -321,6 +436,8 @@ export async function importCsv(req: Request, res: Response) {
         skip_empty_lines: true,
         trim: true,
         bom: true, // handling byte order mark that some editors add
+        relax_quotes: true, // supplier files can contain inch marks like 10" inside product names
+        relax_column_count: true,
       }),
     );
 
@@ -329,10 +446,288 @@ export async function importCsv(req: Request, res: Response) {
       records.push(record);
     }
 
-    const result = await productService.importProductsFromCsv(records); // processing each row and creating products
+    const parseJsonField = (value: unknown) => {
+      if (!value || typeof value !== "string") return undefined;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return undefined;
+      }
+    };
+
+    const result = await productService.createCsvImportPreview({
+      fileName: file.originalname,
+      rows: records,
+      createdById: req.user!.id,
+      supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
+      templateId: typeof req.body?.templateId === "string" ? req.body.templateId : undefined,
+      fieldMap: parseJsonField(req.body?.fieldMap),
+      defaults: parseJsonField(req.body?.defaults),
+    });
     res.json(result);
   } catch (err) {
     console.error("Import CSV error:", err);
     res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function listImportTemplates(req: Request, res: Response) {
+  try {
+    const sourceType = typeof req.query.sourceType === "string" ? req.query.sourceType : undefined;
+    const templates = await productService.listProductImportTemplates(sourceType);
+    res.json({ templates });
+  } catch (err: any) {
+    console.error("List import templates error:", err);
+    res.status(500).json({ error: err?.message || "Internal server error" });
+  }
+}
+
+export async function saveImportTemplate(req: Request, res: Response) {
+  try {
+    const template = await productService.upsertProductImportTemplate({
+      id: typeof req.body?.id === "string" ? req.body.id : undefined,
+      name: typeof req.body?.name === "string" ? req.body.name : undefined,
+      supplier: String(req.body?.supplier || ""),
+      sourceType: typeof req.body?.sourceType === "string" ? req.body.sourceType : "CSV",
+      fieldMap:
+        req.body?.fieldMap && typeof req.body.fieldMap === "object"
+          ? req.body.fieldMap
+          : {},
+      defaults:
+        req.body?.defaults && typeof req.body.defaults === "object"
+          ? req.body.defaults
+          : undefined,
+      createdById: req.user!.id,
+    });
+    res.json(template);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to save import template" });
+  }
+}
+
+export async function deleteImportTemplate(req: Request, res: Response) {
+  try {
+    const result = await productService.deleteProductImportTemplate(String(req.params.id));
+    res.json(result);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import template not found" });
+  }
+}
+
+export async function bulkPriceUpdate(req: Request, res: Response) {
+  try {
+    const result = await productService.bulkUpdateProductPrices({
+      updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
+      reason: String(req.body?.reason || ""),
+      actorId: req.user!.id,
+      actorRole: req.user!.role,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to update prices" });
+  }
+}
+
+// handling image supplier rate-list imports.
+// AI parsing is optional; without GEMINI_API_KEY the backend still creates a failed review batch explaining what is missing.
+export async function importImage(req: Request, res: Response) {
+  try {
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "Image file is required" });
+      return;
+    }
+
+    if (
+      !file.mimetype.startsWith("image/") &&
+      !/\.(png|jpe?g|webp)$/i.test(file.originalname)
+    ) {
+      res.status(400).json({ error: "Only PNG, JPG, JPEG, or WEBP images can use the image import endpoint" });
+      return;
+    }
+
+    const result = await productService.createImageImportPreview({
+      fileName: file.originalname,
+      mimeType: file.mimetype || "image/png",
+      buffer: file.buffer,
+      createdById: req.user!.id,
+    });
+    res.json(result);
+  } catch (err: any) {
+    console.error("Import image error:", err);
+    res.status(500).json({ error: err?.message || "Internal server error" });
+  }
+}
+
+// handling supplier PDF import previews
+// text-based PDFs are extracted into ProductImportBatch/ProductImportRow records for later review/mapping
+export async function importPdf(req: Request, res: Response) {
+  let parser: PDFParse | null = null;
+
+  try {
+    const file = req.file;
+    if (!file) {
+      res.status(400).json({ error: "PDF file is required" });
+      return;
+    }
+
+    if (
+      file.mimetype !== "application/pdf" &&
+      !file.originalname.toLowerCase().endsWith(".pdf")
+    ) {
+      res.status(400).json({ error: "Only PDF files can use the PDF import endpoint" });
+      return;
+    }
+
+    parser = new PDFParse({ data: file.buffer });
+    const parsed = await parser.getText();
+    const result = await productService.createPdfImportPreview({
+      fileName: file.originalname,
+      text: parsed.text || "",
+      createdById: req.user!.id,
+    });
+
+    res.json(result);
+  } catch (err: any) {
+    console.error("Import PDF error:", err);
+    res.status(500).json({ error: err?.message || "Internal server error" });
+  } finally {
+    await parser?.destroy().catch(() => undefined);
+  }
+}
+
+export async function importFromDocument(req: Request, res: Response) {
+  let parser: PDFParse | null = null;
+
+  try {
+    const documentId = String(req.params.documentId || "");
+    if (!documentId) {
+      res.status(400).json({ error: "Document is required" });
+      return;
+    }
+
+    await documentService.assertDocumentsCanLinkToEntity({
+      documentIds: [documentId],
+      documentType: "PRODUCT_IMPORT",
+      linkedEntityType: "ProductImportBatch",
+      viewerRole: req.user!.role,
+    });
+
+    const document = await documentService.getDocumentById(documentId, req.user!.role);
+    if (!document) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+
+    const filePath = documentService.getDocumentFilePath(document);
+    if (!filePath) {
+      res.status(404).json({ error: "Document file is missing from storage" });
+      return;
+    }
+
+    const buffer = await fs.readFile(filePath);
+    const lowerName = (document.fileName || "").toLowerCase();
+    const isPdf = document.mimeType === "application/pdf" || lowerName.endsWith(".pdf");
+    const isImage = document.mimeType.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(lowerName);
+
+    let result: any;
+    if (isPdf) {
+      parser = new PDFParse({ data: buffer });
+      const parsed = await parser.getText();
+      result = await productService.createPdfImportPreview({
+        fileName: document.fileName,
+        text: parsed.text || "",
+        createdById: req.user!.id,
+      });
+    } else if (isImage) {
+      result = await productService.createImageImportPreview({
+        fileName: document.fileName,
+        mimeType: document.mimeType || "image/png",
+        buffer,
+        createdById: req.user!.id,
+      });
+    } else {
+      res.status(400).json({ error: "Only PDF or image product import documents can open an import review." });
+      return;
+    }
+
+    if (result?.batchId) {
+      await documentService.linkDocumentsToEntity({
+        documentIds: [documentId],
+        documentType: "PRODUCT_IMPORT",
+        linkedEntityType: "ProductImportBatch",
+        linkedEntityId: result.batchId,
+        userId: req.user!.id,
+        viewerRole: req.user!.role,
+        metadata: {
+          supplierName: document.supplierName || undefined,
+          billNumber: document.billNumber || undefined,
+          billDate: document.billDate ? new Date(document.billDate).toISOString() : undefined,
+          billAmount: document.billAmount ?? undefined,
+          remarks: document.remarks || undefined,
+        },
+      });
+    }
+
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to open import document" });
+  } finally {
+    await parser?.destroy().catch(() => undefined);
+  }
+}
+
+// returning a PDF import batch with all extracted rows so the admin can review/mapping before catalog import
+export async function getImportBatch(req: Request, res: Response) {
+  try {
+    const batchId = String(req.params.batchId);
+    const batch = await productService.getProductImportBatch(batchId);
+    res.json(batch);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+export async function listImportBatches(req: Request, res: Response) {
+  try {
+    const batches = await productService.listProductImportBatches({
+      sourceType: req.query.sourceType as string | undefined,
+      status: req.query.status as string | undefined,
+      supplier: req.query.supplier as string | undefined,
+      search: req.query.search as string | undefined,
+      page: req.query.page ? Number(req.query.page) : undefined,
+      pageSize: req.query.pageSize ? Number(req.query.pageSize) : undefined,
+    });
+    res.json({ batches });
+  } catch (err: any) {
+    console.error("List import batches error:", err);
+    res.status(500).json({ error: err?.message || "Internal server error" });
+  }
+}
+
+export async function deleteImportBatch(req: Request, res: Response) {
+  try {
+    const batchId = String(req.params.batchId);
+    const result = await productService.deleteProductImportBatch(batchId, req.user!.id);
+    res.json(result);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+// importing only the PDF rows the admin reviewed and selected
+export async function importReviewedBatchRows(req: Request, res: Response) {
+  try {
+    const batchId = String(req.params.batchId);
+    const result = await productService.importReviewedPdfRows(batchId, {
+      rows: Array.isArray(req.body?.rows) ? req.body.rows : [],
+      ignoredRowIds: Array.isArray(req.body?.ignoredRowIds)
+        ? req.body.ignoredRowIds
+        : [],
+      actorId: req.user!.id,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to import reviewed rows" });
   }
 }

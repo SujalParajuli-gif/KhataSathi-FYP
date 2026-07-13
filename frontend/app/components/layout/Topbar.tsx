@@ -63,7 +63,7 @@ export default function Topbar({
   const previewAlerts = alerts.slice(0, 4);
 
   return (
-    <header className="sticky top-0 z-30 border-b border-[#CFCFD3] bg-[rgba(255,255,255,0.9)] backdrop-blur-md">
+    <header className="sticky top-0 z-[60] border-b border-[#CFCFD3] bg-[rgba(255,255,255,0.9)] backdrop-blur-md">
       <div className="px-[20px] py-[12px]">
         <div className="flex items-center justify-between gap-4">
           <div className="min-w-0 flex items-center gap-4">
@@ -181,7 +181,7 @@ export default function Topbar({
                                 {alert.timeLabel}
                               </div>
                             </div>
-                            <div className="mt-[4px] text-[11px] leading-[20px] text-[#8C8889]">
+                            <div className="mt-[4px] break-words text-[11px] leading-[20px] text-[#8C8889]">
                               {alert.message}
                             </div>
                           </div>

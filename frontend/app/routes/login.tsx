@@ -4,6 +4,7 @@ import BrandLogo from "~/components/ui/BrandLogo";
 import Icon from "~/components/ui/Icon";
 import navData from "~/config/ui.nav.json";
 import type { AuthUser, UserRole } from "~/lib/auth";
+import { getDefaultRoute } from "~/lib/routeAccess";
 import { isLoggedIn, setAuthUser, setToken } from "~/lib/auth";
 import { loginApi } from "~/lib/api/endpoints";
 
@@ -199,7 +200,7 @@ export default function LoginPage() {
       setAuthUser(user);
 
       // sending each role to its own starting page right after login succeeds
-      navigate(user.role === "cashier" ? "/billing" : "/");
+      navigate(getDefaultRoute(user.role));
     } catch (err: any) {
       // this handles when the API rejects the login or the network request fails
       // we prefer the backend message first so the user sees the real reason when one is available

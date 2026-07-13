@@ -1,5 +1,17 @@
 import prisma from "../../db/prisma";
-import { deleteReplacedUpload } from "../../lib/uploads";
+import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
+
+export type ManagedUserRole = "ADMIN" | "MANAGER" | "CASHIER" | "STAFF";
+
+export type UserDeleteSafety = {
+  userId: string;
+  userName: string;
+  canPermanentDelete: boolean;
+  references: Array<{ label: string; count: number }>;
+  supportCleanup: Array<{ label: string; count: number }>;
+  safeReason: string | null;
+  recommendedAction: "PERMANENT_DELETE" | "DEACTIVATE";
+};
 
 // defining the shape of data needed to create a new user
 type CreateUserInput = {
@@ -8,7 +20,7 @@ type CreateUserInput = {
   phone?: string;
   gender?: string | null;
   address?: string | null;
-  role?: "ADMIN" | "CASHIER";
+  role?: ManagedUserRole;
   passwordHash: string;
   isActive?: boolean;
 };
@@ -21,7 +33,7 @@ type UpdateUserInput = {
   phone?: string | null;
   gender?: string | null;
   address?: string | null;
-  role?: "ADMIN" | "CASHIER";
+  role?: ManagedUserRole;
   passwordHash?: string;
   isActive?: boolean;
   profileImage?: string | null;
@@ -29,7 +41,7 @@ type UpdateUserInput = {
 
 // listing all users, with optional role filter to show only admins or only cashiers
 // we exclude the passwordHash field from the results to keep it secure
-export async function listUsers(query?: { role?: "ADMIN" | "CASHIER" }) {
+export async function listUsers(query?: { role?: ManagedUserRole }) {
   const where: any = {};
   if (query?.role) where.role = query.role; // adding role filter only if it was provided
 
@@ -158,4 +170,184 @@ export async function uploadUserPhoto(id: string, photoUrl: string) {
   await deleteReplacedUpload(existingUser?.profileImage, user.profileImage);
 
   return user;
+}
+
+export async function getUserDeleteSafety(
+  id: string,
+  actorId?: string,
+): Promise<UserDeleteSafety> {
+  const user = await prisma.user.findUnique({
+    where: { id },
+    select: { id: true, name: true },
+  });
+
+  if (!user) {
+    const error: any = new Error("User not found");
+    error.code = "P2025";
+    throw error;
+  }
+
+  const [
+    invoices,
+    cancelledInvoices,
+    payments,
+    voidedPayments,
+    stockTransactions,
+    invoiceItemPriceOverrides,
+    auditLogs,
+    creditNotes,
+    createdReturnRequests,
+    reviewedReturnRequests,
+    backupJobs,
+    productImportBatches,
+    productImportTemplates,
+    cashDrawers,
+    cashDrawerEvents,
+    documents,
+    deletedDocuments,
+    stockReceiveBatches,
+    softDeleteRecords,
+    deletedProductImportBatches,
+    backupSettingsUpdates,
+    updatedCashierPrivileges,
+    createdCustomers,
+    createdDiscountRequests,
+    reviewedDiscountRequests,
+    priceOverrideAuthorizations,
+    cashierPrivilege,
+    userAlertReads,
+    overridePinAttempts,
+  ] = await Promise.all([
+    prisma.invoice.count({ where: { cashierId: id } }),
+    prisma.invoice.count({ where: { cancelledById: id } }),
+    prisma.payment.count({ where: { createdById: id } }),
+    prisma.payment.count({ where: { voidedById: id } }),
+    prisma.stockTransaction.count({ where: { createdById: id } }),
+    prisma.invoiceItem.count({ where: { overrideById: id } }),
+    prisma.auditLog.count({ where: { actorId: id } }),
+    prisma.creditNote.count({ where: { createdById: id } }),
+    prisma.returnRequest.count({ where: { createdById: id } }),
+    prisma.returnRequest.count({ where: { reviewedById: id } }),
+    prisma.backupJob.count({ where: { createdById: id } }),
+    prisma.productImportBatch.count({ where: { createdById: id } }),
+    prisma.productImportTemplate.count({ where: { createdById: id } }),
+    prisma.cashDrawer.count({ where: { cashierId: id } }),
+    prisma.cashDrawerEvent.count({ where: { createdById: id } }),
+    prisma.document.count({ where: { uploadedById: id } }),
+    prisma.document.count({ where: { deletedById: id } }),
+    prisma.stockReceiveBatch.count({ where: { createdById: id } }),
+    prisma.softDeleteRecord.count({ where: { deletedById: id } }),
+    prisma.productImportBatch.count({ where: { deletedById: id } }),
+    prisma.backupSettings.count({ where: { updatedById: id } }),
+    prisma.cashierPrivilege.count({ where: { updatedById: id } }),
+    prisma.customer.count({ where: { createdById: id } }),
+    prisma.customerDiscountRequest.count({ where: { requestedById: id } }),
+    prisma.customerDiscountRequest.count({ where: { reviewedById: id } }),
+    prisma.priceOverrideAuthorization.count({ where: { cashierId: id } }),
+    prisma.cashierPrivilege.count({ where: { userId: id } }),
+    prisma.userAlertRead.count({ where: { userId: id } }),
+    prisma.overridePinAttempt.count({ where: { userId: id } }),
+  ]);
+
+  const references = [
+    { label: "current signed-in admin account", count: actorId === id ? 1 : 0 },
+    { label: "invoice(s) as cashier", count: invoices },
+    { label: "cancelled invoice(s)", count: cancelledInvoices },
+    { label: "payment(s) created", count: payments },
+    { label: "payment(s) voided", count: voidedPayments },
+    { label: "stock transaction(s)", count: stockTransactions },
+    { label: "invoice price override(s)", count: invoiceItemPriceOverrides },
+    { label: "audit log(s)", count: auditLogs },
+    { label: "credit note(s)", count: creditNotes },
+    { label: "return request(s) created", count: createdReturnRequests },
+    { label: "return request(s) reviewed", count: reviewedReturnRequests },
+    { label: "backup job(s)", count: backupJobs },
+    { label: "product import batch(es)", count: productImportBatches },
+    { label: "product import template(s)", count: productImportTemplates },
+    { label: "cash drawer session(s)", count: cashDrawers },
+    { label: "cash drawer event(s)", count: cashDrawerEvents },
+    { label: "uploaded document(s)", count: documents },
+    { label: "document deletion action(s)", count: deletedDocuments },
+    { label: "stock receive batch(es)", count: stockReceiveBatches },
+    { label: "bin deletion record(s)", count: softDeleteRecords },
+    { label: "product import deletion action(s)", count: deletedProductImportBatches },
+    { label: "backup setting update(s)", count: backupSettingsUpdates },
+    { label: "cashier permission update(s)", count: updatedCashierPrivileges },
+    { label: "customer(s) created", count: createdCustomers },
+    { label: "customer discount request(s) created", count: createdDiscountRequests },
+    { label: "customer discount request(s) reviewed", count: reviewedDiscountRequests },
+    { label: "price override authorization(s)", count: priceOverrideAuthorizations },
+  ].filter((item) => item.count > 0);
+
+  const supportCleanup = [
+    { label: "cashier permission row", count: cashierPrivilege },
+    { label: "alert read state(s)", count: userAlertReads },
+    { label: "override PIN attempt(s)", count: overridePinAttempts },
+  ].filter((item) => item.count > 0);
+
+  const canPermanentDelete = references.length === 0;
+
+  return {
+    userId: user.id,
+    userName: user.name,
+    canPermanentDelete,
+    references,
+    supportCleanup,
+    safeReason: canPermanentDelete
+      ? "No business, security, or audit history was found for this user."
+      : null,
+    recommendedAction: canPermanentDelete ? "PERMANENT_DELETE" : "DEACTIVATE",
+  };
+}
+
+export async function permanentlyDeleteUser(id: string, actorId: string) {
+  const safety = await getUserDeleteSafety(id, actorId);
+  if (!safety.canPermanentDelete) {
+    const error: any = new Error("User cannot be permanently deleted.");
+    error.code = "USER_DELETE_BLOCKED";
+    error.safety = safety;
+    throw error;
+  }
+
+  const user = await prisma.$transaction(async (tx) => {
+    await tx.cashierPrivilege.deleteMany({ where: { userId: id } });
+    await tx.userAlertRead.deleteMany({ where: { userId: id } });
+    await tx.overridePinAttempt.deleteMany({ where: { userId: id } });
+
+    return tx.user.delete({
+      where: { id },
+      select: {
+        id: true,
+        name: true,
+        email: true,
+        role: true,
+        profileImage: true,
+      },
+    });
+  });
+
+  await deleteUploadFile(user.profileImage);
+
+  await prisma.auditLog.create({
+    data: {
+      actorId,
+      action: "USER_PERMANENTLY_DELETED",
+      entityType: "User",
+      entityId: user.id,
+      meta: {
+        name: user.name,
+        email: user.email,
+        role: user.role,
+        safeReason: safety.safeReason,
+        supportCleanup: safety.supportCleanup,
+      },
+    },
+  }).catch(() => undefined);
+
+  return {
+    deleted: true,
+    user,
+    safety,
+    message: `${user.name} permanently deleted.`,
+  };
 }

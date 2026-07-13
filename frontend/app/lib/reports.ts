@@ -106,6 +106,85 @@ export type AnalyticsBrandPerformance = {
   invoiceCount: number;
 };
 
+export type AnalyticsOperationalStockProduct = {
+  id: string;
+  name: string;
+  sku: string;
+  brandName: string;
+  stock: number;
+  lowStockThreshold: number;
+};
+
+export type AnalyticsOperations = {
+  generatedAt: string;
+  stock: {
+    lowStockCount: number;
+    outOfStockCount: number;
+    slowMovingCount: number;
+    lowStockProducts: AnalyticsOperationalStockProduct[];
+    outOfStockProducts: AnalyticsOperationalStockProduct[];
+    slowMovingProducts: AnalyticsOperationalStockProduct[];
+  };
+  cashDrawers: {
+    openCount: number;
+    openDrawers: Array<{
+      id: string;
+      openedAt: string;
+      openingFloat: number;
+      expectedTotal: number;
+      cashSalesTotal: number;
+      cashier?: { id: string; name: string } | null;
+    }>;
+  };
+  parkedBills: {
+    count: number;
+    recent: Array<{
+      id: string;
+      invoiceNo: string;
+      parkedLabel?: string | null;
+      parkedAt?: string | null;
+      netTotal: number;
+      cashier?: { id: string; name: string } | null;
+    }>;
+  };
+  discountRequests: {
+    pendingCount: number;
+    recent: Array<{
+      id: string;
+      customerName: string;
+      discountType: string;
+      discountPercent: number;
+      createdAt: string;
+      requestedBy?: { id: string; name: string } | null;
+    }>;
+  };
+  returns: {
+    count: number;
+    pendingCount: number;
+    approvedCount: number;
+    refundAmount: number;
+    recent: Array<{
+      id: string;
+      status: string;
+      refundAmount: number;
+      refundMethod?: AnalyticsPaymentMethod | null;
+      createdAt: string;
+      invoice?: { id: string; invoiceNo: string } | null;
+      createdBy?: { id: string; name: string } | null;
+    }>;
+  };
+  recentStockReceives: Array<{
+    id: string;
+    supplierName: string;
+    billNumber?: string | null;
+    createdAt: string;
+    createdBy?: { id: string; name: string } | null;
+    lineCount: number;
+    totalQty: number;
+    products: Array<{ id: string; name: string; sku: string; qty: number }>;
+  }>;
+};
+
 // the complete analytics report — this is the full response from getAnalyticsReportApi
 export type AnalyticsReport = {
   filters: AnalyticsFilters;
@@ -122,6 +201,7 @@ export type AnalyticsReport = {
   cashierPerformance: AnalyticsCashierPerformance[];
   paymentDistribution: AnalyticsPaymentDistribution[];
   brandPerformance: AnalyticsBrandPerformance[];
+  operations?: AnalyticsOperations;
 };
 
 // --
@@ -179,4 +259,3 @@ export function paymentMethodLabel(method: AnalyticsPaymentMethod) {
   if (method === "ESEWA") return "eSewa";
   return "Cash";
 }
-

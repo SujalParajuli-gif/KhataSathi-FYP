@@ -1,0 +1,1 @@
+ALTER TABLE `Product` ADD COLUMN `reservedStock` DOUBLE NOT NULL DEFAULT 0;

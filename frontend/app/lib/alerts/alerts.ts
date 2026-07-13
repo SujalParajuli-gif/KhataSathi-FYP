@@ -2,8 +2,8 @@ import { listAlertsApi } from "~/lib/api/endpoints";
 import { formatAlertTimeLabel } from "~/lib/invoices";
 
 // the alert severity levels — CRITICAL for out of stock, LOW for below threshold, INFO for invoice activity
-export type AppAlertLevel = "CRITICAL" | "LOW" | "INFO";
-export type AppAlertType = "Stock" | "Invoice";
+export type AppAlertLevel = "CRITICAL" | "WARNING" | "LOW" | "INFO";
+export type AppAlertType = "Stock" | "Invoice" | "Product" | "Return" | "Payment" | "System";
 
 // the shape of each alert used across the frontend
 export type AppAlert = {
@@ -15,11 +15,16 @@ export type AppAlert = {
   createdAt: string;
   timeLabel: string; // human-readable time like "5m ago" or "Apr 18"
   read: boolean;
+  resolved: boolean;
 };
 
 // mapping each alert type to a Material Symbols icon name
 export function alertIcon(alert: Pick<AppAlert, "type" | "level">) {
   if (alert.type === "Stock") return "inventory_2";
+  if (alert.type === "Product") return "inventory";
+  if (alert.type === "Return") return "assignment_return";
+  if (alert.type === "Payment") return "payments";
+  if (alert.type === "System") return "settings";
   if (alert.level === "CRITICAL") return "error";
   return "receipt_long"; // default icon for invoice alerts
 }
@@ -40,7 +45,20 @@ export function alertTone(alert: Pick<AppAlert, "type" | "level">) {
     };
   }
 
-  if (alert.type === "Stock") {
+  if (alert.level === "WARNING") {
+    return {
+      icon: "bg-[#FFF4DD] text-[#C8810A]",
+      unreadDot: "bg-[#D18B14]",
+      previewUnread: "bg-[#FFFBF3]",
+      previewHover: "hover:bg-[#FFF5E6]",
+      pageUnread: "border-[#F1CD8B] bg-[#FFFCF6]",
+      badge: "bg-[#FFF0D5] text-[#B86E07]",
+      time: "text-[#BA730E]",
+      action: "text-[#9E6208] hover:text-[#7F4D05]",
+    };
+  }
+
+  if (alert.type === "Stock" || alert.type === "Product") {
     return {
       icon: "bg-[#FFF4DD] text-[#C8810A]",
       unreadDot: "bg-[#D18B14]",
@@ -84,6 +102,7 @@ export function normalizeAlert(raw: any): AppAlert {
     createdAt,
     timeLabel: formatAlertTimeLabel(createdAt), // converting ISO date to "5m ago" style label
     read: Boolean(raw.read),
+    resolved: Boolean(raw.resolved),
   };
 }
 
@@ -93,4 +112,3 @@ export async function fetchAlerts(limit?: number) {
   const alerts = Array.isArray(response?.alerts) ? response.alerts : [];
   return alerts.map(normalizeAlert);
 }
-

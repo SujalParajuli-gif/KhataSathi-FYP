@@ -2,10 +2,13 @@ import {
   createProductApi,
   deactivateProductApi,
   getCategoriesApi,
+  getProductDeleteSafetyApi,
   listBrandsApi,
   listProductsApi,
+  permanentlyDeleteProductApi,
   uploadProductImageApi,
   updateProductApi,
+  type ProductDeleteSafety,
 } from "~/lib/api/endpoints";
 import type { Product, ProductsQuery, ProductStatus } from "./products.types";
 
@@ -16,11 +19,25 @@ type BackendBrand = { id: string; name: string; isActive?: boolean };
 type BackendProduct = {
   id: string;
   name: string;
+  productName?: string | null;
   sku: string;
   barcode?: string | null;
   brandId?: string;
   brand?: { id: string; name: string } | null;
   category?: string | null;
+  categoryGroup?: string | null;
+  vendorSource?: string | null;
+  productCodeVariant?: string | null;
+  sizeValue?: number | null;
+  sizeUnit?: string | null;
+  ratePerPiece?: number | null;
+  packageQuantity?: number | null;
+  packageUnit?: string | null;
+  saleUnit?: string | null;
+  allowFractionalQty?: boolean | null;
+  quantityStep?: number | null;
+  wholesaleEligible?: boolean | null;
+  sourceCitation?: string | null;
   retailPrice: number;
   wholesalePrice: number;
   wholesaleQtyThreshold?: number;
@@ -42,11 +59,28 @@ function toFrontendProduct(product: BackendProduct): Product {
   return {
     id: product.id,
     name: product.name,
+    productName: product.productName ?? product.name,
     sku: product.sku,
     barcode: product.barcode ?? "",
     imageUrl: product.imageUrl ?? "",
     brand: product.brand?.name ?? "Unknown",
     category: product.category ?? "Uncategorized",
+    categoryGroup: product.categoryGroup ?? product.category ?? "",
+    vendorSource: product.vendorSource ?? "",
+    productCodeVariant: product.productCodeVariant ?? "",
+    sizeValue:
+      product.sizeValue === null || product.sizeValue === undefined
+        ? null
+        : Number(product.sizeValue),
+    sizeUnit: product.sizeUnit ?? "STANDARD",
+    ratePerPiece: Number(product.ratePerPiece ?? product.retailPrice ?? 0),
+    packageQuantity: Number(product.packageQuantity ?? 1),
+    packageUnit: product.packageUnit ?? "PIECE",
+    saleUnit: product.saleUnit ?? "PIECE",
+    allowFractionalQty: Boolean(product.allowFractionalQty),
+    quantityStep: Number(product.quantityStep ?? 1),
+    wholesaleEligible: product.wholesaleEligible ?? true,
+    sourceCitation: product.sourceCitation ?? "",
     retailPrice: Number(product.retailPrice ?? 0),
     wholesalePrice: Number(product.wholesalePrice ?? 0),
     thresholdQty: Number(product.wholesaleQtyThreshold ?? 1),
@@ -64,8 +98,13 @@ function toFrontendProduct(product: BackendProduct): Product {
 
 // looking up a brand's ID from the cached list by its display name
 function getBrandIdByName(name?: string): string | undefined {
-  if (!name) return undefined;
+  if (!name || name === "All Brands") return undefined;
   return brandsCache.find((brand) => brand.name === name)?.id;
+}
+
+function mapCategoryFilter(category?: string): string | undefined {
+  if (!category || category === "All Categories") return undefined;
+  return category;
 }
 
 // converting frontend status filter values to the backend's expected "true"/"false" string
@@ -103,7 +142,7 @@ export async function fetchProducts(q: ProductsQuery) {
   const response = await listProductsApi({
     search: q.q,
     brand: getBrandIdByName(q.brand),
-    category: q.category,
+    category: mapCategoryFilter(q.category),
     active: mapStatusToActive(q.status),
     lowStock: q.lowOnly || q.stockStatus === "low" ? "true" : undefined,
     page: q.page,
@@ -148,11 +187,25 @@ function toBackendPayload(product: Omit<Product, "id">) {
 
   return {
     name: product.name,
+    productName: product.productName || product.name,
     sku: product.sku,
     barcode: product.barcode || undefined,
     imageUrl: product.imageUrl || null,
     brandId,
     category: product.category || undefined,
+    categoryGroup: product.categoryGroup || undefined,
+    vendorSource: product.vendorSource || undefined,
+    productCodeVariant: product.productCodeVariant || undefined,
+    sizeValue: product.sizeValue ?? undefined,
+    sizeUnit: product.sizeUnit || "STANDARD",
+    ratePerPiece: Number(product.ratePerPiece || product.retailPrice),
+    packageQuantity: Number(product.packageQuantity || 1),
+    packageUnit: product.packageUnit || "PIECE",
+    saleUnit: product.saleUnit || "PIECE",
+    allowFractionalQty: Boolean(product.allowFractionalQty),
+    quantityStep: Number(product.quantityStep || 1),
+    wholesaleEligible: Boolean(product.wholesaleEligible),
+    sourceCitation: product.sourceCitation || undefined,
     retailPrice: Number(product.retailPrice),
     wholesalePrice: Number(product.wholesalePrice),
     wholesaleQtyThreshold: Number(product.thresholdQty ?? 1),
@@ -186,17 +239,37 @@ export async function uploadProductImage(id: string, file: File) {
 // activating or deactivating a product by its ID
 export async function setProductStatus(id: string, status: ProductStatus) {
   if (status === "Inactive") {
-    await deactivateProductApi(id);
-    return { ok: true };
+    const result = await deactivateProductApi(id);
+    return {
+      ok: true,
+      changed: Boolean(result?.changed),
+      message: result?.message || "Product set to Inactive.",
+    };
   }
 
-  await updateProductApi(id, { isActive: true });
-  return { ok: true };
+  const updated = await updateProductApi(id, { isActive: true });
+  return {
+    ok: true,
+    changed: true,
+    product: toFrontendProduct(updated),
+    message: "Product activated.",
+  };
 }
 
 // bulk updating the status of multiple products at once
 export async function bulkSetStatus(ids: string[], status: ProductStatus) {
-  await Promise.all(ids.map((id) => setProductStatus(id, status)));
-  return { ok: true };
+  const results = await Promise.all(ids.map((id) => setProductStatus(id, status)));
+  return {
+    ok: true,
+    changedCount: results.filter((result) => result.changed).length,
+    skippedCount: results.filter((result) => !result.changed).length,
+  };
 }
 
+export async function getProductDeleteSafety(id: string): Promise<ProductDeleteSafety> {
+  return getProductDeleteSafetyApi(id);
+}
+
+export async function permanentlyDeleteProduct(id: string) {
+  return permanentlyDeleteProductApi(id);
+}

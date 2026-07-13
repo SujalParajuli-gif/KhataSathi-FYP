@@ -43,14 +43,9 @@ export async function updateBrand(
     actorId?: string,
 ) {
     return prisma.$transaction(async (tx) => {
-        // fetching the existing brand first so we can compare before and after values for the audit log
         const existing = await tx.brand.findUnique({
             where: { id },
-            include: {
-                products: {
-                    select: { id: true, isActive: true },
-                },
-            },
+            select: { id: true, name: true, isActive: true },
         });
 
         if (!existing) {
@@ -62,19 +57,6 @@ export async function updateBrand(
             data,
         });
 
-        // when a brand is being deactivated, we also deactivate all active products under it
-        // this prevents products from being sold when their brand is no longer active
-        let affectedProducts = 0;
-        if (data.isActive === false && existing.isActive !== false) {
-            const result = await tx.product.updateMany({
-                where: { brandId: id, isActive: true }, // only targeting currently active products
-                data: { isActive: false },
-            });
-            affectedProducts = result.count; // storing how many products were affected for the audit log
-        }
-
-        // creating an audit log entry if we know who performed this action
-        // this records what changed so the admin can review brand modifications later
         if (actorId) {
             await tx.auditLog.create({
                 data: {
@@ -87,13 +69,13 @@ export async function updateBrand(
                         brandNameAfter: updated.name,
                         previousActive: existing.isActive,
                         nextActive: updated.isActive,
-                        deactivatedProductCount: affectedProducts,
+                        productCascade: false,
                     },
                 },
             });
         }
 
-        return { ...updated, deactivatedProductCount: affectedProducts }; // including the count so the frontend can show it to the admin
+        return updated;
     });
 }
 

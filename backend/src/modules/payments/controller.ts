@@ -5,6 +5,8 @@ import {
   type SupportedPaymentMethod,
 } from "./service";
 import * as paymentService from "./service";
+import { formatZodIssues } from "../../lib/requestValidation";
+import { voidPaymentBodySchema } from "./validation";
 
 // building a redirect URL for eSewa failures — this sends the user to the frontend result page with an error message
 function buildGenericEsewaFailureRedirect(message: string) {
@@ -171,6 +173,45 @@ export async function listPayments(req: Request, res: Response) {
     res.json(payments);
   } catch (err) {
     console.error("List payments error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+// voiding a successful payment — marks it as failed with void metadata and recomputes the invoice payment status
+// this is restricted to admin users only via the route middleware
+export async function voidPayment(req: Request, res: Response) {
+  try {
+    const parsed = voidPaymentBodySchema.safeParse(req.body || {});
+    if (!parsed.success) {
+      res.status(400).json({
+        error: "Invalid payment void payload",
+        details: formatZodIssues(parsed.error),
+      });
+      return;
+    }
+
+    const result = await paymentService.voidPayment(
+      String(req.params.id),
+      String(req.params.paymentId),
+      req.user!.id,
+      parsed.data.overridePin,
+    );
+    res.json(result);
+  } catch (err: any) {
+    if (
+      err.message.includes("not found") ||
+      err.message.includes("does not belong") ||
+      err.message.includes("Only successful") ||
+      err.message.includes("already been voided") ||
+      err.message.includes("cancelled") ||
+      err.message.includes("PIN") ||
+      err.message.includes("authorized") ||
+      err.message.includes("not active")
+    ) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Void payment error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

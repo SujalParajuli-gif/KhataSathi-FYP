@@ -2,13 +2,23 @@ import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 import { ConfirmDialog } from "~/components/ui/Modal";
+import PaginationBar from "~/components/ui/PaginationBar";
+import { useToast } from "~/components/ui/Toast";
+import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import {
+  approveCustomerDiscountRequestApi,
   createCustomerApi,
   deactivateCustomerApi,
+  deleteCustomerDiscountApi,
+  getCustomerDiscountDeleteSafetyApi,
   getBusinessSettingsApi,
+  listCustomerDiscountRequestsApi,
   listCustomersApi,
   listInvoicesApi,
+  rejectCustomerDiscountRequestApi,
   updateCustomerApi,
+  type CustomerDiscountDeleteSafety,
+  type CustomerDiscountRequest,
 } from "~/lib/api/endpoints";
 import { formatDateLabel, formatNpr } from "~/lib/invoices";
 
@@ -55,6 +65,10 @@ function clampPercent(v: number) {
   return v;
 }
 
+function clampPage(n: number, min: number, max: number) {
+  return Math.min(max, Math.max(min, n));
+}
+
 // cleanly rounds and formats percentages for UI
 function formatPct(v: number) {
   return `${Math.round(v)}%`;
@@ -76,6 +90,13 @@ function getDiscountMode(c: Customer): DiscountMode {
   if (hasWholesale(c)) return "ADMIN_WHOLESALE";
   if (c.isLoyalty) return "LOYALTY";
   return "NONE";
+}
+
+function getCustomerDiscountKind(c: Customer): "LOYALTY" | "WHOLESALE" | null {
+  const mode = getDiscountMode(c);
+  if (mode === "ADMIN_WHOLESALE") return "WHOLESALE";
+  if (mode === "LOYALTY") return "LOYALTY";
+  return null;
 }
 
 // extracts up to 2 initials from a customer name to put inside the avatar circle
@@ -269,6 +290,7 @@ function SearchInput({
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder="Search by customer, phone, or email"
+        aria-label="Search by customer, phone, or email"
         className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white pl-10 pr-4 text-[13px] font-semibold text-[#000000] outline-none transition placeholder:text-[#8C8889] focus:border-[#11120d]"
       />
     </div>
@@ -306,6 +328,7 @@ function Input({
           value={value}
           onChange={(e) => onChange(e.target.value)}
           placeholder={placeholder}
+          aria-label={placeholder || "Text input"}
           className="w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:text-slate-400"
         />
       </div>
@@ -344,6 +367,7 @@ function NumberInput({
       min={min}
       max={max}
       placeholder={placeholder}
+      aria-label={placeholder || "Number input"}
       onChange={(e) => {
         const raw = e.target.value;
         if (raw === "") {
@@ -382,6 +406,8 @@ function ModalShell({
   footer?: ReactNode;
   onClose: () => void;
 }) {
+  useBodyScrollLock(open);
+
   if (!open) return null;
 
   return (
@@ -828,20 +854,32 @@ function RuleCallout({
 }
 
 export default function DiscountsPage() {
+  const { showToast } = useToast();
   const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(2); // saved business-level loyalty percent used for display and comparison
   const [customers, setCustomers] = useState<Customer[]>([]); // full customer list with derived purchase summary fields
+  const [discountRequests, setDiscountRequests] = useState<CustomerDiscountRequest[]>([]);
+  const [requestBusyId, setRequestBusyId] = useState<string | null>(null);
+  const [requestNotes, setRequestNotes] = useState<Record<string, string>>({});
+  const [requestPercents, setRequestPercents] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true); // first-load state for the page
   const [loadError, setLoadError] = useState(""); // fetch error shown when initial data loading fails
-  const [actionError, setActionError] = useState(""); // mutation error shown near the page actions
 
   const [query, setQuery] = useState(""); // search text for customer filtering
   const [mode, setMode] = useState<"all" | DiscountMode>("all"); // active pricing-mode filter tab
+  const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(20);
 
   const [openEdit, setOpenEdit] = useState(false); // controls the create/edit customer modal
   const [editingId, setEditingId] = useState<string | null>(null); // null means add flow, otherwise edit the matching customer
   const [pendingDeactivateCustomer, setPendingDeactivateCustomer] =
     useState<Customer | null>(null);
   const [deactivateBusy, setDeactivateBusy] = useState(false); // blocks repeated deactivate requests while the confirm dialog is running
+  const [deleteTargetCustomer, setDeleteTargetCustomer] =
+    useState<Customer | null>(null);
+  const [deleteSafety, setDeleteSafety] =
+    useState<CustomerDiscountDeleteSafety | null>(null);
+  const [deleteLoading, setDeleteLoading] = useState(false);
+  const [deleteBusy, setDeleteBusy] = useState(false);
 
   const [fName, setFName] = useState(""); // modal field: customer name
   const [fPhone, setFPhone] = useState(""); // modal field: phone number
@@ -862,10 +900,11 @@ export default function DiscountsPage() {
       setLoadError("");
 
       try {
-        const [customerData, invoices, settings] = await Promise.all([
+        const [customerData, invoices, settings, requestData] = await Promise.all([
           listCustomersApi(),
           loadAllInvoices(),
           getBusinessSettingsApi(),
+          listCustomerDiscountRequestsApi("PENDING"),
         ]);
 
         if (!active) return;
@@ -874,6 +913,11 @@ export default function DiscountsPage() {
         const rawCustomers = normalizeCustomerList(customerData); // supporting either direct arrays or wrapped API responses
         setLoyaltyDiscountPercent(
           clampPercent(Number(settings?.loyaltyDiscountPercent ?? 2)),
+        );
+        const requests = Array.isArray(requestData.requests) ? requestData.requests : [];
+        setDiscountRequests(requests);
+        setRequestPercents(
+          Object.fromEntries(requests.map((request) => [request.id, request.discountPercent])),
         );
 
         setCustomers(
@@ -933,6 +977,23 @@ export default function DiscountsPage() {
       return true;
     });
   }, [customers, mode, query]);
+
+  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
+  const pageClamped = clampPage(page, 1, totalPages);
+  const pageItems = useMemo(() => {
+    const start = (pageClamped - 1) * pageSize;
+    return filtered.slice(start, start + pageSize);
+  }, [filtered, pageClamped, pageSize]);
+  const pageStart = filtered.length === 0 ? 0 : (pageClamped - 1) * pageSize;
+  const pageEnd = filtered.length === 0 ? 0 : pageStart + pageItems.length;
+
+  useEffect(() => {
+    setPage(1);
+  }, [query, mode]);
+
+  useEffect(() => {
+    setPage((current) => clampPage(current, 1, totalPages));
+  }, [totalPages]);
 
   const stats = useMemo(() => {
     const total = customers.length;
@@ -1001,7 +1062,6 @@ export default function DiscountsPage() {
 
     setFormErrors(nextErrors);
     setFormSubmitError("");
-    setActionError("");
 
     if (Object.keys(nextErrors).length > 0) return;
 
@@ -1070,8 +1130,109 @@ export default function DiscountsPage() {
 
   function requestDeactivateCustomer(customer: Customer) {
     if (!customer.isActive) return;
-    setActionError("");
     setPendingDeactivateCustomer(customer);
+  }
+
+  function closeDeleteDialog() {
+    if (deleteBusy) return;
+    setDeleteTargetCustomer(null);
+    setDeleteSafety(null);
+    setDeleteLoading(false);
+  }
+
+  async function requestDeleteDiscount(customer: Customer) {
+    const discountKind = getCustomerDiscountKind(customer);
+    if (!discountKind) {
+      showToast("info", `${customer.name} has no active discount to delete.`);
+      return;
+    }
+
+    setDeleteTargetCustomer(customer);
+    setDeleteSafety(null);
+    setDeleteLoading(true);
+
+    try {
+      const safety = await getCustomerDiscountDeleteSafetyApi(
+        customer.id,
+        discountKind,
+      );
+      setDeleteSafety(safety);
+    } catch (err: any) {
+      showToast(
+        "danger",
+        err?.response?.data?.error ||
+          err?.message ||
+          "Could not check this discount before deleting.",
+      );
+      setDeleteTargetCustomer(null);
+    } finally {
+      setDeleteLoading(false);
+    }
+  }
+
+  async function confirmDeleteDiscount() {
+    const customer = deleteTargetCustomer;
+    const discountKind = customer ? getCustomerDiscountKind(customer) : null;
+    if (!customer || !discountKind || deleteBusy) return;
+
+    if (!deleteSafety?.canDelete) {
+      closeDeleteDialog();
+      return;
+    }
+
+    setDeleteBusy(true);
+    try {
+      const result = await deleteCustomerDiscountApi(customer.id, discountKind);
+      setCustomers((prev) =>
+        prev.map((item) =>
+          item.id === customer.id
+            ? {
+                ...item,
+                isLoyalty:
+                  discountKind === "LOYALTY" ? false : item.isLoyalty,
+                adminWholesaleDiscountPercent:
+                  discountKind === "WHOLESALE"
+                    ? undefined
+                    : item.adminWholesaleDiscountPercent,
+              }
+            : item,
+        ),
+      );
+      showToast(result.changed ? "success" : "info", result.message);
+      closeDeleteDialog();
+    } catch (err: any) {
+      const safety = err?.response?.data?.safety as
+        | CustomerDiscountDeleteSafety
+        | undefined;
+      if (safety) setDeleteSafety(safety);
+      showToast(
+        "danger",
+        err?.response?.data?.error ||
+          err?.message ||
+          "Failed to delete customer discount.",
+      );
+    } finally {
+      setDeleteBusy(false);
+    }
+  }
+
+  async function reactivateCustomer(customer: Customer) {
+    if (customer.isActive || deactivateBusy) return;
+    setDeactivateBusy(true);
+
+    try {
+      await updateCustomerApi(customer.id, { isActive: true });
+      setCustomers((prev) =>
+        prev.map((item) =>
+          item.id === customer.id ? { ...item, isActive: true } : item,
+        ),
+      );
+      showToast("success", `${customer.name} reactivated.`);
+    } catch {
+      showToast("danger", `Failed to reactivate ${customer.name}.`);
+    } finally {
+      setDeactivateBusy(false);
+    }
   }
 
   async function confirmDeactivateCustomer() {
@@ -1087,8 +1248,9 @@ export default function DiscountsPage() {
         ),
       );
       setPendingDeactivateCustomer(null);
+      showToast("success", `${customer.name} deactivated.`);
     } catch {
-      setActionError(`Failed to deactivate ${customer.name}.`);
+      showToast("danger", `Failed to deactivate ${customer.name}.`);
     } finally {
       setDeactivateBusy(false);
     }
@@ -1114,6 +1276,92 @@ export default function DiscountsPage() {
     }
   }
 
+  async function approveDiscountRequest(request: CustomerDiscountRequest) {
+    if (requestBusyId) return;
+    setRequestBusyId(request.id);
+
+    try {
+      const approved = await approveCustomerDiscountRequestApi(request.id, {
+        discountPercent: requestPercents[request.id] ?? request.discountPercent,
+        adminNote: requestNotes[request.id]?.trim() || undefined,
+      });
+      const customerId = approved.approvedCustomerId || approved.approvedCustomer?.id;
+      const nextPercent = Number(approved.discountPercent || request.discountPercent);
+
+      if (customerId) {
+        setCustomers((current) => {
+          const exists = current.some((customer) => customer.id === customerId);
+          const nextCustomer: Customer = {
+            id: customerId,
+            name: approved.customerName,
+            phone: approved.phone,
+            email: approved.email || undefined,
+            isActive: true,
+            isLoyalty: approved.discountType === "LOYALTY",
+            adminWholesaleDiscountPercent:
+              approved.discountType === "WHOLESALE" ? nextPercent : undefined,
+            ...DEFAULT_PURCHASE_SUMMARY,
+          };
+
+          return exists
+            ? current.map((customer) =>
+                customer.id === customerId
+                  ? {
+                      ...customer,
+                      name: approved.customerName,
+                      phone: approved.phone,
+                      email: approved.email || undefined,
+                      isActive: true,
+                      isLoyalty: approved.discountType === "LOYALTY",
+                      adminWholesaleDiscountPercent:
+                        approved.discountType === "WHOLESALE" ? nextPercent : undefined,
+                    }
+                  : customer,
+              )
+            : [nextCustomer, ...current];
+        });
+      }
+
+      setDiscountRequests((current) =>
+        current.filter((item) => item.id !== request.id),
+      );
+      showToast("success", "Discount request approved.");
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to approve discount request.",
+      );
+    } finally {
+      setRequestBusyId(null);
+    }
+  }
+
+  async function rejectDiscountRequest(request: CustomerDiscountRequest) {
+    if (requestBusyId) return;
+    setRequestBusyId(request.id);
+
+    try {
+      await rejectCustomerDiscountRequestApi(request.id, {
+        adminNote: requestNotes[request.id]?.trim() || undefined,
+      });
+      setDiscountRequests((current) =>
+        current.filter((item) => item.id !== request.id),
+      );
+      showToast("success", "Discount request rejected.");
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Failed to reject discount request.",
+      );
+    } finally {
+      setRequestBusyId(null);
+    }
+  }
+
   function onWholesaleChange(value: number | "") {
     setFWholesaleDiscount(value);
     if (typeof value === "number") {
@@ -1127,8 +1375,8 @@ export default function DiscountsPage() {
   }
 
   return (
-    <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-[#000000]">
-      <div className="mx-auto max-w-6xl space-y-9">
+    <div className="space-y-[14px] text-[#000000]">
+      <div className="space-y-[14px]">
         {/* this header keeps the page title separate from the rule reminder pill so the pricing rule stays visible without feeling heavy */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
@@ -1149,7 +1397,7 @@ export default function DiscountsPage() {
         </div>
 
         {/* these metric cards summarize the rule breakdown before the user starts browsing individual customers */}
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-4">
+        <div className="grid grid-cols-1 gap-[14px] md:grid-cols-2 xl:grid-cols-4">
           <MetricCard
             label="Total Customers"
             value={stats.total}
@@ -1179,6 +1427,112 @@ export default function DiscountsPage() {
             tone="neutral"
           />
         </div>
+
+        {discountRequests.length > 0 ? (
+          <div className="rounded-[24px] border border-[#CFCFD3] bg-white p-5">
+            <div className="mb-4 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+              <div>
+                <h2 className="text-[17px] font-extrabold text-[#000000]">
+                  Pending cashier discount requests
+                </h2>
+                <p className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+                  Approving creates or updates the customer discount profile and notifies the cashier.
+                </p>
+              </div>
+              <Pill tone="orange">{discountRequests.length} pending</Pill>
+            </div>
+
+            <div className="grid gap-4 xl:grid-cols-2">
+              {discountRequests.map((request) => (
+                <div
+                  key={request.id}
+                  className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-4"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="truncate text-[15px] font-extrabold text-slate-900">
+                        {request.customerName}
+                      </div>
+                      <div className="mt-1 text-[12px] font-semibold text-slate-500">
+                        {request.phone}
+                        {request.email ? ` | ${request.email}` : ""}
+                      </div>
+                      <div className="mt-2 text-[12px] font-semibold text-slate-600">
+                        Requested by {request.requestedBy?.name || "Cashier"} on{" "}
+                        {new Date(request.createdAt).toLocaleString()}
+                      </div>
+                    </div>
+                    <Pill tone={request.discountType === "WHOLESALE" ? "orange" : "green"}>
+                      {request.discountType} {request.discountPercent}%
+                    </Pill>
+                  </div>
+
+                  {request.reason ? (
+                    <div className="mt-3 rounded-[12px] border border-slate-200 bg-white px-3 py-2 text-[12px] font-semibold text-slate-600">
+                      {request.reason}
+                    </div>
+                  ) : null}
+
+                  <div className="mt-4 grid gap-3 md:grid-cols-[130px_1fr]">
+                    <label className="space-y-1">
+                      <div className="text-[11px] font-extrabold uppercase text-slate-400">
+                        Final %
+                      </div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={100}
+                        value={requestPercents[request.id] ?? request.discountPercent}
+                        onChange={(event) =>
+                          setRequestPercents((current) => ({
+                            ...current,
+                            [request.id]: Number(event.target.value),
+                          }))
+                        }
+                        className="h-[42px] w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold outline-none focus:border-slate-900"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <div className="text-[11px] font-extrabold uppercase text-slate-400">
+                        Admin note
+                      </div>
+                      <input
+                        value={requestNotes[request.id] || ""}
+                        onChange={(event) =>
+                          setRequestNotes((current) => ({
+                            ...current,
+                            [request.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="Optional note for cashier"
+                        className="h-[42px] w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                      />
+                    </label>
+                  </div>
+
+                  <div className="mt-4 flex flex-wrap justify-end gap-2">
+                    <Button
+                      variant="danger"
+                      icon="close"
+                      disabled={requestBusyId === request.id}
+                      onClick={() => void rejectDiscountRequest(request)}
+                    >
+                      Reject
+                    </Button>
+                    <Button
+                      variant="primary"
+                      icon="check_circle"
+                      disabled={requestBusyId === request.id}
+                      onClick={() => void approveDiscountRequest(request)}
+                    >
+                      {requestBusyId === request.id ? "Working..." : "Approve"}
+                    </Button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          </div>
+        ) : null}
 
         {/* this main management card groups filters and customer records into one clear pricing-rules workspace */}
         <div className="overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-white ">
@@ -1230,11 +1584,6 @@ export default function DiscountsPage() {
               </div>
             ) : null}
 
-            {actionError ? (
-              <div className="mb-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
-                {actionError}
-              </div>
-            ) : null}
           </div>
 
           <div className="overflow-x-auto">
@@ -1285,7 +1634,7 @@ export default function DiscountsPage() {
                     </td>
                   </tr>
                 ) : (
-                  filtered.map((customer) => {
+                  pageItems.map((customer) => {
                     const discountMode = getDiscountMode(customer);
                     const rate =
                       discountMode === "ADMIN_WHOLESALE"
@@ -1357,15 +1706,26 @@ export default function DiscountsPage() {
                               label="Edit"
                               onClick={() => openEditCustomer(customer)}
                             />
+                            {discountMode !== "NONE" ? (
+                              <TableActionButton
+                                icon="delete"
+                                label="Delete"
+                                tone="danger"
+                                disabled={deleteBusy || deleteLoading}
+                                onClick={() => requestDeleteDiscount(customer)}
+                              />
+                            ) : null}
                             <TableActionButton
-                              icon="block"
+                              icon={customer.isActive ? "block" : "check_circle"}
                               label={
-                                customer.isActive ? "Deactivate" : "Inactive"
+                                customer.isActive ? "Deactivate" : "Reactivate"
                               }
-                              tone="danger"
-                              disabled={!customer.isActive}
+                              tone={customer.isActive ? "danger" : "neutral"}
+                              disabled={deactivateBusy}
                               onClick={() =>
-                                requestDeactivateCustomer(customer)
+                                customer.isActive
+                                  ? requestDeactivateCustomer(customer)
+                                  : void reactivateCustomer(customer)
                               }
                             />
                           </div>
@@ -1378,11 +1738,21 @@ export default function DiscountsPage() {
             </table>
           </div>
 
-          <div className="flex items-center justify-between border-t border-[#CFCFD3] bg-[#F3F4F6]/40 px-6 py-4">
-            <div className="text-[11px] font-bold text-[#8C8889]">
-              Showing {filtered.length} records
-            </div>
-          </div>
+          <PaginationBar
+            page={pageClamped}
+            totalPages={totalPages}
+            total={filtered.length}
+            start={pageStart}
+            end={pageEnd}
+            label="customer records"
+            pageSize={pageSize}
+            onPageChange={setPage}
+            onPageSizeChange={(nextPageSize) => {
+              setPageSize(nextPageSize);
+              setPage(1);
+            }}
+            className="bg-[#F3F4F6]/40 px-6"
+          />
         </div>
 
         <ModalShell
@@ -1517,6 +1887,78 @@ export default function DiscountsPage() {
             ) : null}
           </div>
         </ModalShell>
+
+        <ConfirmDialog
+          open={!!deleteTargetCustomer}
+          title={
+            deleteSafety?.canDelete
+              ? "Delete discount?"
+              : "Discount delete check"
+          }
+          message={
+            deleteLoading
+              ? "Checking purchase history before this discount can be deleted."
+              : deleteSafety?.canDelete
+                ? `This removes only the ${getCustomerDiscountKind(deleteTargetCustomer!)?.toLowerCase()} discount for ${deleteTargetCustomer?.name}. The customer profile stays in the system.`
+                : deleteSafety?.reason ||
+                  "This discount cannot be deleted right now."
+          }
+          confirmLabel={deleteSafety?.canDelete ? "Delete Discount" : "Close"}
+          cancelLabel={deleteSafety?.canDelete ? "Cancel" : "Back"}
+          tone={deleteSafety?.canDelete ? "danger" : "primary"}
+          icon={deleteSafety?.canDelete ? "delete" : "info"}
+          onConfirm={confirmDeleteDiscount}
+          onClose={closeDeleteDialog}
+          busy={deleteLoading || deleteBusy}
+          details={
+            deleteTargetCustomer ? (
+              <div className="space-y-3">
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <div className="rounded-[14px] border border-slate-200 bg-white p-3">
+                    <div className="text-[10px] font-extrabold uppercase text-slate-400">
+                      Customer
+                    </div>
+                    <div className="mt-1 text-[13px] font-extrabold text-slate-900">
+                      {deleteTargetCustomer.name}
+                    </div>
+                    <div className="mt-1 text-[11px] font-semibold text-slate-500">
+                      {deleteTargetCustomer.phone || "No phone on file"}
+                    </div>
+                  </div>
+                  <div className="rounded-[14px] border border-slate-200 bg-white p-3">
+                    <div className="text-[10px] font-extrabold uppercase text-slate-400">
+                      Discount
+                    </div>
+                    <div className="mt-1 text-[13px] font-extrabold text-slate-900">
+                      {getCustomerDiscountKind(deleteTargetCustomer) ===
+                      "WHOLESALE"
+                        ? `Wholesale ${formatPct(deleteTargetCustomer.adminWholesaleDiscountPercent || 0)}`
+                        : `Loyalty ${formatPct(loyaltyDiscountPercent)}`}
+                    </div>
+                  </div>
+                </div>
+                <div
+                  className={cn(
+                    "rounded-[14px] border px-3 py-2 text-[12px] font-bold",
+                    deleteLoading
+                      ? "border-slate-200 bg-white text-slate-600"
+                      : deleteSafety?.canDelete
+                        ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                        : "border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F]",
+                  )}
+                >
+                  {deleteLoading
+                    ? "Checking..."
+                    : deleteSafety?.canDelete
+                      ? "No finalized purchase history found. This discount can be deleted safely."
+                      : deleteSafety?.purchaseCount
+                        ? `Blocked by ${deleteSafety.references.join(", ")}.`
+                        : "No active discount was found to delete."}
+                </div>
+              </div>
+            ) : null
+          }
+        />
 
         <ConfirmDialog
           open={!!pendingDeactivateCustomer}

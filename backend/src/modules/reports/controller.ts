@@ -21,6 +21,11 @@ function getFilters(req: Request) {
   return { from, to, cashierId, paymentStatus };
 }
 
+function shouldIncludeOperations(req: Request) {
+  const raw = String(req.query.includeOperations || "").trim().toLowerCase();
+  return raw === "1" || raw === "true" || raw === "yes";
+}
+
 // shared error handler for all report endpoints
 // we check the error message to determine if it is a validation error (400) or an unexpected error (500)
 function handleError(res: Response, err: unknown, label: string) {
@@ -40,7 +45,10 @@ function handleError(res: Response, err: unknown, label: string) {
 // returning the full analytics dashboard data — revenue, invoice counts, payment breakdown, etc.
 export async function analytics(req: Request, res: Response) {
   try {
-    const result = await reportService.getAnalyticsReport(getFilters(req));
+    const result = await reportService.getAnalyticsReport(getFilters(req), {
+      viewerRole: req.user?.role,
+      includeOperations: shouldIncludeOperations(req),
+    });
     res.json(result);
   } catch (err) {
     handleError(res, err, "Analytics report error");

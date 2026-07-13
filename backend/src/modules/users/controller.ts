@@ -2,17 +2,23 @@ import { Request, Response } from "express";
 import * as userService from "./service";
 import bcrypt from "bcryptjs";
 
-// normalizing the role input to either "ADMIN" or "CASHIER"
+// normalizing role input to one of the supported staff roles.
 // if the role is not provided or is invalid, it defaults to "CASHIER"
-function normalizeRole(role: unknown): "ADMIN" | "CASHIER" {
-  return String(role || "CASHIER").toUpperCase() === "ADMIN" ? "ADMIN" : "CASHIER";
+function normalizeRole(role: unknown): userService.ManagedUserRole {
+  const normalized = String(role || "CASHIER").toUpperCase();
+  return normalized === "ADMIN" ||
+    normalized === "MANAGER" ||
+    normalized === "CASHIER" ||
+    normalized === "STAFF"
+    ? normalized
+    : "CASHIER";
 }
 
 // listing all users, with optional role filter
 // the admin uses this to view and manage cashier accounts
 export async function list(req: Request, res: Response) {
   try {
-    const role = req.query.role as "ADMIN" | "CASHIER" | undefined; // reading the optional role filter from the query string
+    const role = req.query.role ? normalizeRole(req.query.role) : undefined; // reading the optional role filter from the query string
     const users = await userService.listUsers({ role });
     res.json(users);
   } catch (err) {
@@ -104,6 +110,43 @@ export async function update(req: Request, res: Response) {
       return;
     }
     console.error("Update user error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function deleteSafety(req: Request, res: Response) {
+  try {
+    const userId = String(req.params.id);
+    const safety = await userService.getUserDeleteSafety(userId, req.user!.id);
+    res.json(safety);
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    console.error("User delete safety error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function permanentDelete(req: Request, res: Response) {
+  try {
+    const userId = String(req.params.id);
+    const result = await userService.permanentlyDeleteUser(userId, req.user!.id);
+    res.json(result);
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    if (err.code === "USER_DELETE_BLOCKED") {
+      res.status(409).json({
+        error: err.message,
+        safety: err.safety,
+      });
+      return;
+    }
+    console.error("Permanent user delete error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

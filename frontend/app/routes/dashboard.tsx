@@ -3,30 +3,57 @@ import type { UserRole } from "~/lib/auth";
 // defines the homepage each role lands on immediately after a successful login
 export const DEFAULT_ROUTE_BY_ROLE: Record<UserRole, string> = {
   admin: "/",
+  manager: "/products",
   cashier: "/billing",
+  staff: "/product-lookup",
 };
 
 // this list is the source of truth for which protected routes each role can visit
-// we use it in route guards so cashiers cannot manually type admin-only URLs in the browser
+// we use it in route guards so non-admin roles cannot manually type admin-only URLs in the browser
 export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
   admin: [
     "/",
     "/analytics",
     "/products",
+    "/product-lookup",
     "/discounts",
     "/history",
     "/alerts",
+    "/requests",
     "/invoices",
+    "/documents",
+    "/bin",
     "/settings",
     "/profile",
     "/logout",
   ],
   cashier: [
     "/billing",
+    "/product-lookup",
     "/invoices",
     "/history",
     "/alerts",
     "/customer-discounts",
+    "/cashier-profile",
+    "/logout",
+  ],
+  staff: [
+    "/product-lookup",
+    "/cashier-profile",
+    "/logout",
+  ],
+  manager: [
+    "/",
+    "/analytics",
+    "/products",
+    "/billing",
+    "/product-lookup",
+    "/discounts",
+    "/invoices",
+    "/history",
+    "/alerts",
+    "/requests",
+    "/documents",
     "/cashier-profile",
     "/logout",
   ],
@@ -48,13 +75,13 @@ export function getDefaultRoute(role: UserRole) {
 // like the profile page or the root dashboard
 export function normalizeProtectedPath(pathname: string, role: UserRole) {
   // If the user is a cashier, redirect the root dashboard to the billing page
-  if (role === "cashier" && pathname === "/") {
-    return "/billing";
+  if ((role === "cashier" || role === "staff") && pathname === "/") {
+    return getDefaultRoute(role);
   }
 
   // this handles when a cashier reaches the shared admin profile path
   // we map it to the cashier-specific profile page so the rest of the route guard stays simple
-  if (role === "cashier" && pathname === "/profile") {
+  if ((role === "cashier" || role === "manager" || role === "staff") && pathname === "/profile") {
     return "/cashier-profile";
   }
 

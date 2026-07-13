@@ -117,6 +117,8 @@ export default function ProductsFiltersCard({
 
   onAdd,
   onImport,
+  onManageStock,
+  onBulkPrice,
   onActivate,
   onDeactivate,
   onSoftDelete,
@@ -147,6 +149,8 @@ export default function ProductsFiltersCard({
 
   onAdd: () => void;
   onImport: () => void;
+  onManageStock: () => void;
+  onBulkPrice: () => void;
   onActivate: () => void;
   onDeactivate: () => void;
   onSoftDelete: () => void;
@@ -170,7 +174,22 @@ export default function ProductsFiltersCard({
             </Button>
 
             <Button icon="upload_file" onClick={onImport}>
-              Import CSV
+              Import
+            </Button>
+
+            <Button
+              icon="inventory_2"
+              onClick={onManageStock}
+            >
+              Stock Movement
+            </Button>
+
+            <Button
+              icon="sell"
+              onClick={onBulkPrice}
+              disabled={selectedCount === 0}
+            >
+              Price & Margin
             </Button>
 
             <div className="flex items-center gap-[8px]">
@@ -191,10 +210,10 @@ export default function ProductsFiltersCard({
               <Button
                 variant="danger"
                 disabled={selectedCount === 0}
-                icon="delete"
+                icon="do_not_disturb_on"
                 onClick={onSoftDelete}
               >
-                Soft Delete
+                Set Inactive
               </Button>
             </div>
           </div>

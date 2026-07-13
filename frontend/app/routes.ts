@@ -7,11 +7,15 @@ export default [
   layout("routes/_app.tsx", [
     index("routes/_app.dashboard.tsx"), // the admin dashboard — the default "/" route
     route("products", "routes/_app.products.tsx"),
+    route("product-lookup", "routes/_app.productLookup.tsx"),
     route("billing", "routes/_app.billing.tsx"), // the cashier's billing/POS page
     route("invoices", "routes/_app.invoices.tsx"),
+    route("documents", "routes/_app.documents.tsx"),
+    route("bin", "routes/_app.bin.tsx"),
     route("history", "routes/_app.history.tsx"),
     route("analytics", "routes/_app.analytics.tsx"),
     route("alerts", "routes/_app.alerts.tsx"),
+    route("requests", "routes/_app.requests.tsx"),
     route("profile", "routes/_app.profile.tsx"), // admin profile page
     route("settings", "routes/_app.settings.tsx"),
     route("discounts", "routes/_app.discounts.tsx"),
@@ -24,4 +28,3 @@ export default [
   route("invoices/:id/print", "routes/invoices.print.tsx"), // printable invoice view (opens in new tab)
   route("payments/esewa/result", "routes/payments.esewa.result.tsx"), // eSewa payment result callback page
 ] satisfies RouteConfig;
-

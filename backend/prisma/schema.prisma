@@ -11,7 +11,9 @@ datasource db {
 
 enum Role {
   ADMIN
+  MANAGER
   CASHIER
+  STAFF
 }
 
 enum InvoiceStatus {
@@ -30,11 +32,59 @@ enum PaymentStatus {
   FAILED
 }
 
+enum PaymentKind {
+  CHARGE
+  REFUND
+}
+
 enum PaymentStatusInvoice {
   UNPAID
   PARTIALLY_PAID
   PAID
   CANCELLED
+}
+
+enum ReturnReason {
+  DAMAGED
+  WRONG_ITEM
+  CUSTOMER_REQUEST
+  EXCHANGE
+  OTHER
+}
+
+enum ReturnStatus {
+  PENDING
+  APPROVED
+  REJECTED
+  REVERSED
+}
+
+enum BackupJobType {
+  BACKUP
+  RESTORE
+}
+
+enum BackupJobStatus {
+  RUNNING
+  SUCCESS
+  FAILED
+}
+
+enum BackupScheduleFrequency {
+  DAILY
+  WEEKLY
+}
+
+enum CashDrawerStatus {
+  OPEN
+  CLOSED
+}
+
+enum CashDrawerEventType {
+  OPEN
+  CASH_IN
+  CASH_OUT
+  CLOSE
 }
 
 enum StockTxType {
@@ -43,27 +93,67 @@ enum StockTxType {
   ADJUSTMENT
 }
 
-model User {
-  id                String   @id @default(cuid())
-  name              String
-  email             String   @unique
-  phone             String?  @unique
-  gender            String?
-  address           String?
-  passwordHash      String
-  role              Role     @default(CASHIER)
-  isActive          Boolean  @default(true)
-  lastLogin         DateTime?
-  profileImage      String?
-  nagariktaNo       String?
-  createdAt         DateTime @default(now())
+enum DocumentType {
+  STOCK_BILL
+  PRODUCT_IMPORT
+  RETURN_PROOF
+  PAYMENT_PROOF
+  DISCOUNT_PROOF
+  GENERAL
+}
 
-  invoices          Invoice[] @relation("CashierInvoices")
-  cancelledInvoices Invoice[] @relation("CancelledInvoices")
-  payments          Payment[]
-  stockTransactions StockTransaction[]
-  auditLogs         AuditLog[]
-  userAlerts        UserAlertRead[]
+enum DocumentVisibility {
+  ALL_AUTHENTICATED
+  ADMIN_MANAGER
+  ADMIN_ONLY
+}
+
+enum CustomerDiscountRequestStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model User {
+  id           String    @id @default(cuid())
+  name         String
+  email        String    @unique
+  phone        String?   @unique
+  gender       String?
+  address      String?
+  passwordHash String
+  role         Role      @default(CASHIER)
+  isActive     Boolean   @default(true)
+  lastLogin    DateTime?
+  profileImage String?
+  nagariktaNo  String?
+  createdAt    DateTime  @default(now())
+
+  invoices                    Invoice[]                    @relation("CashierInvoices")
+  cancelledInvoices           Invoice[]                    @relation("CancelledInvoices")
+  payments                    Payment[]                    @relation("PaymentCreator")
+  voidedPayments              Payment[]                    @relation("PaymentVoider")
+  stockTransactions           StockTransaction[]
+  auditLogs                   AuditLog[]
+  userAlerts                  UserAlertRead[]
+  creditNotes                 CreditNote[]
+  createdReturnRequests       ReturnRequest[]              @relation("ReturnRequestCreator")
+  reviewedReturnRequests      ReturnRequest[]              @relation("ReturnRequestReviewer")
+  backupJobs                  BackupJob[]
+  productImportBatches        ProductImportBatch[]
+  productImportTemplates      ProductImportTemplate[]
+  cashDrawers                 CashDrawer[]                 @relation("CashDrawerCashier")
+  cashDrawerEvents            CashDrawerEvent[]
+  documents                   Document[]
+  stockReceiveBatches         StockReceiveBatch[]
+  softDeleteRecords           SoftDeleteRecord[]
+  cashierPrivilege            CashierPrivilege?            @relation("CashierPrivilegeUser")
+  updatedCashierPrivileges    CashierPrivilege[]           @relation("CashierPrivilegeUpdater")
+  createdCustomers            Customer[]                   @relation("CustomerCreator")
+  createdDiscountRequests     CustomerDiscountRequest[]    @relation("CustomerDiscountRequestCreator")
+  reviewedDiscountRequests    CustomerDiscountRequest[]    @relation("CustomerDiscountRequestReviewer")
+  priceOverrideAuthorizations PriceOverrideAuthorization[]
+  overridePinAttempts         OverridePinAttempt[]
 }
 
 model LoginAttempt {
@@ -84,30 +174,51 @@ model Brand {
 }
 
 model Product {
-  id                    String   @id @default(cuid())
-  name                  String
-  sku                   String   @unique
-  barcode               String?  @unique
-  brandId               String
-  category              String?
-  retailPrice           Float
-  wholesalePrice        Float
-  wholesaleQtyThreshold Int      @default(1)
-  usesDefaultWholesaleQtyThreshold Boolean @default(false)
-  stock                 Int      @default(0)
-  lowStockThreshold     Int      @default(5)
-  usesDefaultLowStockThreshold Boolean @default(false)
-  isActive              Boolean  @default(true)
-  imageUrl              String?
-  createdAt             DateTime @default(now())
-  updatedAt             DateTime @updatedAt
+  id                               String   @id @default(cuid())
+  name                             String
+  productName                      String?
+  sku                              String   @unique
+  barcode                          String?  @unique
+  brandId                          String
+  category                         String?
+  categoryGroup                    String?
+  vendorSource                     String?
+  productCodeVariant               String?
+  sizeValue                        Float?
+  sizeUnit                         String   @default("STANDARD")
+  ratePerPiece                     Float    @default(0)
+  packageQuantity                  Float    @default(1)
+  packageUnit                      String   @default("PIECE")
+  saleUnit                         String   @default("PIECE")
+  allowFractionalQty               Boolean  @default(false)
+  quantityStep                     Float    @default(1)
+  wholesaleEligible                Boolean  @default(true)
+  sourceCitation                   String?
+  retailPrice                      Float
+  wholesalePrice                   Float
+  wholesaleQtyThreshold            Float    @default(1)
+  usesDefaultWholesaleQtyThreshold Boolean  @default(false)
+  stock                            Float    @default(0)
+  reservedStock                    Float    @default(0)
+  lowStockThreshold                Float    @default(5)
+  usesDefaultLowStockThreshold     Boolean  @default(false)
+  isActive                         Boolean  @default(true)
+  imageUrl                         String?
+  createdAt                        DateTime @default(now())
+  updatedAt                        DateTime @updatedAt
 
-  brand             Brand              @relation(fields: [brandId], references: [id])
-  invoiceItems      InvoiceItem[]
-  stockTransactions StockTransaction[]
+  brand                       Brand                        @relation(fields: [brandId], references: [id])
+  invoiceItems                InvoiceItem[]
+  stockTransactions           StockTransaction[]
+  returnItems                 ReturnItem[]
+  priceOverrideAuthorizations PriceOverrideAuthorization[]
 
   @@index([barcode])
   @@index([sku])
+  @@index([categoryGroup])
+  @@index([vendorSource])
+  @@index([sizeUnit])
+  @@index([packageUnit])
 }
 
 model Customer {
@@ -118,9 +229,64 @@ model Customer {
   loyaltyPercent   Float    @default(0)
   wholesalePercent Float    @default(0)
   isActive         Boolean  @default(true)
+  createdById      String?
+  createdByRole    Role?
   createdAt        DateTime @default(now())
+  updatedAt        DateTime @updatedAt
 
-  invoices Invoice[]
+  createdBy        User?                     @relation("CustomerCreator", fields: [createdById], references: [id])
+  invoices         Invoice[]
+  discountRequests CustomerDiscountRequest[] @relation("CustomerDiscountRequestApprovedCustomer")
+
+  @@index([createdById])
+}
+
+model CustomerDiscountRequest {
+  id                 String                        @id @default(cuid())
+  customerName       String
+  phone              String
+  email              String?
+  discountType       String
+  discountPercent    Float
+  reason             String?                       @db.Text
+  status             CustomerDiscountRequestStatus @default(PENDING)
+  requestedById      String
+  reviewedById       String?
+  reviewedAt         DateTime?
+  adminNote          String?                       @db.Text
+  approvedCustomerId String?
+  createdAt          DateTime                      @default(now())
+  updatedAt          DateTime                      @updatedAt
+
+  requestedBy      User      @relation("CustomerDiscountRequestCreator", fields: [requestedById], references: [id])
+  reviewedBy       User?     @relation("CustomerDiscountRequestReviewer", fields: [reviewedById], references: [id])
+  approvedCustomer Customer? @relation("CustomerDiscountRequestApprovedCustomer", fields: [approvedCustomerId], references: [id])
+
+  @@index([status, createdAt])
+  @@index([requestedById, createdAt])
+  @@index([phone])
+  @@index([reviewedById])
+  @@index([approvedCustomerId])
+}
+
+model CashierPrivilege {
+  id                          String   @id @default(cuid())
+  userId                      String   @unique
+  canCreateDiscountedCustomer Boolean  @default(false)
+  maxCustomerLoyaltyPercent   Float    @default(5)
+  maxCustomerWholesalePercent Float    @default(10)
+  canRequestCustomerDiscount  Boolean  @default(true)
+  canOverrideBillingPrice     Boolean  @default(false)
+  canApplyManualDiscount      Boolean  @default(false)
+  canVoidPayment              Boolean  @default(false)
+  updatedById                 String?
+  createdAt                   DateTime @default(now())
+  updatedAt                   DateTime @updatedAt
+
+  user      User  @relation("CashierPrivilegeUser", fields: [userId], references: [id])
+  updatedBy User? @relation("CashierPrivilegeUpdater", fields: [updatedById], references: [id])
+
+  @@index([updatedById])
 }
 
 model Invoice {
@@ -136,79 +302,378 @@ model Invoice {
   netTotal               Float                @default(0)
   paidTotal              Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
+  notes                  String?              @db.Text
+  parkedLabel            String?
+  parkedAt               DateTime?
   createdAt              DateTime             @default(now())
   finalizedAt            DateTime?
   cancelledAt            DateTime?
+  deletedAt              DateTime?
 
-  cashier           User               @relation("CashierInvoices", fields: [cashierId], references: [id])
-  cancelledBy       User?              @relation("CancelledInvoices", fields: [cancelledById], references: [id])
-  customer          Customer?          @relation(fields: [customerId], references: [id])
-  items             InvoiceItem[]
-  payments          Payment[]
-  stockTransactions StockTransaction[]
+  cashier                 User               @relation("CashierInvoices", fields: [cashierId], references: [id])
+  cancelledBy             User?              @relation("CancelledInvoices", fields: [cancelledById], references: [id])
+  customer                Customer?          @relation(fields: [customerId], references: [id])
+  items                   InvoiceItem[]
+  payments                Payment[]
+  stockTransactions       StockTransaction[]
+  creditNotesAsOriginal   CreditNote[]       @relation("CreditNoteOriginalInvoice")
+  creditNoteAsReplacement CreditNote?        @relation("CreditNoteReplacementInvoice")
+  returnRequests          ReturnRequest[]
+
+  @@index([status, parkedAt])
+}
+
+model InvoiceSequence {
+  businessDate String   @id
+  lastNumber   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model CreditNoteSequence {
+  businessDate String   @id
+  lastNumber   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model CreditNote {
+  id                   String   @id @default(cuid())
+  creditNoteNo         String   @unique
+  originalInvoiceId    String
+  replacementInvoiceId String?  @unique
+  reason               String?
+  originalNetTotal     Float
+  originalPaidTotal    Float
+  replacementNetTotal  Float?
+  creditedAmount       Float
+  createdById          String
+  createdAt            DateTime @default(now())
+
+  originalInvoice    Invoice  @relation("CreditNoteOriginalInvoice", fields: [originalInvoiceId], references: [id])
+  replacementInvoice Invoice? @relation("CreditNoteReplacementInvoice", fields: [replacementInvoiceId], references: [id])
+  createdBy          User     @relation(fields: [createdById], references: [id])
+
+  @@index([originalInvoiceId])
+  @@index([createdAt])
 }
 
 model BusinessSettings {
-  id                           Int      @id
-  defaultLowStockThreshold     Int      @default(5)
-  defaultWholesaleQtyThreshold Int      @default(15)
-  loyaltyDiscountPercent       Float    @default(2)
-  createdAt                    DateTime @default(now())
-  updatedAt                    DateTime @updatedAt
+  id                           Int       @id
+  defaultLowStockThreshold     Float     @default(5)
+  defaultWholesaleQtyThreshold Float     @default(15)
+  loyaltyDiscountPercent       Float     @default(2)
+  returnWindowDays             Int       @default(7)
+  parkedBillExpiryHours        Int       @default(8)
+  draftRequestExpiryMinutes    Int       @default(30)
+  overridePinHash              String?
+  overridePinUpdatedAt         DateTime?
+  createdAt                    DateTime  @default(now())
+  updatedAt                    DateTime  @updatedAt
 }
 
 model InvoiceItem {
-  id               String   @id @default(cuid())
-  invoiceId        String
-  productId        String
-  qty              Int
-  appliedUnitPrice Float
-  lineTotal        Float
-  createdAt        DateTime @default(now())
+  id                String    @id @default(cuid())
+  invoiceId         String
+  productId         String
+  qty               Float
+  appliedUnitPrice  Float
+  originalUnitPrice Float?
+  overrideUnitPrice Float?
+  overrideReason    String?   @db.Text
+  overrideById      String?
+  overrideAt        DateTime?
+  lineTotal         Float
+  createdAt         DateTime  @default(now())
 
-  invoice Invoice @relation(fields: [invoiceId], references: [id])
+  invoice     Invoice      @relation(fields: [invoiceId], references: [id])
+  product     Product      @relation(fields: [productId], references: [id])
+  returnItems ReturnItem[]
+}
+
+model PriceOverrideAuthorization {
+  id                String    @id @default(cuid())
+  tokenHash         String    @unique
+  cashierId         String
+  productId         String
+  customerId        String?
+  qty               Float
+  originalUnitPrice Float
+  overrideUnitPrice Float
+  overrideReason    String    @db.Text
+  expiresAt         DateTime
+  usedAt            DateTime?
+  usedInvoiceId     String?
+  createdAt         DateTime  @default(now())
+
+  cashier User    @relation(fields: [cashierId], references: [id])
   product Product @relation(fields: [productId], references: [id])
+
+  @@index([cashierId, expiresAt])
+  @@index([productId])
+  @@index([usedAt])
+}
+
+model OverridePinAttempt {
+  id            String    @id @default(cuid())
+  userId        String
+  action        String
+  success       Boolean   @default(false)
+  failureReason String?
+  lockedUntil   DateTime?
+  createdAt     DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id])
+
+  @@index([userId, createdAt])
+  @@index([userId, success, createdAt])
+  @@index([lockedUntil])
+}
+
+model ReturnRequest {
+  id           String         @id @default(cuid())
+  invoiceId    String
+  reason       ReturnReason
+  note         String?        @db.Text
+  status       ReturnStatus   @default(PENDING)
+  refundAmount Float          @default(0)
+  refundMethod PaymentMethod?
+  createdById  String
+  reviewedById String?
+  reviewedAt   DateTime?
+  createdAt    DateTime       @default(now())
+
+  invoice        Invoice      @relation(fields: [invoiceId], references: [id])
+  createdBy      User         @relation("ReturnRequestCreator", fields: [createdById], references: [id])
+  reviewedBy     User?        @relation("ReturnRequestReviewer", fields: [reviewedById], references: [id])
+  items          ReturnItem[]
+  refundPayments Payment[]
+
+  @@index([invoiceId])
+  @@index([status, createdAt])
+}
+
+model ReturnItem {
+  id              String @id @default(cuid())
+  returnRequestId String
+  invoiceItemId   String
+  productId       String
+  qtyReturned     Float
+  unitPrice       Float
+  lineTotal       Float
+
+  returnRequest ReturnRequest @relation(fields: [returnRequestId], references: [id])
+  invoiceItem   InvoiceItem   @relation(fields: [invoiceItemId], references: [id])
+  product       Product       @relation(fields: [productId], references: [id])
+
+  @@index([invoiceItemId])
+  @@index([productId])
 }
 
 model UserAlertRead {
-  id        String   @id @default(cuid())
-  userId    String
-  alertKey  String
-  createdAt DateTime @default(now())
+  id         String    @id @default(cuid())
+  userId     String
+  alertKey   String
+  readAt     DateTime?
+  resolvedAt DateTime?
+  deletedAt  DateTime?
+  purgeAfter DateTime?
+  createdAt  DateTime  @default(now())
 
-  user      User     @relation(fields: [userId], references: [id])
+  user User @relation(fields: [userId], references: [id])
 
   @@unique([userId, alertKey])
+  @@index([userId, deletedAt])
+  @@index([purgeAfter])
 }
 
 model Payment {
-  id          String        @id @default(cuid())
-  invoiceId   String
-  method      PaymentMethod
-  amount      Float
-  status      PaymentStatus @default(PENDING)
-  reference   String?
-  transactionUuid String?   @unique
-  createdById String
-  createdAt   DateTime      @default(now())
+  id              String        @id @default(cuid())
+  invoiceId       String
+  method          PaymentMethod
+  amount          Float
+  cashTendered    Float?
+  changeAmount    Float?
+  kind            PaymentKind   @default(CHARGE)
+  status          PaymentStatus @default(PENDING)
+  reference       String?
+  transactionUuid String?       @unique
+  returnRequestId String?
+  createdById     String
+  voidedAt        DateTime?
+  voidedById      String?
+  createdAt       DateTime      @default(now())
 
-  invoice   Invoice @relation(fields: [invoiceId], references: [id])
-  createdBy User    @relation(fields: [createdById], references: [id])
+  invoice       Invoice        @relation(fields: [invoiceId], references: [id])
+  returnRequest ReturnRequest? @relation(fields: [returnRequestId], references: [id])
+  createdBy     User           @relation("PaymentCreator", fields: [createdById], references: [id])
+  voidedBy      User?          @relation("PaymentVoider", fields: [voidedById], references: [id])
+
+  @@index([returnRequestId])
+}
+
+model CashDrawer {
+  id             String           @id @default(cuid())
+  cashierId      String
+  status         CashDrawerStatus @default(OPEN)
+  openedAt       DateTime         @default(now())
+  closedAt       DateTime?
+  openingFloat   Float
+  cashSalesTotal Float            @default(0)
+  cashInTotal    Float            @default(0)
+  cashOutTotal   Float            @default(0)
+  expectedTotal  Float            @default(0)
+  actualTotal    Float?
+  difference     Float?
+  note           String?          @db.Text
+
+  cashier User              @relation("CashDrawerCashier", fields: [cashierId], references: [id])
+  events  CashDrawerEvent[]
+
+  @@index([cashierId, status, openedAt])
+}
+
+model CashDrawerEvent {
+  id          String              @id @default(cuid())
+  drawerId    String
+  type        CashDrawerEventType
+  amount      Float
+  note        String?             @db.Text
+  createdById String
+  createdAt   DateTime            @default(now())
+
+  drawer    CashDrawer @relation(fields: [drawerId], references: [id])
+  createdBy User       @relation(fields: [createdById], references: [id])
+
+  @@index([drawerId, createdAt])
+  @@index([createdById])
+}
+
+model BackupJob {
+  id          String          @id @default(cuid())
+  type        BackupJobType
+  status      BackupJobStatus @default(RUNNING)
+  filename    String?
+  filepath    String?
+  sizeBytes   Int?
+  message     String?
+  detail      String?         @db.Text
+  createdById String
+  createdAt   DateTime        @default(now())
+  completedAt DateTime?
+
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@index([type, status, createdAt])
+  @@index([createdById])
+}
+
+model BackupSettings {
+  id          Int                     @id
+  enabled     Boolean                 @default(false)
+  frequency   BackupScheduleFrequency @default(DAILY)
+  timeOfDay   String                  @default("02:00")
+  dayOfWeek   Int?
+  lastRunAt   DateTime?
+  updatedById String?
+  updatedAt   DateTime                @updatedAt
+}
+
+model ProductImportBatch {
+  id           String    @id @default(cuid())
+  sourceType   String
+  fileName     String?
+  supplier     String?
+  status       String    @default("DRAFT")
+  totalRows    Int       @default(0)
+  importedRows Int       @default(0)
+  failedRows   Int       @default(0)
+  createdById  String
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+  deletedById  String?
+  deleteReason String?   @db.Text
+  purgeAfter   DateTime?
+
+  createdBy User               @relation(fields: [createdById], references: [id])
+  rows      ProductImportRow[]
+
+  @@index([sourceType, status, createdAt])
+  @@index([createdById])
+  @@index([deletedAt])
+  @@index([purgeAfter])
+}
+
+model ProductImportTemplate {
+  id          String   @id @default(cuid())
+  name        String
+  supplier    String
+  sourceType  String   @default("CSV")
+  fieldMap    Json
+  defaults    Json?
+  createdById String
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  createdBy User @relation(fields: [createdById], references: [id])
+
+  @@unique([supplier, sourceType])
+  @@index([sourceType, supplier])
+  @@index([createdById])
+}
+
+model ProductImportRow {
+  id        String   @id @default(cuid())
+  batchId   String
+  rowNumber Int
+  rawText   String?  @db.Text
+  status    String   @default("READY")
+  error     String?  @db.Text
+  parsed    Json?
+  createdAt DateTime @default(now())
+
+  batch ProductImportBatch @relation(fields: [batchId], references: [id])
+
+  @@index([batchId])
+  @@index([status])
 }
 
 model StockTransaction {
-  id           String      @id @default(cuid())
-  productId    String
-  type         StockTxType
-  qtyDelta     Int
-  reason       String?
-  refInvoiceId String?
-  createdById  String
-  createdAt    DateTime    @default(now())
+  id                  String      @id @default(cuid())
+  productId           String
+  type                StockTxType
+  qtyDelta            Float
+  reason              String?
+  refInvoiceId        String?
+  stockReceiveBatchId String?
+  createdById         String
+  createdAt           DateTime    @default(now())
 
-  product   Product  @relation(fields: [productId], references: [id])
-  invoice   Invoice? @relation(fields: [refInvoiceId], references: [id])
-  createdBy User     @relation(fields: [createdById], references: [id])
+  product           Product            @relation(fields: [productId], references: [id])
+  invoice           Invoice?           @relation(fields: [refInvoiceId], references: [id])
+  stockReceiveBatch StockReceiveBatch? @relation(fields: [stockReceiveBatchId], references: [id])
+  createdBy         User               @relation(fields: [createdById], references: [id])
+
+  @@index([stockReceiveBatchId])
+}
+
+model StockReceiveBatch {
+  id           String    @id @default(cuid())
+  supplierName String
+  billNumber   String?
+  billDate     DateTime?
+  billAmount   Float?
+  remarks      String?   @db.Text
+  createdById  String
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+
+  createdBy    User               @relation(fields: [createdById], references: [id])
+  transactions StockTransaction[]
+
+  @@index([supplierName])
+  @@index([billDate])
+  @@index([createdById])
 }
 
 model AuditLog {
@@ -221,4 +686,65 @@ model AuditLog {
   createdAt  DateTime @default(now())
 
   actor User @relation(fields: [actorId], references: [id])
+}
+
+model Document {
+  id             String       @id @default(cuid())
+  documentType   DocumentType
+  fileName       String // original filename from user's upload
+  storedFileName String // actual filename on disk (cuid-based)
+  storedPath     String // relative path from storage root
+  mimeType       String
+  fileSize       Int // bytes
+  checksum       String? // SHA-256 for integrity verification
+
+  // Business metadata
+  supplierName String?
+  billNumber   String?
+  billDate     DateTime?
+  billAmount   Float?
+  remarks      String?   @db.Text
+
+  // Polymorphic link to related entity (same pattern as AuditLog)
+  linkedEntityType String?
+  linkedEntityId   String?
+  visibility       DocumentVisibility @default(ALL_AUTHENTICATED)
+
+  // Audit
+  uploadedById String
+  createdAt    DateTime  @default(now())
+  deletedAt    DateTime?
+  deletedById  String?
+  deleteReason String?   @db.Text
+  purgeAfter   DateTime?
+
+  uploadedBy User @relation(fields: [uploadedById], references: [id])
+
+  @@index([documentType, createdAt])
+  @@index([linkedEntityType, linkedEntityId])
+  @@index([visibility])
+  @@index([supplierName])
+  @@index([billDate])
+  @@index([uploadedById])
+  @@index([deletedAt])
+  @@index([purgeAfter])
+}
+
+model SoftDeleteRecord {
+  id             String    @id @default(cuid())
+  entityType     String // "Product", "Document", "ProductImportBatch", etc.
+  entityId       String
+  entityLabel    String? // human-readable name/identifier for display
+  deletedById    String
+  deleteReason   String?   @db.Text
+  entitySnapshot Json? // JSON snapshot for restore
+  purgeAfter     DateTime // default: deletedAt + 30 days
+  purgedAt       DateTime?
+  createdAt      DateTime  @default(now())
+
+  deletedBy User @relation(fields: [deletedById], references: [id])
+
+  @@index([entityType, purgeAfter])
+  @@index([deletedById])
+  @@index([purgedAt])
 }
