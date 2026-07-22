@@ -40,6 +40,7 @@ export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
   ],
   staff: [
     "/product-lookup",
+    "/staff-requests",
     "/cashier-profile",
     "/logout",
   ],

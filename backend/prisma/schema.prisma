@@ -24,6 +24,8 @@ enum InvoiceStatus {
 enum PaymentMethod {
   CASH
   ESEWA
+  FONEPAY
+  BANK_TRANSFER
 }
 
 enum PaymentStatus {
@@ -114,6 +116,23 @@ enum CustomerDiscountRequestStatus {
   REJECTED
 }
 
+enum DraftRequestStatus {
+  PENDING
+  ACCEPTED
+  MODIFIED
+  REJECTED
+  COMPLETED
+  EXPIRED
+  CANCELLED_BY_STAFF
+  PARTIALLY_ACCEPTED
+}
+
+enum DraftRequestItemStatus {
+  PENDING
+  ACCEPTED
+  REJECTED
+}
+
 model User {
   id           String    @id @default(cuid())
   name         String
@@ -125,6 +144,7 @@ model User {
   role         Role      @default(CASHIER)
   isActive     Boolean   @default(true)
   lastLogin    DateTime?
+  lastPresenceAt DateTime?
   profileImage String?
   nagariktaNo  String?
   createdAt    DateTime  @default(now())
@@ -154,6 +174,11 @@ model User {
   reviewedDiscountRequests    CustomerDiscountRequest[]    @relation("CustomerDiscountRequestReviewer")
   priceOverrideAuthorizations PriceOverrideAuthorization[]
   overridePinAttempts         OverridePinAttempt[]
+  createdDraftRequests        BillingDraftRequest[]        @relation("DraftRequestCreator")
+  assignedDraftRequests       BillingDraftRequest[]        @relation("DraftRequestAssignedCashier")
+  acceptedDraftRequests       BillingDraftRequest[]        @relation("DraftRequestAcceptor")
+
+  @@index([role, isActive, lastPresenceAt])
 }
 
 model LoginAttempt {
@@ -212,6 +237,7 @@ model Product {
   stockTransactions           StockTransaction[]
   returnItems                 ReturnItem[]
   priceOverrideAuthorizations PriceOverrideAuthorization[]
+  draftRequestItems           DraftRequestItem[]
 
   @@index([barcode])
   @@index([sku])
@@ -237,6 +263,7 @@ model Customer {
   createdBy        User?                     @relation("CustomerCreator", fields: [createdById], references: [id])
   invoices         Invoice[]
   discountRequests CustomerDiscountRequest[] @relation("CustomerDiscountRequestApprovedCustomer")
+  draftRequests    BillingDraftRequest[]
 
   @@index([createdById])
 }
@@ -279,6 +306,7 @@ model CashierPrivilege {
   canOverrideBillingPrice     Boolean  @default(false)
   canApplyManualDiscount      Boolean  @default(false)
   canVoidPayment              Boolean  @default(false)
+  canViewWholesalePrice       Boolean  @default(true)
   updatedById                 String?
   createdAt                   DateTime @default(now())
   updatedAt                   DateTime @updatedAt
@@ -319,6 +347,7 @@ model Invoice {
   creditNotesAsOriginal   CreditNote[]       @relation("CreditNoteOriginalInvoice")
   creditNoteAsReplacement CreditNote?        @relation("CreditNoteReplacementInvoice")
   returnRequests          ReturnRequest[]
+  completedDraftRequest   BillingDraftRequest?
 
   @@index([status, parkedAt])
 }
@@ -331,6 +360,13 @@ model InvoiceSequence {
 }
 
 model CreditNoteSequence {
+  businessDate String   @id
+  lastNumber   Int      @default(0)
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+}
+
+model DraftRequestSequence {
   businessDate String   @id
   lastNumber   Int      @default(0)
   createdAt    DateTime @default(now())
@@ -467,6 +503,56 @@ model ReturnItem {
   product       Product       @relation(fields: [productId], references: [id])
 
   @@index([invoiceItemId])
+  @@index([productId])
+}
+
+model BillingDraftRequest {
+  id                 String             @id @default(cuid())
+  requestNo          String             @unique
+  status             DraftRequestStatus @default(PENDING)
+  customerName       String?
+  customerPhone      String?
+  customerId         String?
+  notes              String?            @db.Text
+  createdById        String
+  assignedCashierId  String?
+  acceptedById       String?
+  completedInvoiceId String?            @unique
+  expiresAt          DateTime?
+  modifiedAt         DateTime?
+  createdAt          DateTime           @default(now())
+  acceptedAt         DateTime?
+
+  customer         Customer?          @relation(fields: [customerId], references: [id])
+  createdBy        User               @relation("DraftRequestCreator", fields: [createdById], references: [id])
+  assignedCashier  User?              @relation("DraftRequestAssignedCashier", fields: [assignedCashierId], references: [id])
+  acceptedBy       User?              @relation("DraftRequestAcceptor", fields: [acceptedById], references: [id])
+  completedInvoice Invoice?           @relation(fields: [completedInvoiceId], references: [id])
+  items            DraftRequestItem[]
+
+  @@index([status, createdAt])
+  @@index([createdById, createdAt])
+  @@index([assignedCashierId, status, createdAt])
+  @@index([acceptedById, acceptedAt])
+  @@index([expiresAt])
+  @@index([customerId])
+}
+
+model DraftRequestItem {
+  id              String                 @id @default(cuid())
+  draftRequestId  String
+  productId       String
+  qty             Float
+  note            String?                @db.Text
+  reviewStatus    DraftRequestItemStatus @default(PENDING)
+  acceptedQty     Float?
+  rejectionReason String?                @db.Text
+  reviewedAt      DateTime?
+
+  draftRequest BillingDraftRequest @relation(fields: [draftRequestId], references: [id], onDelete: Cascade)
+  product      Product             @relation(fields: [productId], references: [id])
+
+  @@index([draftRequestId])
   @@index([productId])
 }
 

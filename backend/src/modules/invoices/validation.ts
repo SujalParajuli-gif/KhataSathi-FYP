@@ -25,7 +25,7 @@ export const checkoutItemSchema = z
 
 export const checkoutPaymentSchema = z
   .object({
-    method: z.enum(["CASH", "ESEWA", "NONE"]),
+    method: z.enum(["CASH", "ESEWA", "FONEPAY", "BANK_TRANSFER", "NONE"]),
     amount: positiveMoneySchema.optional(),
     reference: safeText("Payment reference", 160).optional(),
     tenderedAmount: nonNegativeMoneySchema.optional(),

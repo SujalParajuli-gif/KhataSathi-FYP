@@ -176,6 +176,20 @@ export function calculateRefundAmount(
   return Math.min(Number(rawRefundAmount || 0), remainingRefundable);
 }
 
+export function calculateDiscountAdjustedReturnAmount(
+  invoiceSubTotal: number,
+  invoiceNetTotal: number,
+  rawReturnLineTotal: number,
+) {
+  const subTotal = roundCurrency(Number(invoiceSubTotal || 0));
+  const netTotal = roundCurrency(Number(invoiceNetTotal || 0));
+  const returnLineTotal = roundCurrency(Number(rawReturnLineTotal || 0));
+
+  if (subTotal <= 0 || returnLineTotal <= 0) return 0;
+
+  return roundCurrency(returnLineTotal * (netTotal / subTotal));
+}
+
 export async function listReturnRequests(filters: {
   status?: string;
   userId: string;
@@ -300,9 +314,20 @@ export async function createReturnRequest(
       where: { invoiceId, status: { in: ACTIVE_RETURN_STATUSES } },
       select: { refundAmount: true },
     });
-    const rawRefundAmount = returnLines.reduce(
-      (sum, line) => sum + line.lineTotal,
-      0,
+    const invoiceSubTotal = roundCurrency(
+      Number(invoice.subTotal || 0) ||
+        invoice.items.reduce(
+          (sum: number, item: any) => sum + Number(item.lineTotal || 0),
+          0,
+        ),
+    );
+    const grossReturnAmount = roundCurrency(
+      returnLines.reduce((sum, line) => sum + line.lineTotal, 0),
+    );
+    const rawRefundAmount = calculateDiscountAdjustedReturnAmount(
+      invoiceSubTotal,
+      invoice.netTotal,
+      grossReturnAmount,
     );
     const refundAmount = calculateRefundAmount(
       invoice.paidTotal,
@@ -346,6 +371,8 @@ export async function createReturnRequest(
           invoiceNo: invoice.invoiceNo,
           reason,
           refundAmount,
+          grossReturnAmount,
+          discountAdjustedRefundAmount: rawRefundAmount,
           itemCount: returnLines.length,
         },
       },

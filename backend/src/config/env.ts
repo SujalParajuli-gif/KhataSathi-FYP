@@ -46,7 +46,13 @@ export function getAllowedCorsOrigins() {
 export function getRateLimitConfig() {
   return {
     loginLimitPerMinute: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE || 5),
-    apiLimitPerWindow: Number(process.env.API_RATE_LIMIT_REQUESTS || 300),
+    apiLimitPerWindow: Number(process.env.API_RATE_LIMIT_REQUESTS || 600),
+    backgroundLimitPerWindow: Number(
+      process.env.BACKGROUND_RATE_LIMIT_REQUESTS || 200,
+    ),
+    mediaLimitPerWindow: Number(
+      process.env.MEDIA_RATE_LIMIT_REQUESTS || 600,
+    ),
     apiWindowMinutes: Number(process.env.API_RATE_LIMIT_WINDOW_MINUTES || 15),
   };
 }

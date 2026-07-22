@@ -45,6 +45,16 @@
                 ]
             },
             {
+                "key": "staff-requests",
+                "label": "Requests",
+                "pageTitle": "My Bill Requests",
+                "icon": "receipt_long",
+                "to": "/staff-requests",
+                "roles": [
+                    "staff"
+                ]
+            },
+            {
                 "key": "invoices",
                 "label": "Invoices",
                 "pageTitle": "Invoices",

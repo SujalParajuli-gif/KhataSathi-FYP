@@ -1,7 +1,9 @@
 import React, { useEffect, useMemo, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import { SuccessDialog } from "~/components/ui/Modal";
-import UserAvatar from "~/components/ui/UserAvatar";
+import PreviewableImage from "~/components/ui/PreviewableImage";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProfileWorkspaceNav from "~/components/profile/ProfileWorkspaceNav";
 import {
   getMeApi,
   updateProfileApi,
@@ -9,6 +11,8 @@ import {
 } from "~/lib/api/endpoints";
 import { API_BASE_URL } from "~/lib/api/baseUrl";
 import { setAuthUser } from "~/lib/auth";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
 type TabKey = "personal" | "security";
 
@@ -98,22 +102,22 @@ function Panel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-[22px] border border-slate-200 bg-white  flex flex-col h-full">
-      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex h-full flex-col">
+      <div className="p-6 border-b border-slate-100 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="text-[15px] font-extrabold text-slate-900">
+          <h3 className="text-lg font-bold text-slate-800">
             {title}
-          </div>
+          </h3>
           {subtitle ? (
-            <div className="mt-1 text-[12px] font-medium text-slate-500">
+            <p className="text-sm text-slate-500">
               {subtitle}
-            </div>
+            </p>
           ) : null}
         </div>
         {actions}
       </div>
       <div className="flex-1">{children}</div>
-    </section>
+    </div>
   );
 }
 
@@ -137,10 +141,11 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all",
+        disabled ? "cursor-not-allowed opacity-50" : "",
         primary
-          ? "border-slate-900 bg-slate-900 text-white hover:bg-slate-800"
-          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+          ? "bg-[#11120d] text-white hover:bg-black shadow-sm focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
+          : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
       )}
     >
       <Icon name={icon} className="text-[18px]" />
@@ -160,13 +165,13 @@ function Field({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <label className="text-[11px] font-extrabold uppercase  text-slate-500">
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <label className="block text-xs font-bold text-slate-500 uppercase">
           {label}
         </label>
         {hint ? (
-          <span className="text-[11px] font-semibold text-slate-400">
+          <span className="text-[10px] font-medium text-slate-400">
             {hint}
           </span>
         ) : null}
@@ -195,10 +200,10 @@ function TextInput({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-[14px] border bg-white px-4 py-3 transition",
+        "flex items-center gap-3 rounded-lg border bg-white px-4 py-2.5 transition-all outline-none",
         disabled
-          ? "border-slate-200 bg-slate-50 text-slate-400"
-          : "border-slate-200 focus-within:border-slate-900",
+          ? "border-slate-200 bg-slate-50 text-slate-500 cursor-not-allowed"
+          : "border-slate-200 focus-within:ring-2 focus-within:ring-slate-900 focus-within:border-transparent"
       )}
     >
       <input
@@ -209,8 +214,8 @@ function TextInput({
         aria-label={placeholder || "Text input"}
         disabled={disabled}
         className={cn(
-          "w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-slate-400",
-          disabled ? "text-slate-500" : "text-slate-900",
+          "w-full bg-transparent text-sm outline-none placeholder:text-slate-400",
+          disabled ? "text-slate-500 cursor-not-allowed" : "text-slate-900",
         )}
       />
       {right ? <div className="shrink-0">{right}</div> : null}
@@ -229,25 +234,18 @@ function SelectInput({
   options: string[];
 }) {
   return (
-    <div className="rounded-[14px] border border-slate-200 bg-white px-4 py-3 transition focus-within:border-slate-900">
-      <select
-        value={value}
-        onChange={(e) => onChange(e.target.value)}
-        aria-label="Select an option"
-        className="w-full appearance-none bg-transparent text-[14px] font-semibold text-slate-900 outline-none"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </div>
+    <ProjectSelect value={value} onChange={(event) => onChange(event.target.value)}>
+      {options.map((option) => <option key={option} value={option}>{option}</option>)}
+    </ProjectSelect>
   );
 }
 
 // handles the main "My Profile" page allowing the currently logged-in cashier or admin to view and edit their details
 export default function CashierProfileSection() {
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
   const [tab, setTab] = useState<TabKey>("personal"); // switches between personal details and password settings
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
   const [saving, setSaving] = useState(false); // blocks repeated profile saves while an update is running
@@ -286,26 +284,43 @@ export default function CashierProfileSection() {
 
   useEffect(() => {
     // loading the current logged-in user's profile details when the page first opens
+    const controller = new AbortController();
     async function load() {
       setLoading(true);
       setError("");
       try {
         // asking the backend for the latest profile data keeps this page aligned with the current auth user
-        const data = await getMeApi();
-        const nextProfile = mapUserToProfile(data.user || data);
+        const data = await getMeApi({ signal: controller.signal });
+        if (controller.signal.aborted) return;
+        const user = data.user || data;
+        const nextProfile = mapUserToProfile(user);
         setProfile(nextProfile);
         setInitialProfile(nextProfile);
+        setAuthUser({
+          id: user.id,
+          name: user.name,
+          email: user.email,
+          role: user.role,
+          profileImage: user.profileImage,
+        });
+        window.dispatchEvent(new Event("auth_change"));
       } catch (err: any) {
+        if (controller.signal.aborted || err?.code === "ERR_CANCELED") return;
+        if (isRateLimitError(err)) {
+          requestRateLimitRecovery();
+          return;
+        }
         setError(
           err?.response?.data?.error ||
             "Unable to load your profile right now.",
         );
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
-    load();
-  }, []);
+    void load();
+    return () => controller.abort();
+  }, [rateLimitRecoveryKey]);
 
   // saving region to localstorage whenever it changes
   useEffect(() => {
@@ -455,10 +470,10 @@ export default function CashierProfileSection() {
 
   if (loading) {
     return (
-      <div className="space-y-5 pb-8">
-        <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
-          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white xl:w-[340px] xl:flex-none" />
-          <div className="h-[360px] animate-pulse rounded-[22px] border border-slate-200 bg-white xl:min-w-0 xl:flex-1" />
+      <div className="mx-auto w-full max-w-[1280px] space-y-5 pb-8">
+        <div className="grid grid-cols-1 gap-5 lg:grid-cols-[320px_minmax(0,1fr)]">
+          <div className="h-[420px] animate-pulse rounded-[8px] border border-slate-200 bg-white" />
+          <div className="h-[420px] animate-pulse rounded-[8px] border border-slate-200 bg-white" />
         </div>
       </div>
     );
@@ -466,161 +481,156 @@ export default function CashierProfileSection() {
 
   return (
     <>
-      <div className="space-y-5 pb-8 text-slate-900">
-        {/* this layout keeps the account overview in a fixed-feeling side card and leaves the larger area for editable forms */}
-        <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
-          <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
-            <Panel
-              title="Account Overview"
-              subtitle="Photo, contact , and sign-in for this cashier account."
-            >
+      <div className="w-full pt-0 pb-4 text-slate-900">
+        <div className="mb-5">
+          <h1 className="text-2xl font-bold text-slate-800">
+            Account Settings
+          </h1>
+          <p className="text-slate-500 text-sm">
+            Manage your profile information and sign-in security.
+          </p>
+        </div>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-4 space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
               <div className="space-y-5 px-5 py-5">
-                {/* we center the avatar block here so the page opens with a stronger profile feel before the editable fields start */}
                 <div className="flex flex-col items-center text-center">
-                  <UserAvatar
-                    src={
-                      profile.profileImage
-                        ? `${API_BASE_URL}${profile.profileImage}`
-                        : undefined
-                    }
-                    alt="Profile"
-                    className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[30px] font-extrabold text-slate-700"
-                    fallback={initials || "CU"}
-                  />
-                  <div className="mt-4 text-[20px] font-extrabold text-slate-900">
-                    {fullName}
-                  </div>
-                  <div className="mt-1 text-[13px] font-semibold text-slate-500">
-                    {profile.email || "No email available"}
-                  </div>
-                  <div className="mt-3">
-                    <label className="cursor-pointer">
+                  <div className="relative inline-flex">
+                    <PreviewableImage
+                      src={profile.profileImage}
+                      alt="Profile"
+                      title={fullName}
+                      subtitle={profile.email || undefined}
+                      previewCue="always"
+                      className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[28px] font-extrabold text-slate-700"
+                      fallback={initials || "CU"}
+                    />
+                    <label
+                      className={cn(
+                        "absolute bottom-0 right-0 inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-[#11120d] text-white shadow-sm transition hover:bg-black focus-within:ring-2 focus-within:ring-slate-900 focus-within:ring-offset-2",
+                        uploadingPhoto && "pointer-events-none opacity-60",
+                      )}
+                      title="Change profile photo"
+                      aria-label="Change profile photo"
+                    >
                       <input
                         type="file"
-                        className="hidden"
+                        className="sr-only"
                         accept="image/*"
-                        onChange={(e) => handlePhotoChange(e.target.files?.[0])}
+                        disabled={uploadingPhoto}
+                        onChange={(e) => {
+                          handlePhotoChange(e.target.files?.[0]);
+                          e.currentTarget.value = "";
+                        }}
                       />
-                      <span
-                        className={cn(
-                          "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition",
-                          uploadingPhoto
-                            ? "border-slate-200 bg-slate-100 text-slate-400"
-                            : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-                        )}
-                      >
-                        <Icon name="photo_camera" className="text-[18px]" />
-                        {uploadingPhoto ? "Uploading..." : "Change Photo"}
-                      </span>
+                      <Icon
+                        name={uploadingPhoto ? "progress_activity" : "photo_camera"}
+                        className={cn("text-[17px]", uploadingPhoto && "animate-spin")}
+                      />
                     </label>
+                  </div>
+                  <div className="text-center mt-4">
+                    <h2 className="text-xl font-bold text-slate-800">
+                      {fullName}
+                    </h2>
+                    <p className="text-slate-500 text-sm">
+                      {profile.email || "No email available"}
+                    </p>
+                    <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-200">
+                      <div className="w-1.5 h-1.5 rounded-full bg-slate-600"></div>
+                      {profile.roleLabel}
+                    </div>
                   </div>
                 </div>
 
-                <div className="space-y-5 rounded-[18px] border border-slate-200 bg-slate-50/70 p-10 text-[13px] font-semibold text-slate-600 xl:h-[200px] xl:mt-20">
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2">
-                      <Icon name="phone" className="text-[18px]" /> Phone
-                    </span>
-                    <span className="text-right text-slate-900">
+                <div className="border-t border-slate-100 mt-6 pt-6 space-y-4">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 text-slate-500">
+                      <Icon name="phone" className="text-[16px]" />
+                      <span className="text-sm font-medium">Phone</span>
+                    </div>
+                    <span className="text-sm font-medium text-slate-800">
                       {profile.phone || "No phone added"}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2">
-                      <Icon name="location_on" className="text-[18px]" /> Region
-                    </span>
-                    <span className="text-right text-slate-900">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 text-slate-500">
+                      <Icon name="location_on" className="text-[16px]" />
+                      <span className="text-sm font-medium">Region</span>
+                    </div>
+                    <span className="text-sm font-medium text-slate-800">
                       {profile.location}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="inline-flex items-center gap-2">
-                      <Icon name="schedule" className="text-[18px]" /> Last
-                      login
-                    </span>
-                    <span className="text-right text-slate-900">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3 text-slate-500">
+                      <Icon name="schedule" className="text-[16px]" />
+                      <span className="text-sm font-medium">Last login</span>
+                    </div>
+                    <span className="text-sm font-medium text-slate-800">
                       {formatDateTime(profile.lastLogin)}
                     </span>
                   </div>
                 </div>
               </div>
-            </Panel>
+            </div>
+
+            <nav className="bg-white rounded-xl border border-slate-200 p-2 space-y-1">
+              <button
+                onClick={() => {
+                  setTab("personal");
+                  setError("");
+                }}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                  tab === "personal"
+                    ? "bg-slate-100 text-slate-900"
+                    : "text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                <Icon name="person" className="text-[16px]" />
+                Personal Information
+              </button>
+              <button
+                onClick={() => {
+                  setTab("security");
+                  setError("");
+                }}
+                className={cn(
+                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                  tab === "security"
+                    ? "bg-slate-100 text-slate-900"
+                    : "text-slate-600 hover:bg-slate-50"
+                )}
+              >
+                <Icon name="lock" className="text-[16px]" />
+                Login & Password
+              </button>
+            </nav>
           </div>
 
-          <div className="xl:min-w-0 xl:flex-1">
+          <div className="lg:col-span-8">
             <Panel
               title={
                 tab === "personal" ? "Personal Details" : "Login & Password"
               }
               subtitle={
                 tab === "personal"
-                  ? "Update the same profile fields already available on this page."
-                  : "Keep the current password fields, password guidance, and save flow."
-              }
-              actions={
-                <div className="flex flex-wrap gap-2">
-                  <button
-                    type="button"
-                    onClick={() => setTab("personal")}
-                    className={cn(
-                      "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                      tab === "personal"
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                    )}
-                  >
-                    Personal Information
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => setTab("security")}
-                    className={cn(
-                      "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                      tab === "security"
-                        ? "border-slate-900 bg-slate-900 text-white"
-                        : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                    )}
-                  >
-                    Login & Password
-                  </button>
-                </div>
+                  ? "Update your contact and account information."
+                  : "Change your password and review sign-in security."
               }
             >
-              <div className="flex flex-col h-full justify-between space-y-6 px-5 py-5">
+              <div className="flex h-full flex-col justify-between p-6">
                 <div className="space-y-6">
                   {error ? (
-                    <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                    <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
                       {error}
                     </div>
                   ) : null}
 
                   {tab === "personal" ? (
                     <>
-                      <Field label="Gender">
-                        <div className="flex flex-wrap gap-3">
-                          {(["Male", "Female"] as const).map((gender) => (
-                            <button
-                              key={gender}
-                              type="button"
-                              onClick={() =>
-                                setProfile((current) => ({
-                                  ...current,
-                                  gender,
-                                }))
-                              }
-                              className={cn(
-                                "rounded-[14px] border px-6 py-3 text-[13px] font-extrabold transition",
-                                profile.gender === gender
-                                  ? "border-slate-900 bg-slate-900 text-white"
-                                  : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                              )}
-                            >
-                              {gender}
-                            </button>
-                          ))}
-                        </div>
-                      </Field>
-
                       <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                         <Field label="First Name">
                           <TextInput
@@ -674,21 +684,6 @@ export default function CashierProfileSection() {
                           </Field>
                         </div>
 
-                        <div className="md:col-span-2">
-                          <Field label="Home Address">
-                            <TextInput
-                              value={profile.address}
-                              onChange={(value) =>
-                                setProfile((current) => ({
-                                  ...current,
-                                  address: value,
-                                }))
-                              }
-                              placeholder="e.g. Kathmandu, Nepal"
-                            />
-                          </Field>
-                        </div>
-
                         <Field label="Phone Number">
                           <TextInput
                             value={profile.phone}
@@ -700,6 +695,31 @@ export default function CashierProfileSection() {
                             }
                             placeholder="+977 98XXXXXXXX"
                           />
+                        </Field>
+
+                        <Field label="Gender">
+                          <div className="grid grid-cols-2 gap-4">
+                            {(["Male", "Female"] as const).map((gender) => (
+                              <button
+                                key={gender}
+                                type="button"
+                                onClick={() =>
+                                  setProfile((current) => ({
+                                    ...current,
+                                    gender,
+                                  }))
+                                }
+                                className={cn(
+                                  "px-4 py-2.5 rounded-lg font-semibold text-sm transition-all",
+                                  profile.gender === gender
+                                    ? "border-2 border-[#11120d] bg-[#11120d] text-white"
+                                    : "border border-slate-200 text-slate-600 bg-white hover:bg-slate-50",
+                                )}
+                              >
+                                {gender}
+                              </button>
+                            ))}
+                          </div>
                         </Field>
 
                         <Field
@@ -715,6 +735,19 @@ export default function CashierProfileSection() {
                               }))
                             }
                             options={["Nepal", "India", "Other"]}
+                          />
+                        </Field>
+
+                        <Field label="Home Address">
+                          <TextInput
+                            value={profile.address}
+                            onChange={(value) =>
+                              setProfile((current) => ({
+                                ...current,
+                                address: value,
+                              }))
+                            }
+                            placeholder="e.g. Kathmandu, Nepal"
                           />
                         </Field>
                       </div>
@@ -763,12 +796,12 @@ export default function CashierProfileSection() {
                       </div>
 
                       {isPwdMismatch ? (
-                        <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
                           Passwords do not match.
                         </div>
                       ) : null}
 
-                      <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-5">
+                      <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
                         <div className="text-[11px] font-extrabold uppercase  text-slate-500">
                           Password Requirements
                         </div>

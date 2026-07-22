@@ -4,6 +4,7 @@ import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
 import path from "path";
+import { randomUUID } from "crypto";
 
 import authRoutes from "./modules/auth/routes";
 import brandRoutes from "./modules/brands/routes";
@@ -22,7 +23,10 @@ import returnRoutes from "./modules/returns/routes";
 import cashDrawerRoutes from "./modules/cash-drawers/routes";
 import documentRoutes from "./modules/documents/routes";
 import binRoutes from "./modules/bin/routes";
+import draftRequestRoutes from "./modules/draft-requests/routes";
 import { cleanupStaleEsewaPayments } from "./modules/payments/service";
+import { expireDueParkedDrafts } from "./modules/invoices/service";
+import { expireDueDraftRequests } from "./modules/draft-requests/service";
 import { runDueBinPurge } from "./modules/bin/service";
 import prisma from "./db/prisma";
 import { getAllowedCorsOrigins, getRateLimitConfig } from "./config/env";
@@ -32,6 +36,9 @@ import { logger } from "./lib/logger";
 import {
   attachRateLimitIdentity,
   generalApiRateLimitKey,
+  isBackgroundRateLimitRequest,
+  isGeneralApiRateLimitExempt,
+  isMediaRateLimitRequest,
 } from "./lib/rateLimit";
 
 const app = express(); // creating the express application instance
@@ -41,7 +48,20 @@ const rateLimitConfig = getRateLimitConfig();
 
 app.set("trust proxy", 1);
 
-app.use(helmet());
+app.use((req, res, next) => {
+  const requestId = String(req.header("x-request-id") || randomUUID());
+  res.locals.requestId = requestId;
+  res.setHeader("X-Request-Id", requestId);
+  next();
+});
+
+app.use(
+  helmet({
+    // The frontend dev/prod app can run on a different origin than the API.
+    // Uploaded product/profile images must remain embeddable from that app.
+    crossOriginResourcePolicy: { policy: "cross-origin" },
+  }),
+);
 
 app.use(
   cors({
@@ -60,44 +80,20 @@ app.use(
       callback(new Error(`CORS blocked origin: ${origin}`));
     },
     credentials: true,
+    // Dev and production frontends run on a different origin from the API.
+    // Expose limiter metadata so the request gate can honor the server's real
+    // reset time instead of falling back to an early retry.
+    exposedHeaders: [
+      "Retry-After",
+      "RateLimit",
+      "RateLimit-Policy",
+      "X-Request-Id",
+    ],
   }),
 );
 
-const loginLimiter = rateLimit({
-  windowMs: 60 * 1000,
-  limit: rateLimitConfig.loginLimitPerMinute,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  message: {
-    code: "RATE_LIMITED",
-    error: "Too many login attempts. Please try again in a minute.",
-  },
-});
-
-const apiLimiter = rateLimit({
-  windowMs: rateLimitConfig.apiWindowMinutes * 60 * 1000,
-  limit: rateLimitConfig.apiLimitPerWindow,
-  keyGenerator: generalApiRateLimitKey,
-  standardHeaders: "draft-7",
-  legacyHeaders: false,
-  message: {
-    code: "RATE_LIMITED",
-    error: "Too many requests. Please slow down and try again shortly.",
-  },
-});
-
-app.use("/api/auth/login", loginLimiter);
-app.use("/api", attachRateLimitIdentity);
-app.use("/api", apiLimiter);
-app.use(express.json({ limit: "1mb" })); // parsing incoming JSON request bodies so we can access req.body
-app.use(express.urlencoded({ extended: true, limit: "1mb" })); // parsing URL-encoded form data (used by some payment callbacks)
-app.use(sanitizeBody);
-// serving uploaded files (product images, profile photos) as static files
-// the uploads folder sits at the project root, two levels up from this file's compiled location
-app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
-
-// simple health check endpoint so we can verify the backend is running
-// hitting http://localhost:4000/api/health should return { status: "OK" }
+// Deployment monitoring must remain available even when a user exhausts an
+// API budget. Keep this endpoint before every rate limiter.
 app.get("/api/health", async (_req, res) => {
   try {
     await prisma.$queryRaw`SELECT 1`;
@@ -111,6 +107,117 @@ app.get("/api/health", async (_req, res) => {
   }
 });
 
+function rateLimitHandler(
+  scope: "login" | "background" | "media" | "api",
+  message: string,
+) {
+  return (req: express.Request, res: express.Response) => {
+    const details = (req as express.Request & { rateLimit?: Record<string, unknown> })
+      .rateLimit;
+    logger.warn("API rate limit exceeded", {
+      scope,
+      requestId: res.locals.requestId,
+      method: req.method,
+      path: req.originalUrl,
+      userId: req.rateLimitUserId,
+      ip: req.ip,
+      limit: details?.limit,
+      used: details?.used,
+      remaining: details?.remaining,
+      resetTime: details?.resetTime,
+    });
+    res.status(429).json({
+      code: "RATE_LIMITED",
+      scope,
+      error: message,
+      requestId: res.locals.requestId,
+    });
+  };
+}
+
+const loginLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: rateLimitConfig.loginLimitPerMinute,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  handler: rateLimitHandler(
+    "login",
+    "Too many login attempts. Please try again in a minute.",
+  ),
+});
+
+const apiLimiter = rateLimit({
+  windowMs: rateLimitConfig.apiWindowMinutes * 60 * 1000,
+  limit: rateLimitConfig.apiLimitPerWindow,
+  keyGenerator: generalApiRateLimitKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  skip: isGeneralApiRateLimitExempt,
+  handler: rateLimitHandler(
+    "api",
+    "Too many requests. Please slow down and try again shortly.",
+  ),
+});
+
+// background/heartbeat endpoints (presence pings, alert polls) get their own generous
+// rate-limit bucket so they never eat into the user's main API quota.
+// 200 requests per 15 minutes is ~1 request every 4.5 seconds — well above the 60-second
+// interval used by the frontend for these endpoints.
+const backgroundLimiter = rateLimit({
+  windowMs: rateLimitConfig.apiWindowMinutes * 60 * 1000,
+  limit: rateLimitConfig.backgroundLimitPerWindow,
+  keyGenerator: generalApiRateLimitKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  handler: rateLimitHandler(
+    "background",
+    "Too many background requests. Please try again shortly.",
+  ),
+});
+
+const mediaLimiter = rateLimit({
+  windowMs: rateLimitConfig.apiWindowMinutes * 60 * 1000,
+  limit: rateLimitConfig.mediaLimitPerWindow,
+  keyGenerator: generalApiRateLimitKey,
+  standardHeaders: "draft-7",
+  legacyHeaders: false,
+  handler: rateLimitHandler(
+    "media",
+    "Too many document preview requests. Please try again shortly.",
+  ),
+});
+
+app.use("/api/auth/login", loginLimiter);
+app.use("/api", attachRateLimitIdentity);
+
+// background endpoints use their own separate bucket — mounted before the general limiter
+// so they are handled here and skip the general apiLimiter below
+app.use("/api", (req, res, next) => {
+  if (!isBackgroundRateLimitRequest(req)) {
+    next();
+    return;
+  }
+  backgroundLimiter(req, res, next);
+});
+
+app.use("/api", (req, res, next) => {
+  if (!isMediaRateLimitRequest(req)) {
+    next();
+    return;
+  }
+  mediaLimiter(req, res, next);
+});
+
+app.use("/api", apiLimiter);
+app.use(express.json({ limit: "1mb" })); // parsing incoming JSON request bodies so we can access req.body
+app.use(express.urlencoded({ extended: true, limit: "1mb" })); // parsing URL-encoded form data (used by some payment callbacks)
+app.use(sanitizeBody);
+// serving uploaded files (product images, profile photos) as static files
+// the uploads folder sits at the project root, two levels up from this file's compiled location
+app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
+
+// simple health check endpoint so we can verify the backend is running
+// hitting http://localhost:4000/api/health should return { status: "OK" }
 // mounting all module routes under their respective API paths
 // each module handles its own route definitions, controllers, and services
 app.use("/api/auth", authRoutes);
@@ -130,6 +237,7 @@ app.use("/api/returns", returnRoutes);
 app.use("/api/cash-drawers", cashDrawerRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/bin", binRoutes);
+app.use("/api/draft-requests", draftRequestRoutes);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -159,6 +267,40 @@ const esewaCleanupTimer = setInterval(() => {
   void runEsewaCleanup();
 }, 5 * 60 * 1000);
 esewaCleanupTimer.unref();
+
+async function runDraftRequestExpiryCheck() {
+  try {
+    const result = await expireDueDraftRequests();
+    if (result.expired > 0) {
+      logger.info("Expired due draft requests", result);
+    }
+  } catch (error) {
+    logger.error("Draft request expiry cleanup failed", error);
+  }
+}
+
+void runDraftRequestExpiryCheck();
+const draftRequestExpiryTimer = setInterval(() => {
+  void runDraftRequestExpiryCheck();
+}, 60 * 1000);
+draftRequestExpiryTimer.unref();
+
+async function runParkedBillExpiryCheck() {
+  try {
+    const result = await expireDueParkedDrafts();
+    if (result.expired > 0) {
+      logger.info("Expired due parked bills", result);
+    }
+  } catch (error) {
+    logger.error("Parked bill expiry cleanup failed", error);
+  }
+}
+
+void runParkedBillExpiryCheck();
+const parkedBillExpiryTimer = setInterval(() => {
+  void runParkedBillExpiryCheck();
+}, 60 * 60 * 1000);
+parkedBillExpiryTimer.unref();
 
 async function runBackupScheduleCheck() {
   try {
@@ -210,6 +352,8 @@ async function shutdown(signal: string) {
 
   logger.info("Shutdown signal received", { signal });
   clearInterval(esewaCleanupTimer);
+  clearInterval(draftRequestExpiryTimer);
+  clearInterval(parkedBillExpiryTimer);
   clearInterval(backupScheduleTimer);
   clearInterval(binPurgeTimer);
 

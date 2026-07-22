@@ -3,6 +3,7 @@ import type { ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 import { ConfirmDialog } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
+import { MobileFilterTabs } from "~/components/ui/MobileFilters";
 import { useToast } from "~/components/ui/Toast";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import {
@@ -14,13 +15,14 @@ import {
   getBusinessSettingsApi,
   listCustomerDiscountRequestsApi,
   listCustomersApi,
-  listInvoicesApi,
   rejectCustomerDiscountRequestApi,
   updateCustomerApi,
   type CustomerDiscountDeleteSafety,
   type CustomerDiscountRequest,
 } from "~/lib/api/endpoints";
 import { formatDateLabel, formatNpr } from "~/lib/invoices";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
 type DiscountMode = "ADMIN_WHOLESALE" | "LOYALTY" | "NONE";
 type PurchaseHistoryState = "history" | "cancelled_only" | "empty";
@@ -118,96 +120,26 @@ function normalizeCustomerList(data: any) {
   return [];
 }
 
-// safely checks if an invoice row was cancelled
-function isInvoiceCancelled(raw: any) {
-  const status = String(raw?.paymentStatus || raw?.status || "").toUpperCase();
-  return status === "CANCELLED" || status === "CANCELED";
-}
-
-// safely checks if an invoice row completed properly
-function isFinalizedInvoice(raw: any) {
-  return String(raw?.status || "").toUpperCase() === "FINALIZED";
-}
-
-// fetches all invoices across the whole database
-// we need this so we can accurately count total purchases per customer without pagination gaps
-async function loadAllInvoices() {
-  const all: any[] = [];
-  const pageSize = 100;
-  let page = 1;
-
-  while (true) {
-    const data = await listInvoicesApi({ page, pageSize });
-    const batch = Array.isArray(data?.invoices) ? data.invoices : [];
-    const total = Number(data?.total || 0);
-    all.push(...batch);
-
-    if (batch.length === 0) break;
-    if (total > 0 && all.length >= total) break;
-    if (batch.length < pageSize) break;
-
-    page += 1;
+function purchaseSummaryFromCustomer(customer: any): PurchaseSummary {
+  const summary = customer?.purchaseSummary;
+  const purchaseCount = Number(summary?.completedCount || 0);
+  if (purchaseCount > 0 && summary?.latestCompletedAt) {
+    return {
+      purchaseCount,
+      purchaseHistoryState: "history",
+      lastPurchaseLabel: `${purchaseCount} purchase${purchaseCount === 1 ? "" : "s"} | ${formatNpr(
+        Number(summary.latestCompletedNetTotal || 0),
+      )} on ${formatDateLabel(String(summary.latestCompletedAt))}`,
+    };
   }
-
-  return all;
-}
-
-// this calculates the "Last Purchase" and "Purchase Count" labels shown on each customer card
-// it ignores cancelled invoices and finds the latest successful transaction
-function buildPurchaseLookup(rawInvoices: any[]) {
-  const grouped = new Map<string, any[]>();
-
-  rawInvoices.forEach((invoice) => {
-    const customerId = invoice?.customer?.id || invoice?.customerId;
-    if (!customerId) return;
-
-    const bucket = grouped.get(customerId) || [];
-    bucket.push(invoice);
-    grouped.set(customerId, bucket);
-  });
-
-  const lookup = new Map<string, PurchaseSummary>();
-
-  grouped.forEach((items, customerId) => {
-    const sorted = [...items].sort(
-      (a, b) =>
-        new Date(b?.createdAt || 0).getTime() -
-        new Date(a?.createdAt || 0).getTime(),
-    );
-    const finalized = sorted.filter(isFinalizedInvoice);
-    const validPurchases = finalized.filter(
-      (invoice) => !isInvoiceCancelled(invoice),
-    );
-    const latest = validPurchases[0];
-
-    if (latest) {
-      const purchaseCount = validPurchases.length;
-      const createdAt = String(latest.createdAt || new Date().toISOString());
-      const amount = Number(latest.netTotal || latest.total || 0);
-      lookup.set(customerId, {
-        purchaseCount,
-        purchaseHistoryState: "history",
-        lastPurchaseLabel: `${purchaseCount} purchase${
-          purchaseCount === 1 ? "" : "s"
-        } | ${formatNpr(amount)} on ${formatDateLabel(createdAt)}`,
-      });
-      return;
-    }
-
-    if (finalized.length > 0) {
-      lookup.set(customerId, {
-        purchaseCount: 0,
-        purchaseHistoryState: "cancelled_only",
-        lastPurchaseLabel:
-          "No completed purchase yet. Latest invoice was cancelled.",
-      });
-      return;
-    }
-
-    lookup.set(customerId, DEFAULT_PURCHASE_SUMMARY);
-  });
-
-  return lookup;
+  if (summary?.state === "cancelled_only") {
+    return {
+      purchaseCount: 0,
+      purchaseHistoryState: "cancelled_only",
+      lastPurchaseLabel: "No completed purchase yet. Latest invoice was cancelled.",
+    };
+  }
+  return DEFAULT_PURCHASE_SUMMARY;
 }
 
 function Surface({
@@ -888,43 +820,52 @@ export default function DiscountsPage() {
   const [fWholesaleDiscount, setFWholesaleDiscount] = useState<number | "">(""); // modal field: wholesale percent override
   const [formErrors, setFormErrors] = useState<DiscountFormErrors>({}); // field-level add/edit validation errors
   const [formSubmitError, setFormSubmitError] = useState(""); // top-level add/edit mutation error
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
 
   const formHasWholesale = typeof fWholesaleDiscount === "number"; // used to show when wholesale is overriding loyalty in the form
 
   useEffect(() => {
     let active = true;
+    const controller = new AbortController();
 
     // loading customers, invoices, and business settings together because this page combines all three
     async function load() {
       setLoading(true);
       setLoadError("");
 
-      try {
-        const [customerData, invoices, settings, requestData] = await Promise.all([
-          listCustomersApi(),
-          loadAllInvoices(),
+      const [customerResult, settingsResult, requestResult] = await Promise.allSettled([
+          listCustomersApi(undefined, { signal: controller.signal }),
           getBusinessSettingsApi(),
-          listCustomerDiscountRequestsApi("PENDING"),
+          listCustomerDiscountRequestsApi("PENDING", { signal: controller.signal }),
         ]);
 
-        if (!active) return;
+      if (!active || controller.signal.aborted) return;
 
-        const purchaseLookup = buildPurchaseLookup(invoices); // lets each customer pick up derived purchase labels without rescanning invoices later
-        const rawCustomers = normalizeCustomerList(customerData); // supporting either direct arrays or wrapped API responses
+      if (settingsResult.status === "fulfilled") {
         setLoyaltyDiscountPercent(
-          clampPercent(Number(settings?.loyaltyDiscountPercent ?? 2)),
+          clampPercent(Number(settingsResult.value?.loyaltyDiscountPercent ?? 2)),
         );
-        const requests = Array.isArray(requestData.requests) ? requestData.requests : [];
+      }
+
+      if (requestResult.status === "fulfilled") {
+        const requests = Array.isArray(requestResult.value.requests)
+          ? requestResult.value.requests
+          : [];
         setDiscountRequests(requests);
         setRequestPercents(
           Object.fromEntries(requests.map((request) => [request.id, request.discountPercent])),
         );
+      }
 
+      if (customerResult.status === "fulfilled") {
+        const rawCustomers = normalizeCustomerList(customerResult.value); // supporting either direct arrays or wrapped API responses
         setCustomers(
           rawCustomers.map((customer: any) => {
             // combining server customer data with our derived purchase summary creates the final page row shape
-            const purchaseSummary =
-              purchaseLookup.get(customer.id) || DEFAULT_PURCHASE_SUMMARY;
+            const purchaseSummary = purchaseSummaryFromCustomer(customer);
 
             return {
               id: customer.id,
@@ -941,23 +882,32 @@ export default function DiscountsPage() {
             } satisfies Customer;
           }),
         );
-      } catch {
-        if (!active) return;
-        setCustomers([]);
-        setLoadError("We could not load discount records right now.");
-      } finally {
-        if (active) {
-          setLoading(false);
-        }
       }
+
+      const rejected = [customerResult, settingsResult, requestResult].filter(
+        (result): result is PromiseRejectedResult => result.status === "rejected",
+      );
+      if (rejected.length > 0) {
+        const rateLimited = rejected.some((result) => isRateLimitError(result.reason));
+        if (rateLimited) requestRateLimitRecovery();
+        setLoadError(
+          rateLimited
+            ? "Discount data is temporarily paused and will refresh automatically."
+            : "Some discount records could not be loaded right now.",
+        );
+      }
+
+      if (active) setLoading(false);
     }
 
-    load();
+    const timer = window.setTimeout(() => void load(), 100);
 
     return () => {
       active = false;
+      window.clearTimeout(timer);
+      controller.abort();
     };
-  }, []);
+  }, [rateLimitRecoveryKey]);
 
   const filtered = useMemo(() => {
     const loweredQuery = query.trim().toLowerCase();
@@ -1397,35 +1347,33 @@ export default function DiscountsPage() {
         </div>
 
         {/* these metric cards summarize the rule breakdown before the user starts browsing individual customers */}
-        <div className="grid grid-cols-1 gap-[14px] md:grid-cols-2 xl:grid-cols-4">
-          <MetricCard
-            label="Total Customers"
-            value={stats.total}
-            hint="Registered in discount system"
-            icon="groups"
-            tone="slate"
-          />
-          <MetricCard
-            label="Wholesale Accounts"
-            value={stats.adminWholesale}
-            hint="Customer-specific wholesale rates"
-            icon="storefront"
-            tone="orange"
-          />
-          <MetricCard
-            label="Loyalty Members"
-            value={stats.loyalty}
-            hint="Using loyalty discount"
-            icon="loyalty"
-            tone="green"
-          />
-          <MetricCard
-            label="Standard Billing"
-            value={stats.none}
-            hint="No custom discount assigned"
-            icon="rule"
-            tone="neutral"
-          />
+        <div className="bg-white rounded-[18px] border border-[#CFCFD3] p-5 md:p-6 shadow-sm">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-5 md:gap-6">
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-slate-900">
+                {loading && customers.length === 0 ? "..." : stats.total} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Total</span>
+              </span>
+              <div className="h-1 w-12 bg-slate-800 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-orange-600">
+                {loading && customers.length === 0 ? "..." : stats.adminWholesale} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Wholesale</span>
+              </span>
+              <div className="h-1 w-12 bg-orange-500 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-emerald-600">
+                {loading && customers.length === 0 ? "..." : stats.loyalty} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Loyalty</span>
+              </span>
+              <div className="h-1 w-12 bg-emerald-500 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-slate-600">
+                {loading && customers.length === 0 ? "..." : stats.none} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Standard</span>
+              </span>
+              <div className="h-1 w-12 bg-slate-400 mt-2 rounded-full"></div>
+            </div>
+          </div>
         </div>
 
         {discountRequests.length > 0 ? (
@@ -1537,7 +1485,19 @@ export default function DiscountsPage() {
         {/* this main management card groups filters and customer records into one clear pricing-rules workspace */}
         <div className="overflow-hidden rounded-[24px] border border-[#CFCFD3] bg-white ">
           <div className="flex flex-col gap-4 border-b border-[#CFCFD3] bg-white p-5 xl:flex-row xl:items-center xl:justify-between">
-            <div className="hide-scrollbar flex w-full items-center gap-2 overflow-x-auto pb-2 xl:w-auto xl:pb-0">
+            <MobileFilterTabs
+              className="lg:hidden"
+              ariaLabel="Discount type"
+              value={mode}
+              onChange={setMode}
+              items={[
+                { value: "all", label: "All Discounts", count: stats.total },
+                { value: "ADMIN_WHOLESALE", label: "Wholesale", count: stats.adminWholesale },
+                { value: "LOYALTY", label: "Loyalty", count: stats.loyalty },
+                { value: "NONE", label: "No discount", count: stats.none },
+              ]}
+            />
+            <div className="hide-scrollbar hidden w-full items-center gap-2 overflow-x-auto pb-2 xl:flex xl:w-auto xl:pb-0">
               <FilterChip
                 label="All Discounts"
                 count={stats.total}
@@ -1577,44 +1537,43 @@ export default function DiscountsPage() {
             </div>
           </div>
 
-          <div className="px-5 py-5">
-            {loadError ? (
-              <div className="mb-4 rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
+          {loadError ? (
+            <div className="px-5 pt-5 pb-2">
+              <div className="rounded-[16px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[13px] font-semibold text-[#BE123C]">
                 {loadError}
               </div>
-            ) : null}
+            </div>
+          ) : null}
 
-          </div>
-
-          <div className="overflow-x-auto">
-            <table className="w-full border-collapse text-left">
+          <div className="hidden overflow-x-auto lg:block">
+            <table className="w-full min-w-[940px] border-collapse text-left">
               <thead>
-                <tr className="border-b border-[#CFCFD3] bg-[#F3F4F6]/70">
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                <tr className="border-b border-[#DADDE3] bg-[#F8FAFC]">
+                  <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Customer Details
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                  <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Discount Type
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                  <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Rate
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                  <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Last Purchase
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                  <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Status
                   </th>
-                  <th className="px-6 py-4 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+                  <th className="px-4 py-3 text-center text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Action
                   </th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-[#CFCFD3]/60">
+              <tbody className="divide-y divide-[#E5E7EB]">
                 {loading ? (
                   Array.from({ length: 5 }).map((_, index) => (
                     <tr key={index}>
-                      <td colSpan={6} className="px-6 py-4">
+                      <td colSpan={6} className="px-4 py-3">
                         <div className="h-12 animate-pulse rounded-[12px] bg-[#F3F4F6]" />
                       </td>
                     </tr>
@@ -1646,18 +1605,18 @@ export default function DiscountsPage() {
                     return (
                       <tr
                         key={customer.id}
-                        className="group transition-colors hover:bg-[#F3F4F6]/70"
+                        className="group transition-colors hover:bg-[#ECEFF3]"
                       >
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-3 align-top">
                           <div className="flex items-center gap-3">
-                            <div className="flex h-10 w-10 items-center justify-center rounded-full border border-[#CFCFD3] bg-[#F3F4F6] text-[12px] font-extrabold text-[#565449]">
+                            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[#DADDE3] bg-[#F3F4F6] text-[13px] font-extrabold text-[#565449]">
                               {getInitials(customer.name).charAt(0)}
                             </div>
                             <div className="min-w-0">
-                              <div className="truncate text-[13px] font-bold text-[#000000] transition-colors group-hover:text-[#565449]">
+                              <div className="truncate text-[14px] font-extrabold text-[#000000]">
                                 {customer.name}
                               </div>
-                              <div className="truncate text-[11px] font-semibold text-[#8C8889]">
+                              <div className="truncate mt-0.5 text-[13px] font-semibold text-[#8C8889]">
                                 {customer.phone || "No phone on file"}
                               </div>
                               <div className="truncate text-[11px] font-medium text-[#8C8889]/80">
@@ -1666,10 +1625,10 @@ export default function DiscountsPage() {
                             </div>
                           </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-3 align-top">
                           <DiscountBadge customer={customer} />
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-3 align-top">
                           <div className="flex flex-col">
                             <span className="text-[14px] font-extrabold text-[#000000]">
                               {rate}
@@ -1681,7 +1640,7 @@ export default function DiscountsPage() {
                             </span>
                           </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-3 align-top">
                           <div
                             className={cn(
                               "max-w-[240px] text-[12px] font-semibold leading-6",
@@ -1696,38 +1655,46 @@ export default function DiscountsPage() {
                             {customer.lastPurchaseLabel}
                           </div>
                         </td>
-                        <td className="px-6 py-4">
+                        <td className="px-4 py-3 align-top">
                           <StatusBadge active={customer.isActive} />
                         </td>
-                        <td className="px-6 py-4">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <TableActionButton
-                              icon="edit"
-                              label="Edit"
+                        <td className="px-4 py-3 align-top">
+                          <div className="flex items-center justify-center gap-2">
+                            <button
+                              type="button"
                               onClick={() => openEditCustomer(customer)}
-                            />
+                              className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF]"
+                              title="Edit customer"
+                              aria-label={`Edit ${customer.name}`}
+                            >
+                              <Icon name="edit" className="text-[17px]" />
+                            </button>
                             {discountMode !== "NONE" ? (
-                              <TableActionButton
-                                icon="delete"
-                                label="Delete"
-                                tone="danger"
-                                disabled={deleteBusy || deleteLoading}
+                              <button
+                                type="button"
                                 onClick={() => requestDeleteDiscount(customer)}
-                              />
+                                disabled={deleteBusy || deleteLoading}
+                                className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-rose-600 hover:text-[#FFFFFF] disabled:opacity-50"
+                                title="Delete discount"
+                                aria-label={`Delete discount for ${customer.name}`}
+                              >
+                                <Icon name="delete" className="text-[17px]" />
+                              </button>
                             ) : null}
-                            <TableActionButton
-                              icon={customer.isActive ? "block" : "check_circle"}
-                              label={
-                                customer.isActive ? "Deactivate" : "Reactivate"
-                              }
-                              tone={customer.isActive ? "danger" : "neutral"}
-                              disabled={deactivateBusy}
+                            <button
+                              type="button"
                               onClick={() =>
                                 customer.isActive
                                   ? requestDeactivateCustomer(customer)
                                   : void reactivateCustomer(customer)
                               }
-                            />
+                              disabled={deactivateBusy}
+                              className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF] disabled:opacity-50"
+                              title={customer.isActive ? "Deactivate customer" : "Reactivate customer"}
+                              aria-label={customer.isActive ? `Deactivate ${customer.name}` : `Reactivate ${customer.name}`}
+                            >
+                              <Icon name={customer.isActive ? "block" : "check_circle"} className="text-[17px]" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -1736,6 +1703,95 @@ export default function DiscountsPage() {
                 )}
               </tbody>
             </table>
+          </div>
+
+          <div className="space-y-3 p-3 lg:hidden">
+            {pageItems.map((customer) => {
+              const discountMode = getDiscountMode(customer);
+              const rate =
+                discountMode === "ADMIN_WHOLESALE"
+                  ? formatPct(customer.adminWholesaleDiscountPercent || 0)
+                  : discountMode === "LOYALTY"
+                    ? formatPct(loyaltyDiscountPercent)
+                    : "—";
+
+              return (
+                <div
+                  key={customer.id}
+                  className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm"
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0">
+                      <div className="truncate text-[14px] font-extrabold text-[#000000]">
+                        {customer.name}
+                      </div>
+                      <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                        {customer.phone || "No phone on file"}
+                      </div>
+                    </div>
+                    <DiscountBadge customer={customer} />
+                  </div>
+                  
+                  <div className="mt-4 grid grid-cols-2 gap-4">
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">Rate</div>
+                      <div className="mt-0.5 text-[14px] font-extrabold text-[#000000]">{rate}</div>
+                    </div>
+                    <div>
+                      <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">Status</div>
+                      <div className="mt-1"><StatusBadge active={customer.isActive} /></div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 border-t border-[#E5E7EB] pt-4">
+                    <div className="flex items-center justify-between">
+                      <div className="min-w-0">
+                        <div
+                          className={cn(
+                            "truncate text-[12px] font-semibold",
+                            customer.purchaseHistoryState === "history"
+                              ? "text-[#565449]"
+                              : customer.purchaseHistoryState === "cancelled_only"
+                                ? "text-[#BE123C]"
+                                : "text-[#8C8889]"
+                          )}
+                        >
+                          {customer.lastPurchaseLabel}
+                        </div>
+                      </div>
+                      <div className="ml-4 flex shrink-0 items-center justify-end gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openEditCustomer(customer)}
+                          className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF]"
+                          title="Edit customer"
+                        >
+                          <Icon name="edit" className="text-[17px]" />
+                        </button>
+                        {discountMode !== "NONE" ? (
+                          <button
+                            type="button"
+                            onClick={() => requestDeleteDiscount(customer)}
+                            disabled={deleteBusy || deleteLoading}
+                            className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-rose-600 hover:text-[#FFFFFF] disabled:opacity-50"
+                            title="Delete discount"
+                          >
+                            <Icon name="delete" className="text-[17px]" />
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              );
+            })}
+            {pageItems.length === 0 && !loading && (
+              <div className="py-8 text-center">
+                <div className="text-[#8C8889]">
+                  <span className="text-[13px] font-semibold">No customers found.</span>
+                </div>
+              </div>
+            )}
           </div>
 
           <PaginationBar

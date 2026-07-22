@@ -15,6 +15,8 @@ import {
   listProductsApi,
 } from "~/lib/api/endpoints";
 import { getAuthUser } from "~/lib/auth";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import {
   getRangeFromPreset,
   paymentMethodLabel,
@@ -278,6 +280,10 @@ export default function Dashboard() {
   const [chartError, setChartError] = useState(""); // chart-specific error so the rest of the dashboard can still render
 
   const [range, setRange] = useState<RangeKey>("today"); // active time range for the chart section
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
 
   // fetching all dashboard data in parallel when the page loads
   // loading chart data separately from the rest of the dashboard lets the range selector update without refetching everything
@@ -303,6 +309,15 @@ export default function Dashboard() {
             ]);
 
           if (cancelled) return;
+
+          if (
+            [todayData, weekData, monthData, invoiceData].some(
+              (result) =>
+                result.status === "rejected" && isRateLimitError(result.reason),
+            )
+          ) {
+            requestRateLimitRecovery();
+          }
 
           const todayReport =
             todayData.status === "fulfilled"
@@ -423,6 +438,15 @@ export default function Dashboard() {
         ]);
 
         if (cancelled) return;
+
+        if (
+          [salesData, analyticsData, invoiceData, lowStockData, productData].some(
+            (result) =>
+              result.status === "rejected" && isRateLimitError(result.reason),
+          )
+        ) {
+          requestRateLimitRecovery();
+        }
 
         const builtKpis: Kpi[] = []; // collecting cards gradually lets each API contribute whatever data it has
 
@@ -565,7 +589,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [isManagerDashboard]);
+  }, [isManagerDashboard, rateLimitRecoveryKey]);
 
   useEffect(() => {
     let cancelled = false;
@@ -597,10 +621,12 @@ export default function Dashboard() {
         setActivityData(nextData);
       } catch (error: any) {
         if (!cancelled) {
-          setActivityData([]);
+          if (isRateLimitError(error)) requestRateLimitRecovery();
           setChartError(
-            error?.response?.data?.error ||
-              "Could not load dashboard activity.",
+            isRateLimitError(error)
+              ? "Dashboard activity is temporarily paused and will resume automatically."
+              : error?.response?.data?.error ||
+                  "Could not load dashboard activity.",
           );
         }
       } finally {
@@ -614,7 +640,7 @@ export default function Dashboard() {
     return () => {
       cancelled = true;
     };
-  }, [range]);
+  }, [range, rateLimitRecoveryKey]);
 
   return (
     <div className="min-w-0 space-y-[10px] overflow-x-hidden font-sans antialiased text-slate-900 pb-10">
@@ -688,7 +714,7 @@ export default function Dashboard() {
                   {invoices.map((row) => (
                     <tr
                       key={row.invoiceNo}
-                      className="group transition-colors hover:bg-[#F3F4F6]/70"
+                      className="group transition-colors hover:bg-[#ECEFF3]"
                     >
                       <td className="px-[10px] py-[14px] text-[13px] font-bold text-slate-900">
                         {row.invoiceNo}

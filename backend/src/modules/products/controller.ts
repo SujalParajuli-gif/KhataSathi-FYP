@@ -76,6 +76,11 @@ function parseRequiredNumber(
 // listing products with optional filters — supports search, brand, category, active status, low stock, and pagination
 export async function list(req: Request, res: Response) {
   try {
+    const requestedPage = req.query.page ? Number(req.query.page) : 1;
+    const requestedPageSize = req.query.pageSize
+      ? Number(req.query.pageSize)
+      : 50;
+
     // reading all filter options from the query string
     const filters = {
       search: req.query.search as string | undefined,
@@ -88,8 +93,21 @@ export async function list(req: Request, res: Response) {
             ? false
             : undefined,
       lowStockOnly: req.query.lowStock === "true", // when true, only show products where stock is below the threshold
-      page: req.query.page ? Number(req.query.page) : 1,
-      pageSize: req.query.pageSize ? Number(req.query.pageSize) : 50,
+      stockStatus:
+        req.query.stockStatus === "in" ||
+        req.query.stockStatus === "low" ||
+        req.query.stockStatus === "out"
+          ? (req.query.stockStatus as "in" | "low" | "out")
+          : undefined,
+      includeDraftReservations: req.query.draftReservations === "true",
+      page:
+        Number.isInteger(requestedPage) && requestedPage > 0
+          ? requestedPage
+          : 1,
+      pageSize:
+        Number.isInteger(requestedPageSize) && requestedPageSize > 0
+          ? Math.min(requestedPageSize, 200)
+          : 50,
     };
 
     const result = await productService.listProducts(filters);
@@ -112,6 +130,46 @@ export async function getOne(req: Request, res: Response) {
     res.json(product);
   } catch (err) {
     console.error("Get product error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getMany(req: Request, res: Response) {
+  try {
+    const ids = String(req.query.ids || "")
+      .split(",")
+      .map((id) => id.trim())
+      .filter(Boolean);
+    if (ids.length === 0) {
+      res.json({ products: [] });
+      return;
+    }
+    if (ids.length > 50) {
+      res.status(400).json({ error: "A maximum of 50 products can be refreshed at once." });
+      return;
+    }
+    res.json({ products: await productService.getProductsByIds(ids) });
+  } catch (err) {
+    console.error("Batch product lookup error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getByCode(req: Request, res: Response) {
+  try {
+    const code = String(req.query.code || "").trim();
+    if (!code) {
+      res.status(400).json({ error: "SKU or barcode is required" });
+      return;
+    }
+    const product = await productService.getProductByCode(code);
+    if (!product) {
+      res.status(404).json({ error: "Active product not found" });
+      return;
+    }
+    res.json(product);
+  } catch (err) {
+    console.error("Product code lookup error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -518,6 +576,10 @@ export async function bulkPriceUpdate(req: Request, res: Response) {
   try {
     const result = await productService.bulkUpdateProductPrices({
       updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
+      scope: req.body?.scope === "FILTERED" ? "FILTERED" : "IDS",
+      filters: req.body?.filters || undefined,
+      wholesaleMarginPercent: req.body?.wholesaleMarginPercent,
+      retailMarginPercent: req.body?.retailMarginPercent,
       reason: String(req.body?.reason || ""),
       actorId: req.user!.id,
       actorRole: req.user!.role,

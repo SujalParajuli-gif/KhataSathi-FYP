@@ -11,11 +11,13 @@ export default [
     route("billing", "routes/_app.billing.tsx"), // the cashier's billing/POS page
     route("invoices", "routes/_app.invoices.tsx"),
     route("documents", "routes/_app.documents.tsx"),
+    route("documents/:id/view", "routes/_app.documents.$id.view.tsx"),
     route("bin", "routes/_app.bin.tsx"),
     route("history", "routes/_app.history.tsx"),
     route("analytics", "routes/_app.analytics.tsx"),
     route("alerts", "routes/_app.alerts.tsx"),
     route("requests", "routes/_app.requests.tsx"),
+    route("staff-requests", "routes/_app.staffRequests.tsx"),
     route("profile", "routes/_app.profile.tsx"), // admin profile page
     route("settings", "routes/_app.settings.tsx"),
     route("discounts", "routes/_app.discounts.tsx"),

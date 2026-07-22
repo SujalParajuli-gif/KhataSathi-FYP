@@ -14,10 +14,21 @@ import {
 import { API_BASE_URL } from "~/lib/api/baseUrl";
 import { ConfirmDialog, DialogButton, ModalFrame, StatusDialog } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
-import UserAvatar from "~/components/ui/UserAvatar";
+import PreviewableImage from "~/components/ui/PreviewableImage";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import PaginationBar from "~/components/ui/PaginationBar";
+import {
+  ActiveFilterChips,
+  MobileFilterButton,
+  MobileFilterSheet,
+  type MobileFilterChip,
+} from "~/components/ui/MobileFilters";
+import ProfileWorkspaceNav from "~/components/profile/ProfileWorkspaceNav";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import { setAuthUser } from "~/lib/auth";
 import { useMemo } from "react";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
 // formats the "last login" date, falling back to "Never" if null
 function formatLastLogin(value?: string | null) {
@@ -64,7 +75,7 @@ function GIcon({
 // this is the shared card wrapper used throughout the admin profile workspace
 function CardShell({ children }: { children: React.ReactNode }) {
   return (
-    <div className="overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-white">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex h-full flex-col">
       {children}
     </div>
   );
@@ -74,9 +85,9 @@ function CardShell({ children }: { children: React.ReactNode }) {
 function SectionTitle({ title, sub }: { title: string; sub?: string }) {
   return (
     <div>
-      <h2 className="text-[15px] font-extrabold  text-[#000000]">{title}</h2>
+      <h2 className="text-lg font-bold text-slate-800">{title}</h2>
       {sub ? (
-        <p className="mt-[3px] text-[12px] font-medium text-[#8C8889]">{sub}</p>
+        <p className="mt-1 text-sm text-slate-500">{sub}</p>
       ) : null}
     </div>
   );
@@ -113,7 +124,7 @@ function TextField({
         disabled={disabled}
         onChange={(e) => onChange?.(e.target.value)}
         className={[
-          "w-full rounded-[12px] border bg-white px-3 py-2.5",
+          "h-11 w-full rounded-[8px] border bg-white px-3",
           "text-[13px] font-semibold text-[#000000] outline-none",
           "placeholder:text-[#8C8889]",
           disabled
@@ -149,12 +160,12 @@ function SelectField({
       <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
         {label}
       </div>
-      <select
+      <ProjectSelect
         value={value}
         aria-label={label}
         onChange={(event) => onChange(event.target.value)}
         className={[
-          "w-full rounded-[12px] border bg-white px-3 py-2.5",
+          "h-11 w-full rounded-[8px] border bg-white px-3",
           "text-[13px] font-semibold text-[#000000] outline-none",
           error
             ? "border-rose-300 focus:border-rose-400"
@@ -166,7 +177,7 @@ function SelectField({
             {option.label}
           </option>
         ))}
-      </select>
+      </ProjectSelect>
       {error ? (
         <div className="text-[12px] font-semibold text-rose-600">{error}</div>
       ) : null}
@@ -181,37 +192,106 @@ function Button({
   children,
   onClick,
   disabled,
+  title,
+  iconOnly = false,
 }: {
   variant?: "primary" | "secondary" | "danger";
   icon?: string;
   children: React.ReactNode;
   onClick?: () => void;
   disabled?: boolean;
+  title?: string;
+  iconOnly?: boolean;
 }) {
-  const cls =
-    variant === "primary"
-      ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
-      : variant === "danger"
-        ? "border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100"
-        : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]";
+  const baseClasses =
+    "inline-flex items-center justify-center gap-2 px-4 py-2 rounded-lg text-sm font-semibold transition-all disabled:cursor-not-allowed disabled:opacity-50";
+
+  const variants = {
+    primary: "bg-[#11120d] text-white hover:bg-black shadow-sm",
+    secondary:
+      "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
+    danger: "bg-rose-600 text-white hover:bg-rose-700 shadow-sm",
+  };
 
   return (
     <button
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className={[
-        "inline-flex items-center gap-2 rounded-[12px] border px-3 py-2.5",
-        "text-[13px] font-bold transition-all active:scale-[0.98]",
-        cls,
-        disabled ? "pointer-events-none opacity-50" : "",
-      ].join(" ")}
+      title={title}
+      aria-label={iconOnly ? title : undefined}
+      className={cn(
+        baseClasses,
+        variants[variant],
+        iconOnly ? "w-10 h-10 p-0" : "",
+      )}
     >
       {icon ? <GIcon name={icon} sizePx={18} className="opacity-90" /> : null}
-      {children}
+      <span className={iconOnly ? "sr-only" : undefined}>{children}</span>
     </button>
   );
 }
+
+function ActionMenu({
+  options,
+}: {
+  options: {
+    label: string;
+    icon: string;
+    danger?: boolean;
+    onClick: () => void;
+    disabled?: boolean;
+  }[];
+}) {
+  const [open, setOpen] = useState(false);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    function handleClickOutside(event: MouseEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    return () => document.removeEventListener("mousedown", handleClickOutside);
+  }, []);
+
+  return (
+    <div className="relative inline-block text-left" ref={menuRef}>
+      <button
+        type="button"
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center justify-center w-8 h-8 rounded-full border border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
+      >
+        <GIcon name="more_vert" sizePx={20} />
+      </button>
+      {open && (
+        <div className="absolute right-0 mt-1 w-48 origin-top-right rounded-xl bg-white border border-slate-200 shadow-xl focus:outline-none z-[50] py-1.5 overflow-hidden">
+          {options.map((option, idx) => (
+            <button
+              key={idx}
+              onClick={() => {
+                setOpen(false);
+                option.onClick();
+              }}
+              disabled={option.disabled}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-2.5 text-[13px] font-bold transition-colors disabled:opacity-50 disabled:cursor-not-allowed",
+                option.danger
+                  ? "text-rose-600 hover:bg-rose-50"
+                  : "text-slate-700 hover:bg-slate-50"
+              )}
+            >
+              <GIcon name={option.icon} sizePx={18} />
+              {option.label}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
 
 // this small badge component is used for role, status, and verification labels
 function Badge({
@@ -254,7 +334,7 @@ function Modal({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center px-4">
+    <div className="fixed inset-0 z-[100] flex items-center justify-center px-4">
       <button
         type="button"
         className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm"
@@ -262,8 +342,8 @@ function Modal({
         onClick={onClose}
       />
 
-      <div className="relative w-full max-w-[580px] rounded-[16px] border border-[#CFCFD3] bg-white">
-        <div className="flex items-center justify-between border-b border-[#CFCFD3] px-5 py-4">
+      <div className="relative flex w-full max-w-[580px] max-h-[90vh] flex-col rounded-[8px] border border-[#CFCFD3] bg-white">
+        <div className="flex shrink-0 items-center justify-between border-b border-[#CFCFD3] px-5 py-4">
           <div className="text-[14px] font-extrabold text-[#000000]">
             {title}
           </div>
@@ -277,7 +357,7 @@ function Modal({
           </button>
         </div>
 
-        <div className="p-5">{children}</div>
+        <div className="overflow-y-auto p-5">{children}</div>
       </div>
     </div>
   );
@@ -302,10 +382,12 @@ function ImageUpload({
       </div>
 
       <div className="flex items-center gap-3">
-        <UserAvatar
+        <PreviewableImage
           src={previewUrl}
           alt="Preview"
-          className="flex h-[56px] w-[56px] shrink-0 items-center justify-center overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6]"
+          title="Profile photo preview"
+          previewCue="always"
+          className="flex h-[56px] w-[56px] shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6]"
           fallback={
             <GIcon name="person" sizePx={22} className="text-[#8C8889]" />
           }
@@ -365,7 +447,7 @@ type Cashier = {
   profileImage?: string | null;
 };
 
-type AdminTabKey = "personal" | "security";
+type AdminTabKey = "personal" | "security" | "users";
 
 const ADMIN_LOCATION_STORAGE_KEY = "khatasathi_admin_profile_location";
 
@@ -435,22 +517,22 @@ function ProfilePanel({
   children: React.ReactNode;
 }) {
   return (
-    <section className="flex h-full flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white">
-      <div className="flex flex-col gap-3 border-b border-slate-200 px-5 py-4 md:flex-row md:items-center md:justify-between">
+    <div className="bg-white rounded-2xl border border-slate-200 shadow-sm overflow-hidden flex h-full flex-col">
+      <div className="p-6 border-b border-slate-100 flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
         <div>
-          <div className="text-[15px] font-extrabold text-slate-900">
+          <h3 className="text-lg font-bold text-slate-800">
             {title}
-          </div>
+          </h3>
           {subtitle ? (
-            <div className="mt-1 text-[12px] font-medium text-slate-500">
+            <p className="text-sm text-slate-500">
               {subtitle}
-            </div>
+            </p>
           ) : null}
         </div>
         {actions}
       </div>
       <div className="flex-1">{children}</div>
-    </section>
+    </div>
   );
 }
 
@@ -474,13 +556,14 @@ function ProfileActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all",
+        disabled ? "cursor-not-allowed opacity-50" : "",
         primary
-          ? "border-slate-900 bg-slate-900 text-white hover:bg-slate-800"
-          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
+          ? "bg-[#11120d] text-white hover:bg-black shadow-sm focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
+          : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
       )}
     >
-      <Icon name={icon} className="text-[18px]" />
+      {icon && <GIcon name={icon} sizePx={18} />}
       {label}
     </button>
   );
@@ -497,13 +580,13 @@ function ProfileField({
   children: React.ReactNode;
 }) {
   return (
-    <div className="space-y-2">
-      <div className="flex items-center justify-between gap-3">
-        <label className="text-[11px] font-extrabold uppercase text-slate-500">
+    <div>
+      <div className="flex items-center justify-between gap-3 mb-2">
+        <label className="block text-xs font-bold text-slate-500 uppercase">
           {label}
         </label>
         {hint ? (
-          <span className="text-[11px] font-semibold text-slate-400">
+          <span className="text-[10px] font-medium text-slate-400">
             {hint}
           </span>
         ) : null}
@@ -532,10 +615,10 @@ function ProfileTextInput({
   return (
     <div
       className={cn(
-        "flex items-center gap-3 rounded-[14px] border bg-white px-4 py-3 transition",
+        "flex items-center gap-3 rounded-lg border bg-white px-4 py-2.5 transition-all outline-none",
         disabled
-          ? "border-slate-200 bg-slate-50 text-slate-400"
-          : "border-slate-200 focus-within:border-slate-900",
+          ? "border-slate-200 bg-slate-50 text-slate-500 cursor-not-allowed"
+          : "border-slate-200 focus-within:ring-2 focus-within:ring-slate-900 focus-within:border-transparent"
       )}
     >
       <input
@@ -546,8 +629,8 @@ function ProfileTextInput({
         aria-label={placeholder || "Text input"}
         disabled={disabled}
         className={cn(
-          "w-full bg-transparent text-[14px] font-semibold outline-none placeholder:text-slate-400",
-          disabled ? "text-slate-500" : "text-slate-900",
+          "w-full bg-transparent text-sm outline-none placeholder:text-slate-400",
+          disabled ? "text-slate-500 cursor-not-allowed" : "text-slate-900",
         )}
       />
       {right ? <div className="shrink-0">{right}</div> : null}
@@ -568,26 +651,19 @@ function ProfileSelectInput({
   ariaLabel?: string;
 }) {
   return (
-    <div className="rounded-[14px] border border-slate-200 bg-white px-4 py-3 transition focus-within:border-slate-900">
-      <select
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        aria-label={ariaLabel || "Select an option"}
-        className="w-full appearance-none bg-transparent text-[14px] font-semibold text-slate-900 outline-none"
-      >
-        {options.map((option) => (
-          <option key={option} value={option}>
-            {option}
-          </option>
-        ))}
-      </select>
-    </div>
+    <ProjectSelect value={value} onChange={(event) => onChange(event.target.value)} aria-label={ariaLabel || "Select an option"}>
+      {options.map((option) => <option key={option} value={option}>{option}</option>)}
+    </ProjectSelect>
   );
 }
 
 // the master profile view
 // this shows an admin's personal details alongside a full list of all cashier accounts
 export default function ProfilePage() {
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
   const [adminProfile, setAdminProfile] = useState<AdminProfile>({
     firstName: "",
     lastName: "",
@@ -629,6 +705,14 @@ export default function ProfilePage() {
 
   const [cashiers, setCashiers] = useState<Cashier[]>([]); // all cashier accounts shown in the lower management section
   const [loadingCashiers, setLoadingCashiers] = useState(false); // cashier list loading state
+  const [userQuery, setUserQuery] = useState("");
+  const [userRoleFilter, setUserRoleFilter] = useState<"ALL" | Cashier["role"]>("ALL");
+  const [userStatusFilter, setUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
+  const [userPage, setUserPage] = useState(1);
+  const [userPageSize, setUserPageSize] = useState(10);
+  const [mobileUserFiltersOpen, setMobileUserFiltersOpen] = useState(false);
+  const [draftUserRoleFilter, setDraftUserRoleFilter] = useState<"ALL" | Cashier["role"]>("ALL");
+  const [draftUserStatusFilter, setDraftUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
   const [currentAdminId, setCurrentAdminId] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false); // controls the shared success/error dialog
   const [feedbackTitle, setFeedbackTitle] = useState(""); // dialog title
@@ -710,7 +794,7 @@ export default function ProfilePage() {
     setLoadingCashiers(true);
     try {
       const users = await listUsersApi();
-      const rows = Array.isArray(users) ? users : users?.users || [];
+      const rows = Array.isArray(users) ? users : [];
       setCashiers(
         rows
           .filter((user: any) =>
@@ -718,6 +802,9 @@ export default function ProfilePage() {
           )
           .map(mapCashier),
       );
+    } catch (error) {
+      if (isRateLimitError(error)) requestRateLimitRecovery();
+      throw error;
     } finally {
       setLoadingCashiers(false);
     }
@@ -749,24 +836,33 @@ export default function ProfilePage() {
 
   useEffect(() => {
     // loading the admin's own profile plus the cashier list when the page first opens
+    const controller = new AbortController();
     async function load() {
-      try {
-        const data = await getMeApi();
+      const [profileResult, usersResult] = await Promise.allSettled([
+        getMeApi({ signal: controller.signal }),
+        loadCashiers(),
+      ]);
+
+      if (profileResult.status === "fulfilled" && !controller.signal.aborted) {
+        const data = profileResult.value;
         const user = data.user || data;
         setCurrentAdminId(user.id || null);
         const nextAdminProfile = mapUserToAdminProfile(user);
         setAdminProfile(nextAdminProfile);
         setAdminInitialProfile(nextAdminProfile);
         setAdminPhotoUrl(user.profileImage || undefined);
-      } catch {}
+        await syncAuth(user);
+      }
 
-      try {
-        await loadCashiers();
-      } catch {}
+      const rejected = [profileResult, usersResult].find(
+        (result) => result.status === "rejected" && isRateLimitError(result.reason),
+      );
+      if (rejected) requestRateLimitRecovery();
     }
 
-    load();
-  }, []);
+    void load();
+    return () => controller.abort();
+  }, [rateLimitRecoveryKey]);
 
   useEffect(() => {
     // saving the temporary admin location choice locally until the backend supports this field
@@ -1145,6 +1241,33 @@ export default function ProfilePage() {
   const adminHasSecurityChanges = Boolean(
     adminSecurity.current || adminSecurity.next || adminSecurity.confirm,
   );
+  const filteredCashiers = useMemo(() => {
+    const query = userQuery.trim().toLowerCase();
+    return cashiers.filter((cashier) => {
+      const matchesQuery = !query || `${cashier.name} ${cashier.email} ${cashier.phone} ${cashier.id}`.toLowerCase().includes(query);
+      const matchesRole = userRoleFilter === "ALL" || cashier.role === userRoleFilter;
+      const matchesStatus = userStatusFilter === "ALL" || (userStatusFilter === "ACTIVE" ? cashier.active : !cashier.active);
+      return matchesQuery && matchesRole && matchesStatus;
+    });
+  }, [cashiers, userQuery, userRoleFilter, userStatusFilter]);
+  const userTotalPages = Math.max(1, Math.ceil(filteredCashiers.length / userPageSize));
+  const userPageClamped = Math.min(userTotalPages, Math.max(1, userPage));
+  const userPageStart = filteredCashiers.length === 0 ? 0 : (userPageClamped - 1) * userPageSize;
+  const userPageItems = filteredCashiers.slice(userPageStart, userPageStart + userPageSize);
+  const userPageEnd = userPageStart + userPageItems.length;
+  const userFilterCount = [userRoleFilter !== "ALL", userStatusFilter !== "ALL"].filter(Boolean).length;
+  const userFilterChips: MobileFilterChip[] = [
+    ...(userRoleFilter !== "ALL" ? [{ id: "role", label: formatRoleLabel(userRoleFilter), onRemove: () => { setUserRoleFilter("ALL"); setUserPage(1); } }] : []),
+    ...(userStatusFilter !== "ALL" ? [{ id: "status", label: userStatusFilter === "ACTIVE" ? "Active" : "Inactive", onRemove: () => { setUserStatusFilter("ALL"); setUserPage(1); } }] : []),
+  ];
+
+  useEffect(() => {
+    setUserPage(1);
+  }, [userQuery, userRoleFilter, userStatusFilter]);
+
+  useEffect(() => {
+    if (userPage !== userPageClamped) setUserPage(userPageClamped);
+  }, [userPage, userPageClamped]);
   const adminPasswordMismatch =
     !!adminSecurity.next &&
     !!adminSecurity.confirm &&
@@ -1281,159 +1404,166 @@ export default function ProfilePage() {
   }
 
   return (
-    <div className="space-y-5 pb-10 text-slate-900">
-      {/* this split layout gives the admin account card a fixed-feeling side column and leaves the wider area for editable forms and cashier management */}
-      <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
-        <div className="xl:w-[450px] xl:h-[700px] xl:flex-none">
-          <ProfilePanel
-            title="Account Overview"
-            subtitle="Photo, contact, and sign-in for this admin account."
-          >
-            <div className="space-y-5 px-5 py-5">
-              {/* this top block is more profile-like than form-like, so we center it to make the avatar and identity details feel primary */}
+    <div className="w-full pt-0 pb-4">
+      <div className="mb-5">
+        <h1 className="text-2xl font-bold text-slate-800">
+          Account Settings
+        </h1>
+        <p className="text-slate-500 text-sm">
+          Manage your profile, security, and cashier accounts.
+        </p>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+        <div className="lg:col-span-4 space-y-6">
+          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+            <div className="space-y-5 px-5 py-6 sm:px-6">
               <div className="flex flex-col items-center text-center">
-                <UserAvatar
-                  src={resolveImageUrl(adminPhotoUrl)}
-                  alt="Admin profile"
-                  className="flex h-28 w-28 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[30px] font-extrabold text-slate-700"
-                  fallback={adminInitials || "AD"}
-                />
-                <div className="mt-4 text-[20px] font-extrabold text-slate-900">
-                  {adminDisplayName}
-                </div>
-                <div className="mt-1 text-[13px] font-semibold text-slate-500">
-                  {adminProfile.email || "No email available"}
-                </div>
-                <div className="mt-3">
-                  <label className="cursor-pointer">
+                <div className="relative inline-flex">
+                  <PreviewableImage
+                    src={adminPhotoUrl}
+                    alt="Admin profile"
+                    title={adminDisplayName}
+                    subtitle={adminProfile.email || undefined}
+                    previewCue="always"
+                    className="flex h-24 w-24 items-center justify-center overflow-hidden rounded-full border-4 border-slate-200 bg-slate-100 text-[28px] font-extrabold text-slate-700"
+                    fallback={adminInitials || "AD"}
+                  />
+                  <label
+                    className={cn(
+                      "absolute bottom-0 right-0 inline-flex h-9 w-9 cursor-pointer items-center justify-center rounded-full border-2 border-white bg-[#11120d] text-white shadow-sm transition hover:bg-black focus-within:ring-2 focus-within:ring-slate-900 focus-within:ring-offset-2",
+                      uploadingAdminPhoto && "pointer-events-none opacity-60",
+                    )}
+                    title="Change profile photo"
+                    aria-label="Change profile photo"
+                  >
                     <input
                       type="file"
-                      className="hidden"
+                      className="sr-only"
                       accept="image/*"
-                      onChange={(event) =>
-                        handleAdminPhotoChange(event.target.files?.[0])
-                      }
+                      disabled={uploadingAdminPhoto}
+                      onChange={(event) => {
+                        handleAdminPhotoChange(event.target.files?.[0]);
+                        event.currentTarget.value = "";
+                      }}
                     />
-                    <span
-                      className={cn(
-                        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition",
-                        uploadingAdminPhoto
-                          ? "border-slate-200 bg-slate-100 text-slate-400"
-                          : "border-slate-200 bg-white text-slate-700 hover:bg-slate-50",
-                      )}
-                    >
-                      <Icon name="photo_camera" className="text-[18px]" />
-                      {uploadingAdminPhoto ? "Uploading..." : "Change Photo"}
-                    </span>
+                    <Icon
+                      name={uploadingAdminPhoto ? "progress_activity" : "photo_camera"}
+                      className={cn("text-[17px]", uploadingAdminPhoto && "animate-spin")}
+                    />
                   </label>
+                </div>
+                <div className="text-center mt-4">
+                  <h2 className="text-xl font-bold text-slate-800">
+                    {adminDisplayName}
+                  </h2>
+                  <p className="text-slate-500 text-sm">
+                    {adminProfile.email || "No email available"}
+                  </p>
+                  <div className="mt-3 inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-slate-100 text-slate-700 text-xs font-semibold border border-slate-200">
+                    <div className="w-1.5 h-1.5 rounded-full bg-slate-600"></div>
+                    System Administrator
+                  </div>
                 </div>
               </div>
 
-              <div className="space-y-5 rounded-[18px] border border-slate-200 bg-slate-50/70 p-10 text-[13px] font-semibold text-slate-600 xl:h-[200px] xl:mt-20">
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="phone" className="text-[18px]" /> Phone
-                  </span>
-                  <span className="text-right text-slate-900">
+              <div className="border-t border-slate-100 p-6 space-y-4">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 text-slate-500">
+                    <GIcon name="phone" sizePx={16} />
+                    <span className="text-sm font-medium">Phone</span>
+                  </div>
+                  <span className="text-sm font-medium text-slate-800">
                     {adminProfile.phone || "No phone added"}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="location_on" className="text-[18px]" /> Region
-                  </span>
-                  <span className="text-right text-slate-900">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 text-slate-500">
+                    <GIcon name="location_on" sizePx={16} />
+                    <span className="text-sm font-medium">Region</span>
+                  </div>
+                  <span className="text-sm font-medium text-slate-800">
                     {adminProfile.location}
                   </span>
                 </div>
-                <div className="flex items-center justify-between gap-3">
-                  <span className="inline-flex items-center gap-2">
-                    <Icon name="schedule" className="text-[18px]" /> Last
-                    login
-                  </span>
-                  <span className="text-right text-slate-900">
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3 text-slate-500">
+                    <GIcon name="schedule" sizePx={16} />
+                    <span className="text-sm font-medium">Last login</span>
+                  </div>
+                  <span className="text-sm font-medium text-slate-800">
                     {formatDateTime(adminProfile.lastLogin)}
                   </span>
                 </div>
               </div>
             </div>
-          </ProfilePanel>
+          </div>
+
+          <nav className="bg-white rounded-xl border border-slate-200 p-2 space-y-1">
+            <button
+              onClick={() => {
+                setAdminTab("personal");
+                setAdminSecurityError("");
+              }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                adminTab === "personal"
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <GIcon name="person" sizePx={16} />
+              Personal Information
+            </button>
+            <button
+              onClick={() => {
+                setAdminTab("security");
+                setAdminSecurityError("");
+              }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                adminTab === "security"
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <GIcon name="lock" sizePx={16} />
+              Login & Password
+            </button>
+            <button
+              onClick={() => {
+                setAdminTab("users");
+                setAdminSecurityError("");
+              }}
+              className={cn(
+                "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                adminTab === "users"
+                  ? "bg-slate-100 text-slate-900"
+                  : "text-slate-600 hover:bg-slate-50"
+              )}
+            >
+              <GIcon name="group" sizePx={16} />
+              Cashier Management
+            </button>
+          </nav>
         </div>
 
-        <div className="xl:min-w-0 xl:flex-1">
+        <div className="lg:col-span-8">
+          {adminTab !== "users" ? (
           <ProfilePanel
             title={
               adminTab === "personal" ? "Personal Details" : "Login & Password"
             }
             subtitle={
               adminTab === "personal"
-                ? "Update the same profile fields already available on this page."
-                : "Keep the current password fields, password guidance, and save flow."
-            }
-            actions={
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAdminTab("personal");
-                    setAdminSecurityError("");
-                  }}
-                  className={cn(
-                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                    adminTab === "personal"
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                  )}
-                >
-                  Personal Information
-                </button>
-                <button
-                  type="button"
-                  onClick={() => {
-                    setAdminTab("security");
-                    setAdminSecurityError("");
-                  }}
-                  className={cn(
-                    "rounded-full border px-4 py-2 text-[12px] font-extrabold transition",
-                    adminTab === "security"
-                      ? "border-slate-900 bg-slate-900 text-white"
-                      : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                  )}
-                >
-                  Login & Password
-                </button>
-              </div>
+                ? "Update your contact and account information."
+                : "Change your password and review sign-in security."
             }
           >
-            <div className="flex h-full flex-col justify-between space-y-6 px-5 py-5">
+            <div className="flex h-full flex-col justify-between p-6">
               <div className="space-y-6">
                 {adminTab === "personal" ? (
                   <>
-                    <ProfileField label="Gender">
-                      <div className="flex flex-wrap gap-3">
-                        {(["Male", "Female"] as const).map((gender) => (
-                          <button
-                            key={gender}
-                            type="button"
-                            onClick={() =>
-                              setAdminProfile((current) => ({
-                                ...current,
-                                gender,
-                              }))
-                            }
-                            className={cn(
-                              "rounded-[14px] border px-6 py-3 text-[13px] font-extrabold transition",
-                              adminProfile.gender === gender
-                                ? "border-slate-900 bg-slate-900 text-white"
-                                : "border-slate-200 bg-white text-slate-600 hover:bg-slate-50",
-                            )}
-                          >
-                            {gender}
-                          </button>
-                        ))}
-                      </div>
-                    </ProfileField>
-
                     <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
                       <ProfileField label="First Name">
                         <ProfileTextInput
@@ -1486,21 +1616,6 @@ export default function ProfilePage() {
                         </ProfileField>
                       </div>
 
-                      <div className="md:col-span-2">
-                        <ProfileField label="Home Address">
-                          <ProfileTextInput
-                            value={adminProfile.address}
-                            onChange={(value) =>
-                              setAdminProfile((current) => ({
-                                ...current,
-                                address: value,
-                              }))
-                            }
-                            placeholder="e.g. Kathmandu, Nepal"
-                          />
-                        </ProfileField>
-                      </div>
-
                       <ProfileField label="Phone Number">
                         <ProfileTextInput
                           value={adminProfile.phone}
@@ -1512,6 +1627,31 @@ export default function ProfilePage() {
                           }
                           placeholder="+977 98XXXXXXXX"
                         />
+                      </ProfileField>
+
+                      <ProfileField label="Gender">
+                        <div className="grid grid-cols-2 gap-4">
+                          {(["Male", "Female"] as const).map((gender) => (
+                            <button
+                              key={gender}
+                              type="button"
+                              onClick={() =>
+                                setAdminProfile((current) => ({
+                                  ...current,
+                                  gender,
+                                }))
+                              }
+                              className={cn(
+                                "px-4 py-2.5 rounded-lg font-semibold text-sm transition-all",
+                                adminProfile.gender === gender
+                                  ? "border-2 border-[#11120d] bg-[#11120d] text-white"
+                                  : "border border-slate-200 text-slate-600 bg-white hover:bg-slate-50",
+                              )}
+                            >
+                              {gender}
+                            </button>
+                          ))}
+                        </div>
                       </ProfileField>
 
                       <ProfileField
@@ -1529,12 +1669,25 @@ export default function ProfilePage() {
                           options={["Nepal", "India", "Other"]}
                         />
                       </ProfileField>
+
+                        <ProfileField label="Home Address">
+                          <ProfileTextInput
+                            value={adminProfile.address}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                address: value,
+                              }))
+                            }
+                            placeholder="e.g. Kathmandu, Nepal"
+                          />
+                        </ProfileField>
                     </div>
                   </>
                 ) : (
                   <>
                     {adminSecurityError ? (
-                      <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                      <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
                         {adminSecurityError}
                       </div>
                     ) : null}
@@ -1554,7 +1707,7 @@ export default function ProfilePage() {
                       />
                     </ProfileField>
 
-                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                    <div className="max-w-xl space-y-6">
                       <ProfileField label="New Password">
                         <ProfileTextInput
                           value={adminSecurity.next}
@@ -1587,12 +1740,12 @@ export default function ProfilePage() {
                     </div>
 
                     {adminPasswordMismatch ? (
-                      <div className="rounded-[16px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                      <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
                         Passwords do not match.
                       </div>
                     ) : null}
 
-                    <div className="rounded-[18px] border border-slate-200 bg-slate-50/70 p-5">
+                    <div className="max-w-xl rounded-[8px] border border-slate-200 bg-slate-50/70 p-4">
                       <div className="text-[11px] font-extrabold uppercase text-slate-500">
                         Password Requirements
                       </div>
@@ -1645,14 +1798,12 @@ export default function ProfilePage() {
               </div>
             </div>
           </ProfilePanel>
-        </div>
-      </div>
-
+          ) : (
       <CardShell>
         <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] px-[16px] py-[14px]">
           <SectionTitle
-            title="Manage staff"
-            sub="Create, edit, activate/deactivate, and review cashier or manager accounts."
+            title="User Management"
+            sub="Create and manage manager, cashier, and staff accounts."
           />
 
           <Button
@@ -1663,55 +1814,70 @@ export default function ProfilePage() {
               setAddOpen(true);
             }}
           >
-            Add staff
+            Add user
           </Button>
         </div>
 
-        <div className="p-[12px] overflow-x-auto">
-          <table className="w-full min-w-[980px] text-left">
-            <thead>
-              <tr className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-                <th className="px-3 py-3">Staff</th>
-                <th className="px-3 py-3">Email</th>
-                <th className="px-3 py-3">Phone</th>
-                <th className="px-3 py-3">Role</th>
-                <th className="px-3 py-3">Last login</th>
-                <th className="px-3 py-3">Status</th>
-                <th className="px-3 py-3 text-right">Action</th>
+        <div className="border-b border-[#E5E7EB] bg-[#FAFBFC] p-4">
+          <div className="flex gap-2 lg:hidden">
+            <div className="relative min-w-0 flex-1"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => { setUserQuery(event.target.value); setUserPage(1); }} placeholder="Search users..." className="h-[46px] w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div>
+            <MobileFilterButton activeCount={userFilterCount} onClick={() => { setDraftUserRoleFilter(userRoleFilter); setDraftUserStatusFilter(userStatusFilter); setMobileUserFiltersOpen(true); }} />
+          </div>
+          <ActiveFilterChips items={userFilterChips} className="mt-2 lg:hidden" />
+
+          <div className="hidden grid-cols-[minmax(240px,1fr)_220px_220px_auto] items-end gap-3 lg:grid">
+            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search users</span><div className="relative"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => { setUserQuery(event.target.value); setUserPage(1); }} placeholder="Name, email, phone, or ID" className="h-11 w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div></label>
+            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Role</span><ProjectSelect value={userRoleFilter} onChange={(event) => { setUserRoleFilter(event.target.value as "ALL" | Cashier["role"]); setUserPage(1); }}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
+            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Status</span><ProjectSelect value={userStatusFilter} onChange={(event) => { setUserStatusFilter(event.target.value as "ALL" | "ACTIVE" | "INACTIVE"); setUserPage(1); }}><option value="ALL">All statuses</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></ProjectSelect></label>
+            <button type="button" disabled={!userQuery && userFilterCount === 0} onClick={() => { setUserQuery(""); setUserRoleFilter("ALL"); setUserStatusFilter("ALL"); setUserPage(1); }} className="h-11 rounded-xl border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#565449] disabled:cursor-not-allowed disabled:opacity-40">Clear</button>
+          </div>
+        </div>
+
+        <div className="hidden max-h-[600px] overflow-auto lg:block">
+          <table className="relative w-full min-w-[760px] border-collapse text-left">
+            <thead className="sticky top-0 z-10 bg-[#F8FAFC]">
+              <tr className="border-b border-[#DADDE3] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                <th className="px-4 py-3">User</th>
+                <th className="px-4 py-3">Contact</th>
+                <th className="px-4 py-3">Last login</th>
+                <th className="px-4 py-3">Status</th>
+                <th className="px-4 py-3 text-right">Actions</th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-[#CFCFD3]">
+            <tbody className="divide-y divide-[#E5E7EB]">
               {loadingCashiers ? (
                 <tr>
                   <td
-                    colSpan={7}
-                    className="px-3 py-8 text-center text-[#8C8889]"
+                    colSpan={5}
+                    className="px-4 py-10 text-center text-[#8C8889]"
                   >
-                    Loading staff accounts...
+                    Loading user accounts...
                   </td>
                 </tr>
-              ) : cashiers.length === 0 ? (
+              ) : filteredCashiers.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={7}
-                    className="px-3 py-8 text-center text-[#8C8889]"
+                    colSpan={5}
+                    className="px-4 py-10 text-center text-[#8C8889]"
                   >
-                    No staff accounts found.
+                    No user accounts match the current filters.
                   </td>
                 </tr>
               ) : (
-                cashiers.map((cashier) => (
+                userPageItems.map((cashier) => (
                   <tr
                     key={cashier.id}
-                    className="text-[13px] font-semibold text-[#565449]"
+                    className="text-[13px] font-semibold text-[#565449] transition-colors hover:bg-[#ECEFF3]"
                   >
-                    <td className="px-3 py-3">
+                    <td className="px-4 py-3.5 align-middle">
                       <div className="flex items-center gap-3">
-                        <UserAvatar
-                          src={resolveImageUrl(cashier.profileImage)}
+                        <PreviewableImage
+                          src={cashier.profileImage}
                           alt={cashier.name}
-                          className="flex h-9 w-9 items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                          title={cashier.name}
+                          subtitle={cashier.email}
+                          className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6]"
                           fallback={
                             <GIcon
                               name="person"
@@ -1725,56 +1891,60 @@ export default function ProfilePage() {
                           <div className="truncate font-extrabold text-[#000000]">
                             {cashier.name}
                           </div>
-                          <div className="text-[12px] text-[#8C8889]">
-                            ID: {cashier.id}
+                          <div className="mt-1 flex items-center gap-2">
+                            <Badge tone={cashier.role === "MANAGER" ? "blue" : cashier.role === "STAFF" ? "green" : "slate"}>
+                              {formatRoleLabel(cashier.role)}
+                            </Badge>
+                            <span className="max-w-[105px] truncate text-[11px] text-[#8C8889]" title={cashier.id}>
+                              ID: {cashier.id}
+                            </span>
                           </div>
                         </div>
                       </div>
                     </td>
 
-                    <td className="px-3 py-3">{cashier.email}</td>
-                    <td className="px-3 py-3">{cashier.phone || "—"}</td>
-                    <td className="px-3 py-3">
-                      <Badge tone={cashier.role === "MANAGER" ? "blue" : cashier.role === "STAFF" ? "green" : "slate"}>
-                        {formatRoleLabel(cashier.role)}
-                      </Badge>
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="truncate font-bold text-[#11120d]" title={cashier.email}>
+                        {cashier.email}
+                      </div>
+                      <div className="mt-1 text-[12px] text-[#8C8889]">
+                        {cashier.phone || "Not added"}
+                      </div>
                     </td>
-                    <td className="px-3 py-3 text-[#8C8889]">
+                    <td className="px-4 py-3.5 align-middle text-[12px] text-[#6B7280]">
                       {cashier.lastLogin}
                     </td>
 
-                    <td className="px-3 py-3">
+                    <td className="px-4 py-3.5 align-middle">
                       <Badge tone={cashier.active ? "green" : "slate"}>
                         {cashier.active ? "Active" : "Inactive"}
                       </Badge>
                     </td>
 
-                    <td className="px-3 py-3">
-                      <div className="flex items-center justify-end gap-2">
-                        <Button
-                          variant="secondary"
-                          icon="edit"
-                          onClick={() => openEdit(cashier)}
-                        >
-                          Edit
-                        </Button>
-
-                        <Button
-                          variant={cashier.active ? "danger" : "secondary"}
-                          icon={cashier.active ? "block" : "check_circle"}
-                          onClick={() => toggleCashierActive(cashier.id)}
-                        >
-                          {cashier.active ? "Deactivate" : "Activate"}
-                        </Button>
-
-                        <Button
-                          variant="danger"
-                          icon="delete_forever"
-                          disabled={cashier.id === currentAdminId}
-                          onClick={() => openDeleteCashier(cashier)}
-                        >
-                          Delete
-                        </Button>
+                    <td className="px-4 py-3.5 align-middle">
+                      <div className="flex items-center justify-end">
+                        <ActionMenu
+                          options={[
+                            {
+                              label: "Edit",
+                              icon: "edit",
+                              onClick: () => openEdit(cashier),
+                            },
+                            {
+                              label: cashier.active ? "Deactivate" : "Activate",
+                              icon: cashier.active ? "block" : "check_circle",
+                              danger: cashier.active,
+                              onClick: () => toggleCashierActive(cashier.id),
+                            },
+                            {
+                              label: "Permanently delete",
+                              icon: "delete_forever",
+                              danger: true,
+                              disabled: cashier.id === currentAdminId,
+                              onClick: () => openDeleteCashier(cashier),
+                            },
+                          ]}
+                        />
                       </div>
                     </td>
                   </tr>
@@ -1783,11 +1953,128 @@ export default function ProfilePage() {
             </tbody>
           </table>
         </div>
+
+        <div className="space-y-3 p-3 lg:hidden">
+          {loadingCashiers ? (
+            <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
+              Loading user accounts...
+            </div>
+          ) : filteredCashiers.length === 0 ? (
+            <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
+              No user accounts match the current filters.
+            </div>
+          ) : (
+            userPageItems.map((cashier) => (
+              <article key={cashier.id} className="space-y-4 rounded-[16px] border border-[#DADDE3] bg-white p-4 shadow-sm">
+                <div className="flex min-w-0 items-start gap-3">
+                  <PreviewableImage
+                    src={cashier.profileImage}
+                    alt={cashier.name}
+                    title={cashier.name}
+                    subtitle={cashier.email}
+                    className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-slate-200 bg-slate-100"
+                    fallback={
+                      <GIcon name="person" sizePx={20} className="text-slate-500" />
+                    }
+                  />
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate text-[14px] font-extrabold text-black">
+                      {cashier.name}
+                    </div>
+                    <div className="mt-0.5 truncate text-[12px] font-medium text-slate-500">
+                      {cashier.email}
+                    </div>
+                  </div>
+                  <Badge tone={cashier.active ? "green" : "slate"}>
+                    {cashier.active ? "Active" : "Inactive"}
+                  </Badge>
+                </div>
+
+                <div className="flex items-center justify-between gap-2">
+                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-[12px] flex-1">
+                    <div>
+                      <div className="font-extrabold uppercase text-slate-400">Role</div>
+                      <div className="mt-1 font-bold text-slate-800">
+                        {formatRoleLabel(cashier.role)}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="font-extrabold uppercase text-slate-400">Phone</div>
+                      <div className="mt-1 font-bold text-slate-800">
+                        {cashier.phone || "Not added"}
+                      </div>
+                    </div>
+                    <div className="col-span-2">
+                      <div className="font-extrabold uppercase text-slate-400">Last login</div>
+                      <div className="mt-1 font-bold text-slate-800">
+                        {cashier.lastLogin}
+                      </div>
+                    </div>
+                  </div>
+                  <div className="shrink-0 pr-1">
+                    <ActionMenu
+                      options={[
+                        {
+                          label: "Edit",
+                          icon: "edit",
+                          onClick: () => openEdit(cashier),
+                        },
+                        {
+                          label: cashier.active ? "Deactivate" : "Activate",
+                          icon: cashier.active ? "block" : "check_circle",
+                          danger: cashier.active,
+                          onClick: () => toggleCashierActive(cashier.id),
+                        },
+                        {
+                          label: "Permanently delete",
+                          icon: "delete_forever",
+                          danger: true,
+                          disabled: cashier.id === currentAdminId,
+                          onClick: () => openDeleteCashier(cashier),
+                        },
+                      ]}
+                    />
+                  </div>
+                </div>
+              </article>
+            ))
+          )}
+        </div>
+        {!loadingCashiers && filteredCashiers.length > 0 ? (
+          <PaginationBar
+            page={userPageClamped}
+            totalPages={userTotalPages}
+            total={filteredCashiers.length}
+            start={userPageStart}
+            end={userPageEnd}
+            label="users"
+            pageSize={userPageSize}
+            onPageChange={setUserPage}
+            onPageSizeChange={(nextPageSize) => { setUserPageSize(nextPageSize); setUserPage(1); }}
+            className="border-t border-[#E5E7EB]"
+          />
+        ) : null}
+
+        <MobileFilterSheet
+          open={mobileUserFiltersOpen}
+          onClose={() => setMobileUserFiltersOpen(false)}
+          onClear={() => { setDraftUserRoleFilter("ALL"); setDraftUserStatusFilter("ALL"); }}
+          onApply={() => { setUserRoleFilter(draftUserRoleFilter); setUserStatusFilter(draftUserStatusFilter); setUserPage(1); setMobileUserFiltersOpen(false); }}
+          title="User filters"
+        >
+          <div className="space-y-5">
+            <label className="block space-y-2"><span className="text-[13px] font-bold">Role</span><ProjectSelect value={draftUserRoleFilter} onChange={(event) => setDraftUserRoleFilter(event.target.value as "ALL" | Cashier["role"])}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
+            <fieldset className="space-y-2"><legend className="text-[13px] font-bold">Status</legend><div className="grid grid-cols-3 overflow-hidden rounded-xl border border-[#CFCFD3]">{([['ALL', 'All'], ['ACTIVE', 'Active'], ['INACTIVE', 'Inactive']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setDraftUserStatusFilter(value)} className={cn("min-h-[50px] border-r border-[#CFCFD3] px-2 text-[12px] font-extrabold last:border-r-0", draftUserStatusFilter === value ? "bg-[#11120d] text-white" : "bg-white text-[#565449]")}>{label}</button>)}</div></fieldset>
+          </div>
+        </MobileFilterSheet>
       </CardShell>
+          )}
+        </div>
+      </div>
 
       <Modal
         open={addOpen}
-        title="Add staff"
+        title="Add user"
         onClose={() => {
           setAddOpen(false);
           resetAddForm();
@@ -1795,7 +2082,7 @@ export default function ProfilePage() {
       >
         <div className="space-y-4">
           <ImageUpload
-            label="Staff photo"
+            label="Profile photo"
             previewUrl={resolveImageUrl(newPhotoUrl)}
             onPick={(file) => {
               setNewPhotoFile(file);
@@ -1893,10 +2180,10 @@ export default function ProfilePage() {
         </div>
       </Modal>
 
-      <Modal open={editOpen} title="Edit staff" onClose={closeEdit}>
+      <Modal open={editOpen} title="Edit user" onClose={closeEdit}>
         <div className="space-y-4">
           <ImageUpload
-            label="Staff photo"
+            label="Profile photo"
             previewUrl={resolveImageUrl(editPhotoUrl)}
             onPick={(file) => {
               setEditPhotoFile(file);
@@ -1950,7 +2237,7 @@ export default function ProfilePage() {
               { value: "STAFF", label: "Staff" },
             ]}
           />
-          <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
+          <div className="rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
             <div className="flex items-center justify-between gap-3">
               <div>
                 <div className="text-[12px] font-extrabold text-[#000000]">
@@ -2092,12 +2379,12 @@ export default function ProfilePage() {
         }
       >
         {deleteSafetyLoading ? (
-          <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 text-[13px] font-semibold text-[#565449]">
+          <div className="rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 text-[13px] font-semibold text-[#565449]">
             Checking account history...
           </div>
         ) : deleteSafety?.canPermanentDelete ? (
           <div className="space-y-3">
-            <div className="rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3">
+            <div className="rounded-[8px] border border-emerald-200 bg-emerald-50 px-4 py-3">
               <div className="text-[12px] font-extrabold uppercase text-emerald-700">
                 Safe to permanently delete
               </div>
@@ -2107,7 +2394,7 @@ export default function ProfilePage() {
             </div>
 
             {deleteSafety.supportCleanup.length > 0 ? (
-              <div className="rounded-[14px] border border-[#CFCFD3] bg-white px-4 py-3">
+              <div className="rounded-[8px] border border-[#CFCFD3] bg-white px-4 py-3">
                 <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
                   Also removed with this account
                 </div>
@@ -2131,7 +2418,7 @@ export default function ProfilePage() {
           </div>
         ) : deleteSafety ? (
           <div className="space-y-3">
-            <div className="rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3">
+            <div className="rounded-[8px] border border-amber-200 bg-amber-50 px-4 py-3">
               <div className="text-[12px] font-extrabold uppercase text-amber-700">
                 Permanent delete is blocked
               </div>
@@ -2141,7 +2428,7 @@ export default function ProfilePage() {
               </div>
             </div>
 
-            <div className="max-h-[220px] overflow-auto rounded-[14px] border border-[#CFCFD3] bg-white">
+            <div className="max-h-[220px] overflow-auto rounded-[8px] border border-[#CFCFD3] bg-white">
               {deleteSafety.references.map((item) => (
                 <div
                   key={item.label}
@@ -2163,7 +2450,7 @@ export default function ProfilePage() {
             </div>
           </div>
         ) : (
-          <div className="rounded-[14px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+          <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
             The account history could not be loaded. Try again before deleting.
           </div>
         )}

@@ -1,4 +1,6 @@
 import React, { useMemo, useState } from "react";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import { useSearchParams } from "react-router";
 import type { Product, ProductStatus, ToastKind } from "~/lib/domain/products/products.types";
 import {
@@ -37,6 +39,7 @@ import {
   uploadProductImage,
 } from "~/lib/domain/products/products.api";
 import { getAuthUser } from "~/lib/auth";
+import { isRateLimitError } from "~/lib/api/client";
 import type { ProductDeleteSafety } from "~/lib/api/endpoints";
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
@@ -88,6 +91,8 @@ type BulkActionState =
       successMessage: string;
       targetStatus: ProductStatus;
     };
+
+type BulkSelectionScope = "page" | "filtered";
 
 type QuickStockProductForm = {
   name: string;
@@ -218,10 +223,17 @@ export default function ProductsPage() {
     () => normalizeBusinessDefaults(),
   );
 
-  const [products, setProducts] = useState<Product[]>([]); // stores the full fetched product list before table pagination is applied
+  const [products, setProducts] = useState<Product[]>([]); // current server-backed table page
   const [total, setTotal] = useState(0); // backend-reported total matching the current filters
+  const [productsLoading, setProductsLoading] = useState(true);
+  const [productsLoadError, setProductsLoadError] = useState("");
+  const productLoadRequestRef = React.useRef(0);
+  const productMetaRecoveryNeededRef = React.useRef(false);
+  const productRowsRecoveryNeededRef = React.useRef(false);
+  const [productRecoveryKey, setProductRecoveryKey] = useState(0);
 
   const [q, setQ] = useState(""); // text search across product data
+  const [debouncedQ, setDebouncedQ] = useState("");
   const [brand, setBrand] = useState("All Brands"); // brand dropdown filter
   const [category, setCategory] = useState("All Categories"); // category dropdown filter
   const [stockStatus, setStockStatus] = useState<"all" | "in" | "low" | "out">(
@@ -231,17 +243,54 @@ export default function ProductsPage() {
   const [lowOnly, setLowOnly] = useState(false); // quick toggle for low stock products only
 
   const [selected, setSelected] = useState<Record<string, boolean>>({}); // checkbox state for bulk actions across the current dataset
+  const [bulkSelectionScope, setBulkSelectionScope] =
+    useState<BulkSelectionScope>("page");
+  const productCatalogControlsRef = React.useRef<HTMLDivElement>(null);
+  const [isSelectionPinned, setIsSelectionPinned] = useState(false);
   // converting the selection object into an id list makes the bulk action handlers much easier to work with
   const selectedIds = useMemo(
     () => Object.keys(selected).filter((id) => selected[id]),
     [selected],
   );
+  const isFilteredSelection = bulkSelectionScope === "filtered";
+  const selectedCount = isFilteredSelection ? total : selectedIds.length;
   const selectedProducts = useMemo(
     () => products.filter((product) => selectedIds.includes(product.id)),
     [products, selectedIds],
   );
 
-  const fetchPageSize = 200; // we keep requesting products in larger chunks so client-side table paging feels instant
+  React.useEffect(() => {
+    if (selectedCount <= 0) {
+      setIsSelectionPinned(false);
+      return undefined;
+    }
+
+    const controls = productCatalogControlsRef.current;
+    const scrollContainer = document.querySelector<HTMLElement>(
+      "[data-app-scroll-container]",
+    );
+    if (!controls || !scrollContainer) return undefined;
+
+    const observer = new IntersectionObserver(
+      ([entry]) => {
+        const scrollTopEdge =
+          entry.rootBounds?.top ??
+          scrollContainer.getBoundingClientRect().top;
+        setIsSelectionPinned(
+          !entry.isIntersecting && entry.boundingClientRect.bottom <= scrollTopEdge + 1,
+        );
+      },
+      {
+        root: scrollContainer,
+        rootMargin: "14px 0px 0px 0px",
+        threshold: [0, 0.01],
+      },
+    );
+
+    observer.observe(controls);
+    return () => observer.disconnect();
+  }, [selectedCount]);
+
   const [tablePageSize, setTablePageSize] = useState(20); // visible rows per table page
   const [page, setPage] = useState(1); // current table page
 
@@ -255,7 +304,9 @@ export default function ProductsPage() {
   const [bulkAction, setBulkAction] = useState<BulkActionState>(null); // stores the current bulk action confirmation content
   const [openStockManager, setOpenStockManager] = useState(false);
   const [openBulkPrice, setOpenBulkPrice] = useState(false);
+  const [openMobileBulkActions, setOpenMobileBulkActions] = useState(false);
   const [stockMode, setStockMode] = useState<"receive" | "correct">("receive");
+  const [mobileStockStep, setMobileStockStep] = useState<1 | 2 | 3>(1);
   const [stockDirection, setStockDirection] = useState<"add" | "remove">("add");
   const [stockProductIds, setStockProductIds] = useState<string[]>([]);
   const [stockProductQuery, setStockProductQuery] = useState("");
@@ -442,13 +493,23 @@ export default function ProductsPage() {
 
   // loading product meta and saved business defaults together keeps the filters and form defaults in sync
   async function loadMeta() {
-    const [meta, settings] = await Promise.all([
+    const [metaResult, settingsResult] = await Promise.allSettled([
       fetchProductsMeta(),
       getBusinessSettingsApi(),
     ]);
-    setBrands(["All Brands", ...meta.brands]);
-    setCategories(["All Categories", ...meta.categories]);
-    setBusinessDefaults(normalizeBusinessDefaults(settings));
+
+    if (metaResult.status === "fulfilled") {
+      setBrands(["All Brands", ...metaResult.value.brands]);
+      setCategories(["All Categories", ...metaResult.value.categories]);
+    }
+    if (settingsResult.status === "fulfilled") {
+      setBusinessDefaults(normalizeBusinessDefaults(settingsResult.value));
+    }
+
+    const failure = [metaResult, settingsResult].find(
+      (result): result is PromiseRejectedResult => result.status === "rejected",
+    );
+    if (failure) throw failure.reason;
   }
 
   async function loadImportBatches() {
@@ -472,11 +533,12 @@ export default function ProductsPage() {
       });
       setStockBillDocuments(Array.isArray(result.documents) ? result.documents : []);
     } catch (error: any) {
-      setStockBillDocuments([]);
-      toastMsg(
-        "danger",
-        error?.response?.data?.error || error?.message || "Failed to load uploaded stock bills.",
-      );
+      if (!isRateLimitError(error)) {
+        toastMsg(
+          "danger",
+          error?.response?.data?.error || error?.message || "Failed to load uploaded stock bills.",
+        );
+      }
     } finally {
       setStockBillsLoading(false);
     }
@@ -493,10 +555,10 @@ export default function ProductsPage() {
       });
       setImportDocuments(Array.isArray(result.documents) ? result.documents : []);
     } catch (error: any) {
-      setImportDocuments([]);
-      toastMsg(
-        "danger",
-        error?.response?.data?.error || error?.message || "Failed to load product import documents.",
+      setImportError(
+        isRateLimitError(error)
+          ? "Import documents are temporarily paused and will resume automatically."
+          : error?.response?.data?.error || error?.message || "Failed to load product import documents.",
       );
     } finally {
       setImportDocumentsLoading(false);
@@ -517,42 +579,28 @@ export default function ProductsPage() {
         error?.message ||
         "Failed to open import batch.";
       setImportError(message);
-      toastMsg("danger", message);
     } finally {
       setImportBusy(false);
     }
   }
 
-  // this fetches every product page that matches the current filters
-  // we collect them into one array because the UI table uses its own smaller client-side pagination
-  async function loadProducts() {
-    let nextPage = 1;
-    let nextTotal = 0;
-    const collected: Product[] = [];
-
-    do {
-      // sending the current filter state to the backend for each paged request
-      const res = await fetchProducts({
-        q: q.trim() || undefined,
+  async function loadProducts(options?: { signal?: AbortSignal }) {
+    const res = await fetchProducts(
+      {
+        q: debouncedQ || undefined,
         brand: brand === "All Brands" ? undefined : brand,
         category: category === "All Categories" ? undefined : category,
         stockStatus,
         status,
         lowOnly,
-        page: nextPage,
-        pageSize: fetchPageSize,
-      });
+        page,
+        pageSize: tablePageSize,
+      },
+      options,
+    );
 
-      collected.push(...res.items);
-      nextTotal = res.total; // backend tells us how many matching rows exist in total
-      nextPage += 1;
-
-      // this handles when the backend returns an empty page early, so we stop instead of looping forever
-      if (res.items.length === 0) break;
-    } while (collected.length < nextTotal);
-
-    setProducts(collected);
-    setTotal(nextTotal);
+    setProducts(res.items);
+    setTotal(res.total);
   }
 
   React.useEffect(() => {
@@ -561,32 +609,95 @@ export default function ProductsPage() {
   }, [productImagePreview]);
 
   React.useEffect(() => {
-    // fetching metadata and the initial product list when the page first loads
-    (async () => {
-      try {
-        await Promise.all([loadMeta(), loadImportBatches(), loadImportTemplates()]);
-        await loadProducts();
-      } catch (error: any) {
-        toastMsg("danger", error?.message || "Failed to load products.");
+    // Product rows are loaded by the filter-driven effect below. Import
+    // history/templates belong to the Import workspace and are loaded only
+    // when that workspace opens.
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        try {
+          await loadMeta();
+          productMetaRecoveryNeededRef.current = false;
+        } catch (error: any) {
+          if (isRateLimitError(error)) {
+            productMetaRecoveryNeededRef.current = true;
+          } else if (error?.code !== "ERR_CANCELED") {
+            toastMsg("danger", error?.message || "Failed to load products.");
+          }
+        }
+      })();
+    }, 100);
+
+    return () => window.clearTimeout(timer);
+  }, [productRecoveryKey]);
+
+  React.useEffect(() => {
+    const recover = () => {
+      if (
+        !productMetaRecoveryNeededRef.current &&
+        !productRowsRecoveryNeededRef.current
+      ) {
+        return;
       }
-    })();
+      productMetaRecoveryNeededRef.current = false;
+      productRowsRecoveryNeededRef.current = false;
+      setProductRecoveryKey((current) => current + 1);
+    };
+    window.addEventListener("rate_limit_cleared", recover);
+    return () => window.removeEventListener("rate_limit_cleared", recover);
   }, []);
 
   React.useEffect(() => {
-    // reloading products whenever one of the filter values changes
-    (async () => {
-      try {
-        await loadProducts();
-      } catch (error: any) {
-        toastMsg("danger", error?.message || "Failed to load products.");
-      }
-    })();
-  }, [q, brand, category, stockStatus, status, lowOnly, fetchPageSize]);
+    const timer = window.setTimeout(() => {
+      setDebouncedQ(q.trim());
+      setPage(1);
+      setSelected({});
+      setBulkSelectionScope("page");
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [q]);
 
   React.useEffect(() => {
-    // sending the table back to page 1 after any filter change avoids landing on empty later pages
-    setPage(1);
-  }, [q, brand, category, stockStatus, status, lowOnly]);
+    const controller = new AbortController();
+    const requestId = productLoadRequestRef.current + 1;
+    productLoadRequestRef.current = requestId;
+    setProductsLoading(true);
+    setProductsLoadError("");
+    void loadProducts({ signal: controller.signal })
+      .then(() => {
+        productRowsRecoveryNeededRef.current = false;
+      })
+      .catch((error: any) => {
+        if (error?.code === "ERR_CANCELED") return;
+        if (
+          error?.code === "ERR_RATE_LIMIT_COOLDOWN" ||
+          error?.response?.status === 429
+        ) {
+          productRowsRecoveryNeededRef.current = true;
+          setProductsLoadError(
+            "Product data is temporarily paused and will refresh automatically.",
+          );
+        } else {
+          setProductsLoadError("Products could not be loaded. Please try again.");
+          toastMsg("danger", error?.message || "Failed to load products.");
+        }
+      })
+      .finally(() => {
+        if (productLoadRequestRef.current === requestId) {
+          setProductsLoading(false);
+        }
+      });
+    return () => controller.abort();
+  }, [
+    debouncedQ,
+    brand,
+    category,
+    stockStatus,
+    status,
+    lowOnly,
+    page,
+    tablePageSize,
+    productRecoveryKey,
+  ]);
 
   React.useEffect(() => {
     if (!requestedImportBatchId) return;
@@ -623,7 +734,7 @@ export default function ProductsPage() {
           pageSize: 20,
         });
         setStockLookupResults(
-          result.items.filter((product) => !stockProductIds.includes(product.id)),
+          result.items.filter((product: Product) => !stockProductIds.includes(product.id)),
         );
       } catch (error: any) {
         setStockLookupResults([]);
@@ -650,14 +761,69 @@ export default function ProductsPage() {
     setStockFocusProductId(null);
   }, [stockFocusProductId, stockManagerProducts]);
 
-  const totalPages = Math.max(1, Math.ceil(products.length / tablePageSize)); // client-side total page count for the visible table
+  const totalPages = Math.max(1, Math.ceil(total / tablePageSize));
   const pageClamped = clampPage(page, 1, totalPages); // protecting against stale page numbers after the dataset changes
-  const pageItems = useMemo(() => {
-    const start = (pageClamped - 1) * tablePageSize;
-    return products.slice(start, start + tablePageSize);
-  }, [pageClamped, products, tablePageSize]);
-  const pageStart = products.length === 0 ? 0 : (pageClamped - 1) * tablePageSize; // zero-based starting index for the current page
-  const pageEnd = products.length === 0 ? 0 : pageStart + pageItems.length; // ending index used by the table footer summary
+  const pageItems = products;
+  const pageStart = total === 0 ? 0 : (pageClamped - 1) * tablePageSize;
+  const pageEnd = total === 0 ? 0 : pageStart + pageItems.length;
+  const effectiveSelected = useMemo(
+    () =>
+      isFilteredSelection
+        ? Object.fromEntries(pageItems.map((product) => [product.id, true]))
+        : selected,
+    [isFilteredSelection, pageItems, selected],
+  );
+  const allPageRowsSelected =
+    pageItems.length > 0 && pageItems.every((product) => selected[product.id]);
+  const canSelectAllMatching =
+    !isFilteredSelection && allPageRowsSelected && total > pageItems.length;
+  const currentProductFilters = useMemo(
+    () => ({
+      search: debouncedQ || undefined,
+      brand: brand === "All Brands" ? undefined : brand,
+      category: category === "All Categories" ? undefined : category,
+      isActive:
+        status === "active" ? true : status === "inactive" ? false : undefined,
+      lowStockOnly: lowOnly || stockStatus === "low" ? true : undefined,
+      stockStatus: stockStatus !== "all" ? stockStatus : undefined,
+    }),
+    [debouncedQ, brand, category, status, lowOnly, stockStatus],
+  );
+
+  React.useEffect(() => {
+    if (page !== pageClamped) setPage(pageClamped);
+  }, [page, pageClamped]);
+
+  function resetPageSelection() {
+    setPage(1);
+    setSelected({});
+    setBulkSelectionScope("page");
+  }
+
+  function updateBrand(value: string) {
+    setBrand(value);
+    resetPageSelection();
+  }
+
+  function updateCategory(value: string) {
+    setCategory(value);
+    resetPageSelection();
+  }
+
+  function updateStockStatus(value: "all" | "in" | "low" | "out") {
+    setStockStatus(value);
+    resetPageSelection();
+  }
+
+  function updateStatus(value: "all" | "active" | "inactive") {
+    setStatus(value);
+    resetPageSelection();
+  }
+
+  function updateLowOnly(value: boolean) {
+    setLowOnly(value);
+    resetPageSelection();
+  }
 
   // this resets every filter control back to its default value
   function clearFilters() {
@@ -667,10 +833,24 @@ export default function ProductsPage() {
     setStockStatus("all");
     setStatus("all");
     setLowOnly(false);
+    resetPageSelection();
+  }
+
+  function clearBulkSelection() {
+    setSelected({});
+    setBulkSelectionScope("page");
+  }
+
+  function selectAllMatchingProducts() {
+    setSelected(Object.fromEntries(products.map((product) => [product.id, true])));
+    setBulkSelectionScope("filtered");
   }
 
   // toggling every checkbox on the current visible page is used by the bulk action buttons above the table
   function toggleAllOnPage(checked: boolean) {
+    if (isFilteredSelection) {
+      setBulkSelectionScope("page");
+    }
     const next = { ...selected };
     pageItems.forEach((product) => {
       next[product.id] = checked;
@@ -680,6 +860,13 @@ export default function ProductsPage() {
 
   // this updates one checkbox inside the selected map without losing the rest of the selected rows
   function toggleOne(id: string, checked: boolean) {
+    if (isFilteredSelection) {
+      setBulkSelectionScope("page");
+      setSelected(
+        Object.fromEntries(pageItems.map((product) => [product.id, product.id === id ? checked : true])),
+      );
+      return;
+    }
     setSelected((prev) => ({ ...prev, [id]: checked }));
   }
 
@@ -811,6 +998,7 @@ export default function ProductsPage() {
     if (!validateForm()) return;
 
     try {
+      const wasEditing = Boolean(activeProductId);
       // normalizing user-entered values before save keeps empty strings and default thresholds consistent
       const payload = {
         ...form,
@@ -855,14 +1043,18 @@ export default function ProductsPage() {
         ? await updateProduct(activeProductId, payload as any)
         : await createProduct(payload as any);
 
-      let imageUploadFailed = false;
+      let imageUploadError = "";
       // uploading the image after the product save gives us the real saved product id to attach it to
       if (productImageFile) {
         try {
           await uploadProductImage(savedProduct.id, productImageFile);
-        } catch {
+        } catch (error: any) {
           // this handles when the image upload fails after the product itself was already saved
-          imageUploadFailed = true;
+          imageUploadError = error?.message || "Image upload failed.";
+          setFormErrors((prev) => ({
+            ...prev,
+            image: imageUploadError,
+          }));
         }
       }
 
@@ -872,20 +1064,20 @@ export default function ProductsPage() {
       clearFormValidation();
       resetImageState("");
       await loadProducts();
-      setSelected({});
+      clearBulkSelection();
 
       // we still show a partial-success message if the product save worked but the image upload did not
-      if (imageUploadFailed) {
+      if (imageUploadError) {
         toastMsg(
           "danger",
-          activeProductId
-            ? "Product saved, but image upload failed."
-            : "Product added, but image upload failed.",
+          wasEditing
+            ? `Product saved, but image upload failed: ${imageUploadError}`
+            : `Product added, but image upload failed: ${imageUploadError}`,
         );
         return;
       }
 
-      toastMsg("success", activeProductId ? "Product updated." : "Product added.");
+      toastMsg("success", wasEditing ? "Product updated." : "Product added.");
     } catch (error: any) {
       // this handles any create or update failure from the product API
       toastMsg("danger", error?.message || "Failed to save product.");
@@ -901,7 +1093,7 @@ export default function ProductsPage() {
     const skippedCount = selectedIds.length - idsToActivate.length;
     if (idsToActivate.length === 0) {
       toastMsg("info", formatStatusOutcome("Active", 0, skippedCount));
-      setSelected({});
+      clearBulkSelection();
       return;
     }
     try {
@@ -910,7 +1102,7 @@ export default function ProductsPage() {
         result.changedCount > 0 ? "success" : "info",
         formatStatusOutcome("Active", result.changedCount, skippedCount + result.skippedCount),
       );
-      setSelected({});
+      clearBulkSelection();
       await loadProducts();
     } catch (error: any) {
       toastMsg("danger", error?.message || "Failed to activate selected.");
@@ -966,7 +1158,7 @@ export default function ProductsPage() {
     const skippedCount = selectedIds.length - idsToUpdate.length;
     if (idsToUpdate.length === 0) {
       toastMsg("info", formatStatusOutcome(targetStatus, 0, skippedCount));
-      setSelected({});
+      clearBulkSelection();
       setBulkAction(null);
       return;
     }
@@ -976,7 +1168,7 @@ export default function ProductsPage() {
         result.changedCount > 0 ? bulkAction.successKind : "info",
         formatStatusOutcome(targetStatus, result.changedCount, skippedCount + result.skippedCount),
       );
-      setSelected({});
+      clearBulkSelection();
       setBulkAction(null);
       await loadProducts();
     } catch (error: any) {
@@ -1025,7 +1217,7 @@ export default function ProductsPage() {
       setOpenConfirmDelete(false);
       setActiveProductId(null);
       setDeleteSafety(null);
-      setSelected({});
+      clearBulkSelection();
       await loadProducts();
     } catch (error: any) {
       const safety = error?.response?.data?.safety as ProductDeleteSafety | undefined;
@@ -1078,7 +1270,7 @@ export default function ProductsPage() {
       setImportResult(result);
       setLastImportedProducts([]);
       setLastImportSupplier("");
-      setSelected({});
+      clearBulkSelection();
 
       if (result.batchId) {
         const batch = await getProductImportBatchApi(result.batchId);
@@ -1089,7 +1281,7 @@ export default function ProductsPage() {
           result.message || "Import review is ready.",
         );
       } else {
-        toastMsg("danger", result.message || "No import review was created.");
+        setImportError(result.message || "No import review was created.");
       }
     } catch (error: any) {
       // preferring backend error text here helps the user understand row format issues more clearly
@@ -1098,7 +1290,6 @@ export default function ProductsPage() {
         error?.message ||
         "Failed to import products.";
       setImportError(message);
-      toastMsg("danger", message);
     } finally {
       setImportBusy(false);
     }
@@ -1113,7 +1304,7 @@ export default function ProductsPage() {
       setImportResult(result);
       setLastImportedProducts([]);
       setLastImportSupplier("");
-      setSelected({});
+      clearBulkSelection();
 
       if (result.batchId) {
         const batch = await getProductImportBatchApi(result.batchId);
@@ -1125,7 +1316,7 @@ export default function ProductsPage() {
           result.message || "Import review is ready.",
         );
       } else {
-        toastMsg("danger", result.message || "No import review was created.");
+        setImportError(result.message || "No import review was created.");
       }
     } catch (error: any) {
       const message =
@@ -1133,7 +1324,6 @@ export default function ProductsPage() {
         error?.message ||
         "Failed to open uploaded import document.";
       setImportError(message);
-      toastMsg("danger", message);
     } finally {
       setImportBusy(false);
       setImportDocumentBusyId(null);
@@ -1152,6 +1342,7 @@ export default function ProductsPage() {
     setStockLineError("");
     setStockReason("");
     setStockMode("receive");
+    setMobileStockStep(1);
     setStockDirection("add");
     setStockBillFiles([]);
     setStockSelectedBillIds([]);
@@ -1184,6 +1375,7 @@ export default function ProductsPage() {
     setStockLineError("");
     setStockReason("Received after product import");
     setStockMode("receive");
+    setMobileStockStep(2);
     setStockDirection("add");
     setStockBillFiles([]);
     setStockSelectedBillIds([]);
@@ -1202,7 +1394,13 @@ export default function ProductsPage() {
   }
 
   function openBulkPriceForSelection() {
-    if (selectedProducts.length === 0) return;
+    if (selectedCount === 0) return;
+    if (isFilteredSelection) {
+      setPriceRows({});
+      setPriceReason("");
+      setOpenBulkPrice(true);
+      return;
+    }
     setPriceRows(
       Object.fromEntries(
         selectedProducts.map((product) => [
@@ -1437,7 +1635,7 @@ export default function ProductsPage() {
       toastMsg("success", stockMode === "receive" ? "Stock received and batch saved." : "Stock updated.");
       setOpenStockManager(false);
       setOpenStockQuickAdd(false);
-      setSelected({});
+      clearBulkSelection();
       setStockProductIds([]);
       setStockRows({});
       setStockProductQuery("");
@@ -1459,6 +1657,34 @@ export default function ProductsPage() {
     } finally {
       setStockBusy(false);
     }
+  }
+
+  function advanceMobileStockMovement() {
+    setStockLineError("");
+
+    if (mobileStockStep === 1) {
+      if (!stockReason.trim()) {
+        setStockLineError("Reason is required for stock changes.");
+        return;
+      }
+      if (stockMode === "receive" && !stockSupplierName.trim()) {
+        setStockLineError("Choose or enter a supplier before adding products.");
+        return;
+      }
+      setMobileStockStep(2);
+      return;
+    }
+
+    if (mobileStockStep === 2) {
+      if (stockManagerProducts.length === 0) {
+        setStockLineError("Add at least one product to continue.");
+        return;
+      }
+      setMobileStockStep(3);
+      return;
+    }
+
+    void confirmStockManager();
   }
 
   function closeStockManager() {
@@ -1520,7 +1746,7 @@ export default function ProductsPage() {
             <div className="mb-[6px] text-[12px] font-extrabold uppercase text-[#8C8889]">
               Sale unit
             </div>
-            <select
+            <ProjectSelect
               value={quickStockProduct.saleUnit}
               onChange={(event) =>
                 setQuickStockProduct((current) => ({
@@ -1534,14 +1760,14 @@ export default function ProductsPage() {
               <option value="KG">KG</option>
               <option value="GRAM">Gram</option>
               <option value="METER">Meter</option>
-            </select>
+            </ProjectSelect>
           </label>
 
           <label>
             <div className="mb-[6px] text-[12px] font-extrabold uppercase text-[#8C8889]">
               Brand
             </div>
-            <select
+            <ProjectSelect
               value={quickStockProduct.brand}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
@@ -1560,14 +1786,14 @@ export default function ProductsPage() {
                     {item}
                   </option>
                 ))}
-            </select>
+            </ProjectSelect>
           </label>
 
           <label>
             <div className="mb-[6px] text-[12px] font-extrabold uppercase text-[#8C8889]">
               Category
             </div>
-            <select
+            <ProjectSelect
               value={quickStockProduct.category}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
@@ -1586,7 +1812,7 @@ export default function ProductsPage() {
                     {item}
                   </option>
                 ))}
-            </select>
+            </ProjectSelect>
           </label>
 
           <label>
@@ -1668,14 +1894,16 @@ export default function ProductsPage() {
       return;
     }
 
-    const updates = selectedProducts.map((product) => ({
-      productId: product.id,
-      retailPrice: Number(priceRows[product.id]?.retailPrice || 0),
-      wholesalePrice: Number(priceRows[product.id]?.wholesalePrice || 0),
-      ratePerPiece: Number(priceRows[product.id]?.ratePerPiece || priceRows[product.id]?.wholesalePrice || 0),
-    }));
+    const updates = isFilteredSelection
+      ? []
+      : selectedProducts.map((product) => ({
+          productId: product.id,
+          retailPrice: Number(priceRows[product.id]?.retailPrice || 0),
+          wholesalePrice: Number(priceRows[product.id]?.wholesalePrice || 0),
+          ratePerPiece: Number(priceRows[product.id]?.ratePerPiece || priceRows[product.id]?.wholesalePrice || 0),
+        }));
 
-    if (updates.some((row) => row.retailPrice <= 0 || row.wholesalePrice <= 0)) {
+    if (!isFilteredSelection && updates.some((row) => row.retailPrice <= 0 || row.wholesalePrice <= 0)) {
       toastMsg("danger", "Retail and wholesale prices must be greater than 0.");
       return;
     }
@@ -1684,16 +1912,25 @@ export default function ProductsPage() {
       setPriceBusy(true);
       const result = await bulkUpdateProductPricesApi({
         reason: priceReason.trim(),
-        updates,
+        ...(isFilteredSelection
+          ? {
+              scope: "FILTERED" as const,
+              filters: currentProductFilters,
+              wholesaleMarginPercent,
+              retailMarginPercent,
+            }
+          : { scope: "IDS" as const, updates }),
       });
       toastMsg(
         result.errorCount > 0 ? "info" : "success",
         result.errorCount > 0
           ? `${result.updatedCount} prices updated with ${result.errorCount} issue(s).`
-          : "Selected product prices updated.",
+          : isFilteredSelection
+            ? `${result.updatedCount} matching product prices updated.`
+            : "Selected product prices updated.",
       );
       setOpenBulkPrice(false);
-      setSelected({});
+      clearBulkSelection();
       await loadProducts();
     } catch (error: any) {
       toastMsg(
@@ -1735,7 +1972,7 @@ export default function ProductsPage() {
       await loadMeta();
       await loadImportBatches();
       await loadProducts();
-      setSelected({});
+      clearBulkSelection();
       setLastImportedProducts(result.createdProducts || []);
       setLastImportSupplier(result.batch.supplier || pdfReviewBatch.supplier || importSupplier.trim() || "");
       toastMsg(
@@ -1750,7 +1987,6 @@ export default function ProductsPage() {
         error?.message ||
         "Failed to import reviewed rows.";
       setImportError(message);
-      toastMsg("danger", message);
     } finally {
       setPdfReviewBusy(false);
     }
@@ -1759,40 +1995,193 @@ export default function ProductsPage() {
   return (
     <div className="space-y-[14px]">
       {/* handing all current filter state and bulk action callbacks into the shared filter/header card */}
-      <ProductsFiltersCard
-        q={q}
-        setQ={setQ}
-        brands={brands}
-        brand={brand}
-        setBrand={setBrand}
-        categories={categories}
-        category={category}
-        setCategory={setCategory}
-        stockStatus={stockStatus}
-        setStockStatus={setStockStatus}
-        status={status}
-        setStatus={setStatus}
-        lowOnly={lowOnly}
-        setLowOnly={setLowOnly}
-        onClear={clearFilters}
-        selectedCount={selectedIds.length}
-        onAdd={openAdd}
-        onImport={() => {
-          resetImportState();
-          void Promise.all([loadImportBatches(), loadImportTemplates()]);
-          setOpenImport(true);
-        }}
-        onManageStock={openStockManagerForSelection}
-        onBulkPrice={openBulkPriceForSelection}
-        onActivate={activateSelected}
-        onDeactivate={requestDeactivateSelected}
-        onSoftDelete={requestSoftDeleteSelected}
-      />
+      <div ref={productCatalogControlsRef}>
+        <ProductsFiltersCard
+          q={q}
+          setQ={setQ}
+          brands={brands}
+          brand={brand}
+          setBrand={updateBrand}
+          categories={categories}
+          category={category}
+          setCategory={updateCategory}
+          stockStatus={stockStatus}
+          setStockStatus={updateStockStatus}
+          status={status}
+          setStatus={updateStatus}
+          lowOnly={lowOnly}
+          setLowOnly={updateLowOnly}
+          onClear={clearFilters}
+          selectedCount={selectedCount}
+          onAdd={openAdd}
+          onImport={() => {
+            resetImportState();
+            setOpenImport(true);
+            void Promise.allSettled([
+              loadImportBatches(),
+              loadImportTemplates(),
+            ]);
+          }}
+          onManageStock={openStockManagerForSelection}
+          onBulkPrice={openBulkPriceForSelection}
+          onActivate={activateSelected}
+          onDeactivate={requestDeactivateSelected}
+          onSoftDelete={requestSoftDeleteSelected}
+        />
+      </div>
+
+      {selectedCount > 0 ? (
+        <>
+        {/* ── mobile selection bar (< lg) ── */}
+        <div
+          className={`selection-sticky-wrap sticky top-0 z-[30] -mx-5 lg:hidden ${
+            isSelectionPinned
+              ? "bg-white/95 px-5 pb-2 pt-2 shadow-[0_10px_18px_-16px_rgba(15,23,42,0.7)] backdrop-blur-md"
+              : "px-5 pt-0"
+          }`}
+        >
+          <div
+            role="toolbar"
+            aria-label="Selected product actions"
+            className="animate-selection-bar-enter overflow-hidden rounded-[12px] border border-[#9DD8B2] bg-[#F3FBF6] text-[#11120d] shadow-sm"
+          >
+            {/* ── main row: always visible, smoothly adapts padding ── */}
+            <div
+              className="flex items-center gap-2 px-3 transition-[padding,min-height] duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+              style={{ padding: isSelectionPinned ? "6px 12px" : "10px 12px", minHeight: isSelectionPinned ? 54 : 44 }}
+            >
+              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#179B4D] text-white">
+                <Icon name="check" className="text-[16px]" />
+              </span>
+              <button
+                type="button"
+                onClick={() => setOpenMobileBulkActions(true)}
+                className="min-w-0 flex-1 text-left transition-[font-size] duration-200"
+                style={{ fontSize: isSelectionPinned ? 13 : 15 }}
+              >
+                <span className="truncate font-extrabold" aria-live="polite">
+                  {isFilteredSelection
+                    ? `All ${total.toLocaleString()} matching`
+                    : `${selectedIds.length.toLocaleString()} selected`}
+                </span>
+                {!isSelectionPinned && (
+                  <span className="ml-1 text-[12px] font-semibold text-[#567060]">Actions</span>
+                )}
+              </button>
+              {isSelectionPinned && (
+                <button
+                  type="button"
+                  onClick={() => setOpenMobileBulkActions(true)}
+                  className="inline-flex h-9 shrink-0 items-center justify-center rounded-[10px] border border-[#9DD8B2] bg-white px-3 text-[12px] font-bold text-[#16753A]"
+                >
+                  Actions
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={clearBulkSelection}
+                className="shrink-0 px-1 text-[12px] font-bold text-[#16753A] underline underline-offset-4 transition-[min-height] duration-200"
+                style={{ minHeight: isSelectionPinned ? 36 : 44 }}
+              >
+                Clear
+              </button>
+            </div>
+
+            {/* ── sub-row: collapses smoothly via grid-rows animation ── */}
+            <div
+              className="selection-sub-row"
+              data-collapsed={isSelectionPinned ? "true" : "false"}
+            >
+              <div>
+                <div className="flex gap-4 border-t border-[#D8EADF] px-3 py-2 text-[12px] font-bold text-[#16753A] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+                  <button type="button" onClick={() => toggleAllOnPage(true)} className="shrink-0 underline underline-offset-4">Select page ({pageItems.length})</button>
+                  {canSelectAllMatching ? <button type="button" onClick={selectAllMatchingProducts} className="shrink-0 underline underline-offset-4">Select all {total.toLocaleString()} matching</button> : null}
+                  <button type="button" onClick={() => setOpenMobileBulkActions(true)} className="ml-auto shrink-0 underline underline-offset-4">Choose action</button>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ── desktop selection bar (>= lg) ── */}
+        <div
+          className={`selection-sticky-wrap sticky top-0 z-[30] hidden lg:block ${
+            isSelectionPinned
+              ? "-mx-6 px-6 pb-3 pt-3 bg-white/95 shadow-[0_10px_18px_-16px_rgba(15,23,42,0.7)] backdrop-blur-md"
+              : ""
+          }`}
+        >
+          <div className="animate-selection-bar-enter rounded-[12px] border border-[#CFCFD3] bg-white px-[16px] py-[12px] shadow-sm">
+            <div className="flex flex-col gap-[10px] lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex items-start gap-[10px]">
+                <span className="mt-[2px] inline-flex h-[28px] w-[28px] items-center justify-center rounded-[8px] bg-[#F3F4F6] text-[#11120d]">
+                  <Icon name={isFilteredSelection ? "select_all" : "checklist"} className="text-[17px]" />
+                </span>
+                <div>
+                  <div className="text-[14px] font-bold text-[#11120d]">
+                    {isFilteredSelection
+                      ? `All ${total.toLocaleString()} matching products selected`
+                      : `${selectedIds.length.toLocaleString()} product${selectedIds.length === 1 ? "" : "s"} selected`}
+                  </div>
+                  <div className="mt-[2px] text-[12px] font-medium text-[#6B7280]">
+                    {isFilteredSelection
+                      ? "Bulk actions will use the current search and filters."
+                      : canSelectAllMatching
+                        ? `Only this page is selected. There are ${total.toLocaleString()} products matching your filters.`
+                        : "Bulk actions will apply only to the selected rows."}
+                  </div>
+                </div>
+              </div>
+              <div className="flex flex-wrap items-center gap-[8px]">
+                {canSelectAllMatching ? (
+                  <button
+                    type="button"
+                    onClick={selectAllMatchingProducts}
+                    className="rounded-[10px] border border-[#11120d] bg-[#11120d] px-[12px] py-[8px] text-[12px] font-bold text-white transition hover:bg-[#2a2c27]"
+                  >
+                    Select all {total.toLocaleString()} matching products
+                  </button>
+                ) : null}
+                <button
+                  type="button"
+                  onClick={clearBulkSelection}
+                  className="rounded-[10px] border border-[#CFCFD3] bg-white px-[12px] py-[8px] text-[12px] font-bold text-[#565449] transition hover:bg-[#F3F4F6]"
+                >
+                  Clear selection
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+        </>
+      ) : null}
+
+      {openMobileBulkActions && selectedCount > 0 ? (
+        <div className="fixed inset-0 z-[125] lg:hidden">
+          <button type="button" onClick={() => setOpenMobileBulkActions(false)} className="absolute inset-0 bg-slate-950/55" aria-label="Close selected product actions" />
+          <section role="dialog" aria-modal="true" aria-label="Selected product actions" className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
+            <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
+            <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[22px] font-extrabold text-[#11120d]">{selectedCount.toLocaleString()} products selected</h2><button type="button" onClick={() => setOpenMobileBulkActions(false)} className="h-11 w-11" aria-label="Close actions"><Icon name="close" className="text-[26px]" /></button></div>
+            {[
+              { icon: "toggle_on", label: "Activate selected", tone: "bg-[#EAF8EF] text-[#179B4D]", action: () => void activateSelected() },
+              { icon: "do_not_disturb_on", label: "Set inactive", tone: "bg-[#F3F4F6] text-[#565449]", action: requestSoftDeleteSelected },
+              { icon: "sell", label: "Price & Margin", tone: "bg-[#F3F4F6] text-[#565449]", action: openBulkPriceForSelection },
+              { icon: "inventory_2", label: "Stock Movement", tone: "bg-[#F3F4F6] text-[#565449]", action: openStockManagerForSelection },
+            ].map((item) => (
+              <button key={item.label} type="button" onClick={() => { setOpenMobileBulkActions(false); item.action(); }} className="flex min-h-[66px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className={`inline-flex h-11 w-11 items-center justify-center rounded-[12px] ${item.tone}`}><Icon name={item.icon} className="text-[22px]" /></span><span className="flex-1 text-[15px] font-bold text-[#11120d]">{item.label}</span><Icon name="chevron_right" className="text-[#565449]" /></button>
+            ))}
+            <button type="button" onClick={() => setOpenMobileBulkActions(false)} className="mt-4 h-[50px] w-full rounded-[12px] bg-[#11120d] text-[14px] font-bold text-white">Done</button>
+            <button type="button" onClick={() => { setOpenMobileBulkActions(false); clearBulkSelection(); }} className="mt-2 min-h-[calc(44px+env(safe-area-inset-bottom))] w-full pb-[env(safe-area-inset-bottom)] text-[14px] font-bold text-[#565449]">Cancel selection</button>
+          </section>
+        </div>
+      ) : null}
 
       {/* this table only receives the current client-side page slice, not the full product array */}
       <ProductsTableCard
         rows={pageItems}
-        selected={selected}
+        loading={productsLoading}
+        loadError={productsLoadError}
+        selected={effectiveSelected}
         toggleAllOnPage={toggleAllOnPage}
         toggleOne={toggleOne}
         onView={openViewProduct}
@@ -1804,11 +2193,17 @@ export default function ProductsPage() {
         page={pageClamped}
         totalPages={totalPages}
         pageSize={tablePageSize}
-        onPageChange={setPage}
+        onPageChange={(nextPage) => {
+          if (!isFilteredSelection) clearBulkSelection();
+          setPage(nextPage);
+        }}
         onPageSizeChange={(nextPageSize) => {
           setTablePageSize(nextPageSize);
           setPage(1);
+          if (!isFilteredSelection) clearBulkSelection();
         }}
+        onClearFilters={clearFilters}
+        onRetry={() => void loadProducts()}
       />
 
       {/* centralizing modal state here keeps add/edit/view/import/delete flows coordinated from one page component */}
@@ -1841,6 +2236,7 @@ export default function ProductsPage() {
         deleteBusy={deleteBusy}
         onConfirmPermanentDelete={confirmPermanentDeleteOne}
         bulkAction={bulkAction}
+        bulkProducts={selectedProducts}
         onCloseBulkAction={() => setBulkAction(null)}
         onConfirmBulkAction={confirmBulkAction}
         onEditActiveProduct={openEditFromView}
@@ -1937,7 +2333,6 @@ export default function ProductsPage() {
               error?.message ||
               "Failed to delete import review.";
             setImportError(message);
-            toastMsg("danger", message);
           } finally {
             setImportBusy(false);
           }
@@ -1963,9 +2358,26 @@ export default function ProductsPage() {
             : "Receive supplier stock or correct counted stock. Start empty, search existing products, or create new products while receiving."
         }
         onClose={closeStockManager}
-        maxWidthClass="max-w-[1040px]"
+        maxWidthClass="max-w-[920px]"
+        mobileFullScreen
       >
-        <div className="space-y-[20px]">
+        <div className="space-y-[14px]">
+          {!openStockQuickAdd ? (
+            <div className="rounded-[14px] border border-[#E5E7EB] bg-white p-3 lg:hidden">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <div className="text-[16px] font-extrabold text-[#11120d]">Step {mobileStockStep} of 3</div>
+                  <div className="mt-0.5 text-[13px] font-semibold text-[#8C8889]">{mobileStockStep === 1 ? "Movement setup" : mobileStockStep === 2 ? "Add products" : "Review movement"}</div>
+                </div>
+                <div className="flex items-center gap-1.5">
+                  {[1, 2, 3].map((step) => <span key={step} className={`h-2.5 rounded-full transition-all ${step === mobileStockStep ? "w-7 bg-[#11120d]" : step < mobileStockStep ? "w-2.5 bg-[#179B4D]" : "w-2.5 bg-[#D1D5DB]"}`} />)}
+                </div>
+              </div>
+              {mobileStockStep > 1 ? (
+                <button type="button" onClick={() => setMobileStockStep((mobileStockStep - 1) as 1 | 2)} className="mt-3 inline-flex h-10 items-center gap-2 rounded-[10px] border border-[#CFCFD3] px-3 text-[12px] font-bold text-[#565449]"><Icon name="arrow_back" className="text-[18px]" />Back</button>
+              ) : null}
+            </div>
+          ) : null}
           {openStockQuickAdd ? (
             <div className="space-y-[12px]">
               <button
@@ -2054,11 +2466,43 @@ export default function ProductsPage() {
             </div>
           ) : (
             <>
+          <div className={`${mobileStockStep !== 1 ? "hidden" : "grid"} grid-cols-2 gap-3 lg:hidden`}>
+            {([
+              { mode: "receive" as const, icon: "inventory_2", title: "Receive Stock", detail: "Add stock received from your supplier" },
+              { mode: "correct" as const, icon: "edit_square", title: "Correct Stock", detail: "Adjust quantity to correct inventory" },
+            ]).map((option) => {
+              const selected = stockMode === option.mode;
+              return (
+                <button
+                  key={option.mode}
+                  type="button"
+                  onClick={() => {
+                    setStockMode(option.mode);
+                    if (option.mode === "receive") {
+                      setStockDirection("add");
+                    } else {
+                      setStockBillFiles([]);
+                      setStockSelectedBillIds([]);
+                      setStockShowDocumentPicker(false);
+                    }
+                    setStockLineError("");
+                  }}
+                  className={`relative min-h-[132px] rounded-[14px] border p-3 text-left transition ${selected ? "border-[#179B4D] bg-[#F3FBF6]" : "border-[#E5E7EB] bg-white"}`}
+                >
+                  {selected ? <span className="absolute right-2.5 top-2.5 inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#179B4D] text-white"><Icon name="check" className="text-[14px]" /></span> : null}
+                  <span className={`inline-flex h-9 w-9 items-center justify-center rounded-[10px] ${selected ? "bg-[#EAF8EF] text-[#179B4D]" : "bg-[#F3F4F6] text-[#6B7280]"}`}><Icon name={option.icon} className="text-[20px]" /></span>
+                  <span className="mt-3 block text-[14px] font-extrabold text-[#11120d]">{option.title}</span>
+                  <span className="mt-1.5 block text-[11px] font-semibold leading-4 text-[#6B7280]">{option.detail}</span>
+                </button>
+              );
+            })}
+          </div>
+
           {/* Top Controls: Mode & Reason */}
-          <div className="flex flex-col gap-[16px] md:flex-row md:items-start md:justify-between bg-[#F8FAFC] p-[16px] rounded-[16px] border border-[#E5E7EB]">
+          <div className={`${mobileStockStep !== 1 ? "hidden lg:flex" : "flex"} flex-col gap-[12px] rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-[12px] md:flex-row md:items-center md:justify-between`}>
             <div className="flex flex-col gap-[12px] md:flex-row md:items-center">
               {/* Segmented Toggle for Mode */}
-              <div className="flex h-[42px] rounded-[12px] bg-[#E5E7EB] p-[4px]">
+              <div className="hidden h-[38px] rounded-[10px] bg-[#E5E7EB] p-[3px] lg:flex">
                 <button
                   type="button"
                   onClick={() => {
@@ -2089,14 +2533,14 @@ export default function ProductsPage() {
 
               {/* Add/Remove Sub-toggle for Correct Mode */}
               {stockMode === "correct" && (
-                <div className="flex h-[42px] rounded-[12px] border border-[#CFCFD3] bg-white p-[4px]">
+                <div className="flex h-[38px] rounded-[10px] border border-[#CFCFD3] bg-white p-[3px]">
                   {(["add", "remove"] as const).map((direction) => (
                     <button
                       key={direction}
                       type="button"
                       onClick={() => setStockDirection(direction)}
                       className={`flex items-center justify-center rounded-[8px] px-[16px] text-[12px] font-bold transition-colors ${
-                        stockDirection === direction ? "bg-[#3B82F6] text-white" : "text-[#565449] hover:bg-[#F3F4F6]"
+                        stockDirection === direction ? "bg-[#11120d] text-white" : "text-[#565449] hover:bg-[#F3F4F6]"
                       }`}
                     >
                       {direction === "add" ? "+ Add" : "- Remove"}
@@ -2114,15 +2558,19 @@ export default function ProductsPage() {
                   setStockLineError("");
                 }}
                 placeholder="Reason or stock note (required)"
-                className="h-[42px] w-full rounded-[10px] border border-[#CFCFD3] bg-white px-[14px] text-[13px] font-semibold text-[#11120d] outline-none placeholder-[#8C8889] focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                className="h-[38px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold text-[#11120d] outline-none placeholder-[#8C8889] focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
               />
             </div>
           </div>
 
+          {mobileStockStep === 1 && stockLineError ? (
+            <div className="rounded-[10px] border border-[#FCA5A5] bg-[#FEF2F2] p-3 text-[12px] font-bold text-[#DC2626] lg:hidden">{stockLineError}</div>
+          ) : null}
+
           {/* Bill Attachment Section (Only for Receive Mode) */}
           {stockMode === "receive" && (
-            <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[16px] shadow-sm">
-              <div className="flex flex-wrap items-center justify-between gap-[10px] mb-[16px]">
+            <div className={`${mobileStockStep !== 1 ? "hidden lg:block" : "block"} rounded-[12px] border border-[#E5E7EB] bg-white p-[12px] shadow-sm`}>
+              <div className="mb-[12px] flex flex-wrap items-center justify-between gap-[10px]">
                 <div>
                   <div className="text-[14px] font-extrabold text-[#11120d] flex items-center gap-[8px]">
                     <Icon name="receipt" sizePx={18} className="text-[#3B82F6]" />
@@ -2152,10 +2600,10 @@ export default function ProductsPage() {
                 </div>
               </div>
 
-              <div className="grid grid-cols-1 gap-[12px] md:grid-cols-2 lg:grid-cols-3 items-end">
+              <div className="grid grid-cols-1 items-end gap-[10px] md:grid-cols-2 lg:grid-cols-3">
                 <div className="space-y-[6px]">
                   <label className="text-[12px] font-bold text-[#565449]">Supplier</label>
-                  <select
+                  <ProjectSelect
                     value={stockSupplierMode === "new" ? "__new" : stockSupplierName}
                     onChange={(e) => {
                       if (e.target.value === "__new") {
@@ -2174,7 +2622,7 @@ export default function ProductsPage() {
                       <option key={supplier} value={supplier}>{supplier}</option>
                     ))}
                     <option value="__new">+ Add new supplier</option>
-                  </select>
+                  </ProjectSelect>
                 </div>
 
                 {stockSupplierMode === "new" && (
@@ -2271,7 +2719,7 @@ export default function ProductsPage() {
                     </div>
                     <div className="space-y-[6px]">
                       <label className="text-[12px] font-bold text-[#565449]">Bill Date</label>
-                      <input type="date" value={stockBillDate} onChange={(e) => setStockBillDate(e.target.value)} className="h-[40px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold outline-none focus:border-[#3B82F6]" />
+                      <ProjectDateInput value={stockBillDate} onChange={(e) => setStockBillDate(e.target.value)} className="h-[40px] rounded-[8px] text-[13px] font-semibold focus-visible:border-[#3B82F6]" />
                     </div>
                     <div className="space-y-[6px]">
                       <label className="text-[12px] font-bold text-[#565449]">Bill Amount</label>
@@ -2288,10 +2736,10 @@ export default function ProductsPage() {
           )}
 
           {/* Product Selection and Table */}
-          <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[16px] shadow-sm space-y-[16px]">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-[12px]">
-              <div className="relative flex-1 max-w-[400px]">
-                <div className="flex h-[42px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] focus-within:border-[#3B82F6] focus-within:ring-1 focus-within:ring-[#3B82F6] transition">
+          <div className={`${mobileStockStep === 1 ? "hidden lg:block" : "block"} space-y-[12px] rounded-[12px] border border-[#E5E7EB] bg-white p-[12px] shadow-sm`}>
+            <div className={`${mobileStockStep === 3 ? "hidden lg:flex" : "flex"} flex-col justify-between gap-[10px] md:flex-row md:items-center`}>
+              <div className="relative flex-1 md:max-w-[360px]">
+                <div className="flex h-[38px] items-center gap-[8px] rounded-[9px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] transition focus-within:border-[#3B82F6] focus-within:ring-1 focus-within:ring-[#3B82F6]">
                   <Icon name="search" sizePx={20} className="text-[#8C8889]" />
                   <input
                     value={stockProductQuery}
@@ -2311,7 +2759,7 @@ export default function ProductsPage() {
                       <div
                         key={product.id}
                         onClick={() => addProductToStockManager(product)}
-                        className="flex cursor-pointer items-center justify-between gap-[12px] px-[16px] py-[12px] transition hover:bg-[#F8FAFC] border-b border-[#E5E7EB] last:border-0"
+                        className="flex cursor-pointer items-center justify-between gap-[12px] px-[16px] py-[12px] transition-colors hover:bg-[#ECEFF3] border-b border-[#E5E7EB] last:border-0"
                       >
                         <div>
                           <div className="text-[13px] font-bold text-[#11120d]">{product.name}</div>
@@ -2345,13 +2793,13 @@ export default function ProductsPage() {
                   min={0}
                   value={stockApplyQty}
                   onChange={(event) => setStockApplyQty(Number(event.target.value))}
-                  className="h-[36px] w-[80px] rounded-[8px] border border-[#CFCFD3] bg-[#F8FAFC] px-[10px] text-right text-[13px] font-bold outline-none focus:border-[#3B82F6]"
+                  className="h-[34px] w-[76px] rounded-[8px] border border-[#CFCFD3] bg-[#F8FAFC] px-[10px] text-right text-[13px] font-bold outline-none focus:border-[#3B82F6]"
                 />
                 <button
                   type="button"
                   onClick={applyStockQtyToAllSelected}
                   disabled={stockManagerProducts.length === 0}
-                  className="h-[36px] rounded-[8px] bg-[#E5E7EB] px-[12px] text-[12px] font-bold text-[#11120d] transition hover:bg-[#D1D5DB] disabled:opacity-50"
+                  className="h-[34px] rounded-[8px] bg-[#E5E7EB] px-[12px] text-[12px] font-bold text-[#11120d] transition hover:bg-[#D1D5DB] disabled:opacity-50"
                 >
                   Apply
                 </button>
@@ -2364,14 +2812,44 @@ export default function ProductsPage() {
               </div>
             )}
 
-            <div className="overflow-hidden rounded-[12px] border border-[#E5E7EB]">
-              <table className="w-full text-left">
-                <thead className="bg-[#F8FAFC] border-b border-[#E5E7EB]">
+            <div className="space-y-3 lg:hidden">
+              {mobileStockStep === 3 ? (
+                <div className="rounded-[12px] border border-[#BFDBFE] bg-[#EFF6FF] p-3 text-[13px] font-semibold text-[#1D4ED8]">
+                  Review each quantity and resulting stock before confirming this {stockMode === "receive" ? "receive" : "correction"}.
+                </div>
+              ) : null}
+              {stockManagerProducts.map((product) => {
+                const qty = Math.abs(Number(stockRows[product.id] || 0));
+                const delta = stockMode === "receive" || stockDirection === "add" ? qty : -qty;
+                const nextStock = product.stock + delta;
+                return (
+                  <article key={product.id} className={`rounded-[14px] border bg-white p-3 ${nextStock < 0 ? "border-[#FCA5A5]" : "border-[#E5E7EB]"}`}>
+                    <div className="flex items-start gap-3">
+                      <div className="inline-flex h-12 w-12 shrink-0 items-center justify-center rounded-[11px] bg-[#F3F4F6] text-[#8C8889]"><Icon name="inventory_2" /></div>
+                      <div className="min-w-0 flex-1"><div className="truncate text-[15px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-1 truncate font-mono text-[11px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
+                      <button type="button" onClick={() => removeProductFromStockManager(product.id)} className="inline-flex h-10 w-10 items-center justify-center rounded-[10px] text-[#BE123C]" aria-label={`Remove ${product.name}`}><Icon name="close" /></button>
+                    </div>
+                    <div className="mt-3 grid grid-cols-[1fr_118px] gap-3">
+                      <div className="rounded-[10px] bg-[#F8FAFC] p-2.5"><div className="text-[10px] font-bold uppercase tracking-wide text-[#8C8889]">Current stock</div><div className="mt-1 text-[16px] font-extrabold text-[#11120d]">{product.stock} {product.saleUnit || "PIECE"}</div></div>
+                      <label><span className="text-[11px] font-bold text-[#565449]">Change qty</span><div className="mt-1 flex h-11 items-center overflow-hidden rounded-[10px] border border-[#CFCFD3]"><span className={`px-2 text-[17px] font-extrabold ${delta < 0 ? "text-rose-600" : "text-emerald-600"}`}>{delta < 0 ? "−" : "+"}</span><input ref={(node) => { stockQtyInputRefs.current[product.id] = node; }} type="number" min={0} value={stockRows[product.id] ?? 0} onChange={(event) => { setStockRows((current) => ({ ...current, [product.id]: Number(event.target.value) })); setStockLineError(""); }} className="h-full min-w-0 flex-1 px-2 text-right text-[15px] font-bold outline-none" /></div></label>
+                    </div>
+                    <div className={`mt-3 flex items-center justify-between rounded-[10px] px-3 py-2.5 ${nextStock < 0 ? "bg-[#FFF1F2] text-[#BE123C]" : "bg-[#F3F4F6] text-[#11120d]"}`}><span className="text-[12px] font-bold">Resulting stock</span><span className="text-[15px] font-extrabold">{product.stock} <Icon name="arrow_forward" className="mx-1 text-[15px] text-[#8C8889]" /> {nextStock}</span></div>
+                    {nextStock < 0 ? <div className="mt-2 text-[11px] font-bold text-[#BE123C]">Resulting stock cannot be negative.</div> : null}
+                  </article>
+                );
+              })}
+              {stockManagerProducts.length === 0 ? <div className="rounded-[14px] border-2 border-dashed border-[#E5E7EB] px-4 py-10 text-center text-[13px] font-semibold text-[#8C8889]">No products added to this batch yet.</div> : null}
+            </div>
+
+            <div className="hidden overflow-hidden rounded-[12px] border border-[#E5E7EB] lg:block">
+              <div className="max-h-[min(46vh,430px)] overflow-y-auto">
+              <table className="w-full table-fixed text-left">
+                <thead className="sticky top-0 z-10 border-b border-[#E5E7EB] bg-[#F8FAFC] shadow-sm">
                   <tr>
-                    <th className="px-[16px] py-[10px] text-[11px] font-extrabold uppercase text-[#8C8889]">Product</th>
-                    <th className="px-[16px] py-[10px] text-right text-[11px] font-extrabold uppercase text-[#8C8889]">Change Qty</th>
-                    <th className="px-[16px] py-[10px] text-right text-[11px] font-extrabold uppercase text-[#8C8889]">Resulting Stock</th>
-                    <th className="w-[60px] px-[16px] py-[10px]"></th>
+                    <th className="w-[44%] px-[14px] py-[9px] text-[11px] font-extrabold uppercase text-[#8C8889]">Product</th>
+                    <th className="w-[22%] px-[14px] py-[9px] text-right text-[11px] font-extrabold uppercase text-[#8C8889]">Change Qty</th>
+                    <th className="w-[24%] px-[14px] py-[9px] text-right text-[11px] font-extrabold uppercase text-[#8C8889]">Resulting Stock</th>
+                    <th className="w-[48px] px-[10px] py-[9px]"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-[#E5E7EB]">
@@ -2381,12 +2859,12 @@ export default function ProductsPage() {
                     const nextStock = product.stock + delta;
 
                     return (
-                      <tr key={product.id} className="transition hover:bg-[#F8FAFC]">
-                        <td className="px-[16px] py-[12px]">
-                          <div className="text-[13px] font-bold text-[#11120d]">{product.name}</div>
-                          <div className="text-[11px] font-medium text-[#8C8889] mt-[2px]">SKU: {product.sku}</div>
+                      <tr key={product.id} className="transition-colors hover:bg-[#ECEFF3]">
+                        <td className="px-[14px] py-[10px]">
+                          <div className="truncate text-[13px] font-bold text-[#11120d]">{product.name}</div>
+                          <div className="mt-[2px] truncate text-[11px] font-medium text-[#8C8889]">SKU: {product.sku || "-"}</div>
                         </td>
-                        <td className="px-[16px] py-[12px] text-right">
+                        <td className="px-[14px] py-[10px] text-right">
                           <div className="flex items-center justify-end gap-[8px]">
                             <span className={`text-[14px] font-extrabold ${delta < 0 ? "text-rose-600" : "text-emerald-600"}`}>
                               {delta < 0 ? "-" : "+"}
@@ -2400,22 +2878,22 @@ export default function ProductsPage() {
                                 setStockRows((current) => ({ ...current, [product.id]: Number(event.target.value) }));
                                 setStockLineError("");
                               }}
-                              className="h-[36px] w-[90px] rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-right text-[13px] font-bold outline-none focus:border-[#3B82F6]"
+                              className="h-[34px] w-[84px] rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-right text-[13px] font-bold outline-none focus:border-[#3B82F6]"
                             />
                           </div>
                         </td>
-                        <td className="px-[16px] py-[12px] text-right">
+                        <td className="px-[14px] py-[10px] text-right">
                           <div className="flex items-center justify-end gap-[6px] text-[13px] font-bold">
                             <span className="text-[#8C8889]">{product.stock}</span>
                             <Icon name="arrow_forward" sizePx={14} className="text-[#8C8889]" />
                             <span className={nextStock < 0 ? "text-rose-600" : "text-[#11120d]"}>{nextStock}</span>
                           </div>
                         </td>
-                        <td className="px-[16px] py-[12px] text-right">
+                        <td className="px-[10px] py-[10px] text-right">
                           <button
                             type="button"
                             onClick={() => removeProductFromStockManager(product.id)}
-                            className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#8C8889] hover:bg-[#FEF2F2] hover:text-[#DC2626] transition"
+                            className="flex h-[30px] w-[30px] items-center justify-center rounded-[8px] text-[#8C8889] transition hover:bg-[#FEF2F2] hover:text-[#DC2626]"
                             title="Remove"
                           >
                             <Icon name="close" sizePx={18} />
@@ -2433,19 +2911,36 @@ export default function ProductsPage() {
                   )}
                 </tbody>
               </table>
+              </div>
             </div>
           </div>
 
-          <div className="flex justify-end gap-[12px] pt-[8px]">
-            <DialogButton onClick={closeStockManager}>Cancel</DialogButton>
-            <DialogButton
-              variant="primary"
-              icon="inventory_2"
-              onClick={confirmStockManager}
-              disabled={stockBusy}
-            >
-              {stockBusy ? "Updating..." : "Confirm Movement"}
-            </DialogButton>
+          <div className="sticky bottom-0 z-20 -mx-[4px] border-t border-[#E5E7EB] bg-white/95 px-[4px] pt-[12px] backdrop-blur">
+            <div className="grid grid-cols-[auto_1fr] gap-2 lg:hidden">
+              <button
+                type="button"
+                onClick={mobileStockStep === 1 ? closeStockManager : () => setMobileStockStep((mobileStockStep - 1) as 1 | 2)}
+                disabled={stockBusy}
+                className="h-12 rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[13px] font-extrabold text-[#565449] disabled:opacity-50"
+              >
+                {mobileStockStep === 1 ? "Cancel" : "Back"}
+              </button>
+              <button
+                type="button"
+                onClick={advanceMobileStockMovement}
+                disabled={stockBusy}
+                className="inline-flex h-12 items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 text-[14px] font-extrabold text-white disabled:opacity-50"
+              >
+                {stockBusy ? "Updating..." : mobileStockStep === 1 ? "Next: Add Products" : mobileStockStep === 2 ? "Next: Review Movement" : "Confirm Movement"}
+                {!stockBusy ? <Icon name={mobileStockStep === 3 ? "inventory_2" : "arrow_forward"} className="text-[19px]" /> : null}
+              </button>
+            </div>
+            <div className="hidden justify-end gap-[12px] lg:flex">
+              <DialogButton onClick={closeStockManager}>Cancel</DialogButton>
+              <DialogButton variant="primary" icon="inventory_2" onClick={confirmStockManager} disabled={stockBusy}>
+                {stockBusy ? "Updating..." : "Confirm Movement"}
+              </DialogButton>
+            </div>
           </div>
             </>
           )}
@@ -2455,138 +2950,213 @@ export default function ProductsPage() {
       <ModalFrame
         open={openBulkPrice}
         title="Bulk Price Update"
-        description="Update pricing and margins for selected products simultaneously."
+        description=""
         onClose={() => setOpenBulkPrice(false)}
-        maxWidthClass="max-w-[1000px]"
+        maxWidthClass="max-w-[800px]"
+        mobileFullScreen
       >
         <div className="space-y-[20px]">
-          {/* Reason Input */}
-          <div className="rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC] p-[16px]">
-            <label className="text-[12px] font-bold text-[#565449] mb-[8px] block">Reason for Update</label>
-            <input
-              value={priceReason}
-              onChange={(event) => setPriceReason(event.target.value)}
-              placeholder="e.g. Supplier rate changes, seasonal discount..."
-              className="h-[44px] w-full rounded-[10px] border border-[#CFCFD3] bg-white px-[14px] text-[13px] font-semibold text-[#11120d] outline-none placeholder-[#8C8889] focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
-            />
+          {/* Info Banner */}
+          <div className="bg-[#EFF6FF] border border-[#BFDBFE] rounded-[8px] p-[12px] flex items-start gap-[10px]">
+            <Icon name="info" className="mt-[2px] flex-shrink-0 text-[16px] text-[#2563EB]" />
+            <p className="text-[13px] text-[#1D4ED8]">
+              {isFilteredSelection ? (
+                <>
+                  Updating prices for <span className="font-semibold">all {total.toLocaleString()} matching products</span>. Margin controls will be calculated from each product's base rate.
+                </>
+              ) : (
+                <>
+                  Updating prices for <span className="font-semibold">{selectedProducts.length} selected products</span>. Margin controls will auto-calculate from base rate.
+                </>
+              )}
+            </p>
           </div>
 
-          {/* Margin Application */}
-          <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[16px] shadow-sm">
-            <div className="flex flex-col md:flex-row md:items-center justify-between gap-[16px]">
+          {/* Margin Controls */}
+          <div>
+            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[12px]">Margin Controls</h3>
+            <div className="grid grid-cols-2 items-end gap-[12px] lg:flex lg:items-center lg:gap-[16px]">
               <div className="flex-1">
-                <div className="flex items-center gap-[8px]">
-                  <Icon name="percent" sizePx={18} className="text-[#3B82F6]" />
-                  <div className="text-[14px] font-extrabold text-[#11120d]">
-                    Apply Margins from Rate/Cost
-                  </div>
-                </div>
-                <div className="mt-[4px] text-[12px] font-medium text-[#565449]">
-                  Set global margin percentages to automatically calculate wholesale and retail prices based on each product's base rate.
+                <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">Wholesale Margin %</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={wholesaleMarginPercent}
+                    onChange={(event) => setWholesaleMarginPercent(Number(event.target.value))}
+                    className="w-full h-[38px] px-[12px] pr-[28px] border border-[#CFCFD3] rounded-[8px] text-[13px] font-semibold text-[#11120d] outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                  />
+                  <span className="absolute right-[12px] top-1/2 -translate-y-1/2 text-[#8C8889] text-[13px] font-bold">%</span>
                 </div>
               </div>
-              <div className="flex items-end gap-[12px]">
-                <div className="space-y-[6px]">
-                  <label className="block text-[11px] font-bold text-[#8C8889] uppercase tracking-wider">
-                    Wholesale %
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={wholesaleMarginPercent}
-                      onChange={(event) => setWholesaleMarginPercent(Number(event.target.value))}
-                      className="h-[40px] w-[100px] rounded-[8px] border border-[#CFCFD3] bg-white px-[12px] pr-[28px] text-right text-[14px] font-bold text-[#11120d] outline-none focus:border-[#3B82F6]"
-                    />
-                    <span className="absolute right-[10px] top-[10px] text-[13px] font-bold text-[#8C8889]">%</span>
-                  </div>
+              <div className="flex-1">
+                <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">Retail Margin %</label>
+                <div className="relative">
+                  <input
+                    type="number"
+                    value={retailMarginPercent}
+                    onChange={(event) => setRetailMarginPercent(Number(event.target.value))}
+                    className="w-full h-[38px] px-[12px] pr-[28px] border border-[#CFCFD3] rounded-[8px] text-[13px] font-semibold text-[#11120d] outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+                  />
+                  <span className="absolute right-[12px] top-1/2 -translate-y-1/2 text-[#8C8889] text-[13px] font-bold">%</span>
                 </div>
-                <div className="space-y-[6px]">
-                  <label className="block text-[11px] font-bold text-[#8C8889] uppercase tracking-wider">
-                    Retail %
-                  </label>
-                  <div className="relative">
-                    <input
-                      type="number"
-                      value={retailMarginPercent}
-                      onChange={(event) => setRetailMarginPercent(Number(event.target.value))}
-                      className="h-[40px] w-[100px] rounded-[8px] border border-[#CFCFD3] bg-white px-[12px] pr-[28px] text-right text-[14px] font-bold text-[#11120d] outline-none focus:border-[#3B82F6]"
-                    />
-                    <span className="absolute right-[10px] top-[10px] text-[13px] font-bold text-[#8C8889]">%</span>
-                  </div>
-                </div>
+              </div>
+              {!isFilteredSelection ? (
                 <button
                   type="button"
                   onClick={applyPriceMarginsToSelected}
-                  className="h-[40px] rounded-[8px] bg-[#EFF6FF] px-[16px] text-[13px] font-bold text-[#2563EB] transition hover:bg-[#DBEAFE]"
+                  className="col-span-2 h-[42px] rounded-[8px] bg-[#2563EB] px-[20px] text-[13px] font-bold whitespace-nowrap text-white transition hover:bg-[#1D4ED8] lg:col-auto lg:mt-[20px] lg:h-[38px]"
                 >
                   Apply Margins
                 </button>
-              </div>
+              ) : null}
             </div>
           </div>
 
           {/* Pricing Table */}
-          <div className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white shadow-sm">
-            <div className="grid grid-cols-[minmax(0,1fr)_130px_130px_130px] gap-[12px] border-b border-[#E5E7EB] bg-[#F8FAFC] px-[16px] py-[12px] text-[11px] font-extrabold uppercase tracking-wider text-[#8C8889]">
-              <div>Product</div>
-              <div className="text-right">Base Rate</div>
-              <div className="text-right">Wholesale</div>
-              <div className="text-right">Retail</div>
+          {isFilteredSelection ? (
+            <div className="rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-[14px]">
+              <div className="grid gap-[10px] sm:grid-cols-3">
+                <div className="rounded-[10px] border border-[#E5E7EB] bg-white p-[12px]">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8C8889]">Scope</div>
+                  <div className="mt-[5px] text-[16px] font-black text-[#11120d]">{total.toLocaleString()} products</div>
+                </div>
+                <div className="rounded-[10px] border border-[#E5E7EB] bg-white p-[12px]">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8C8889]">Wholesale margin</div>
+                  <div className="mt-[5px] text-[16px] font-black text-[#11120d]">{wholesaleMarginPercent}%</div>
+                </div>
+                <div className="rounded-[10px] border border-[#E5E7EB] bg-white p-[12px]">
+                  <div className="text-[10px] font-bold uppercase tracking-[0.08em] text-[#8C8889]">Retail margin</div>
+                  <div className="mt-[5px] text-[16px] font-black text-[#11120d]">{retailMarginPercent}%</div>
+                </div>
+              </div>
+              <p className="mt-[10px] text-[12px] font-medium text-[#565449]">
+                This will update every product matching the current Product page filters. Use exact row selection if individual product prices need manual edits.
+              </p>
             </div>
-            <div className="max-h-[380px] overflow-y-auto">
-              {selectedProducts.map((product) => {
-                const row = priceRows[product.id] || {
-                  retailPrice: product.retailPrice,
-                  wholesalePrice: product.wholesalePrice,
-                  ratePerPiece: product.ratePerPiece,
-                };
-                return (
-                  <div
-                    key={product.id}
-                    className="grid grid-cols-[minmax(0,1fr)_130px_130px_130px] items-center gap-[12px] border-b border-[#E5E7EB] px-[16px] py-[12px] last:border-0 hover:bg-[#F8FAFC] transition"
-                  >
+          ) : (
+          <>
+          <div className="space-y-3 lg:hidden">
+            {selectedProducts.map((product) => {
+              const row = priceRows[product.id] || {
+                retailPrice: product.retailPrice,
+                wholesalePrice: product.wholesalePrice,
+                ratePerPiece: product.ratePerPiece,
+              };
+              return (
+                <article key={product.id} className="rounded-[14px] border border-[#E5E7EB] bg-white p-3 shadow-sm">
+                  <div className="flex items-start justify-between gap-3">
                     <div className="min-w-0">
-                      <div className="truncate text-[13px] font-bold text-[#11120d]">
-                        {product.name}
-                      </div>
-                      <div className="mt-[2px] text-[11px] font-medium text-[#565449]">
-                        SKU: {product.sku || "-"}
-                      </div>
+                      <div className="truncate text-[15px] font-extrabold text-[#11120d]">{product.name}</div>
+                      <div className="mt-1 font-mono text-[11px] text-[#8C8889]">SKU: {product.sku || "-"}</div>
                     </div>
-                    {(["ratePerPiece", "wholesalePrice", "retailPrice"] as const).map((key) => (
-                      <div key={key} className="relative">
-                        <span className="absolute left-[10px] top-[10px] text-[12px] font-bold text-[#8C8889]">Rs</span>
-                        <input
-                          type="number"
-                          value={row[key]}
-                          onChange={(event) =>
-                            setPriceRows((current) => ({
-                              ...current,
-                              [product.id]: {
-                                ...(current[product.id] || row),
-                                [key]: Number(event.target.value),
-                              },
-                            }))
-                          }
-                          className="h-[38px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] pl-[30px] text-right text-[13px] font-bold text-[#11120d] outline-none focus:border-[#3B82F6]"
-                        />
-                      </div>
+                    <div className="rounded-[9px] bg-[#F3F4F6] px-2.5 py-1.5 text-right text-[11px] font-bold text-[#565449]">Current retail<br /><span className="text-[13px] text-[#11120d]">NPR {product.retailPrice}</span></div>
+                  </div>
+                  <div className="mt-3 grid gap-3">
+                    {([
+                      ["ratePerPiece", "New rate"],
+                      ["wholesalePrice", "New wholesale"],
+                      ["retailPrice", "New retail"],
+                    ] as const).map(([key, label]) => (
+                      <label key={key} className="grid grid-cols-[1fr_145px] items-center gap-3">
+                        <span className="text-[12px] font-bold text-[#565449]">{label}</span>
+                        <div className="flex h-11 items-center overflow-hidden rounded-[10px] border border-[#BFDBFE] bg-[#EFF6FF]/30">
+                          <span className="border-r border-[#BFDBFE] px-2.5 text-[12px] font-bold text-[#565449]">NPR</span>
+                          <input
+                            type="number"
+                            value={row[key]}
+                            onChange={(event) => setPriceRows((current) => ({ ...current, [product.id]: { ...(current[product.id] || row), [key]: Number(event.target.value) } }))}
+                            className="h-full min-w-0 flex-1 bg-transparent px-2 text-right text-[14px] font-extrabold text-[#11120d] outline-none"
+                          />
+                        </div>
+                      </label>
                     ))}
                   </div>
-                );
-              })}
-            </div>
+                </article>
+              );
+            })}
+          </div>
+          <div className="relative hidden max-h-[55vh] overflow-x-auto overflow-y-auto rounded-[12px] border border-[#E5E7EB] lg:block">
+            <table className="w-full text-[13px]">
+              <thead className="bg-[#F8FAFC] sticky top-0 z-10 shadow-sm">
+                <tr className="text-[11px] font-medium text-[#8C8889] border-b border-[#E5E7EB]">
+                  <th className="text-left py-[8px] px-[12px] font-medium uppercase min-w-[200px] bg-[#F8FAFC]">Product Name</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase bg-[#F8FAFC]">Current Rate (Rs)</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase bg-[#F8FAFC]">Current Wholesale (Rs)</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase border-r border-[#E5E7EB] bg-[#F8FAFC]">Current Retail (Rs)</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase text-[#2563EB] bg-[#F8FAFC]">New Rate (Rs)</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase text-[#2563EB] bg-[#F8FAFC]">New Wholesale (Rs)</th>
+                  <th className="text-center py-[8px] px-[12px] font-medium uppercase text-[#2563EB] bg-[#F8FAFC]">New Retail (Rs)</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-[#E5E7EB]">
+                {selectedProducts.map((product) => {
+                  const row = priceRows[product.id] || {
+                    retailPrice: product.retailPrice,
+                    wholesalePrice: product.wholesalePrice,
+                    ratePerPiece: product.ratePerPiece,
+                  };
+                  return (
+                    <tr key={product.id} className="transition-colors hover:bg-[#ECEFF3]">
+                      <td className="py-[12px] px-[12px]">
+                        <div className="font-bold text-[#11120d]">{product.name}</div>
+                        <div className="text-[11px] text-[#565449] mt-[2px]">SKU: {product.sku || "-"}</div>
+                      </td>
+                      <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50">
+                        {product.ratePerPiece}
+                      </td>
+                      <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50">
+                        {product.wholesalePrice}
+                      </td>
+                      <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50 border-r border-[#E5E7EB]">
+                        {product.retailPrice}
+                      </td>
+                      {(["ratePerPiece", "wholesalePrice", "retailPrice"] as const).map((key) => (
+                        <td key={key} className="py-[12px] px-[12px] text-center w-[120px]">
+                          <div className="relative inline-block w-full">
+                            <input
+                              type="number"
+                              value={row[key]}
+                              onChange={(event) =>
+                                setPriceRows((current) => ({
+                                  ...current,
+                                  [product.id]: {
+                                    ...(current[product.id] || row),
+                                    [key]: Number(event.target.value),
+                                  },
+                                }))
+                              }
+                              className="w-full h-[34px] border border-[#BFDBFE] rounded-[8px] text-[13px] font-bold text-center bg-[#EFF6FF]/30 focus:outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                            />
+                          </div>
+                        </td>
+                      ))}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+          </>
+          )}
+
+          {/* Reason Input */}
+          <div>
+            <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">
+              Reason <span className="text-red-500">*</span> <span className="text-[#8C8889] font-normal">— Required, logged for audit trail</span>
+            </label>
+            <textarea
+              rows={2}
+              value={priceReason}
+              onChange={(event) => setPriceReason(event.target.value)}
+              placeholder="Enter reason for price update..."
+              className="w-full py-[8px] px-[12px] border border-[#CFCFD3] rounded-[8px] text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+            />
           </div>
 
-          <div className="flex justify-end gap-[12px] pt-[8px]">
+          <div className="sticky bottom-0 -mx-4 grid grid-cols-[auto_1fr] gap-2 border-t border-[#E5E7EB] bg-white px-4 pt-3 lg:static lg:mx-0 lg:flex lg:items-center lg:justify-end lg:gap-[12px] lg:border-0 lg:px-0 lg:pt-[8px]">
             <DialogButton onClick={() => setOpenBulkPrice(false)}>Cancel</DialogButton>
-            <DialogButton
-              variant="primary"
-              icon="sell"
-              onClick={confirmBulkPriceUpdate}
-              disabled={priceBusy}
-            >
-              {priceBusy ? "Updating..." : "Confirm Price Update"}
+            <DialogButton variant="primary" icon="sell" onClick={confirmBulkPriceUpdate} disabled={priceBusy}>
+              {priceBusy ? "Updating..." : "Update Prices"}
             </DialogButton>
           </div>
         </div>
@@ -2594,4 +3164,3 @@ export default function ProductsPage() {
     </div>
   );
 }
-

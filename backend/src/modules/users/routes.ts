@@ -19,6 +19,12 @@ const router = Router();
 
 router.use(authGuard); // all user management routes require authentication
 
+router.patch("/me/presence", userController.touchPresence); // heartbeat used by billing/product lookup sessions
+router.get(
+  "/cashiers/presence",
+  requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"),
+  userController.listCashierPresence,
+); // active cashier presence list for draft request routing
 router.get("/", requireRole("ADMIN"), userController.list); // only admin can view user management list
 router.post("/", requireRole("ADMIN"), userController.create); // only admin can create new users
 router.get("/:id/delete-safety", requireRole("ADMIN"), userController.deleteSafety); // explains whether a staff account can be permanently deleted

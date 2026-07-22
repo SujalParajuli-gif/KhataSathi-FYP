@@ -5,6 +5,7 @@ import * as documentService from "./service";
 import {
   createDocumentSchema,
   listDocumentsSchema,
+  updateDocumentMetadataSchema,
   updateDocumentVisibilitySchema,
   ALLOWED_MIME_TYPES,
 } from "./validation";
@@ -184,6 +185,43 @@ export async function updateDocumentVisibilityHandler(req: Request, res: Respons
       return;
     }
     console.error("Update document visibility error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function updateDocumentMetadataHandler(req: Request, res: Response) {
+  try {
+    const parseResult = updateDocumentMetadataSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        error: "Invalid document details",
+        details: parseResult.error.issues.map((i) => i.message),
+      });
+      return;
+    }
+
+    const result = await documentService.updateDocumentMetadata(
+      String(req.params.id),
+      parseResult.data,
+      req.user!.id,
+    );
+
+    res.json({
+      ...result,
+      message: result.changed
+        ? "Document details updated"
+        : "Document details already match",
+    });
+  } catch (err: any) {
+    if (err.message?.includes("not found")) {
+      res.status(404).json({ error: err.message });
+      return;
+    }
+    if (err.message?.includes("Invalid bill date")) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    console.error("Update document metadata error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

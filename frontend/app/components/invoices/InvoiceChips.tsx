@@ -49,14 +49,28 @@ export function PaymentMethodChip({
   className?: string;
 }) {
   const iconName =
-    method === "Cash" ? "payments" : method === "eSewa" ? "qr_code_2" : "block";
+    method === "Cash"
+      ? "payments"
+      : method === "Fonepay" || method === "eSewa"
+        ? "qr_code_2"
+        : method === "Bank Transfer"
+          ? "account_balance"
+          : method === "Mixed"
+            ? "call_split"
+            : "block";
   const label = method === "None" ? "No Payment" : method;
   const tone =
     method === "Cash"
       ? "border-[#8C8889] bg-[#FFFFFF] text-[#000000]"
       : method === "eSewa"
         ? "border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D]"
-        : "border-[#D1D5DB] bg-[#F3F4F6] text-[#6B7280]";
+        : method === "Fonepay"
+          ? "border-[#BFDBFE] bg-[#EFF6FF] text-[#2F67D8]"
+          : method === "Bank Transfer"
+            ? "border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F]"
+            : method === "Mixed"
+              ? "border-[#BFDBFE] bg-[#F8FBFF] text-[#2F67D8]"
+              : "border-[#D1D5DB] bg-[#F3F4F6] text-[#6B7280]";
 
   return (
     <span
@@ -71,4 +85,3 @@ export function PaymentMethodChip({
     </span>
   );
 }
-

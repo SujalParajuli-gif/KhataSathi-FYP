@@ -18,9 +18,9 @@ import { denyStaff, requireRole } from "../../middleware/rbac";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard); // all customer routes require authentication
-router.use(denyStaff);
 
 router.get("/", list); // any authenticated user can view the customer list
+router.use(denyStaff);
 router.post("/cashier-discounted", createDiscountedByCashier); // authorized cashiers can create discounted customers
 router.get("/discount-requests", listDiscountRequests); // admin sees all requests; cashiers see their own requests
 router.post("/discount-requests", createDiscountRequest); // cashiers can request admin approval for discounts

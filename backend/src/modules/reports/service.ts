@@ -12,12 +12,21 @@ import {
 } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
 import {
+  getInvoicePaymentTargetTotal,
+  getRemainingPaymentDue,
+} from "../../lib/money";
+import {
   getBusinessSettings,
   resolveLowStockThreshold,
 } from "../settings/service";
 
 const DAY_MS = 24 * 60 * 60 * 1000; // milliseconds in a day — used for calculating date spans
-const PAYMENT_METHODS: PaymentMethod[] = ["CASH", "ESEWA"]; // all payment methods our system supports
+const PAYMENT_METHODS: PaymentMethod[] = [
+  "CASH",
+  "ESEWA",
+  "FONEPAY",
+  "BANK_TRANSFER",
+]; // all payment methods our system supports
 const INVOICE_PAYMENT_STATUSES: PaymentStatusInvoice[] = [
   "UNPAID",
   "PARTIALLY_PAID",
@@ -636,6 +645,12 @@ function sumSuccessfulPayments(invoice: ReportInvoice) {
   );
 }
 
+function getInvoiceNetRevenueRatio(invoice: ReportInvoice, invoiceRevenue: number) {
+  const subTotal = roundCurrency(Number(invoice.subTotal || 0));
+  if (subTotal <= 0) return 0;
+  return invoiceRevenue / subTotal;
+}
+
 // --
 
 // the main analytics report function — this computes everything the analytics dashboard needs
@@ -781,9 +796,12 @@ export async function getAnalyticsReport(
     else if (invoice.paymentStatus === "PARTIALLY_PAID") partiallyPaidInvoiceCount += 1;
     else unpaidInvoiceCount += 1;
 
-    const invoiceDue = roundCurrency(
-      Math.max(0, invoice.netTotal - effectivePaidTotal),
+    const invoiceRevenue = getInvoicePaymentTargetTotal(invoice.netTotal);
+    const recognizedPaidTotal = roundCurrency(
+      Math.min(invoiceRevenue, effectivePaidTotal),
     );
+    const invoiceDue = getRemainingPaymentDue(invoice.netTotal, recognizedPaidTotal);
+    const netRevenueRatio = getInvoiceNetRevenueRatio(invoice, invoiceRevenue);
     const invoiceItemsSold = sumInvoiceItemQty(invoice);
     const customerKey = invoice.customer?.id || "__walk_in__"; // walk-in customers (no customer record) are grouped together
     const bucketKey = getBucketKey(
@@ -795,8 +813,8 @@ export async function getAnalyticsReport(
     // accumulating summary totals
     grossSales += invoice.subTotal;
     discountTotal += invoice.loyaltyDiscountAmount;
-    netSales += invoice.netTotal;
-    collectedTotal += effectivePaidTotal;
+    netSales += invoiceRevenue;
+    collectedTotal += recognizedPaidTotal;
     dueTotal += invoiceDue;
     itemsSold += invoiceItemsSold;
 
@@ -806,8 +824,8 @@ export async function getAnalyticsReport(
 
     // adding this invoice's metrics to its time bucket for the chart
     if (bucket) {
-      bucket.revenue += invoice.netTotal;
-      bucket.collected += effectivePaidTotal;
+      bucket.revenue += invoiceRevenue;
+      bucket.collected += recognizedPaidTotal;
       bucket.due += invoiceDue;
       bucket.discount += invoice.loyaltyDiscountAmount;
       bucket.invoices += 1;
@@ -816,10 +834,11 @@ export async function getAnalyticsReport(
 
     // accumulating per-product and per-brand metrics from the invoice items
     for (const item of invoice.items) {
+      const itemNetRevenue = roundCurrency(item.lineTotal * netRevenueRatio);
       const existingProduct = productMap.get(item.productId);
       if (existingProduct) {
         existingProduct.qty += item.qty;
-        existingProduct.revenue += item.lineTotal;
+        existingProduct.revenue += itemNetRevenue;
         existingProduct.invoiceCount += 1;
       } else {
         productMap.set(item.productId, {
@@ -829,7 +848,7 @@ export async function getAnalyticsReport(
           brandId: item.product.brand?.id || null,
           brandName: item.product.brand?.name || "Unbranded",
           qty: item.qty,
-          revenue: item.lineTotal,
+          revenue: itemNetRevenue,
           invoiceCount: 1,
         });
       }
@@ -838,14 +857,14 @@ export async function getAnalyticsReport(
       const existingBrand = brandMap.get(brandKey);
       if (existingBrand) {
         existingBrand.qty += item.qty;
-        existingBrand.revenue += item.lineTotal;
+        existingBrand.revenue += itemNetRevenue;
         existingBrand.invoiceCount += 1;
       } else {
         brandMap.set(brandKey, {
           brandId: item.product.brand?.id || null,
           brandName: item.product.brand?.name || "Unbranded",
           qty: item.qty,
-          revenue: item.lineTotal,
+          revenue: itemNetRevenue,
           invoiceCount: 1,
         });
       }
@@ -865,8 +884,8 @@ export async function getAnalyticsReport(
     const existingCustomer = customerMap.get(customerKey);
     if (existingCustomer) {
       existingCustomer.invoiceCount += 1;
-      existingCustomer.revenue += invoice.netTotal;
-      existingCustomer.collected += effectivePaidTotal;
+      existingCustomer.revenue += invoiceRevenue;
+      existingCustomer.collected += recognizedPaidTotal;
       existingCustomer.due += invoiceDue;
       existingCustomer.discount += invoice.loyaltyDiscountAmount;
       existingCustomer.itemsSold += invoiceItemsSold;
@@ -876,8 +895,8 @@ export async function getAnalyticsReport(
         name: invoice.customer?.name || "Walk-in customer",
         phone: invoice.customer?.phone || null,
         invoiceCount: 1,
-        revenue: invoice.netTotal,
-        collected: effectivePaidTotal,
+        revenue: invoiceRevenue,
+        collected: recognizedPaidTotal,
         due: invoiceDue,
         discount: invoice.loyaltyDiscountAmount,
         itemsSold: invoiceItemsSold,
@@ -889,8 +908,8 @@ export async function getAnalyticsReport(
     const existingCashier = cashierMap.get(invoice.cashierId);
     if (existingCashier) {
       existingCashier.invoiceCount += 1;
-      existingCashier.revenue += invoice.netTotal;
-      existingCashier.collected += effectivePaidTotal;
+      existingCashier.revenue += invoiceRevenue;
+      existingCashier.collected += recognizedPaidTotal;
       existingCashier.due += invoiceDue;
       existingCashier.discount += invoice.loyaltyDiscountAmount;
       existingCashier.itemsSold += invoiceItemsSold;
@@ -899,8 +918,8 @@ export async function getAnalyticsReport(
         cashierId: invoice.cashierId,
         name: invoice.cashier?.name || "Unknown cashier",
         invoiceCount: 1,
-        revenue: invoice.netTotal,
-        collected: effectivePaidTotal,
+        revenue: invoiceRevenue,
+        collected: recognizedPaidTotal,
         due: invoiceDue,
         discount: invoice.loyaltyDiscountAmount,
         itemsSold: invoiceItemsSold,

@@ -39,6 +39,8 @@ export type Product = {
   thresholdQtyMode: ThresholdMode;
 
   stock: number;
+  draftRequestedQty?: number;
+  effectiveAvailableStock?: number;
   lowStockThreshold: number; // when stock falls to or below this number, we show a low stock alert
   lowStockThresholdMode: ThresholdMode;
 
@@ -56,6 +58,7 @@ export type ProductsQuery = {
   stockStatus?: "all" | "in" | "low" | "out"; // client-side stock level filter
   status?: "all" | "active" | "inactive"; // active/inactive filter
   lowOnly?: boolean;
+  includeDraftReservations?: boolean;
   page?: number;
   pageSize?: number;
 };

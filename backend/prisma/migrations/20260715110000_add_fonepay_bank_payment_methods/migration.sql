@@ -1,0 +1,5 @@
+ALTER TABLE `Payment`
+  MODIFY `method` ENUM('CASH', 'ESEWA', 'FONEPAY', 'BANK_TRANSFER') NOT NULL;
+
+ALTER TABLE `ReturnRequest`
+  MODIFY `refundMethod` ENUM('CASH', 'ESEWA', 'FONEPAY', 'BANK_TRANSFER') NULL;

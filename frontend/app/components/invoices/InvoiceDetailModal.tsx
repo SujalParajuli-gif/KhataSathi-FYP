@@ -1,10 +1,12 @@
-import React, { useEffect } from "react";
+import React from "react";
 import type { ReactNode } from "react";
+import { createPortal } from "react-dom";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
 } from "~/components/invoices/InvoiceChips";
 import Icon from "~/components/ui/Icon";
+import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import type { AppInvoice } from "~/lib/invoices";
 import {
   formatNpr,
@@ -34,20 +36,14 @@ export default function InvoiceDetailModal({
   onVoidPayment,
   voidingPaymentId,
 }: Props) {
-  useEffect(() => {
-    if (open) {
-      const original = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = original;
-      };
-    }
-  }, [open]);
+  useBodyScrollLock(open);
 
-  if (!open || !invoice) return null; // do not render anything when closed or missing data
+  if (!open || !invoice || typeof document === "undefined") return null;
 
-  return (
-    <div className="fixed inset-0 z-[60]">
+  const totalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);
+
+  return createPortal(
+    <div className="fixed inset-0 z-[80]">
       {/* modal backdrop — click to close */}
       <button
         type="button"
@@ -56,13 +52,20 @@ export default function InvoiceDetailModal({
         aria-label="Close"
       />
 
-      <div className="absolute left-1/2 top-1/2 max-h-[92vh] w-[980px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 overflow-hidden rounded-[20px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] ">
+      <div
+        role="dialog"
+        aria-modal="true"
+        aria-label={`Invoice ${invoice.invoiceNo}`}
+        className="absolute left-1/2 top-1/2 flex max-h-[90vh] w-[1120px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-xl"
+      >
         {/* modal header — shows invoice number, customer name, and status */}
-        <div className="flex items-start justify-between gap-[12px] border-b-[2px] border-[#E5E7EB] p-[20px]">
+        <div className="flex items-start justify-between gap-[12px] border-b border-[#E5E7EB] p-4">
           <div>
-            <div className="text-[12px] font-bold text-[#8C8889]">Invoice</div>
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
+              Invoice
+            </div>
             <div className="text-[18px] font-extrabold text-[#000000]">
-              {invoice.invoiceNo} | {invoice.customerName}
+              {invoice.invoiceNo}
             </div>
             <div className="mt-[4px] text-[12px] text-[#8C8889]">
               Cashier: <span className="font-bold">{invoice.cashierName}</span> |{" "}
@@ -77,7 +80,7 @@ export default function InvoiceDetailModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+              className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
               aria-label="Close"
             >
               <Icon name="close" />
@@ -86,12 +89,54 @@ export default function InvoiceDetailModal({
         </div>
 
         {/* modal body — grid split into left (items, payments) and right (summary) columns */}
-        <div className="grid max-h-[80vh] grid-cols-12 gap-[20px] overflow-y-auto p-[20px]">
+        <div className="grid gap-3 border-b border-[#E5E7EB] bg-[#FFFFFF] p-3 md:grid-cols-3">
+          <div className="flex items-center gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#EFF6FF] text-[#2F67D8]">
+              <Icon name="shopping_cart" />
+            </div>
+            <div>
+              <div className="text-[13px] font-extrabold text-[#000000]">
+                {invoice.items.length} line(s)
+              </div>
+              <div className="text-[12px] font-bold text-[#8C8889]">
+                Total qty: {totalUnits}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#FFFFFF] text-[#2F67D8]">
+              <Icon name="person" />
+            </div>
+            <div className="min-w-0">
+              <div className="truncate text-[13px] font-extrabold text-[#000000]">
+                {invoice.customerName}
+              </div>
+              <div className="truncate text-[12px] font-bold text-[#8C8889]">
+                {invoice.customerSubtitle}
+              </div>
+            </div>
+          </div>
+          <div className="flex items-center gap-3 rounded-[14px] border border-[#2F67D8] bg-[#EFF6FF] p-3">
+            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-[#2F67D8] text-white">
+              <span className="text-[12px] font-extrabold">Rs.</span>
+            </div>
+            <div>
+              <div className="text-[12px] font-extrabold text-[#565449]">
+                Net total
+              </div>
+              <div className="font-mono text-[18px] font-extrabold text-[#2F67D8]">
+                {formatNpr(invoice.netTotal)}
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div className="grid max-h-[calc(90vh-188px)] grid-cols-12 gap-4 overflow-y-auto bg-[#FFFFFF] p-4">
           {/* left column */}
-          <div className="col-span-12 space-y-[16px] xl:col-span-7">
+          <div className="col-span-12 space-y-3 xl:col-span-8">
             {/* items table */}
-            <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
-              <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
+            <div className="overflow-hidden rounded-[16px] border border-[#DADDE3]">
+              <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[12px]">
                 <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
                   Items
                 </div>
@@ -100,7 +145,7 @@ export default function InvoiceDetailModal({
                 </div>
               </div>
 
-              <div className="p-[8px]">
+              <div className="p-2">
                 {invoice.items.length === 0 ? (
                   <div className="px-[12px] py-[20px] text-[13px] text-[#8C8889]">
                     No items recorded for this invoice.
@@ -109,7 +154,7 @@ export default function InvoiceDetailModal({
                   invoice.items.map((item) => (
                     <div
                       key={item.id}
-                      className="flex items-center justify-between gap-[12px] rounded-[12px] px-[12px] py-[8px] transition hover:bg-[#F3F4F6]"
+                      className="flex items-center justify-between gap-3 rounded-[12px] px-3 py-3 transition hover:bg-[#F3F4F6]"
                     >
                       <div className="min-w-0">
                         <div className="truncate font-bold text-[#000000]">
@@ -150,26 +195,26 @@ export default function InvoiceDetailModal({
             </div>
 
             {/* brief payment summary block */}
-            <div className="rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] p-[16px]">
+            <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-3 shadow-sm">
               <div className="flex items-center justify-between text-[13px]">
                 <span className="font-bold text-[#8C8889]">Payment summary</span>
                 <PaymentMethodChip method={invoice.paymentMethod} showIcon />
               </div>
 
-              <div className="mt-[12px] grid grid-cols-1 gap-[12px] md:grid-cols-3">
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-3">
+                <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
                   <div className="font-bold text-[#8C8889]">Paid</div>
                   <div className="mt-[4px] font-mono font-extrabold text-[#000000]">
                     {formatNpr(invoice.paidAmount)}
                   </div>
                 </div>
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+                <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
                   <div className="font-bold text-[#8C8889]">Due</div>
                   <div className="mt-[4px] font-mono font-extrabold text-[#000000]">
                     {formatNpr(invoice.dueAmount)}
                   </div>
                 </div>
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-[12px]">
+                <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
                   <div className="font-bold text-[#8C8889]">Status</div>
                   <div className="mt-[8px]">
                     <InvoiceStatusChip status={invoice.status} />
@@ -180,7 +225,7 @@ export default function InvoiceDetailModal({
 
             {/* cancellation details — only shown if the invoice status is Cancelled */}
             {invoice.status === "Cancelled" ? (
-              <div className="rounded-[16px] border-[2px] border-rose-200 bg-rose-50 p-[16px]">
+              <div className="rounded-[16px] border border-rose-200 bg-rose-50 p-[16px]">
                 <div className="text-[12px] font-extrabold uppercase text-rose-700">
                   Cancellation Details
                 </div>
@@ -210,8 +255,8 @@ export default function InvoiceDetailModal({
             ) : null}
 
             {invoice.creditNotes.length > 0 ? (
-              <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF]">
-                <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
+              <div className="overflow-hidden rounded-[16px] border border-[#F6D28B] bg-[#FFFFFF] shadow-sm">
+                <div className="flex items-center justify-between border-b border-[#F6D28B] bg-[#FFF7E8] px-[16px] py-[12px]">
                   <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                     Credit note history
                   </div>
@@ -234,7 +279,7 @@ export default function InvoiceDetailModal({
                               : `Created from ${note.originalInvoiceNo || "-"}`}
                           </div>
                         </div>
-                        <div className="rounded-[999px] border border-[#CFCFD3] bg-[#F3F4F6] px-[10px] py-[4px] text-[10px] font-extrabold uppercase text-[#565449]">
+                        <div className="rounded-[999px] border border-[#F6D28B] bg-[#FFFFFF] px-[10px] py-[4px] text-[10px] font-extrabold uppercase text-[#B7791F]">
                           {note.direction === "ORIGINAL" ? "Original" : "Replacement"}
                         </div>
                       </div>
@@ -280,8 +325,8 @@ export default function InvoiceDetailModal({
             ) : null}
 
             {/* payment history list */}
-            <div className="overflow-hidden rounded-[16px] border-[2px] border-[#CFCFD3]">
-              <div className="flex items-center justify-between border-b-[2px] border-[#CFCFD3] bg-[#F3F4F6] px-[16px] py-[12px]">
+            <div className="overflow-hidden rounded-[16px] border border-[#DADDE3]">
+              <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[12px]">
                 <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
                   Payment breakdown
                 </div>
@@ -299,7 +344,7 @@ export default function InvoiceDetailModal({
                   invoice.payments.map((payment) => (
                     <div
                       key={payment.id}
-                      className="grid grid-cols-1 gap-[12px] px-[16px] py-[12px] text-[12px] md:grid-cols-[280px_150px_160px_1fr]"
+                    className="grid grid-cols-1 gap-3 px-4 py-3 text-[12px] md:grid-cols-[minmax(220px,1fr)_130px_110px_minmax(150px,1fr)]"
                     >
                       <div>
                         <div className="font-bold text-[#000000]">
@@ -387,14 +432,15 @@ export default function InvoiceDetailModal({
           </div>
 
           {/* right column — financial summary and actions */}
-          <div className="col-span-12 xl:col-span-5">
-            <div className="rounded-[16px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] p-[20px]">
-              <div className="text-[12px] font-extrabold uppercase  text-[#565449]">
-                Summary
+          <div className="col-span-12 xl:col-span-4">
+            <div className="sticky top-0 rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
+              <div className="flex items-center gap-2 text-[12px] font-extrabold uppercase tracking-[0.06em] text-[#565449]">
+                <Icon name="receipt_long" className="text-[18px] text-[#2F67D8]" />
+                Financial summary
               </div>
 
               {/* financial totals */}
-              <div className="mt-[16px] space-y-[12px] text-[13px]">
+              <div className="mt-4 space-y-3 text-[13px]">
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Subtotal</span>
                   <span className="font-mono font-extrabold text-[#000000]">
@@ -407,9 +453,9 @@ export default function InvoiceDetailModal({
                     -{formatNpr(invoice.discount)}
                   </span>
                 </div>
-                <div className="flex justify-between">
-                  <span className="font-bold text-[#8C8889]">Net total</span>
-                  <span className="font-mono font-extrabold text-[#000000]">
+                <div className="flex items-center justify-between rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] px-3 py-2">
+                  <span className="font-extrabold text-[#565449]">Net total</span>
+                  <span className="font-mono text-[16px] font-extrabold text-[#000000]">
                     {formatNpr(invoice.netTotal)}
                   </span>
                 </div>
@@ -428,21 +474,8 @@ export default function InvoiceDetailModal({
 
                 <div className="my-[8px] border-t border-dashed border-[#CFCFD3]" />
 
-                {/* customer info card */}
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] p-[12px]">
-                  <div className="text-[12px] font-bold text-[#565449]">
-                    Customer
-                  </div>
-                  <div className="mt-[4px] font-extrabold text-[#000000]">
-                    {invoice.customerName}
-                  </div>
-                  <div className="mt-[4px] text-[12px] text-[#8C8889]">
-                    {invoice.customerSubtitle}
-                  </div>
-                </div>
-
                 {invoice.notes ? (
-                  <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8F9FA] p-[12px]">
+                  <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-[12px]">
                     <div className="text-[12px] font-bold text-[#565449]">
                       Invoice note
                     </div>
@@ -458,7 +491,7 @@ export default function InvoiceDetailModal({
                   <button
                     type="button"
                     onClick={() => openInvoicePrint(invoice.id)}
-                    className="flex h-[44px] items-center justify-center gap-[8px] rounded-[14px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]"
+                    className="flex h-[44px] items-center justify-center gap-[8px] rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]"
                   >
                     <Icon name="print" />
                     Print Invoice
@@ -466,7 +499,7 @@ export default function InvoiceDetailModal({
                   <button
                     type="button"
                     onClick={() => openInvoiceReceiptPrint(invoice.id)}
-                    className="flex h-[44px] items-center justify-center gap-[8px] rounded-[14px] border-[2px] border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]"
+                    className="flex h-[44px] items-center justify-center gap-[8px] rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]"
                   >
                     <Icon name="receipt_long" />
                     Receipt Print
@@ -487,6 +520,7 @@ export default function InvoiceDetailModal({
           </div>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

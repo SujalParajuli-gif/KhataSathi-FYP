@@ -26,6 +26,22 @@ type ProductLookup = {
     stock: number;
 };
 
+function normalizePositiveStockQty(value: unknown, label: string) {
+    const qty = Number(value);
+    if (!Number.isFinite(qty) || qty <= 0) {
+        throw new Error(`${label} must be greater than zero`);
+    }
+    return Math.round(qty * 1000) / 1000;
+}
+
+function normalizeStockDelta(value: unknown) {
+    const qtyDelta = Number(value);
+    if (!Number.isFinite(qtyDelta) || qtyDelta === 0) {
+        throw new Error("Stock adjustment quantity cannot be zero");
+    }
+    return Math.round(qtyDelta * 1000) / 1000;
+}
+
 // adding stock to a product — used when new inventory arrives
 // we wrap this in a transaction because the stock update, stock transaction log, and audit log
 // all need to succeed together or fail together
@@ -35,22 +51,26 @@ export async function restockProduct(
     reason: string,
     userId: string
 ) {
-    const product = await prisma.product.findUnique({ where: { id: productId } });
+    const normalizedProductId = String(productId || "").trim();
+    if (!normalizedProductId) throw new Error("Product is required");
+    const normalizedQty = normalizePositiveStockQty(qty, "Restock quantity");
+
+    const product = await prisma.product.findUnique({ where: { id: normalizedProductId } });
     if (!product) throw new Error("Product not found");
 
     await prisma.$transaction(async (tx) => {
         // increasing the product's stock by the given quantity
         await tx.product.update({
-            where: { id: productId },
-            data: { stock: { increment: qty } },
+            where: { id: normalizedProductId },
+            data: { stock: { increment: normalizedQty } },
         });
 
         // recording the stock change as a RESTOCK transaction so we can track it in history
         await tx.stockTransaction.create({
             data: {
-                productId,
+                productId: normalizedProductId,
                 type: "RESTOCK",
-                qtyDelta: qty, // positive value because stock is being added
+                qtyDelta: normalizedQty, // positive value because stock is being added
                 reason: reason || "Manual restock",
                 createdById: userId,
             },
@@ -62,14 +82,14 @@ export async function restockProduct(
                 actorId: userId,
                 action: "PRODUCT_RESTOCKED",
                 entityType: "Product",
-                entityId: productId,
-                meta: { productName: product.name, qty, reason },
+                entityId: normalizedProductId,
+                meta: { productName: product.name, qty: normalizedQty, reason },
             },
         });
     });
 
     // fetching the updated product and applying business thresholds before returning
-    const updatedProduct = await prisma.product.findUnique({ where: { id: productId } });
+    const updatedProduct = await prisma.product.findUnique({ where: { id: normalizedProductId } });
     if (!updatedProduct) return updatedProduct;
 
     const settings = await getBusinessSettings();
@@ -79,15 +99,32 @@ export async function restockProduct(
 // manually adjusting stock — the delta can be positive (adding) or negative (removing)
 // we use this for corrections like damaged goods, counting errors, or manual fixes
 export async function receiveStockBatch(input: ReceiveStockBatchInput, userId: string) {
-    const supplierName = input.supplierName.trim();
+    const supplierName = String(input.supplierName || "").trim();
     if (!supplierName) throw new Error("Supplier name is required");
 
-    const lines = input.lines
-        .map((line) => ({
-            productId: String(line.productId || "").trim(),
-            qty: Number(line.qty),
-        }))
-        .filter((line) => line.productId && Number.isFinite(line.qty) && line.qty > 0);
+    if (!Array.isArray(input.lines) || input.lines.length === 0) {
+        throw new Error("At least one received product quantity is required");
+    }
+
+    if (input.billAmount !== undefined && input.billAmount !== null) {
+        const billAmount = Number(input.billAmount);
+        if (!Number.isFinite(billAmount) || billAmount < 0) {
+            throw new Error("Bill amount cannot be negative");
+        }
+    }
+
+    const mergedLinesByProduct = new Map<string, number>();
+    input.lines.forEach((line, index) => {
+        const productId = String(line?.productId || "").trim();
+        if (!productId) throw new Error(`Product is required for received line ${index + 1}`);
+        const qty = normalizePositiveStockQty(line?.qty, `Received quantity for line ${index + 1}`);
+        mergedLinesByProduct.set(productId, (mergedLinesByProduct.get(productId) || 0) + qty);
+    });
+
+    const lines = Array.from(mergedLinesByProduct.entries()).map(([productId, qty]) => ({
+        productId,
+        qty: normalizePositiveStockQty(qty, "Received quantity"),
+    }));
 
     if (lines.length === 0) {
         throw new Error("At least one received product quantity is required");
@@ -277,29 +314,56 @@ export async function adjustStock(
     reason: string,
     userId: string
 ) {
-    const product = await prisma.product.findUnique({ where: { id: productId } });
+    const normalizedProductId = String(productId || "").trim();
+    if (!normalizedProductId) throw new Error("Product is required");
+    const normalizedDelta = normalizeStockDelta(qtyDelta);
+
+    const product = await prisma.product.findUnique({ where: { id: normalizedProductId } });
     if (!product) throw new Error("Product not found");
 
     // checking that the adjustment will not make stock go below 0
     // we do not allow negative stock values in the system
-    if (product.stock + qtyDelta < 0) {
-        throw new Error(`Adjustment would result in negative stock. Current: ${product.stock}, delta: ${qtyDelta}`);
+    if (product.stock + normalizedDelta < 0) {
+        throw new Error(`Adjustment would result in negative stock. Current: ${product.stock}, delta: ${normalizedDelta}`);
     }
 
     await prisma.$transaction(async (tx) => {
         // applying the stock adjustment (increment works for both positive and negative values)
-        const updated = await tx.product.update({
-            where: { id: productId },
-            data: { stock: { increment: qtyDelta } },
+        const updatedCount =
+            normalizedDelta < 0
+                ? await tx.product.updateMany({
+                    where: {
+                        id: normalizedProductId,
+                        stock: { gte: Math.abs(normalizedDelta) },
+                    },
+                    data: { stock: { increment: normalizedDelta } },
+                })
+                : await tx.product.updateMany({
+                    where: { id: normalizedProductId },
+                    data: { stock: { increment: normalizedDelta } },
+                });
+
+        if (updatedCount.count !== 1) {
+            const latestProduct = await tx.product.findUnique({
+                where: { id: normalizedProductId },
+                select: { stock: true },
+            });
+            throw new Error(
+                `Adjustment would result in negative stock. Current: ${latestProduct?.stock ?? 0}, delta: ${normalizedDelta}`,
+            );
+        }
+
+        const updated = await tx.product.findUniqueOrThrow({
+            where: { id: normalizedProductId },
             select: { stock: true },
         });
 
         // recording the adjustment as an ADJUSTMENT type stock transaction
         await tx.stockTransaction.create({
             data: {
-                productId,
+                productId: normalizedProductId,
                 type: "ADJUSTMENT",
-                qtyDelta, // can be positive or negative
+                qtyDelta: normalizedDelta, // can be positive or negative
                 reason: reason || "Manual adjustment",
                 createdById: userId,
             },
@@ -311,10 +375,10 @@ export async function adjustStock(
                 actorId: userId,
                 action: "STOCK_ADJUSTED",
                 entityType: "Product",
-                entityId: productId,
+                entityId: normalizedProductId,
                 meta: {
                     productName: product.name,
-                    qtyDelta,
+                    qtyDelta: normalizedDelta,
                     previousStock: product.stock,
                     nextStock: updated.stock,
                     reason,
@@ -323,7 +387,7 @@ export async function adjustStock(
         });
     });
 
-    const updatedProduct = await prisma.product.findUnique({ where: { id: productId } });
+    const updatedProduct = await prisma.product.findUnique({ where: { id: normalizedProductId } });
     if (!updatedProduct) return updatedProduct;
 
     const settings = await getBusinessSettings();

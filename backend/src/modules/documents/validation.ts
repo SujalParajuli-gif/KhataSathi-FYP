@@ -69,3 +69,19 @@ export const updateDocumentVisibilitySchema = z.object({
 export type UpdateDocumentVisibilityInput = z.infer<
   typeof updateDocumentVisibilitySchema
 >;
+
+export const updateDocumentMetadataSchema = z.object({
+  documentType: z.enum(DOCUMENT_TYPES).optional(),
+  supplierName: z.string().max(255).nullable().optional(),
+  billNumber: z.string().max(100).nullable().optional(),
+  billDate: z.string().nullable().optional(),
+  billAmount: z.preprocess(
+    (value) => (value === "" ? null : value),
+    z.union([z.coerce.number().min(0), z.null()]).optional(),
+  ),
+  remarks: z.string().max(2000).nullable().optional(),
+});
+
+export type UpdateDocumentMetadataInput = z.infer<
+  typeof updateDocumentMetadataSchema
+>;

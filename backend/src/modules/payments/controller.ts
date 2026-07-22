@@ -1,5 +1,5 @@
 import { Request, Response } from "express";
-import { buildEsewaResultUrl, getEsewaConfig } from "./esewa";
+import { getPaymentGateway } from "./gateways";
 import {
   SUPPORTED_PAYMENT_METHODS,
   type SupportedPaymentMethod,
@@ -10,8 +10,7 @@ import { voidPaymentBodySchema } from "./validation";
 
 // building a redirect URL for eSewa failures — this sends the user to the frontend result page with an error message
 function buildGenericEsewaFailureRedirect(message: string) {
-  const config = getEsewaConfig();
-  return buildEsewaResultUrl(config.frontendBaseUrl, {
+  return getPaymentGateway("ESEWA").buildResultRedirect({
     status: "failed",
     message,
   });

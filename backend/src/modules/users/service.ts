@@ -1,7 +1,9 @@
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
+import { reconcileProfileImages } from "../../lib/profileImages";
 
 export type ManagedUserRole = "ADMIN" | "MANAGER" | "CASHIER" | "STAFF";
+export const PRESENCE_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
 
 export type UserDeleteSafety = {
   userId: string;
@@ -39,13 +41,23 @@ type UpdateUserInput = {
   profileImage?: string | null;
 };
 
+export function isPresenceActive(
+  lastPresenceAt?: Date | string | null,
+  now: Date = new Date(),
+) {
+  if (!lastPresenceAt) return false;
+  const lastSeen = new Date(lastPresenceAt).getTime();
+  if (!Number.isFinite(lastSeen)) return false;
+  return now.getTime() - lastSeen <= PRESENCE_ACTIVE_WINDOW_MS;
+}
+
 // listing all users, with optional role filter to show only admins or only cashiers
 // we exclude the passwordHash field from the results to keep it secure
 export async function listUsers(query?: { role?: ManagedUserRole }) {
   const where: any = {};
   if (query?.role) where.role = query.role; // adding role filter only if it was provided
 
-  return prisma.user.findMany({
+  const users = await prisma.user.findMany({
     where,
     orderBy: { createdAt: "desc" }, // newest users first
     select: {
@@ -58,10 +70,13 @@ export async function listUsers(query?: { role?: ManagedUserRole }) {
       role: true,
       isActive: true,
       lastLogin: true,
+      lastPresenceAt: true,
       profileImage: true,
       createdAt: true,
     },
   });
+
+  return reconcileProfileImages(users);
 }
 
 // creating a new user record in the database
@@ -88,6 +103,7 @@ export async function createUser(data: CreateUserInput) {
       role: true,
       isActive: true,
       lastLogin: true,
+      lastPresenceAt: true,
       profileImage: true,
       createdAt: true,
     },
@@ -128,6 +144,7 @@ export async function updateUser(id: string, data: UpdateUserInput) {
       role: true,
       isActive: true,
       lastLogin: true,
+      lastPresenceAt: true,
       profileImage: true,
       createdAt: true,
     },
@@ -161,6 +178,7 @@ export async function uploadUserPhoto(id: string, photoUrl: string) {
       role: true,
       isActive: true,
       lastLogin: true,
+      lastPresenceAt: true,
       profileImage: true,
       createdAt: true,
     },
@@ -170,6 +188,77 @@ export async function uploadUserPhoto(id: string, photoUrl: string) {
   await deleteReplacedUpload(existingUser?.profileImage, user.profileImage);
 
   return user;
+}
+
+export async function touchUserPresence(id: string) {
+  const lastPresenceAt = new Date();
+  const user = await prisma.user.update({
+    where: { id },
+    data: { lastPresenceAt },
+    select: {
+      id: true,
+      name: true,
+      role: true,
+      isActive: true,
+      lastPresenceAt: true,
+    },
+  });
+
+  return {
+    ...user,
+    isPresent: isPresenceActive(user.lastPresenceAt, lastPresenceAt),
+  };
+}
+
+export async function listCashierPresence() {
+  const now = new Date();
+  const onlineSince = new Date(now.getTime() - PRESENCE_ACTIVE_WINDOW_MS);
+  const cashiers = await prisma.user.findMany({
+    where: { role: "CASHIER", isActive: true },
+    orderBy: [{ lastPresenceAt: "desc" }, { name: "asc" }],
+    select: {
+      id: true,
+      name: true,
+      email: true,
+      phone: true,
+      isActive: true,
+      lastPresenceAt: true,
+    },
+  });
+  const cashierIds = cashiers.map((cashier) => cashier.id);
+  const [openDrawers, pendingDraftGroups] = await Promise.all([
+    prisma.cashDrawer.findMany({
+      where: { cashierId: { in: cashierIds }, status: "OPEN" },
+      select: { id: true, cashierId: true, openedAt: true },
+    }),
+    prisma.billingDraftRequest.groupBy({
+      by: ["assignedCashierId"],
+      where: {
+        assignedCashierId: { in: cashierIds },
+        status: { in: ["PENDING", "MODIFIED"] },
+      },
+      _count: { _all: true },
+    }),
+  ]);
+  const drawerByCashierId = new Map<
+    string,
+    { id: string; cashierId: string; openedAt: Date }
+  >(openDrawers.map((drawer) => [drawer.cashierId, drawer]));
+  const pendingByCashierId = new Map<string, number>(
+    pendingDraftGroups
+      .filter((group) => group.assignedCashierId)
+      .map((group) => [group.assignedCashierId!, group._count._all]),
+  );
+
+  return cashiers.map((cashier) => ({
+    ...cashier,
+    isPresent:
+      cashier.lastPresenceAt !== null && cashier.lastPresenceAt >= onlineSince,
+    hasOpenDrawer: drawerByCashierId.has(cashier.id),
+    openDrawerId: drawerByCashierId.get(cashier.id)?.id || null,
+    openDrawerOpenedAt: drawerByCashierId.get(cashier.id)?.openedAt || null,
+    pendingDraftRequestCount: pendingByCashierId.get(cashier.id) || 0,
+  }));
 }
 
 export async function getUserDeleteSafety(
@@ -214,6 +303,9 @@ export async function getUserDeleteSafety(
     createdDiscountRequests,
     reviewedDiscountRequests,
     priceOverrideAuthorizations,
+    createdDraftRequests,
+    assignedDraftRequests,
+    acceptedDraftRequests,
     cashierPrivilege,
     userAlertReads,
     overridePinAttempts,
@@ -244,6 +336,9 @@ export async function getUserDeleteSafety(
     prisma.customerDiscountRequest.count({ where: { requestedById: id } }),
     prisma.customerDiscountRequest.count({ where: { reviewedById: id } }),
     prisma.priceOverrideAuthorization.count({ where: { cashierId: id } }),
+    prisma.billingDraftRequest.count({ where: { createdById: id } }),
+    prisma.billingDraftRequest.count({ where: { assignedCashierId: id } }),
+    prisma.billingDraftRequest.count({ where: { acceptedById: id } }),
     prisma.cashierPrivilege.count({ where: { userId: id } }),
     prisma.userAlertRead.count({ where: { userId: id } }),
     prisma.overridePinAttempt.count({ where: { userId: id } }),
@@ -277,6 +372,9 @@ export async function getUserDeleteSafety(
     { label: "customer discount request(s) created", count: createdDiscountRequests },
     { label: "customer discount request(s) reviewed", count: reviewedDiscountRequests },
     { label: "price override authorization(s)", count: priceOverrideAuthorizations },
+    { label: "draft request(s) created", count: createdDraftRequests },
+    { label: "draft request(s) assigned", count: assignedDraftRequests },
+    { label: "draft request(s) accepted", count: acceptedDraftRequests },
   ].filter((item) => item.count > 0);
 
   const supportCleanup = [

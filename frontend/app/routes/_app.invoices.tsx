@@ -1,13 +1,23 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
 } from "~/components/invoices/InvoiceChips";
 import { ConfirmDialog } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
+import {
+  ActiveFilterChips,
+  MobileFilterButton,
+  MobileFilterSheet,
+  MobileFilterTabs,
+  type MobileFilterChip,
+} from "~/components/ui/MobileFilters";
 import PaginationBar from "~/components/ui/PaginationBar";
 import { useToast } from "~/components/ui/Toast";
 import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
+import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import {
   addPaymentApi,
   approveReturnRequestApi,
@@ -31,6 +41,7 @@ import {
   type ReturnStatusCode,
 } from "~/lib/api/endpoints";
 import { getAuthUser } from "~/lib/auth";
+import { isRateLimitError } from "~/lib/api/client";
 import { submitEsewaForm } from "~/lib/esewa";
 import type {
   AppInvoice,
@@ -91,22 +102,23 @@ function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
-async function fetchAllInvoices(filters?: Record<string, unknown>) {
-  const pageSize = 200;
-  let page = 1;
-  let total = 0;
-  const collected: any[] = [];
+// this converts a date input value into a local date boundary so invoice date filters
+// include the full selected "to" day instead of ending at midnight.
+function buildLocalDateBoundary(value: string, endOfDay = false) {
+  if (!value) return null;
 
-  do {
-    const data = await listInvoicesApi({ ...filters, page, pageSize });
-    const batch = Array.isArray(data?.invoices) ? data.invoices : [];
-    collected.push(...batch);
-    total = Number(data?.total ?? collected.length);
-    page += 1;
-    if (batch.length === 0) break;
-  } while (collected.length < total);
+  const [year, month, day] = value.split("-").map(Number);
+  if (!year || !month || !day) return null;
 
-  return collected.map(normalizeInvoice);
+  return new Date(
+    year,
+    month - 1,
+    day,
+    endOfDay ? 23 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 59 : 0,
+    endOfDay ? 999 : 0,
+  );
 }
 
 // this builds a short string summarizing the items in the invoice (e.g., "Apple x2 + 3 more")
@@ -640,10 +652,10 @@ function InvoiceModifyModal({
         onClick={onClose}
         aria-label="Close"
       />
-      <div className="absolute left-1/2 top-1/2 flex max-h-[92vh] w-[1180px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border-2 border-[#CFCFD3] bg-[#FFFFFF]">
-        <div className="flex flex-col gap-4 border-b border-[#CFCFD3] p-5 lg:flex-row lg:items-center lg:justify-between">
+      <div className="absolute left-1/2 top-1/2 flex max-h-[90vh] w-[1160px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-xl">
+        <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 lg:flex-row lg:items-center lg:justify-between">
           <div className="min-w-0">
-            <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
               Modify finalized invoice
             </div>
             <div className="mt-1 truncate text-[20px] font-extrabold text-[#000000]">
@@ -661,7 +673,7 @@ function InvoiceModifyModal({
             <button
               type="button"
               onClick={onClose}
-              className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#CFCFD3]"
+              className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
               aria-label="Close"
             >
               <Icon name="close" />
@@ -669,11 +681,11 @@ function InvoiceModifyModal({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_360px]">
+        <div className="max-h-[calc(90vh-138px)] overflow-y-auto bg-[#FFFFFF] p-4">
+          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
             <div className="min-w-0 space-y-4">
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF]">
-                <div className="flex flex-col gap-3 border-b border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3 md:flex-row md:items-center md:justify-between">
+              <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+                <div className="flex flex-col gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3 md:flex-row md:items-center md:justify-between">
                   <div>
                     <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                       Add replacement item
@@ -820,8 +832,8 @@ function InvoiceModifyModal({
                 ) : null}
               </div>
 
-              <div className="overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF]">
-                <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3">
+              <div className="overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+                <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
                   <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                     Replacement items
                   </div>
@@ -831,8 +843,8 @@ function InvoiceModifyModal({
                 </div>
 
                 <div className="overflow-x-auto">
-                  <div className="min-w-[760px]">
-                    <div className="grid grid-cols-[minmax(260px,1fr)_120px_132px_130px_44px] gap-3 border-b border-[#E5E7EB] px-4 py-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
+                  <div className="min-w-[620px]">
+                    <div className="grid grid-cols-[minmax(220px,1fr)_110px_120px_120px_40px] gap-3 border-b border-[#E5E7EB] px-4 py-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
                       <div>Item</div>
                       <div>Unit</div>
                       <div>Qty</div>
@@ -844,7 +856,7 @@ function InvoiceModifyModal({
                       {lines.map((line) => (
                         <div
                           key={line.productId}
-                          className="grid grid-cols-[minmax(260px,1fr)_120px_132px_130px_44px] items-center gap-3 px-4 py-3"
+                          className="grid grid-cols-[minmax(220px,1fr)_110px_120px_120px_40px] items-center gap-3 px-4 py-3"
                         >
                           <div className="min-w-0">
                             <div className="truncate text-[13px] font-extrabold text-[#000000]">
@@ -915,40 +927,32 @@ function InvoiceModifyModal({
             </div>
 
             <aside className="space-y-4">
-              <div className="rounded-[16px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[12px] font-semibold text-[#B7791F]">
-                This creates a credit note for the original invoice and finalizes a replacement invoice.
-              </div>
-
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-                <label className="block text-[12px] font-extrabold uppercase text-[#8C8889]">
-                  Reason / reminder note
-                </label>
-                <textarea
-                  value={reason}
-                  onChange={(event) => onChangeReason(event.target.value)}
-                  placeholder="Wrong quantity, item change, customer request..."
-                  rows={4}
-                  className="mt-2 w-full resize-none rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 py-3 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
-                />
-                <div className="mt-3 flex flex-wrap gap-2">
-                  {CREDIT_REASON_SUGGESTIONS.map((suggestion) => (
-                    <button
-                      key={suggestion}
-                      type="button"
-                      onClick={() => applyReasonSuggestion(suggestion)}
-                      className="rounded-[10px] border border-[#CFCFD3] bg-[#F3F4F6] px-3 py-1.5 text-[11px] font-extrabold text-[#565449] transition hover:border-[#11120d] hover:bg-[#FFFFFF] hover:text-[#000000]"
-                    >
-                      {suggestion}
-                    </button>
-                  ))}
+              <div className="overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#F8FAFC] shadow-sm">
+                <div className="flex items-center gap-2 border-b border-[#DADDE3] bg-[#FFFFFF] px-4 py-3 text-[12px] font-extrabold uppercase tracking-[0.06em] text-[#565449]">
+                  <Icon name="receipt_long" className="text-[18px] text-[#2F67D8]" />
+                  Credit Preview
                 </div>
-              </div>
 
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-                <div className="text-[12px] font-extrabold uppercase text-[#565449]">
-                  Credit preview
+                <div className="grid grid-cols-2 gap-px border-b border-[#DADDE3] bg-[#DADDE3]">
+                  <div className="bg-[#FFFFFF] p-3 text-center">
+                    <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                      Original Units
+                    </div>
+                    <div className="mt-1 font-mono text-[14px] font-extrabold text-[#000000]">
+                      {originalUnits}
+                    </div>
+                  </div>
+                  <div className="bg-[#FFFFFF] p-3 text-center">
+                    <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                      Replacement Units
+                    </div>
+                    <div className="mt-1 font-mono text-[14px] font-extrabold text-[#000000]">
+                      {nextUnits}
+                    </div>
+                  </div>
                 </div>
-                <div className="mt-4 space-y-3 text-[13px]">
+
+                <div className="space-y-3 p-4 text-[13px]">
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-bold text-[#8C8889]">Original total</span>
                     <span className="font-mono font-extrabold text-[#000000]">
@@ -961,7 +965,7 @@ function InvoiceModifyModal({
                       {formatNpr(invoice.paidAmount)}
                     </span>
                   </div>
-                  <div className="border-t border-dashed border-[#CFCFD3]" />
+                  <div className="my-2 border-t border-dashed border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-bold text-[#8C8889]">Replacement estimate</span>
                     <span className="font-mono font-extrabold text-[#000000]">
@@ -974,38 +978,56 @@ function InvoiceModifyModal({
                       {formatNpr(estimatedCreditTransfer)}
                     </span>
                   </div>
+                  <div className="my-2 border-t border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-bold text-[#8C8889]">Due after replacement</span>
-                    <span className="font-mono font-extrabold text-[#BE123C]">
+                    <span className="font-mono text-[15px] font-extrabold text-[#BE123C]">
                       {formatNpr(estimatedDueAfterTransfer)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-bold text-[#8C8889]">Customer credit est.</span>
-                    <span className="font-mono font-extrabold text-[#179B4D]">
+                    <span className="font-mono text-[15px] font-extrabold text-[#179B4D]">
                       {formatNpr(estimatedCustomerCredit)}
                     </span>
                   </div>
                 </div>
               </div>
 
-              <div className="grid grid-cols-2 gap-3">
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
-                  <div className="text-[12px] font-bold text-[#8C8889]">
-                    Original units
-                  </div>
-                  <div className="mt-1 font-mono font-extrabold text-[#000000]">
-                    {originalUnits}
-                  </div>
-                </div>
-                <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6] p-3">
-                  <div className="text-[12px] font-bold text-[#8C8889]">
-                    Replacement units
-                  </div>
-                  <div className="mt-1 font-mono font-extrabold text-[#000000]">
-                    {nextUnits}
-                  </div>
-                </div>
+              <div className="rounded-[12px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[12px] font-semibold text-[#B7791F]">
+                This creates a credit note for the original invoice and finalizes a replacement invoice.
+              </div>
+
+              <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
+                <label className="block text-[12px] font-extrabold uppercase text-[#8C8889]">
+                  Reason / Details
+                </label>
+                <ProjectSelect
+                  value={CREDIT_REASON_SUGGESTIONS.find(s => reason.startsWith(s)) || "Other"}
+                  onChange={(e) => {
+                    const val = e.target.value;
+                    if (val !== "Other") {
+                      onChangeReason(val);
+                    } else {
+                      onChangeReason("");
+                    }
+                  }}
+                  className="mt-2 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-2.5 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
+                >
+                  <option value="Other">Custom / Manual entry</option>
+                  <optgroup label="Common reasons">
+                    {CREDIT_REASON_SUGGESTIONS.map((suggestion) => (
+                      <option key={suggestion} value={suggestion}>{suggestion}</option>
+                    ))}
+                  </optgroup>
+                </ProjectSelect>
+                <input
+                  type="text"
+                  value={reason}
+                  onChange={(event) => onChangeReason(event.target.value)}
+                  placeholder="Type details or manual reason..."
+                  className="mt-3 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 py-3 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
+                />
               </div>
 
               {error ? (
@@ -1106,7 +1128,7 @@ function InvoiceModifyModal({
           </div>
         ) : null}
 
-        <div className="border-t border-[#CFCFD3] bg-[#FFFFFF] px-5 py-4">
+        <div className="border-t border-[#E5E7EB] bg-[#FFFFFF] px-4 py-3">
           <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
             <div className="flex flex-wrap gap-3 text-[12px] font-bold text-[#8C8889]">
               <span>{lines.length} line(s)</span>
@@ -1940,7 +1962,10 @@ export default function CashierInvoicesPage() {
   const isAdminView = authUser?.role === "admin";
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // active status tab at the top of the page
   const [query, setQuery] = useState(""); // invoice search text
-  const [isFilterOpen, setFilterOpen] = useState(false); // mobile/tablet filter drawer toggle
+  const [debouncedQuery, setDebouncedQuery] = useState("");
+  const [fromDate, setFromDate] = useState(""); // optional invoice date lower boundary
+  const [toDate, setToDate] = useState(""); // optional invoice date upper boundary
+  const [showHeldBillsPanel, setShowHeldBillsPanel] = useState(false);
   const [onlyMine, setOnlyMine] = useState(false); // optional filter to show only invoices created by the logged-in cashier
   const [cashierFilter, setCashierFilter] = useState("All"); // admin-facing cashier selector for narrowing invoices to one cashier
   const [customerTypeFilter, setCustomerTypeFilter] =
@@ -1948,8 +1973,26 @@ export default function CashierInvoicesPage() {
   const [methodFilter, setMethodFilter] = useState<"All" | PaymentMethodLabel>(
     "All",
   );
-  const [invoices, setInvoices] = useState<AppInvoice[]>([]); // full normalized invoice list before tab and page slicing
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [draftFromDate, setDraftFromDate] = useState("");
+  const [draftToDate, setDraftToDate] = useState("");
+  const [draftOnlyMine, setDraftOnlyMine] = useState(false);
+  const [draftCashierFilter, setDraftCashierFilter] = useState("All");
+  const [draftCustomerTypeFilter, setDraftCustomerTypeFilter] = useState<InvoiceCustomerTypeFilter>("All");
+  const [draftMethodFilter, setDraftMethodFilter] = useState<"All" | PaymentMethodLabel>("All");
+  const [invoices, setInvoices] = useState<AppInvoice[]>([]);
+  const [invoiceTotal, setInvoiceTotal] = useState(0);
+  const [invoiceSummary, setInvoiceSummary] = useState(() => calcSummary([]));
+  const [pageSize, setPageSize] = useState(20);
+  const [page, setPage] = useState(1);
   const [loading, setLoading] = useState(true); // first-load state for the page
+  const [hasLoadedInvoices, setHasLoadedInvoices] = useState(false);
+  const [initialInvoiceLoadState, setInitialInvoiceLoadState] = useState<
+    "loading" | "paused" | "error"
+  >("loading");
+  const [invoiceReloadKey, setInvoiceReloadKey] = useState(0);
+  const invoiceLoadPausedRef = useRef(false);
+  const invoiceSecondaryLoadPausedRef = useRef(false);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
@@ -2004,9 +2047,58 @@ export default function CashierInvoicesPage() {
   const [pendingParkedTransfer, setPendingParkedTransfer] =
     useState<PendingParkedTransfer>(null);
 
-  // fetching a larger invoice list here lets the page search and filter on the client without constant reloads
-  async function loadInvoices() {
-    setInvoices(await fetchAllInvoices());
+  async function loadInvoices(options?: { signal?: AbortSignal }) {
+    const paymentStatus =
+      activeTab === "Paid"
+        ? "PAID"
+        : activeTab === "Partial"
+          ? "PARTIALLY_PAID"
+          : activeTab === "Unpaid"
+            ? "UNPAID"
+            : activeTab === "Cancelled"
+              ? "CANCELLED"
+              : undefined;
+    const paymentMethod =
+      methodFilter === "All"
+        ? undefined
+        : methodFilter === "Bank Transfer"
+          ? "BANK_TRANSFER"
+          : methodFilter === "eSewa"
+            ? "ESEWA"
+            : methodFilter.toUpperCase();
+    const data = await listInvoicesApi(
+      {
+        status: "FINALIZED",
+        paymentStatus,
+        cashierId: isAdminView
+          ? cashierFilter === "All"
+            ? undefined
+            : cashierFilter
+          : onlyMine
+            ? authUser?.id
+            : undefined,
+        customerType:
+          customerTypeFilter === "Walk-in"
+            ? "WALK_IN"
+            : customerTypeFilter === "Registered"
+              ? "REGISTERED"
+              : undefined,
+        paymentMethod,
+        search: debouncedQuery || undefined,
+        from: fromDate || undefined,
+        to: toDate || undefined,
+        page,
+        pageSize,
+      },
+      options,
+    );
+    const rows = Array.isArray(data?.invoices) ? data.invoices : [];
+    setInvoices(rows.map(normalizeInvoice));
+    setInvoiceTotal(Number(data?.total || 0));
+    if (data?.summary) setInvoiceSummary(data.summary);
+    setHasLoadedInvoices(true);
+    setInitialInvoiceLoadState("loading");
+    invoiceLoadPausedRef.current = false;
   }
 
   async function loadAdminParkedDrafts() {
@@ -2017,8 +2109,12 @@ export default function CashierInvoicesPage() {
       setAdminParkedDrafts(
         Array.isArray(data?.drafts) ? data.drafts : [],
       );
-    } catch {
-      setAdminParkedDrafts([]);
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        invoiceSecondaryLoadPausedRef.current = true;
+      } else {
+        showToast("danger", "Could not refresh held bills.");
+      }
     } finally {
       setAdminParkedLoading(false);
     }
@@ -2044,8 +2140,12 @@ export default function CashierInvoicesPage() {
     try {
       const data = await getMyCashierPrivilegesApi();
       setCanCashierVoidPayment(Boolean(data?.privilege?.canVoidPayment));
-    } catch {
-      setCanCashierVoidPayment(false);
+    } catch (error) {
+      if (isRateLimitError(error)) {
+        invoiceSecondaryLoadPausedRef.current = true;
+      } else {
+        setCanCashierVoidPayment(false);
+      }
     }
   }
 
@@ -2066,11 +2166,18 @@ export default function CashierInvoicesPage() {
       const raw = Array.isArray(data?.requests) ? data.requests : [];
       setReturnRequests(raw.map(normalizeReturnRequest));
     } catch (err: any) {
-      setReturnRequestsError(
-        err?.response?.data?.error ||
-          err?.message ||
-          "Failed to load return requests.",
-      );
+      if (isRateLimitError(err)) {
+        invoiceSecondaryLoadPausedRef.current = true;
+        setReturnRequestsError(
+          "Return requests are temporarily paused and will refresh automatically.",
+        );
+      } else {
+        setReturnRequestsError(
+          err?.response?.data?.error ||
+            err?.message ||
+            "Failed to load return requests.",
+        );
+      }
     } finally {
       setReturnRequestsLoading(false);
     }
@@ -2122,142 +2229,198 @@ export default function CashierInvoicesPage() {
   }
 
   useEffect(() => {
-    // loading the invoice list once when the page first opens
-    async function load() {
-      try {
-        await loadInvoices();
-        if (isAdminView) {
-          await loadAdminCashiers();
-          await loadReturnRequests();
-          await loadAdminParkedDrafts();
-        } else {
-          await loadCashierPrivileges();
+    const timer = window.setTimeout(() => {
+      void (async () => {
+        const results = isAdminView
+          ? await Promise.allSettled([
+              loadAdminCashiers(),
+              loadReturnRequests(),
+              loadAdminParkedDrafts(),
+            ])
+          : await Promise.allSettled([loadCashierPrivileges()]);
+
+        if (
+          results.some(
+            (result) =>
+              result.status === "rejected" && isRateLimitError(result.reason),
+          )
+        ) {
+          invoiceSecondaryLoadPausedRef.current = true;
         }
-      } catch {
-        // this handles when the invoice list request fails, so we fall back to an empty state instead of stale data
-        setInvoices([]);
-      } finally {
-        setLoading(false);
+      })();
+    }, 100);
+
+    return () => window.clearTimeout(timer);
+  }, [invoiceReloadKey, isAdminView]);
+
+  useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedQuery(query.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [query]);
+
+  useEffect(() => {
+    const recover = () => {
+      if (
+        !invoiceLoadPausedRef.current &&
+        !invoiceSecondaryLoadPausedRef.current
+      ) {
+        return;
       }
-    }
-    load();
+      invoiceLoadPausedRef.current = false;
+      invoiceSecondaryLoadPausedRef.current = false;
+      setInitialInvoiceLoadState("loading");
+      setInvoiceReloadKey((current) => current + 1);
+    };
+    window.addEventListener("rate_limit_cleared", recover);
+    return () => window.removeEventListener("rate_limit_cleared", recover);
   }, []);
 
-  // locks body scroll when any modal is open to prevent background scrolling
   useEffect(() => {
-    if (
-      detailInvoice ||
-      editInvoice ||
-      modifyInvoice ||
-      returnInvoice ||
-      showReturnReview
-    ) {
-      const original = document.body.style.overflow;
-      document.body.style.overflow = "hidden";
-      return () => {
-        document.body.style.overflow = original;
-      };
-    }
-  }, [detailInvoice, editInvoice, modifyInvoice, returnInvoice, showReturnReview]);
-
-  // deriving the cashier dropdown from the loaded invoice data keeps the filter in sync without extra API calls
-  const cashierOptions = useMemo(() => {
-    const options = new Map<string, string>();
-
-    invoices.forEach((invoice) => {
-      if (!invoice.cashierId) return;
-      if (!options.has(invoice.cashierId)) {
-        options.set(invoice.cashierId, invoice.cashierName);
-      }
-    });
-
-    return Array.from(options.entries())
-      .map(([id, name]) => ({ id, name }))
-      .sort((left, right) => left.name.localeCompare(right.name));
-  }, [invoices]);
-
-  // computing the list of invoices after applying the search query and filters
-  // we wrap this in useMemo so it only recalculates when the query or invoices change
-  const scopedInvoices = useMemo(() => {
-    const loweredQuery = query.trim().toLowerCase();
-
-    return invoices
-      .filter((invoice) =>
-        isAdminView
-          ? cashierFilter === "All"
-            ? true
-            : invoice.cashierId === cashierFilter
-          : true,
-      )
-      .filter((invoice) =>
-        !isAdminView && onlyMine && authUser?.id
-          ? invoice.cashierId === authUser.id
-          : true,
-      )
-      .filter((invoice) =>
-        customerTypeFilter === "All"
-          ? true
-          : getInvoiceCustomerType(invoice) === customerTypeFilter,
-      )
-      .filter((invoice) =>
-        methodFilter === "All" ? true : invoice.paymentMethod === methodFilter,
-      )
-      .filter((invoice) => {
-        if (!loweredQuery) return true;
-
-        return [
-          invoice.invoiceNo,
-          invoice.customerName,
-          invoice.cashierName,
-          invoice.itemSummary,
-        ]
-          .join(" ")
-          .toLowerCase()
-          .includes(loweredQuery);
+    const controller = new AbortController();
+    setLoading(true);
+    if (!hasLoadedInvoices) setInitialInvoiceLoadState("loading");
+    void loadInvoices({ signal: controller.signal })
+      .catch((error: any) => {
+        if (
+          error?.code === "ERR_RATE_LIMIT_COOLDOWN" ||
+          error?.response?.status === 429
+        ) {
+          invoiceLoadPausedRef.current = true;
+          if (!hasLoadedInvoices) setInitialInvoiceLoadState("paused");
+        } else if (error?.code !== "ERR_CANCELED") {
+          if (!hasLoadedInvoices) setInitialInvoiceLoadState("error");
+          showToast("danger", error?.message || "Failed to load invoices.");
+        }
+      })
+      .finally(() => {
+        if (!controller.signal.aborted) setLoading(false);
       });
+    return () => controller.abort();
   }, [
-    authUser?.id,
+    activeTab,
     cashierFilter,
     customerTypeFilter,
-    invoices,
+    debouncedQuery,
+    fromDate,
+    invoiceReloadKey,
     isAdminView,
     methodFilter,
     onlyMine,
-    query,
+    page,
+    pageSize,
+    toDate,
   ]);
 
-  const filtered = useMemo(() => {
-    return scopedInvoices.filter((invoice) =>
-      activeTab === "All" ? true : invoice.status === activeTab,
+  // InvoiceDetailModal owns its lock. The remaining invoice workspaces share one
+  // lock here so transitions between them cannot restore scrolling too early.
+  useBodyScrollLock(
+    Boolean(editInvoice || modifyInvoice || returnInvoice || showReturnReview),
+  );
+
+  const cashierOptions = useMemo(() => {
+    return adminCashiers
+      .map(({ id, name }) => ({ id, name }))
+      .sort((left, right) => left.name.localeCompare(right.name));
+  }, [adminCashiers]);
+
+  const filtered = invoices;
+  const summary = invoiceSummary;
+  const adminHeldSummary = useMemo(() => {
+    const heldTotal = adminParkedDrafts.reduce(
+      (sum, draft) => sum + Number(draft.subTotal || 0),
+      0,
     );
-  }, [activeTab, scopedInvoices]);
+    const cashierCount = new Set(
+      adminParkedDrafts
+        .map((draft) => draft.cashier?.id || draft.cashier?.name || "")
+        .filter(Boolean),
+    ).size;
+    const oldest = adminParkedDrafts
+      .map((draft) => (draft.parkedAt ? new Date(draft.parkedAt) : null))
+      .filter((date): date is Date => !!date && !Number.isNaN(date.getTime()))
+      .sort((left, right) => left.getTime() - right.getTime())[0];
 
-  const summary = useMemo(() => calcSummary(scopedInvoices), [scopedInvoices]); // summary cards always reflect the current search and filter scope
+    return {
+      heldTotal,
+      cashierCount,
+      oldestLabel: oldest ? oldest.toLocaleTimeString([], {
+        hour: "2-digit",
+        minute: "2-digit",
+      }) : "None",
+    };
+  }, [adminParkedDrafts]);
 
-  const [pageSize, setPageSize] = useState(20);
-  const totalPages = Math.max(1, Math.ceil(filtered.length / pageSize));
-  const [page, setPage] = useState(1);
+  const totalPages = Math.max(1, Math.ceil(invoiceTotal / pageSize));
   const pageClamped = clampPage(page, 1, totalPages);
   const hasExtraFilters = isAdminView
     ? cashierFilter !== "All" ||
+      fromDate.length > 0 ||
+      toDate.length > 0 ||
       customerTypeFilter !== "All" ||
       methodFilter !== "All"
-    : onlyMine || customerTypeFilter !== "All" || methodFilter !== "All";
+    : onlyMine ||
+      fromDate.length > 0 ||
+      toDate.length > 0 ||
+      customerTypeFilter !== "All" ||
+      methodFilter !== "All";
 
-  const pageItems = useMemo(() => {
-    const start = (pageClamped - 1) * pageSize;
-    return filtered.slice(start, start + pageSize);
-  }, [filtered, pageClamped, pageSize]);
-  const pageStart = filtered.length === 0 ? 0 : (pageClamped - 1) * pageSize;
-  const pageEnd = filtered.length === 0 ? 0 : pageStart + pageItems.length;
+  const pageItems = invoices;
+  const pageStart = invoiceTotal === 0 ? 0 : (pageClamped - 1) * pageSize;
+  const pageEnd = invoiceTotal === 0 ? 0 : pageStart + pageItems.length;
+
+  useEffect(() => {
+    if (page !== pageClamped) setPage(pageClamped);
+  }, [page, pageClamped]);
 
   // clearing the secondary filters lets the user get back to the full invoice list quickly without disturbing search or tabs
   function clearExtraFilters() {
     setOnlyMine(false);
     setCashierFilter("All");
+    setFromDate("");
+    setToDate("");
     setCustomerTypeFilter("All");
     setMethodFilter("All");
     setPage(1);
+  }
+
+  const mobileFilterCount = [
+    Boolean(fromDate || toDate),
+    isAdminView && cashierFilter !== "All",
+    !isAdminView && onlyMine,
+    customerTypeFilter !== "All",
+    methodFilter !== "All",
+  ].filter(Boolean).length;
+  const selectedCashierLabel = cashierOptions.find((cashier) => cashier.id === cashierFilter)?.name || "Cashier";
+  const mobileFilterChips: MobileFilterChip[] = [
+    ...(fromDate || toDate ? [{ id: "dates", label: `${fromDate || "Any"} – ${toDate || "Any"}`, onRemove: () => { setFromDate(""); setToDate(""); setPage(1); } }] : []),
+    ...(isAdminView && cashierFilter !== "All" ? [{ id: "cashier", label: selectedCashierLabel, onRemove: () => { setCashierFilter("All"); setPage(1); } }] : []),
+    ...(!isAdminView && onlyMine ? [{ id: "mine", label: "Only mine", onRemove: () => { setOnlyMine(false); setPage(1); } }] : []),
+    ...(customerTypeFilter !== "All" ? [{ id: "customer", label: customerTypeFilter, onRemove: () => { setCustomerTypeFilter("All"); setPage(1); } }] : []),
+    ...(methodFilter !== "All" ? [{ id: "method", label: methodFilter, onRemove: () => { setMethodFilter("All"); setPage(1); } }] : []),
+  ];
+
+  function openMobileFilters() {
+    setDraftFromDate(fromDate);
+    setDraftToDate(toDate);
+    setDraftOnlyMine(onlyMine);
+    setDraftCashierFilter(cashierFilter);
+    setDraftCustomerTypeFilter(customerTypeFilter);
+    setDraftMethodFilter(methodFilter);
+    setMobileFiltersOpen(true);
+  }
+
+  function applyMobileFilters() {
+    setFromDate(draftFromDate);
+    setToDate(draftToDate);
+    setOnlyMine(draftOnlyMine);
+    setCashierFilter(draftCashierFilter);
+    setCustomerTypeFilter(draftCustomerTypeFilter);
+    setMethodFilter(draftMethodFilter);
+    setPage(1);
+    setMobileFiltersOpen(false);
   }
 
   // fetching the full invoice details when the user clicks to view it
@@ -3025,10 +3188,30 @@ export default function CashierInvoicesPage() {
     };
   }, [modifyInvoice, modifyLines, modifyReason, showModifyConfirm]);
 
-  if (loading) {
+  if (!hasLoadedInvoices) {
     return (
       <div className="flex items-center justify-center h-[60vh]">
-        <div className="text-[#8C8889] font-semibold">Loading invoices...</div>
+        <div className="flex max-w-md flex-col items-center gap-3 text-center">
+          <div className="text-[#8C8889] font-semibold">
+            {initialInvoiceLoadState === "paused"
+              ? "Invoice data is temporarily paused and will refresh automatically."
+              : initialInvoiceLoadState === "error"
+                ? "Invoices could not be loaded."
+                : "Loading invoices..."}
+          </div>
+          {initialInvoiceLoadState === "error" ? (
+            <button
+              type="button"
+              className="rounded-[8px] border border-[#CFCFD3] bg-white px-4 py-2 text-sm font-bold text-[#11120d] hover:bg-[#F3F4F6]"
+              onClick={() => {
+                setInitialInvoiceLoadState("loading");
+                setInvoiceReloadKey((current) => current + 1);
+              }}
+            >
+              Try again
+            </button>
+          ) : null}
+        </div>
       </div>
     );
   }
@@ -3045,221 +3228,260 @@ export default function CashierInvoicesPage() {
         })}
       </div>
 
-      {/* these summary cards give a quick invoice health overview before the user starts filtering the table */}
-      <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-7 gap-4 mt-4">
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-            Total Sales
-          </div>
-          <div className="text-2xl font-extrabold text-[#000000] mt-1">
-            {formatNpr(summary.totalSales)}
-          </div>
-        </div>
+      {/* these summary cards keep all existing invoice signals but make them easier to scan visually */}
+      <div className="mt-4 grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
+        {[
+          {
+            label: "Total Sales",
+            value: formatNpr(summary.totalSales),
+            icon: "monitoring",
+            tone: "text-[#2F67D8]",
+            sub: "Excluding cancelled",
+          },
+          {
+            label: "Invoices Generated",
+            value: summary.generated,
+            icon: "receipt_long",
+            tone: "text-[#11120d]",
+            sub: `${invoiceTotal} visible`,
+          },
+          {
+            label: "Paid Invoices",
+            value: summary.paid,
+            icon: "check_circle",
+            tone: "text-[#179B4D]",
+            sub: "Fully settled",
+          },
+          {
+            label: "Partial Invoices",
+            value: summary.partial,
+            icon: "pending_actions",
+            tone: "text-[#B7791F]",
+            sub: `${summary.due} due bill(s)`,
+          },
+          {
+            label: "Unpaid Invoices",
+            value: summary.unpaid,
+            icon: "error",
+            tone: "text-rose-700",
+            sub: "Needs collection",
+          },
 
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-            Invoices Generated
+          {
+            label: "Outstanding Due",
+            value: formatNpr(summary.outstandingDue),
+            icon: "account_balance_wallet",
+            tone: "text-[#B7791F]",
+            sub: "Receivable",
+          },
+        ].map((card) => (
+          <div
+            key={card.label}
+            className="min-h-[108px] rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm [container-type:inline-size]"
+          >
+            <div className="flex flex-col">
+              <div className="flex items-center gap-2">
+                <div
+                  className={cn(
+                    "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#F3F4F6]",
+                    card.tone,
+                  )}
+                >
+                  <Icon name={card.icon} className="text-[16px]" />
+                </div>
+                <div className="min-w-0 flex-1 truncate text-[10px] font-extrabold uppercase leading-snug tracking-[0.08em] text-[#64748B]">
+                  {card.label}
+                </div>
+              </div>
+              <div
+                className="mt-3 truncate font-mono text-[clamp(20px,12cqi,32px)] font-extrabold leading-none tracking-tight text-[#000000]"
+                title={String(card.value)}
+              >
+                {card.value}
+              </div>
+            </div>
+            <div className="mt-2 truncate text-[11px] font-semibold text-[#8C8889]">
+              {card.sub}
+            </div>
           </div>
-          <div className="text-2xl font-extrabold text-[#000000] mt-1">
-            {summary.generated}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-            Paid Invoices
-          </div>
-          <div className="text-2xl font-extrabold text-[#179B4D] mt-1">
-            {summary.paid}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
-          <div className="text-[11px] font-extrabold text-[#B7791F] uppercase ">
-            Partial Invoices
-          </div>
-          <div className="text-2xl font-extrabold text-[#B7791F] mt-1">
-            {summary.partial}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
-          <div className="text-[11px] font-extrabold text-rose-700 uppercase ">
-            Unpaid Invoices
-          </div>
-          <div className="text-2xl font-extrabold text-rose-700 mt-1">
-            {summary.unpaid}
-          </div>
-        </div>
-
-        <div className="rounded-2xl border border-[#CFCFD3] bg-[#FFFFFF] p-5 ">
-          <div className="text-[11px] font-extrabold text-slate-500 uppercase ">
-            Cancelled Invoices
-          </div>
-          <div className="text-2xl font-extrabold text-slate-900 mt-1">
-            {summary.cancelled}
-          </div>
-        </div>
-
-        <div className="bg-[#FFFFFF] rounded-2xl border border-[#CFCFD3] p-5 ">
-          <div className="text-[11px] font-extrabold text-[#8C8889] uppercase ">
-            Outstanding Due
-          </div>
-          <div className="text-2xl font-extrabold text-[#000000] mt-1">
-            {formatNpr(summary.outstandingDue)}
-          </div>
-        </div>
+        ))}
       </div>
 
       {isAdminView ? (
-        <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="min-w-0">
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
-                Held Bills Oversight
+        <div className="mt-5 overflow-hidden rounded-[18px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+          <div className="flex flex-col gap-3 px-4 py-3 lg:flex-row lg:items-center lg:justify-between">
+            <div className="flex min-w-0 flex-col gap-3 md:flex-row md:items-center">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] bg-[#F3F4F6] text-[#11120d]">
+                <Icon name="inventory_2" className="text-[22px]" />
               </div>
-              <div className="mt-2 flex flex-wrap items-center gap-2 text-[12px] font-bold text-[#565449]">
-                <span className="rounded-full border border-[#CFCFD3] bg-[#F8F9FA] px-3 py-1">
-                  {adminParkedDrafts.length} held bill(s)
-                </span>
-                <span className="rounded-full border border-[#CFCFD3] bg-[#F8F9FA] px-3 py-1">
-                  Across cashiers
-                </span>
-                {adminParkedDrafts.length > 0 ? (
-                  <span className="rounded-full border border-[#CFCFD3] bg-[#F8F9FA] px-3 py-1 font-mono">
-                    {formatNpr(
-                      adminParkedDrafts.reduce(
-                        (sum, draft) => sum + Number(draft.subTotal || 0),
-                        0,
-                      ),
-                    )}{" "}
-                    held
+              <div className="min-w-0">
+                <div className="text-[12px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
+                  Held bills oversight
+                </div>
+                <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px] font-bold text-[#565449]">
+                  <span>{adminParkedDrafts.length} held bill(s)</span>
+                  <span className="text-[#CFCFD3]">|</span>
+                  <span className="font-mono text-[#000000]">
+                    {formatNpr(adminHeldSummary.heldTotal)}
                   </span>
-                ) : null}
+                  <span className="text-[#CFCFD3]">|</span>
+                  <span>{adminHeldSummary.cashierCount} cashier(s)</span>
+                  <span className="text-[#CFCFD3]">|</span>
+                  <span>Oldest {adminHeldSummary.oldestLabel}</span>
+                </div>
               </div>
             </div>
-            <button
-              type="button"
-              onClick={() => void loadAdminParkedDrafts()}
-              disabled={adminParkedLoading}
-              className="inline-flex h-[40px] items-center justify-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
-            >
-              <Icon name="sync" />
-              {adminParkedLoading ? "Refreshing..." : "Refresh"}
-            </button>
+
+            <div className="flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => void loadAdminParkedDrafts()}
+                disabled={adminParkedLoading}
+                className="inline-flex h-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+              >
+                <Icon name="sync" className="text-[16px]" />
+                {adminParkedLoading ? "Refreshing..." : "Refresh"}
+              </button>
+              <button
+                type="button"
+                onClick={() => setShowHeldBillsPanel((value) => !value)}
+                className={cn(
+                  "inline-flex h-[38px] items-center justify-center gap-2 rounded-[12px] px-4 text-[12px] font-extrabold transition",
+                  showHeldBillsPanel
+                    ? "bg-[#11120d] text-white"
+                    : "border border-[#11120d] bg-[#FFFFFF] text-[#11120d] hover:bg-[#F3F4F6]",
+                )}
+              >
+                <Icon
+                  name={showHeldBillsPanel ? "expand_less" : "tune"}
+                  className="text-[16px]"
+                />
+                {showHeldBillsPanel ? "Hide" : "Manage"}
+              </button>
+            </div>
           </div>
 
-          {adminParkedDrafts.length > 0 ? (
-            <div className="mt-4 grid max-h-[330px] grid-cols-[repeat(auto-fit,minmax(300px,420px))] justify-start gap-3 overflow-y-auto pr-1">
-              {adminParkedDrafts.map((draft) => {
-                const itemCount = draft.items?.length || 0;
-                const units =
-                  draft.items?.reduce(
-                    (sum, item) => sum + Number(item.qty || 0),
-                    0,
-                  ) || 0;
-                const parkedAt = draft.parkedAt
-                  ? new Date(draft.parkedAt).toLocaleString()
-                  : "Recently parked";
+          {showHeldBillsPanel ? (
+            <div className="border-t border-[#E5E7EB] bg-[#F8FAFC] p-4">
+              {adminParkedDrafts.length > 0 ? (
+                <div className="grid max-h-[340px] grid-cols-[repeat(auto-fit,minmax(280px,420px))] justify-start gap-3 overflow-y-auto pr-1">
+                  {adminParkedDrafts.map((draft) => {
+                    const itemCount = draft.items?.length || 0;
+                    const units =
+                      draft.items?.reduce(
+                        (sum, item) => sum + Number(item.qty || 0),
+                        0,
+                      ) || 0;
+                    const parkedAt = draft.parkedAt
+                      ? new Date(draft.parkedAt).toLocaleString()
+                      : "Recently parked";
 
-                return (
-                  <div
-                    key={draft.id}
-                    className="flex min-h-[178px] flex-col justify-between rounded-[16px] border border-[#CFCFD3] bg-[#F8F9FA] p-4"
-                  >
-                    <div className="min-w-0">
-                      <div className="flex items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="truncate text-[14px] font-extrabold text-[#000000]">
-                            {draft.parkedLabel || draft.invoiceNo || "Held bill"}
+                    return (
+                      <div
+                        key={draft.id}
+                        className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm"
+                      >
+                        <div className="flex items-start justify-between gap-3">
+                          <div className="min-w-0">
+                            <div className="truncate text-[14px] font-extrabold text-[#000000]">
+                              {draft.parkedLabel || draft.invoiceNo || "Held bill"}
+                            </div>
+                            <div className="mt-1 truncate text-[12px] font-semibold text-[#8C8889]">
+                              {draft.cashier?.name || "Unknown cashier"} |{" "}
+                              {draft.customer?.name || "Walk-in Customer"}
+                            </div>
                           </div>
-                          <div className="mt-1 truncate text-[12px] font-semibold text-[#8C8889]">
-                            {draft.cashier?.name || "Unknown cashier"} |{" "}
-                            {draft.customer?.name || "Walk-in Customer"}
+                          <div className="shrink-0 rounded-full border border-[#CFCFD3] bg-[#F8F9FA] px-2.5 py-1 font-mono text-[11px] font-extrabold text-[#000000]">
+                            {formatNpr(Number(draft.subTotal || 0))}
                           </div>
                         </div>
-                        <div className="shrink-0 rounded-full border border-[#CFCFD3] bg-white px-2.5 py-1 font-mono text-[11px] font-extrabold text-[#000000]">
-                          {formatNpr(Number(draft.subTotal || 0))}
+
+                        <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-[#565449]">
+                          <span className="rounded-full border border-[#E5E7EB] bg-[#F8F9FA] px-2 py-1">
+                            {itemCount} line(s)
+                          </span>
+                          <span className="rounded-full border border-[#E5E7EB] bg-[#F8F9FA] px-2 py-1">
+                            {units} qty
+                          </span>
+                          <span className="rounded-full border border-[#E5E7EB] bg-[#F8F9FA] px-2 py-1">
+                            {parkedAt}
+                          </span>
+                        </div>
+
+                        <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_108px]">
+                          <div className="min-w-0">
+                            <label
+                              htmlFor={`transfer-held-${draft.id}`}
+                              className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]"
+                            >
+                              Transfer to cashier
+                            </label>
+                            <ProjectSelect
+                              id={`transfer-held-${draft.id}`}
+                              value={draft.cashier?.id || ""}
+                              onChange={(event) =>
+                                requestAdminParkedTransfer(
+                                  draft,
+                                  event.target.value,
+                                )
+                              }
+                              disabled={adminParkedBusyId === draft.id}
+                              className="mt-1 h-[38px] w-full rounded-[11px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449] outline-none transition focus:border-[#000000] disabled:opacity-50"
+                              aria-label="Choose cashier to transfer this held bill"
+                            >
+                              <option value="">Choose cashier</option>
+                              {adminCashiers.map((cashier) => (
+                                <option key={cashier.id} value={cashier.id}>
+                                  {cashier.name}
+                                </option>
+                              ))}
+                            </ProjectSelect>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => void discardAdminParkedDraft(draft.id)}
+                            disabled={adminParkedBusyId === draft.id}
+                            className="mt-[18px] inline-flex h-[38px] items-center justify-center gap-2 rounded-[11px] border border-rose-200 bg-rose-50 px-3 text-[12px] font-extrabold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                          >
+                            <Icon name="delete" className="text-[15px]" />
+                            {adminParkedBusyId === draft.id ? "..." : "Discard"}
+                          </button>
                         </div>
                       </div>
-                      <div className="mt-3 flex flex-wrap gap-2 text-[11px] font-bold text-[#565449]">
-                        <span className="rounded-full bg-white px-2 py-1">
-                          {itemCount} line(s)
-                        </span>
-                        <span className="rounded-full bg-white px-2 py-1">
-                          {units} qty
-                        </span>
-                        <span className="rounded-full bg-white px-2 py-1">
-                          {parkedAt}
-                        </span>
-                      </div>
+                    );
+                  })}
+                </div>
+              ) : (
+                <div className="flex min-h-[86px] items-center justify-center rounded-[14px] border border-dashed border-[#CFCFD3] bg-[#FFFFFF] px-4 py-5 text-center">
+                  <div>
+                    <div className="text-[13px] font-extrabold text-[#565449]">
+                      No held bills right now
                     </div>
-                    <div className="mt-4 grid gap-2 sm:grid-cols-[minmax(0,1fr)_112px]">
-                      <div className="min-w-0">
-                      <label
-                        htmlFor={`transfer-held-${draft.id}`}
-                        className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]"
-                      >
-                        Transfer to cashier
-                      </label>
-                      <select
-                        id={`transfer-held-${draft.id}`}
-                        value={draft.cashier?.id || ""}
-                        onChange={(event) =>
-                          requestAdminParkedTransfer(draft, event.target.value)
-                        }
-                        disabled={adminParkedBusyId === draft.id}
-                        className="h-[40px] rounded-[12px] border-2 border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449] outline-none transition focus:border-[#000000] disabled:opacity-50"
-                        aria-label="Choose cashier to transfer this held bill"
-                      >
-                        <option value="">Choose cashier</option>
-                        {adminCashiers.map((cashier) => (
-                          <option key={cashier.id} value={cashier.id}>
-                            {cashier.name}
-                          </option>
-                        ))}
-                      </select>
-                      </div>
-                      <button
-                        type="button"
-                        onClick={() => void discardAdminParkedDraft(draft.id)}
-                        disabled={adminParkedBusyId === draft.id}
-                        className="mt-[20px] inline-flex h-[40px] items-center justify-center gap-2 rounded-[12px] border-2 border-rose-200 bg-rose-50 px-3 text-[12px] font-extrabold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50 sm:mt-[18px]"
-                      >
-                        <Icon name="delete" />
-                        {adminParkedBusyId === draft.id ? "Working..." : "Discard"}
-                      </button>
-                    </div>
-                    <div className="mt-2 text-[11px] font-semibold leading-4 text-[#8C8889]">
-                      Selecting another cashier opens a confirmation before this held bill moves.
+                    <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+                      Parked drafts from cashiers will appear here for transfer or discard.
                     </div>
                   </div>
-                );
-              })}
-            </div>
-          ) : (
-            <div className="mt-4 flex min-h-[94px] items-center justify-center rounded-[16px] border border-dashed border-[#CFCFD3] bg-[#F8F9FA] px-4 py-5 text-center">
-              <div>
-                <div className="text-[13px] font-extrabold text-[#565449]">
-                  No held bills right now
                 </div>
-                <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
-                  Parked drafts from cashiers will appear here for transfer or discard.
-                </div>
-              </div>
+              )}
             </div>
-          )}
+          ) : null}
         </div>
       ) : null}
 
-      {/* this filter card keeps tabs and search together because both change the same invoice list below */}
-      <div className="mt-6 rounded-[20px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-        <div className="flex flex-col gap-4 xl:flex-row xl:items-end xl:justify-between">
-          <div className="min-w-0 flex-1">
-            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
-              Browse Invoices
+      <div className="mt-6 overflow-hidden rounded-[18px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+        <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 xl:flex-row xl:items-center xl:justify-between">
+          <div className="min-w-0">
+            <div className="mb-2 text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
+              Browse invoices
             </div>
-            <div className="mt-3 flex items-center gap-2 flex-wrap">
+            <MobileFilterTabs
+              className="lg:hidden"
+              ariaLabel="Invoice status"
+              value={activeTab}
+              onChange={(tab) => { setActiveTab(tab); setPage(1); }}
+              items={(['All', 'Paid', 'Partial', 'Unpaid', 'Cancelled'] as const).map((tab) => ({ value: tab, label: tab === 'All' ? 'All Invoices' : tab }))}
+            />
+            <div className="hidden max-w-full gap-1 overflow-x-auto rounded-[14px] bg-[#F3F5F8] p-1 lg:inline-flex">
               {(["All", "Paid", "Partial", "Unpaid", "Cancelled"] as const).map(
                 (tab) => {
                   const active = tab === activeTab;
@@ -3272,10 +3494,10 @@ export default function CashierInvoicesPage() {
                         setPage(1);
                       }}
                       className={cn(
-                        "px-[16px] py-[8px] rounded-[999px] border-2 text-[12px] font-extrabold transition ",
+                        "h-[34px] shrink-0 rounded-[10px] px-4 text-[12px] font-extrabold transition",
                         active
-                          ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
-                          : "bg-[#FFFFFF] text-[#8C8889] border-[#CFCFD3] hover:bg-[#CFCFD3]",
+                          ? "bg-[#11120d] text-[#FFFFFF] shadow-sm"
+                          : "text-[#565449] hover:bg-[#FFFFFF]",
                       )}
                     >
                       {tab === "All" ? "All Invoices" : tab}
@@ -3286,331 +3508,459 @@ export default function CashierInvoicesPage() {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-3 sm:flex-row xl:w-auto xl:min-w-[520px] xl:justify-end">
-            <div className="w-full xl:w-[360px]">
-              <div className="flex items-center gap-2 rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-[14px] py-[10px] focus-within:border-[#000000] transition-colors">
-                <Icon name="search" className="text-[#8C8889]" />
-                <input
-                  value={query}
-                  onChange={(e) => {
-                    setQuery(e.target.value);
-                    setPage(1);
-                  }}
-                  placeholder="Search invoice no, customer, or item..."
-                  className="w-full bg-transparent text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889]"
-                />
-              </div>
+          <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto xl:min-w-[600px]">
+            <div className="flex h-[42px] min-w-0 flex-1 items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 transition focus-within:border-[#11120d]">
+              <Icon name="search" className="text-[18px] text-[#8C8889]" />
+              <input
+                value={query}
+                onChange={(e) => {
+                  setQuery(e.target.value);
+                  setPage(1);
+                }}
+                placeholder="Search invoice no, customer, item..."
+                className="w-full bg-transparent text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889]"
+              />
             </div>
+
+            <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden" />
 
             {isAdminView ? (
               <button
                 type="button"
                 onClick={openReturnReview}
-                className="flex h-[44px] items-center justify-center gap-2 rounded-[12px] border-2 border-[#9DD8B2] bg-[#EAF8EF] px-[16px] font-extrabold text-[#179B4D] transition hover:bg-[#DFF3E7] sm:self-start"
+                className="inline-flex h-[42px] items-center justify-center gap-2 rounded-[12px] border border-[#9DD8B2] bg-[#EAF8EF] px-3 text-[12px] font-extrabold text-[#179B4D] transition hover:bg-[#DFF3E7]"
               >
-                <Icon name="assignment_return" />
-                <span>
-                  Returns
-                  {returnRequests.length > 0 ? ` (${returnRequests.length})` : ""}
-                </span>
+                <Icon name="assignment_return" className="text-[17px]" />
+                Returns{returnRequests.length > 0 ? ` (${returnRequests.length})` : ""}
               </button>
+            ) : null}
+          </div>
+          <ActiveFilterChips items={mobileFilterChips} className="lg:hidden" />
+        </div>
+
+        <div className="hidden bg-[#FAFBFC] p-4 lg:block">
+          <div
+            className={cn(
+              "grid grid-cols-1 gap-3 md:grid-cols-2 xl:items-end",
+              isAdminView
+                ? "xl:grid-cols-[minmax(140px,0.8fr)_minmax(140px,0.8fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(190px,1fr)_auto]"
+                : "xl:grid-cols-[minmax(140px,0.85fr)_minmax(140px,0.85fr)_minmax(170px,1fr)_minmax(190px,1fr)_minmax(150px,0.8fr)_auto]",
+            )}
+          >
+            <label className="space-y-2">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                From date
+              </div>
+              <ProjectDateInput
+                value={fromDate}
+                max={toDate || undefined}
+                onChange={(event) => {
+                  setFromDate(event.target.value);
+                  setPage(1);
+                }}
+                className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+              />
+            </label>
+
+            <label className="space-y-2">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                To date
+              </div>
+              <ProjectDateInput
+                value={toDate}
+                min={fromDate || undefined}
+                onChange={(event) => {
+                  setToDate(event.target.value);
+                  setPage(1);
+                }}
+                className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+              />
+            </label>
+
+            {isAdminView ? (
+              <label className="space-y-2">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                  Cashier
+                </div>
+                <ProjectSelect
+                  value={cashierFilter}
+                  aria-label="Filter by cashier"
+                  onChange={(event) => {
+                    setCashierFilter(event.target.value);
+                    setPage(1);
+                  }}
+                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                >
+                  <option value="All">All cashiers</option>
+                  {cashierOptions.map((cashier) => (
+                    <option key={cashier.id} value={cashier.id}>
+                      {cashier.name}
+                    </option>
+                  ))}
+                </ProjectSelect>
+              </label>
+            ) : null}
+
+            <label className="space-y-2">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                Customer type
+              </div>
+              <ProjectSelect
+                value={customerTypeFilter}
+                onChange={(event) => {
+                  setCustomerTypeFilter(
+                    event.target.value as InvoiceCustomerTypeFilter,
+                  );
+                  setPage(1);
+                }}
+                className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+              >
+                <option value="All">All types</option>
+                <option value="Walk-in">Walk-in</option>
+                <option value="Registered">Registered</option>
+              </ProjectSelect>
+            </label>
+
+            <label className="space-y-2">
+              <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                Payment method
+              </div>
+              <ProjectSelect
+                value={methodFilter}
+                onChange={(event) => {
+                  setMethodFilter(event.target.value as "All" | PaymentMethodLabel);
+                  setPage(1);
+                }}
+                className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+              >
+                <option value="All">All methods</option>
+                <option value="Cash">Cash</option>
+                <option value="eSewa">eSewa</option>
+                <option value="Fonepay">Fonepay</option>
+                <option value="Bank Transfer">Bank Transfer</option>
+                <option value="Mixed">Mixed</option>
+                <option value="None">None</option>
+              </ProjectSelect>
+            </label>
+
+            {!isAdminView ? (
+              <label className="flex h-[42px] cursor-pointer items-center gap-3 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6]">
+                <span
+                  className={cn(
+                    "relative h-[22px] w-[40px] rounded-full transition",
+                    onlyMine ? "bg-[#11120d]" : "bg-[#DADDE3]",
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    checked={onlyMine}
+                    onChange={(event) => {
+                      setOnlyMine(event.target.checked);
+                      setPage(1);
+                    }}
+                    className="sr-only"
+                  />
+                  <span
+                    className={cn(
+                      "absolute top-[3px] h-4 w-4 rounded-full bg-white shadow transition",
+                      onlyMine ? "left-[21px]" : "left-[3px]",
+                    )}
+                  />
+                </span>
+                Only mine
+              </label>
             ) : null}
 
             <button
               type="button"
-              onClick={() => setFilterOpen((value) => !value)}
-              className="h-[44px] px-[16px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center justify-center gap-2 transition sm:self-start"
+              onClick={clearExtraFilters}
+              disabled={!hasExtraFilters}
+              className={cn(
+                "h-[42px] rounded-[12px] border px-4 text-[12px] font-extrabold whitespace-nowrap transition",
+                hasExtraFilters
+                  ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]"
+                  : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",
+              )}
             >
-              <Icon name={isFilterOpen ? "close" : "filter_list"} />
-              {isFilterOpen ? "Hide Filters" : "Filter"}
+              Clear filters
             </button>
           </div>
         </div>
-
-        {isFilterOpen ? (
-          <div className="mt-4 rounded-[18px] border border-[#E5E7EB] bg-[#F8FAFC]/80 p-4">
-            <div className="flex flex-wrap items-start justify-between gap-4">
-              <div>
-                <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#8C8889]">
-                  Filter Options
-                </div>
-                <div className="mt-1 text-[12px] font-medium text-[#8C8889]">
-                  Refine the visible invoices using cashier, customer type, and payment method.
-                </div>
-              </div>
-
-              <button
-                type="button"
-                onClick={clearExtraFilters}
-                disabled={!hasExtraFilters}
-                className={cn(
-                  "rounded-[12px] border px-[14px] py-[9px] text-[12px] font-extrabold transition",
-                  hasExtraFilters
-                    ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] hover:bg-[#F3F4F6]"
-                    : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",
-                )}
-              >
-                Clear filters
-              </button>
-            </div>
-
-            <div className="mt-4 grid grid-cols-1 gap-4 lg:grid-cols-12">
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
-                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
-                  {isAdminView ? "Cashier" : "Cashier Match"}
-                </div>
-
-                {isAdminView ? (
-                  <select
-                    value={cashierFilter}
-                    aria-label="Filter by cashier"
-                    onChange={(event) => {
-                      setCashierFilter(event.target.value);
-                      setPage(1);
-                    }}
-                    className="mt-3 h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#000000]"
-                  >
-                    <option value="All">All cashiers</option>
-                    {cashierOptions.map((cashier) => (
-                      <option key={cashier.id} value={cashier.id}>
-                        {cashier.name}
-                      </option>
-                    ))}
-                  </select>
-                ) : (
-                  <label className="mt-3 flex cursor-pointer items-center gap-3 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-3 text-[13px] font-bold text-[#000000]">
-                    <input
-                      type="checkbox"
-                      checked={onlyMine}
-                      onChange={(event) => {
-                        setOnlyMine(event.target.checked);
-                        setPage(1);
-                      }}
-                      className="h-4 w-4 accent-[#000000]"
-                    />
-                    Show only my invoices
-                  </label>
-                )}
-              </div>
-
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
-                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
-                  Customer Type
-                </div>
-                <div className="mt-3 flex gap-2 flex-wrap">
-                  {(["All", "Walk-in", "Registered"] as const).map((type) => {
-                    const active = type === customerTypeFilter;
-                    return (
-                      <button
-                        key={type}
-                        type="button"
-                        onClick={() => {
-                          setCustomerTypeFilter(type);
-                          setPage(1);
-                        }}
-                        className={cn(
-                          "rounded-[12px] border px-[14px] py-[8px] text-[12px] font-extrabold transition",
-                          active
-                            ? "border-[#000000] bg-[#000000] text-[#FFFFFF]"
-                            : "border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
-                        )}
-                      >
-                        {type}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4 lg:col-span-4">
-                <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
-                  Payment Method
-                </div>
-                <div className="mt-3 flex gap-2 flex-wrap">
-                  {(["All", "Cash", "eSewa", "None"] as const).map((method) => {
-                    const active = method === methodFilter;
-                    return (
-                      <button
-                        key={method}
-                        type="button"
-                        onClick={() => {
-                          setMethodFilter(method);
-                          setPage(1);
-                        }}
-                        className={cn(
-                          "rounded-[12px] border px-[14px] py-[8px] text-[12px] font-extrabold transition",
-                          active
-                            ? "border-[#000000] bg-[#000000] text-[#FFFFFF]"
-                            : "border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]",
-                        )}
-                      >
-                        {method}
-                      </button>
-                    );
-                  })}
-                </div>
-              </div>
-            </div>
-          </div>
-        ) : null}
       </div>
 
-      {/* the table uses its own card and horizontal overflow because invoice rows carry a lot of fields on one line */}
-      <div className="mt-6 bg-[#FFFFFF] border-2 border-[#CFCFD3] rounded-[20px] overflow-hidden ">
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse min-w-[800px]">
+      <MobileFilterSheet
+        open={mobileFiltersOpen}
+        onClose={() => setMobileFiltersOpen(false)}
+        onClear={() => {
+          setDraftFromDate("");
+          setDraftToDate("");
+          setDraftOnlyMine(false);
+          setDraftCashierFilter("All");
+          setDraftCustomerTypeFilter("All");
+          setDraftMethodFilter("All");
+        }}
+        onApply={applyMobileFilters}
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={draftFromDate} max={draftToDate || undefined} onChange={(event) => setDraftFromDate(event.target.value)} /></label>
+            <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={draftToDate} min={draftFromDate || undefined} onChange={(event) => setDraftToDate(event.target.value)} /></label>
+          </div>
+          {isAdminView ? (
+            <label className="block space-y-2"><span className="text-[13px] font-bold">Cashier</span><ProjectSelect value={draftCashierFilter} onChange={(event) => setDraftCashierFilter(event.target.value)}><option value="All">All cashiers</option>{cashierOptions.map((cashier) => <option key={cashier.id} value={cashier.id}>{cashier.name}</option>)}</ProjectSelect></label>
+          ) : (
+            <label className="flex min-h-11 items-center justify-between rounded-xl border border-slate-200 px-3 text-[13px] font-bold"><span>Only mine</span><input type="checkbox" checked={draftOnlyMine} onChange={(event) => setDraftOnlyMine(event.target.checked)} className="h-5 w-5 accent-[#11120d]" /></label>
+          )}
+          <label className="block space-y-2"><span className="text-[13px] font-bold">Customer type</span><ProjectSelect value={draftCustomerTypeFilter} onChange={(event) => setDraftCustomerTypeFilter(event.target.value as InvoiceCustomerTypeFilter)}><option value="All">All types</option><option value="Walk-in">Walk-in</option><option value="Registered">Registered</option></ProjectSelect></label>
+          <label className="block space-y-2"><span className="text-[13px] font-bold">Payment method</span><ProjectSelect value={draftMethodFilter} onChange={(event) => setDraftMethodFilter(event.target.value as "All" | PaymentMethodLabel)}><option value="All">All methods</option><option value="Cash">Cash</option><option value="eSewa">eSewa</option><option value="Fonepay">Fonepay</option><option value="Bank Transfer">Bank Transfer</option><option value="Mixed">Mixed</option><option value="None">None</option></ProjectSelect></label>
+        </div>
+      </MobileFilterSheet>
+
+      <div className="mt-5 overflow-hidden rounded-[18px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+        <div className="hidden overflow-x-auto lg:block">
+          <table className="w-full min-w-[940px] border-collapse text-left">
             <thead>
-              <tr className="bg-[#CFCFD3]/40 border-b-2 border-[#CFCFD3]">
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
-                  Invoice / Date
+              <tr className="border-b border-[#DADDE3] bg-[#F8FAFC]">
+                <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  Invoice
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
+                <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                   Customer
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
-                  Summary
+                <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  Items
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase ">
-                  Status & Method
+                <th className="px-4 py-3 text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  Status
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase  text-right">
-                  Net Total
+                <th className="px-4 py-3 text-right text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  Amount
                 </th>
-                <th className="px-5 py-4 text-[11px] font-extrabold text-[#8C8889] uppercase  text-center">
+                <th className="px-4 py-3 text-center text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                   Actions
                 </th>
               </tr>
             </thead>
 
-            <tbody className="divide-y divide-[#CFCFD3]">
-              {pageItems.map((invoice) => (
-                <tr
-                  key={invoice.id}
-                  className="hover:bg-[#CFCFD3]/20 transition-colors"
-                >
-                  <td className="px-5 py-4 align-top">
-                    <div className="font-bold text-[#000000]">
-                      {invoice.invoiceNo}
-                    </div>
-                    <div className="text-[12px] text-[#8C8889] mt-1">
-                      {invoice.createdDateLabel}
-                    </div>
-                    <div className="text-[11px] text-[#8C8889] mt-0.5 opacity-80">
-                      By {invoice.cashierName}
-                    </div>
-                  </td>
+            <tbody className="divide-y divide-[#E5E7EB]">
+              {pageItems.map((invoice) => {
+                const initials =
+                  invoice.customerName
+                    .split(" ")
+                    .slice(0, 2)
+                    .map((part) => part[0])
+                    .join("")
+                    .toUpperCase() || "W";
 
-                  <td className="px-5 py-4 align-top">
-                    <div className="flex items-center gap-3">
-                      <div className="w-8 h-8 rounded-full bg-[#CFCFD3] border border-[#CFCFD3] flex items-center justify-center font-extrabold text-[#000000] text-xs shrink-0">
-                        {invoice.customerName
-                          .split(" ")
-                          .slice(0, 2)
-                          .map((part) => part[0])
-                          .join("")
-                          .toUpperCase()}
+                return (
+                  <tr
+                    key={invoice.id}
+                    className="transition-colors hover:bg-[#ECEFF3]"
+                  >
+                    <td className="px-4 py-3 align-top">
+                      <div className="font-mono text-[14px] font-extrabold text-[#000000]">
+                        {invoice.invoiceNo}
                       </div>
-                      <div>
-                        <div className="font-extrabold text-[#000000]">
-                          {invoice.customerName}
+                      <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                        {invoice.createdDateLabel} | {invoice.createdTimeLabel}
+                      </div>
+                      <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889]">
+                        By {invoice.cashierName}
+                      </div>
+                    </td>
+
+                    <td className="px-4 py-3 align-top">
+                      <div className="flex items-center gap-3">
+                        <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[#DADDE3] bg-[#F3F4F6] text-[13px] font-extrabold text-[#565449]">
+                          {initials}
                         </div>
-                        <div className="text-[12px] text-[#8C8889] font-medium">
-                          {invoice.customerSubtitle}
-                        </div>
-                      </div>
-                    </div>
-                  </td>
-
-                  <td className="px-5 py-4 align-top max-w-[260px]">
-                    <div className="inline-flex items-center gap-2 bg-[#CFCFD3]/30 border border-[#CFCFD3] px-3 py-1.5 rounded-[10px] w-full hover:bg-[#CFCFD3]/60 transition-colors">
-                      <Icon
-                        name="shopping_bag"
-                        className="text-[14px] text-[#8C8889] shrink-0"
-                      />
-                      <span className="text-[12px] font-medium text-[#000000] truncate">
-                        {getCompactInvoiceSummary(invoice)}
-                      </span>
-                    </div>
-                  </td>
-
-                  <td className="px-5 py-4 align-top">
-                    <div className="flex flex-col items-start gap-2">
-                      <div className="flex items-center gap-2">
-                        <InvoiceStatusChip status={invoice.status} />
-                        <PaymentMethodChip
-                          method={invoice.paymentMethod}
-                          showIcon
-                        />
-                      </div>
-
-                      {invoice.status !== "Paid" &&
-                        invoice.status !== "Cancelled" &&
-                        invoice.dueAmount > 0 && (
-                          <div className="text-[11px] font-extrabold text-white bg-rose-600 border border-rose-600 px-2 py-0.5 rounded-md">
-                            Due: {formatNpr(invoice.dueAmount)}
+                        <div className="min-w-0">
+                          <div className="truncate text-[14px] font-extrabold text-[#000000]">
+                            {invoice.customerName}
                           </div>
-                        )}
-                      {invoice.status === "Cancelled" &&
-                      invoice.cancelledByName ? (
-                        <div className="text-[11px] font-semibold text-slate-500">
-                          Cancelled by {invoice.cancelledByName}
-                          {invoice.cancelledByRole
-                            ? ` (${invoice.cancelledByRole})`
-                            : ""}
+                          <div className="mt-0.5 max-w-[220px] truncate text-[13px] font-semibold text-[#8C8889]">
+                            {invoice.customerSubtitle}
+                          </div>
                         </div>
-                      ) : null}
-                    </div>
-                  </td>
+                      </div>
+                    </td>
 
-                  <td className="px-5 py-4 align-top text-right">
-                    <div className="font-mono font-extrabold text-[#000000] text-[15px]">
-                      {formatNpr(invoice.netTotal)}
-                    </div>
-                  </td>
+                    <td className="px-4 py-3 align-top">
+                      <div className="max-w-[280px] truncate rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
+                        {getCompactInvoiceSummary(invoice)}
+                      </div>
+                    </td>
 
-                  <td className="px-5 py-4 align-top">
-                    <div className="flex items-center justify-center gap-1">
-                      <button
-                        onClick={() => openInvoice(invoice.id)}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition-colors hover:bg-[#000000] hover:text-[#FFFFFF]"
-                        title="View"
-                      >
-                        <Icon name="visibility" className="text-[16px]" />
-                      </button>
+                    <td className="px-4 py-3 align-top">
+                      <div className="flex flex-col items-start gap-2">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <InvoiceStatusChip status={invoice.status} />
+                          <PaymentMethodChip method={invoice.paymentMethod} showIcon />
+                        </div>
+                        {invoice.status !== "Paid" &&
+                        invoice.status !== "Cancelled" &&
+                        invoice.dueAmount > 0 ? (
+                          <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-2 py-1 text-[12px] font-extrabold text-rose-700">
+                            Due {formatNpr(invoice.dueAmount)}
+                          </div>
+                        ) : null}
+                        {invoice.status === "Cancelled" &&
+                        invoice.cancelledByName ? (
+                          <div className="text-[12px] font-semibold text-slate-500">
+                            Cancelled by {invoice.cancelledByName}
+                            {invoice.cancelledByRole
+                              ? ` (${invoice.cancelledByRole})`
+                              : ""}
+                          </div>
+                        ) : null}
+                      </div>
+                    </td>
 
-                      <button
-                        onClick={() => openEditInvoice(invoice)}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition-colors hover:bg-[#000000] hover:text-[#FFFFFF]"
-                        title="Edit"
-                      >
-                        <Icon name="edit" className="text-[16px]" />
-                      </button>
+                    <td className="px-4 py-3 text-right align-top">
+                      <div className="font-mono text-[18px] font-extrabold text-[#000000]">
+                        {formatNpr(invoice.netTotal)}
+                      </div>
+                      <div className="mt-1 text-[12px] font-bold text-[#8C8889]">
+                        Paid {formatNpr(invoice.paidAmount)}
+                      </div>
+                    </td>
 
-                      <button
-                        onClick={() => openInvoicePrint(invoice.id)}
-                        className="flex h-8 w-8 items-center justify-center rounded-lg border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition-colors hover:bg-[#000000] hover:text-[#FFFFFF]"
-                        title="Print"
-                      >
-                        <Icon name="print" className="text-[16px]" />
-                      </button>
-                    </div>
-                  </td>
-                </tr>
-              ))}
+                    <td className="px-4 py-3 align-top">
+                      <div className="flex items-center justify-center gap-2">
+                        <button
+                          type="button"
+                          onClick={() => openInvoice(invoice.id)}
+                          className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF]"
+                          title="View invoice"
+                          aria-label={`View invoice ${invoice.invoiceNo}`}
+                        >
+                          <Icon name="visibility" className="text-[17px]" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openEditInvoice(invoice)}
+                          className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF]"
+                          title="Edit invoice"
+                          aria-label={`Edit invoice ${invoice.invoiceNo}`}
+                        >
+                          <Icon name="edit" className="text-[17px]" />
+                        </button>
+
+                        <button
+                          type="button"
+                          onClick={() => openInvoicePrint(invoice.id)}
+                          className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF]"
+                          title="Print invoice"
+                          aria-label={`Print invoice ${invoice.invoiceNo}`}
+                        >
+                          <Icon name="print" className="text-[17px]" />
+                        </button>
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>
 
+        <div className="space-y-3 p-3 lg:hidden">
+          {pageItems.map((invoice) => (
+            <div
+              key={invoice.id}
+              className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="min-w-0">
+                  <div className="font-mono text-[14px] font-extrabold text-[#000000]">
+                    {invoice.invoiceNo}
+                  </div>
+                  <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                    {invoice.createdDateLabel} | {invoice.createdTimeLabel}
+                  </div>
+                </div>
+                <div className="text-right">
+                  <div className="font-mono text-[16px] font-extrabold text-[#000000]">
+                    {formatNpr(invoice.netTotal)}
+                  </div>
+                  {invoice.dueAmount > 0 && invoice.status !== "Cancelled" ? (
+                    <div className="mt-1 text-[12px] font-extrabold text-rose-700">
+                      Due {formatNpr(invoice.dueAmount)}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              <div className="mt-3 border-t border-[#E5E7EB] pt-3">
+                <div className="text-[14px] font-extrabold text-[#000000]">
+                  {invoice.customerName}
+                </div>
+                <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                  {invoice.customerSubtitle} | By {invoice.cashierName}
+                </div>
+              </div>
+
+              <div className="mt-3 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
+                {getCompactInvoiceSummary(invoice)}
+              </div>
+
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                <div className="flex flex-wrap items-center gap-2">
+                  <InvoiceStatusChip status={invoice.status} />
+                  <PaymentMethodChip method={invoice.paymentMethod} showIcon />
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openInvoice(invoice.id)}
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    title="View invoice"
+                    aria-label={`View invoice ${invoice.invoiceNo}`}
+                  >
+                    <Icon name="visibility" className="text-[17px]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openEditInvoice(invoice)}
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    title="Edit invoice"
+                    aria-label={`Edit invoice ${invoice.invoiceNo}`}
+                  >
+                    <Icon name="edit" className="text-[17px]" />
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openInvoicePrint(invoice.id)}
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    title="Print invoice"
+                    aria-label={`Print invoice ${invoice.invoiceNo}`}
+                  >
+                    <Icon name="print" className="text-[17px]" />
+                  </button>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+
         {pageItems.length === 0 ? (
-          <div className="h-[150px] flex items-center justify-center text-[#8C8889] font-semibold">
-            No invoices match your criteria.
+          <div className="flex min-h-[160px] items-center justify-center px-4 py-10 text-center">
+            <div>
+              <div className="text-[14px] font-extrabold text-[#565449]">
+                No invoices match your criteria.
+              </div>
+              <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+                Clear filters or search a different invoice number, customer, or item.
+              </div>
+            </div>
           </div>
         ) : null}
 
         <PaginationBar
           page={pageClamped}
           totalPages={totalPages}
-          total={filtered.length}
+          total={invoiceTotal}
           start={pageStart}
           end={pageEnd}
           label="invoices"
@@ -3620,7 +3970,7 @@ export default function CashierInvoicesPage() {
             setPageSize(nextPageSize);
             setPage(1);
           }}
-          className="border-t-2"
+          className="border-t border-[#E5E7EB]"
         />
       </div>
 

@@ -5,7 +5,11 @@ export type AnalyticsPaymentStatus =
   | "PARTIALLY_PAID"
   | "PAID"
   | "CANCELLED";
-export type AnalyticsPaymentMethod = "CASH" | "ESEWA";
+export type AnalyticsPaymentMethod =
+  | "CASH"
+  | "ESEWA"
+  | "FONEPAY"
+  | "BANK_TRANSFER";
 export type AnalyticsBucketGranularity = "hour" | "day" | "week";
 
 // the filters the analytics page sends to the backend
@@ -257,5 +261,7 @@ export function paymentStatusLabel(status: AnalyticsPaymentStatus) {
 // display-friendly labels for payment methods
 export function paymentMethodLabel(method: AnalyticsPaymentMethod) {
   if (method === "ESEWA") return "eSewa";
+  if (method === "FONEPAY") return "Fonepay";
+  if (method === "BANK_TRANSFER") return "Bank Transfer";
   return "Cash";
 }
