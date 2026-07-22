@@ -10,8 +10,8 @@ export async function loginApi(email: string, password: string) {
 }
 
 // fetching the currently logged-in user's profile data using the JWT token
-export async function getMeApi() {
-    const res = await api.get("/api/auth/me");
+export async function getMeApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/auth/me", { signal: options?.signal });
     return res.data;
 }
 
@@ -35,6 +35,7 @@ export type CashierPrivilege = {
     canOverrideBillingPrice: boolean;
     canApplyManualDiscount: boolean;
     canVoidPayment: boolean;
+    canViewWholesalePrice: boolean;
     updatedById?: string | null;
     createdAt?: string | null;
     updatedAt?: string | null;
@@ -45,6 +46,7 @@ export type CashierPrivilegeRow = {
     name: string;
     email: string;
     phone?: string | null;
+    role: "MANAGER" | "CASHIER" | "STAFF";
     isActive: boolean;
     privilege: CashierPrivilege;
 };
@@ -91,6 +93,17 @@ function getBearerHeaders() {
 
 // uploading a profile photo — uses raw fetch instead of axios because FormData needs
 // the browser to auto-set the multipart/form-data content-type with the correct boundary
+async function readUploadError(res: Response, fallback: string) {
+    const text = await res.text().catch(() => "");
+    if (!text) return fallback;
+    try {
+        const parsed = JSON.parse(text);
+        return parsed.error || parsed.message || fallback;
+    } catch {
+        return text || fallback;
+    }
+}
+
 export async function uploadProfilePhotoApi(file: File) {
     const formData = new FormData();
     formData.append("photo", file);
@@ -100,8 +113,7 @@ export async function uploadProfilePhotoApi(file: File) {
         body: formData
     });
     if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Upload failed");
+        throw new Error(await readUploadError(res, "Upload failed"));
     }
     return res.json();
 }
@@ -109,27 +121,72 @@ export async function uploadProfilePhotoApi(file: File) {
 // --- Brand endpoints ---
 
 // listing all brands — optionally filtering to only active ones
+const REFERENCE_DATA_CACHE_MS = 30_000;
+let brandsCache: { data: any[]; expiresAt: number } | null = null;
+let brandsRequest: Promise<any[]> | null = null;
+let categoriesCache: { data: any; expiresAt: number } | null = null;
+let categoriesRequest: Promise<any> | null = null;
+let businessSettingsCache: {
+    data: BusinessSettings;
+    expiresAt: number;
+} | null = null;
+let businessSettingsRequest: Promise<BusinessSettings> | null = null;
+
+function invalidateProductReferenceCache() {
+    brandsCache = null;
+    categoriesCache = null;
+}
+
+function invalidateBusinessSettingsCache() {
+    businessSettingsCache = null;
+}
+
 export async function listBrandsApi(activeOnly?: boolean) {
-    const params = activeOnly ? { active: "true" } : {};
-    const res = await api.get("/api/brands", { params });
-    return res.data;
+    let brands: any[];
+    if (brandsCache && brandsCache.expiresAt > Date.now()) {
+        brands = brandsCache.data;
+    } else {
+        if (!brandsRequest) {
+            brandsRequest = api
+                .get("/api/brands")
+                .then((res) => {
+                    const rows = Array.isArray(res.data) ? res.data : [];
+                    brandsCache = {
+                        data: rows,
+                        expiresAt: Date.now() + REFERENCE_DATA_CACHE_MS,
+                    };
+                    return rows;
+                })
+                .finally(() => {
+                    brandsRequest = null;
+                });
+        }
+        brands = await brandsRequest;
+    }
+
+    return activeOnly
+        ? brands.filter((brand) => brand?.isActive !== false)
+        : brands;
 }
 
 // creating a new brand with the given name
 export async function createBrandApi(name: string) {
     const res = await api.post("/api/brands", { name });
+    invalidateProductReferenceCache();
     return res.data;
 }
 
 // updating a brand's name or active status
 export async function updateBrandApi(id: string, data: { name?: string; isActive?: boolean }) {
     const res = await api.put(`/api/brands/${id}`, data);
+    invalidateProductReferenceCache();
     return res.data;
 }
 
 // deactivating a brand — this will also deactivate all products under this brand
 export async function deactivateBrandApi(id: string) {
     const res = await api.patch(`/api/brands/${id}/deactivate`);
+    invalidateProductReferenceCache();
     return res.data;
 }
 
@@ -141,13 +198,21 @@ interface ProductFilters {
     category?: string;
     active?: string;
     lowStock?: string;
+    stockStatus?: "in" | "low" | "out";
+    draftReservations?: string;
     page?: number;
     pageSize?: number;
 }
 
 // listing products with optional search, brand filter, category filter, and pagination
-export async function listProductsApi(filters?: ProductFilters) {
-    const res = await api.get("/api/products", { params: filters });
+export async function listProductsApi(
+    filters?: ProductFilters,
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products", {
+        params: filters,
+        signal: options?.signal,
+    });
     return res.data;
 }
 
@@ -157,15 +222,39 @@ export async function getProductApi(id: string) {
     return res.data;
 }
 
+export async function getProductsByIdsApi(
+    ids: string[],
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products/lookup", {
+        params: { ids: [...new Set(ids)].join(",") },
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
+export async function getProductByCodeApi(
+    code: string,
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products/lookup-code", {
+        params: { code },
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
 // creating a new product with all its details (name, SKU, prices, brand, etc.)
 export async function createProductApi(data: any) {
     const res = await api.post("/api/products", data);
+    invalidateProductReferenceCache();
     return res.data;
 }
 
 // updating an existing product's details
 export async function updateProductApi(id: string, data: any) {
     const res = await api.put(`/api/products/${id}`, data);
+    invalidateProductReferenceCache();
     return res.data;
 }
 
@@ -197,13 +286,30 @@ export async function permanentlyDeleteProductApi(id: string) {
         safety: ProductDeleteSafety;
         message: string;
     }>(`/api/products/${id}`);
+    invalidateProductReferenceCache();
     return res.data;
 }
 
 // fetching all available product categories for the filter dropdown
 export async function getCategoriesApi() {
-    const res = await api.get("/api/products/categories");
-    return res.data;
+    if (categoriesCache && categoriesCache.expiresAt > Date.now()) {
+        return categoriesCache.data;
+    }
+    if (!categoriesRequest) {
+        categoriesRequest = api
+            .get("/api/products/categories")
+            .then((res) => {
+                categoriesCache = {
+                    data: res.data,
+                    expiresAt: Date.now() + REFERENCE_DATA_CACHE_MS,
+                };
+                return res.data;
+            })
+            .finally(() => {
+                categoriesRequest = null;
+            });
+    }
+    return categoriesRequest;
 }
 
 // uploading a CSV file to bulk import products — uses raw fetch for FormData
@@ -278,12 +384,23 @@ export async function deleteProductImportTemplateApi(id: string) {
 
 export async function bulkUpdateProductPricesApi(payload: {
     reason: string;
-    updates: Array<{
+    updates?: Array<{
         productId: string;
         retailPrice: number;
         wholesalePrice: number;
         ratePerPiece?: number;
     }>;
+    scope?: "IDS" | "FILTERED";
+    filters?: {
+        search?: string;
+        brand?: string;
+        category?: string;
+        isActive?: boolean;
+        lowStockOnly?: boolean;
+        stockStatus?: "in" | "low" | "out";
+    };
+    wholesaleMarginPercent?: number;
+    retailMarginPercent?: number;
 }) {
     const res = await api.post("/api/products/bulk-price-update", payload);
     return res.data as {
@@ -438,13 +555,34 @@ export async function importProductDocumentApi(documentId: string) {
 
 // fetching the current business settings (low stock threshold, wholesale qty, loyalty discount)
 export async function getBusinessSettingsApi() {
-    const res = await api.get("/api/settings/business");
-    return res.data as BusinessSettings;
+    if (
+        businessSettingsCache &&
+        businessSettingsCache.expiresAt > Date.now()
+    ) {
+        return businessSettingsCache.data;
+    }
+    if (!businessSettingsRequest) {
+        businessSettingsRequest = api
+            .get("/api/settings/business")
+            .then((res) => {
+                const data = res.data as BusinessSettings;
+                businessSettingsCache = {
+                    data,
+                    expiresAt: Date.now() + REFERENCE_DATA_CACHE_MS,
+                };
+                return data;
+            })
+            .finally(() => {
+                businessSettingsRequest = null;
+            });
+    }
+    return businessSettingsRequest;
 }
 
 // updating business settings — only admin can access this
 export async function updateBusinessSettingsApi(data: Partial<BusinessSettings>) {
     const res = await api.put("/api/settings/business", data);
+    invalidateBusinessSettingsCache();
     return res.data as BusinessSettings;
 }
 
@@ -458,8 +596,10 @@ export async function updateOverridePinApi(pin: string) {
     return res.data as OverridePolicy;
 }
 
-export async function getMyCashierPrivilegesApi() {
-    const res = await api.get("/api/settings/cashier-privileges/me");
+export async function getMyCashierPrivilegesApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/settings/cashier-privileges/me", {
+        signal: options?.signal,
+    });
     return res.data as { privilege: CashierPrivilege };
 }
 
@@ -541,9 +681,15 @@ export async function closeCashDrawerApi(
 // --- Customer endpoints ---
 
 // listing all customers — optionally filtering to active only
-export async function listCustomersApi(activeOnly?: boolean) {
+export async function listCustomersApi(
+    activeOnly?: boolean,
+    options?: { signal?: AbortSignal },
+) {
     const params = activeOnly ? { active: "true" } : {};
-    const res = await api.get("/api/customers", { params });
+    const res = await api.get("/api/customers", {
+        params,
+        signal: options?.signal,
+    });
     return res.data;
 }
 
@@ -576,9 +722,13 @@ export async function createCustomerDiscountRequestApi(data: {
     return res.data as CustomerDiscountRequest;
 }
 
-export async function listCustomerDiscountRequestsApi(status?: "PENDING" | "APPROVED" | "REJECTED") {
+export async function listCustomerDiscountRequestsApi(
+    status?: "PENDING" | "APPROVED" | "REJECTED",
+    options?: { signal?: AbortSignal },
+) {
     const res = await api.get("/api/customers/discount-requests", {
         params: status ? { status } : undefined,
+        signal: options?.signal,
     });
     return res.data as { requests: CustomerDiscountRequest[] };
 }
@@ -670,13 +820,13 @@ export async function checkoutInvoiceApi(data: {
         overrideAuthorizationToken?: string;
     }>;
     payment?: {
-        method: "CASH" | "ESEWA" | "NONE";
+        method: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
     };
     payments?: Array<{
-        method: "CASH" | "ESEWA" | "NONE";
+        method: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
@@ -716,8 +866,8 @@ export async function parkInvoiceDraftApi(data: {
     return res.data;
 }
 
-export async function listParkedDraftsApi() {
-    const res = await api.get("/api/invoices/parked");
+export async function listParkedDraftsApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/invoices/parked", { signal: options?.signal });
     return res.data;
 }
 
@@ -793,8 +943,14 @@ export async function reverseReturnRequestApi(id: string, note?: string) {
 }
 
 // listing invoices with optional filters (date range, status, cashier, etc.)
-export async function listInvoicesApi(filters?: any) {
-    const res = await api.get("/api/invoices", { params: filters });
+export async function listInvoicesApi(
+    filters?: any,
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/invoices", {
+        params: filters,
+        signal: options?.signal,
+    });
     return res.data;
 }
 
@@ -1066,8 +1222,11 @@ export async function listCategorizedHistoryApi(filters?: {
     q?: string;
     page?: number;
     pageSize?: number;
-}) {
-    const res = await api.get("/api/audit/history", { params: filters });
+}, options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/audit/history", {
+        params: filters,
+        signal: options?.signal,
+    });
     return res.data as {
         category: string;
         events: Array<{
@@ -1134,20 +1293,233 @@ export async function restoreBackupApi(id: string, confirmation: string) {
 // --- User management endpoints ---
 
 // listing all users — optionally filtered by role
+const USER_DIRECTORY_CACHE_MS = 30_000;
+const userDirectoryCache = new Map<
+    string,
+    { users: any[]; expiresAt: number }
+>();
+const userDirectoryRequests = new Map<string, Promise<any[]>>();
+
+function invalidateUserDirectoryCache() {
+    userDirectoryCache.clear();
+}
+
+// User records are reference data used by several routes (Profile, Settings,
+// Invoices, and History). Share short-lived role-scoped snapshots instead of
+// downloading the same list again during normal route changes. Every user
+// mutation below invalidates them immediately.
 export async function listUsersApi(params?: { role?: string }) {
-    const res = await api.get("/api/users", { params });
+    const role = params?.role?.trim().toUpperCase();
+    const cacheKey = role || "ALL";
+    const now = Date.now();
+    const cached = userDirectoryCache.get(cacheKey);
+
+    if (cached && cached.expiresAt > now) {
+        return cached.users;
+    }
+
+    let request = userDirectoryRequests.get(cacheKey);
+    if (!request) {
+        request = api
+            .get("/api/users", {
+                params: role ? { role } : undefined,
+            })
+            .then((res) => {
+                const rows = Array.isArray(res.data)
+                    ? res.data
+                    : Array.isArray(res.data?.users)
+                      ? res.data.users
+                      : [];
+                userDirectoryCache.set(cacheKey, {
+                    users: rows,
+                    expiresAt: Date.now() + USER_DIRECTORY_CACHE_MS,
+                });
+                return rows;
+            })
+            .finally(() => {
+                userDirectoryRequests.delete(cacheKey);
+            });
+        userDirectoryRequests.set(cacheKey, request);
+    }
+
+    return request;
+}
+
+export type CashierPresence = {
+    id: string;
+    name: string;
+    email: string;
+    phone?: string | null;
+    isActive: boolean;
+    lastPresenceAt?: string | null;
+    isPresent: boolean;
+    hasOpenDrawer: boolean;
+    openDrawerId?: string | null;
+    openDrawerOpenedAt?: string | null;
+    pendingDraftRequestCount: number;
+};
+
+export async function touchUserPresenceApi() {
+    const res = await api.patch("/api/users/me/presence");
+    return res.data;
+}
+
+export async function listCashierPresenceApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get<{ cashiers: CashierPresence[] }>("/api/users/cashiers/presence", {
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
+export type DraftRequestItemInput = {
+    productId: string;
+    qty: number;
+    note?: string | null;
+};
+
+export type DraftRequestPayload = {
+    customerName?: string | null;
+    customerPhone?: string | null;
+    customerId?: string | null;
+    notes?: string | null;
+    assignedCashierId?: string | null;
+    items: DraftRequestItemInput[];
+};
+
+export type BillingDraftRequest = {
+    id: string;
+    requestNo: string;
+    status: string;
+    customerName?: string | null;
+    customerPhone?: string | null;
+    customerId?: string | null;
+    customer?: { id: string; name: string; phone?: string | null } | null;
+    notes?: string | null;
+    assignedCashierId?: string | null;
+    createdBy?: { id: string; name: string; role?: string | null } | null;
+    assignedCashier?: { id: string; name: string; role?: string | null; isActive?: boolean } | null;
+    acceptedBy?: { id: string; name: string; role?: string | null } | null;
+    completedInvoice?: { id: string; invoiceNo: string; netTotal?: number } | null;
+    expiresAt?: string | null;
+    acceptedAt?: string | null;
+    modifiedAt?: string | null;
+    createdAt: string;
+    itemCount?: number;
+    totalQty?: number;
+    estimatedTotal?: number;
+    items?: Array<{
+        id: string;
+        productId: string;
+        qty: number;
+        note?: string | null;
+        reviewStatus?: string | null;
+        acceptedQty?: number | null;
+        rejectionReason?: string | null;
+        reviewedAt?: string | null;
+        product?: {
+            id: string;
+            name: string;
+            sku?: string | null;
+            barcode?: string | null;
+            retailPrice?: number | null;
+            wholesalePrice?: number | null;
+            stock?: number | null;
+            reservedStock?: number | null;
+            saleUnit?: string | null;
+            allowFractionalQty?: boolean | null;
+            quantityStep?: number | null;
+            isActive?: boolean | null;
+            brand?: { id: string; name: string } | null;
+        } | null;
+    }>;
+};
+
+export type DraftRequestReviewItem = {
+    itemId: string;
+    action: "ACCEPT" | "REJECT";
+    acceptedQty?: number;
+    reason?: string | null;
+};
+
+export async function createDraftRequestApi(data: DraftRequestPayload) {
+    const res = await api.post<{ request: BillingDraftRequest }>("/api/draft-requests", data);
+    return res.data;
+}
+
+export async function listDraftRequestsApi(params?: {
+    status?: string;
+    scope?: string;
+    mode?: "list" | "full";
+    page?: number;
+    pageSize?: number;
+}, options?: { signal?: AbortSignal }) {
+    const res = await api.get<{
+        requests: BillingDraftRequest[];
+        total?: number;
+        page?: number;
+        pageSize?: number;
+    }>("/api/draft-requests", {
+        params,
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
+export async function getDraftRequestApi(id: string) {
+    const res = await api.get<{ request: BillingDraftRequest }>(`/api/draft-requests/${id}`);
+    return res.data;
+}
+
+export async function updateDraftRequestApi(id: string, data: Partial<DraftRequestPayload>) {
+    const res = await api.put<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}`,
+        data,
+    );
+    return res.data;
+}
+
+export async function cancelDraftRequestApi(id: string) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/cancel`,
+    );
+    return res.data;
+}
+
+export async function acceptDraftRequestApi(id: string, items?: DraftRequestReviewItem[]) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/accept`,
+        { items },
+    );
+    return res.data;
+}
+
+export async function rejectDraftRequestApi(id: string, note?: string | null) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/reject`,
+        { note },
+    );
+    return res.data;
+}
+
+export async function completeDraftRequestApi(id: string, invoiceId: string) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/complete`,
+        { invoiceId },
+    );
     return res.data;
 }
 
 // creating a new user account (admin creates cashiers here)
 export async function createUserApi(data: any) {
     const res = await api.post("/api/users", data);
+    invalidateUserDirectoryCache();
     return res.data;
 }
 
 // updating an existing user's details
 export async function updateUserApi(id: string, data: any) {
     const res = await api.put(`/api/users/${id}`, data);
+    invalidateUserDirectoryCache();
     return res.data;
 }
 
@@ -1173,6 +1545,7 @@ export async function permanentlyDeleteUserApi(id: string) {
         safety: UserDeleteSafety;
         message: string;
     }>(`/api/users/${id}`);
+    invalidateUserDirectoryCache();
     return res.data;
 }
 
@@ -1238,8 +1611,11 @@ export async function listBinApi(filters?: {
     entityType?: string;
     page?: number;
     pageSize?: number;
-}) {
-    const res = await api.get("/api/bin", { params: filters });
+}, options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/bin", {
+        params: filters,
+        signal: options?.signal,
+    });
     return res.data as {
         records: BinRecord[];
         total: number;
@@ -1271,10 +1647,11 @@ export async function uploadUserPhotoApi(userId: string, file: File) {
         body: fd,
     });
     if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Upload failed");
+        throw new Error(await readUploadError(res, "Upload failed"));
     }
-    return res.json();
+    const data = await res.json();
+    invalidateUserDirectoryCache();
+    return data;
 }
 
 // uploading an image for a product listing
@@ -1287,8 +1664,7 @@ export async function uploadProductImageApi(productId: string, file: File) {
         body: fd,
     });
     if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Upload failed");
+        throw new Error(await readUploadError(res, "Upload failed"));
     }
     return res.json();
 }
@@ -1397,14 +1773,19 @@ export async function listDocumentsApi(filters?: {
     to?: string;
     page?: number;
     pageSize?: number;
-}) {
-    const res = await api.get<DocumentListResponse>("/api/documents", { params: filters });
+}, options?: { signal?: AbortSignal }) {
+    const res = await api.get<DocumentListResponse>("/api/documents", {
+        params: filters,
+        signal: options?.signal,
+    });
     return res.data;
 }
 
 // fetching a single document's metadata
-export async function getDocumentApi(id: string) {
-    const res = await api.get<DocumentRecord>(`/api/documents/${id}`);
+export async function getDocumentApi(id: string, options?: { signal?: AbortSignal }) {
+    const res = await api.get<DocumentRecord>(`/api/documents/${id}`, {
+        signal: options?.signal,
+    });
     return res.data;
 }
 
@@ -1413,15 +1794,53 @@ export function getDocumentFileUrl(id: string) {
     return `${API_BASE_URL}/api/documents/${id}/file`;
 }
 
+const documentFileReads = new Map<string, Promise<Blob>>();
+const documentFileFailures = new Map<string, { until: number; message: string }>();
+
 export async function fetchDocumentFileBlobApi(id: string) {
-    const res = await fetch(getDocumentFileUrl(id), {
-        headers: getBearerHeaders(),
-    });
-    if (!res.ok) {
-        const err = await res.json().catch(() => ({}));
-        throw new Error(err.error || "Failed to load document file");
+    const recentFailure = documentFileFailures.get(id);
+    if (recentFailure && recentFailure.until > Date.now()) {
+        throw new Error(recentFailure.message);
     }
-    return res.blob();
+
+    const existing = documentFileReads.get(id);
+    if (existing) return existing;
+
+    const request = api
+        .get<Blob>(`/api/documents/${id}/file`, { responseType: "blob" })
+        .then((res) => {
+            documentFileFailures.delete(id);
+            return res.data;
+        })
+        .catch(async (error: any) => {
+            let message = "Failed to load document file";
+            const payload = error?.response?.data;
+            if (payload instanceof Blob && payload.type.includes("json")) {
+                try {
+                    const parsed = JSON.parse(await payload.text());
+                    message = parsed?.error || message;
+                } catch {
+                    // Keep the stable fallback when an error blob is malformed.
+                }
+            } else {
+                message = payload?.error || error?.message || message;
+            }
+            // Broken/missing storage records should not be hammered again by
+            // thumbnail and preview rerenders.
+            if (error?.response?.status === 404) {
+                documentFileFailures.set(id, {
+                    until: Date.now() + 30_000,
+                    message,
+                });
+            }
+            throw new Error(message);
+        })
+        .finally(() => {
+            documentFileReads.delete(id);
+        });
+
+    documentFileReads.set(id, request);
+    return request;
 }
 
 // deleting a document
@@ -1439,8 +1858,30 @@ export async function updateDocumentVisibilityApi(id: string, visibility: Docume
     };
 }
 
+export async function updateDocumentMetadataApi(
+    id: string,
+    metadata: {
+        documentType?: DocumentType;
+        supplierName?: string | null;
+        billNumber?: string | null;
+        billDate?: string | null;
+        billAmount?: number | null;
+        remarks?: string | null;
+    },
+) {
+    const res = await api.patch(`/api/documents/${id}/metadata`, metadata);
+    return res.data as {
+        document: DocumentRecord;
+        changed: boolean;
+        changedFields: string[];
+        message: string;
+    };
+}
+
 // fetching storage health and statistics
-export async function getStorageInfoApi() {
-    const res = await api.get<StorageInfo>("/api/documents/storage-info");
+export async function getStorageInfoApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get<StorageInfo>("/api/documents/storage-info", {
+        signal: options?.signal,
+    });
     return res.data;
 }

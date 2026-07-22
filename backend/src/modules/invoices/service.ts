@@ -4,6 +4,11 @@ import {
   buildBusinessDateRange,
   toBusinessClock,
 } from "../../lib/businessDate";
+import {
+  getInvoicePaymentTargetTotal,
+  getRemainingPaymentDue,
+  roundPayableTotal,
+} from "../../lib/money";
 import prisma from "../../db/prisma";
 import {
   assertCashierOverrideAllowed,
@@ -23,6 +28,7 @@ export { StockConflictError } from "./stockConflicts";
 const MAX_CREATE_DRAFT_RETRIES = 5; // retry limit for when the auto-generated invoice number collides with an existing one
 const ACTIVE_RETURN_STATUSES = ["PENDING", "APPROVED"] as const;
 const PRICE_OVERRIDE_AUTH_TTL_MS = 5 * 60 * 1000;
+const MAX_PARKED_BILLS_PER_CASHIER = 5;
 
 // we use this to round any currency value to 2 decimal places
 // without this, JavaScript floating point math can produce results like 10.0000000001
@@ -408,7 +414,7 @@ type CheckoutItemInput = {
 };
 
 type CheckoutPaymentInput = {
-  method?: "CASH" | "ESEWA" | "NONE";
+  method?: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
   amount?: number;
   reference?: string;
   tenderedAmount?: number;
@@ -658,8 +664,15 @@ function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
     return { method: "NONE" as const };
   }
 
-  if (payment.method !== "CASH" && payment.method !== "ESEWA") {
-    throw new Error("payment.method must be CASH, ESEWA, or NONE");
+  if (
+    payment.method !== "CASH" &&
+    payment.method !== "ESEWA" &&
+    payment.method !== "FONEPAY" &&
+    payment.method !== "BANK_TRANSFER"
+  ) {
+    throw new Error(
+      "payment.method must be CASH, ESEWA, FONEPAY, BANK_TRANSFER, or NONE",
+    );
   }
 
   const amount = roundCurrency(Number(payment.amount));
@@ -908,6 +921,19 @@ async function adjustReservedStockTx(
   }
 }
 
+async function findSystemAuditActorId() {
+  const systemActor = await prisma.user.findFirst({
+    where: {
+      isActive: true,
+      role: { in: ["ADMIN", "MANAGER"] },
+    },
+    orderBy: [{ role: "asc" }, { createdAt: "asc" }],
+    select: { id: true },
+  });
+
+  return systemActor?.id || null;
+}
+
 async function finalizeCheckoutInvoiceTx(
   tx: any,
   invoiceId: string,
@@ -941,7 +967,7 @@ async function finalizeCheckoutInvoiceTx(
   );
   const appliedDiscountPercent =
     subTotal > 0 ? roundCurrency((normalizedDiscount / subTotal) * 100) : 0;
-  const netTotal = roundCurrency(subTotal - normalizedDiscount);
+  const netTotal = roundPayableTotal(subTotal - normalizedDiscount);
   const isManualDiscountOverride =
     Math.abs(normalizedDiscount - computedDiscount) > 0.001;
 
@@ -1081,13 +1107,14 @@ async function recordCheckoutCashPaymentTx(
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
-  if (invoice.netTotal <= 0) {
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+  if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
-  if (currentPaid + normalizedAmount > invoice.netTotal) {
+  if (currentPaid + normalizedAmount > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, net total: Rs ${invoice.netTotal}. Max allowed: Rs ${roundCurrency(invoice.netTotal - currentPaid)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
     );
   }
 
@@ -1110,7 +1137,7 @@ async function recordCheckoutCashPaymentTx(
     select: { id: true, name: true, role: true },
   });
   const nextPaymentStatus =
-    currentPaid + normalizedAmount >= invoice.netTotal
+    currentPaid + normalizedAmount >= paymentTargetTotal
       ? "PAID"
       : "PARTIALLY_PAID";
 
@@ -1154,9 +1181,97 @@ async function recordCheckoutCashPaymentTx(
         nextStatus: nextPaymentStatus,
         paidTotal: roundCurrency(currentPaid + normalizedAmount),
         netTotal: invoice.netTotal,
-        remainingDue: roundCurrency(
-          Math.max(0, invoice.netTotal - currentPaid - normalizedAmount),
+        remainingDue: getRemainingPaymentDue(
+          invoice.netTotal,
+          currentPaid + normalizedAmount,
         ),
+      },
+    },
+  });
+}
+
+async function recordCheckoutManualDigitalPaymentTx(
+  tx: any,
+  invoice: {
+    id: string;
+    invoiceNo: string;
+    paymentStatus: string;
+    netTotal: number;
+    paidTotal?: number;
+  },
+  method: "FONEPAY" | "BANK_TRANSFER",
+  amount: number,
+  createdById: string,
+  reference?: string,
+) {
+  const normalizedAmount = roundCurrency(amount);
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    throw new Error("Payment amount must be greater than zero");
+  }
+  if (!reference?.trim()) {
+    throw new Error(
+      `${method === "FONEPAY" ? "Fonepay" : "Bank transfer"} reference is required`,
+    );
+  }
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+  if (paymentTargetTotal <= 0) {
+    throw new Error("Zero-total invoice does not need a payment");
+  }
+
+  const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
+  if (currentPaid + normalizedAmount > paymentTargetTotal) {
+    throw new Error(
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
+    );
+  }
+
+  const actor = await tx.user.findUnique({
+    where: { id: createdById },
+    select: { id: true, name: true, role: true },
+  });
+  const nextPaymentStatus =
+    currentPaid + normalizedAmount >= paymentTargetTotal
+      ? "PAID"
+      : "PARTIALLY_PAID";
+  const nextPaidTotal = roundCurrency(currentPaid + normalizedAmount);
+
+  await tx.payment.create({
+    data: {
+      invoiceId: invoice.id,
+      method,
+      amount: normalizedAmount,
+      status: "SUCCESS",
+      reference: reference.trim(),
+      createdById,
+    },
+  });
+
+  await tx.invoice.update({
+    where: { id: invoice.id },
+    data: {
+      paidTotal: nextPaidTotal,
+      paymentStatus: nextPaymentStatus,
+    },
+  });
+
+  await tx.auditLog.create({
+    data: {
+      actorId: createdById,
+      action: "INVOICE_PAYMENT_UPDATED",
+      entityType: "Invoice",
+      entityId: invoice.id,
+      meta: {
+        invoiceNo: invoice.invoiceNo,
+        actorName: actor?.name || null,
+        actorRole: actor?.role || null,
+        method,
+        reference: reference.trim(),
+        amountAdded: normalizedAmount,
+        previousStatus: invoice.paymentStatus,
+        nextStatus: nextPaymentStatus,
+        paidTotal: nextPaidTotal,
+        netTotal: invoice.netTotal,
+        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal),
       },
     },
   });
@@ -1428,6 +1543,22 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
           invoiceForPayments,
           payment.amount,
           cashierId,
+        );
+        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+          where: { id: invoice.id },
+          include: { payments: true },
+        });
+      } else if (
+        payment.method === "FONEPAY" ||
+        payment.method === "BANK_TRANSFER"
+      ) {
+        await recordCheckoutManualDigitalPaymentTx(
+          tx,
+          invoiceForPayments,
+          payment.method,
+          payment.amount,
+          cashierId,
+          payment.reference,
         );
         invoiceForPayments = await tx.invoice.findUniqueOrThrow({
           where: { id: invoice.id },
@@ -1859,6 +1990,20 @@ export async function parkDraft(cashierId: string, input: ParkDraftInput) {
       await tx.invoice.delete({ where: { id: existingDraft.id } });
     }
 
+    const parkedCount = await tx.invoice.count({
+      where: {
+        cashierId,
+        status: "DRAFT",
+        parkedAt: { not: null },
+      },
+    });
+
+    if (parkedCount >= MAX_PARKED_BILLS_PER_CASHIER) {
+      throw new Error(
+        `You can hold up to ${MAX_PARKED_BILLS_PER_CASHIER} bills at a time. Resume or discard one before parking another bill.`,
+      );
+    }
+
     const draftProductsById = await validateCheckoutProductsTx(tx, draftItems);
     const invoiceNo = await generateParkedDraftNo(tx);
     const invoice = await tx.invoice.create({
@@ -2027,6 +2172,91 @@ export async function discardParkedDraft(
   return { message: "Parked bill discarded" };
 }
 
+export async function expireDueParkedDrafts(now = new Date()) {
+  const settings = await getBusinessSettings();
+  const expiryHours = Math.max(1, Number(settings.parkedBillExpiryHours || 24));
+  const cutoff = new Date(now.getTime() - expiryHours * 60 * 60 * 1000);
+
+  const dueDrafts = await prisma.invoice.findMany({
+    where: {
+      status: "DRAFT",
+      parkedAt: { not: null, lte: cutoff },
+    },
+    include: {
+      items: true,
+      cashier: { select: { id: true, name: true } },
+    },
+    orderBy: { parkedAt: "asc" },
+    take: 100,
+  });
+
+  if (dueDrafts.length === 0) {
+    return {
+      expired: 0,
+      invoiceNos: [] as string[],
+      cutoff: cutoff.toISOString(),
+      expiryHours,
+    };
+  }
+
+  const actorId = await findSystemAuditActorId();
+  const invoiceNos: string[] = [];
+
+  await prisma.$transaction(async (tx) => {
+    for (const draft of dueDrafts) {
+      const invoice = await tx.invoice.findUnique({
+        where: { id: draft.id },
+        include: {
+          items: true,
+          cashier: { select: { id: true, name: true } },
+        },
+      });
+
+      if (!invoice || invoice.status !== "DRAFT" || !invoice.parkedAt) {
+        continue;
+      }
+
+      if (invoice.parkedAt.getTime() > cutoff.getTime()) {
+        continue;
+      }
+
+      invoiceNos.push(invoice.invoiceNo);
+
+      if (actorId) {
+        await tx.auditLog.create({
+          data: {
+            actorId,
+            action: "INVOICE_DRAFT_EXPIRED",
+            entityType: "Invoice",
+            entityId: invoice.id,
+            meta: {
+              invoiceNo: invoice.invoiceNo,
+              label: invoice.parkedLabel,
+              parkedAt: invoice.parkedAt.toISOString(),
+              expiredAt: now.toISOString(),
+              expiryHours,
+              cashierId: invoice.cashierId,
+              cashierName: invoice.cashier?.name || null,
+              itemCount: invoice.items.length,
+            },
+          },
+        });
+      }
+
+      await adjustReservedStockTx(tx, invoice.items, "release");
+      await tx.invoiceItem.deleteMany({ where: { invoiceId: invoice.id } });
+      await tx.invoice.delete({ where: { id: invoice.id } });
+    }
+  });
+
+  return {
+    expired: invoiceNos.length,
+    invoiceNos,
+    cutoff: cutoff.toISOString(),
+    expiryHours,
+  };
+}
+
 export async function transferParkedDraft(
   invoiceId: string,
   adminId: string,
@@ -2084,7 +2314,11 @@ export async function transferParkedDraft(
 // defining the shape of filters for listing invoices
 interface InvoiceFilters {
   status?: string;
+  paymentStatus?: string;
   cashierId?: string;
+  customerType?: string;
+  paymentMethod?: string;
+  search?: string;
   from?: string;
   to?: string;
   page?: number;
@@ -2102,19 +2336,36 @@ export async function listInvoices(filters: InvoiceFilters) {
       : 1;
   const safePageSize =
     Number.isInteger(filters.pageSize) && Number(filters.pageSize) > 0
-      ? Number(filters.pageSize)
+      ? Math.min(Number(filters.pageSize), 200)
       : 20;
 
-  const where: Prisma.InvoiceWhereInput = {};
+  const baseWhere: Prisma.InvoiceWhereInput = {};
 
   // soft-deleted invoices are excluded from results by default
   // passing includeDeleted: true explicitly includes them (for admin audit views)
   if (!filters.includeDeleted) {
-    where.deletedAt = null;
+    baseWhere.deletedAt = null;
   }
 
-  if (filters.status) where.status = filters.status as any; // filtering by invoice status (DRAFT, FINALIZED)
-  if (filters.cashierId) where.cashierId = filters.cashierId; // filtering by which cashier created the invoice
+  if (filters.status) baseWhere.status = filters.status as any;
+  if (filters.cashierId) baseWhere.cashierId = filters.cashierId;
+
+  if (filters.customerType === "WALK_IN") baseWhere.customerId = null;
+  if (filters.customerType === "REGISTERED") baseWhere.customerId = { not: null };
+
+  const search = filters.search?.trim();
+  if (search) {
+    baseWhere.OR = [
+      { invoiceNo: { contains: search } },
+      { customer: { is: { name: { contains: search } } } },
+      { customer: { is: { phone: { contains: search } } } },
+      { cashier: { name: { contains: search } } },
+      { items: { some: { product: { name: { contains: search } } } } },
+      { items: { some: { product: { sku: { contains: search } } } } },
+      { items: { some: { product: { barcode: { contains: search } } } } },
+      { payments: { some: { reference: { contains: search } } } },
+    ];
+  }
 
   // building the date range filter using our business date utilities
   // this converts the YYYY-MM-DD strings to proper Nepal timezone UTC ranges
@@ -2123,13 +2374,75 @@ export async function listInvoices(filters: InvoiceFilters) {
     to: filters.to,
   });
   if (createdAt) {
-    where.createdAt = createdAt;
+    baseWhere.createdAt = createdAt;
+  }
+
+  const where: Prisma.InvoiceWhereInput = { ...baseWhere };
+  if (filters.paymentStatus) {
+    where.paymentStatus = filters.paymentStatus as any;
+  }
+
+  const chargePayment = (method: string): Prisma.PaymentListRelationFilter => ({
+    some: {
+      kind: "CHARGE",
+      status: "SUCCESS",
+      voidedAt: null,
+      method: method as any,
+    },
+  });
+
+  if (filters.paymentMethod === "NONE") {
+    where.payments = { none: { kind: "CHARGE", status: "SUCCESS", voidedAt: null } };
+  } else if (filters.paymentMethod === "MIXED") {
+    const methods = ["CASH", "ESEWA", "FONEPAY", "BANK_TRANSFER"];
+    where.OR = methods.flatMap((left, leftIndex) =>
+      methods.slice(leftIndex + 1).map((right) => ({
+        AND: [
+          { payments: chargePayment(left) },
+          { payments: chargePayment(right) },
+        ],
+      })),
+    );
+    if (baseWhere.OR) {
+      delete where.OR;
+      where.AND = [
+        { OR: baseWhere.OR },
+        {
+          OR: methods.flatMap((left, leftIndex) =>
+            methods.slice(leftIndex + 1).map((right) => ({
+              AND: [
+                { payments: chargePayment(left) },
+                { payments: chargePayment(right) },
+              ],
+            })),
+          ),
+        },
+      ];
+    }
+  } else if (filters.paymentMethod) {
+    where.payments = chargePayment(filters.paymentMethod);
   }
 
   const skip = (safePage - 1) * safePageSize; // calculating pagination offset
 
   // running query and count in parallel for better performance
-  const [invoices, total] = await Promise.all([
+  const summaryWhere: Prisma.InvoiceWhereInput = { ...where };
+  delete summaryWhere.paymentStatus;
+  const nonCancelledWhere: Prisma.InvoiceWhereInput = {
+    ...summaryWhere,
+    paymentStatus: { not: "CANCELLED" },
+  };
+
+  const [
+    invoices,
+    total,
+    statusGroups,
+    financials,
+    dueCount,
+    walkInCount,
+    esewaCount,
+    withReferenceCount,
+  ] = await Promise.all([
     prisma.invoice.findMany({
       where,
       include: {
@@ -2165,8 +2478,11 @@ export async function listInvoices(filters: InvoiceFilters) {
           select: {
             id: true,
             method: true,
+            kind: true,
             status: true,
             amount: true,
+            cashTendered: true,
+            changeAmount: true,
             reference: true,
             createdAt: true,
           },
@@ -2179,9 +2495,61 @@ export async function listInvoices(filters: InvoiceFilters) {
       take: safePageSize,
     }),
     prisma.invoice.count({ where }), // getting total count for pagination
+    prisma.invoice.groupBy({
+      by: ["paymentStatus"],
+      where: summaryWhere,
+      _count: { _all: true },
+    }),
+    prisma.invoice.aggregate({
+      where: nonCancelledWhere,
+      _sum: { netTotal: true, paidTotal: true },
+      _count: { _all: true },
+    }),
+    prisma.invoice.count({
+      where: {
+        ...summaryWhere,
+        paymentStatus: { in: ["UNPAID", "PARTIALLY_PAID"] },
+      },
+    }),
+    prisma.invoice.count({ where: { ...summaryWhere, customerId: null } }),
+    prisma.invoice.count({
+      where: { ...summaryWhere, payments: chargePayment("ESEWA") },
+    }),
+    prisma.invoice.count({
+      where: {
+        ...summaryWhere,
+        payments: { some: { reference: { not: null } } },
+      },
+    }),
   ]);
 
-  return { invoices, total, page: safePage, pageSize: safePageSize };
+  const counts = Object.fromEntries(
+    statusGroups.map((group) => [group.paymentStatus, group._count._all]),
+  ) as Record<string, number>;
+  const totalSales = roundCurrency(Number(financials._sum.netTotal || 0));
+  const totalPaid = roundCurrency(Number(financials._sum.paidTotal || 0));
+
+  return {
+    invoices,
+    total,
+    page: safePage,
+    pageSize: safePageSize,
+    totalPages: Math.max(1, Math.ceil(total / safePageSize)),
+    summary: {
+      generated: Object.values(counts).reduce((sum, count) => sum + count, 0),
+      paid: counts.PAID || 0,
+      partial: counts.PARTIALLY_PAID || 0,
+      unpaid: counts.UNPAID || 0,
+      cancelled: counts.CANCELLED || 0,
+      due: dueCount,
+      totalSales,
+      totalPaid,
+      outstandingDue: roundCurrency(Math.max(0, totalSales - totalPaid)),
+      walkIn: walkInCount,
+      esewa: esewaCount,
+      withReference: withReferenceCount,
+    },
+  };
 }
 
 // fetching a single invoice with all its related data — items, payments, cashier, customer
@@ -2460,7 +2828,7 @@ export async function finalizeInvoice(
     // this is stored on the invoice so we can display "X% discount" later in history and reports
     const appliedDiscountPercent =
       subTotal > 0 ? roundCurrency((normalizedDiscount / subTotal) * 100) : 0;
-    const netTotal = roundCurrency(subTotal - normalizedDiscount); // this is the final amount the customer needs to pay
+    const netTotal = roundPayableTotal(subTotal - normalizedDiscount); // this is the whole-NPR amount the cashier collects
 
     // fetching the user who is performing this action so we can log their name and role in the audit
     const actor = await tx.user.findUnique({

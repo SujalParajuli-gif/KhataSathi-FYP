@@ -60,6 +60,7 @@ temp/
 backend/uploads/
 uploads/
 backend/backups/
+backend/document-storage/
 
 # optional generated assets if not source-controlled
 frontend/build/client/

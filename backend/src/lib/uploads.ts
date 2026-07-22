@@ -2,7 +2,9 @@ import fs from "fs/promises";
 import path from "path";
 
 const UPLOADS_PREFIX = "/uploads/"; // the URL prefix that all uploaded file paths start with
-const uploadsRoot = path.resolve(__dirname, "../../uploads"); // absolute path to the uploads folder on disk
+// Profile and product uploads are written to the repository-level uploads folder.
+// This path works from both src/lib (development) and dist/lib (production).
+const uploadsRoot = path.resolve(__dirname, "../../../uploads");
 
 // converting a public URL like "/uploads/products/image.png" to the actual file path on disk
 // we added multiple safety checks here to prevent path traversal attacks
@@ -28,6 +30,25 @@ function resolveUploadFile(publicUrl?: string | null) {
   }
 
   return absolutePath;
+}
+
+// Checking a managed upload before returning its URL prevents the frontend from
+// repeatedly requesting a file that was removed outside the application. URLs
+// outside /uploads are not managed by this service and are left untouched.
+export async function isUploadFileAvailable(publicUrl?: string | null) {
+  if (!publicUrl) return false;
+
+  const filePath = resolveUploadFile(publicUrl);
+  if (!filePath) return true;
+
+  try {
+    await fs.access(filePath);
+    return true;
+  } catch (error: any) {
+    if (error?.code === "ENOENT") return false;
+    console.error("Failed to inspect upload file:", filePath, error);
+    return true;
+  }
 }
 
 // deleting an uploaded file from disk using its public URL

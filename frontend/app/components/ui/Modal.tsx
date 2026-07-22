@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { useEffect, type ReactNode } from "react";
+import { createPortal } from "react-dom";
 import Icon from "~/components/ui/Icon";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 
@@ -16,8 +17,10 @@ type ModalFrameProps = {
   children?: ReactNode;
   footer?: ReactNode;
   onClose: () => void;
+  headerActions?: ReactNode;
   maxWidthClass?: string;
   compact?: boolean;
+  mobileFullScreen?: boolean;
 };
 
 // the base modal frame — provides the overlay, centered positioning, header with title, and close button
@@ -29,14 +32,27 @@ export function ModalFrame({
   children,
   footer,
   onClose,
+  headerActions,
   maxWidthClass = "max-w-[560px]",
   compact = false,
+  mobileFullScreen = false,
 }: ModalFrameProps) {
   useBodyScrollLock(open);
 
-  if (!open) return null; // not rendering anything if the modal is closed
+  useEffect(() => {
+    if (!open) return undefined;
 
-  return (
+    function closeOnEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose();
+    }
+
+    window.addEventListener("keydown", closeOnEscape);
+    return () => window.removeEventListener("keydown", closeOnEscape);
+  }, [open, onClose]);
+
+  if (!open || typeof document === "undefined") return null;
+
+  return createPortal(
     <div className="fixed inset-0 z-[90]">
       {/* semi-transparent backdrop — clicking it closes the modal */}
       <button
@@ -46,11 +62,19 @@ export function ModalFrame({
         className="absolute inset-0 bg-slate-950/45 backdrop-blur-sm"
       />
 
-      <div className="absolute inset-0 flex items-center justify-center p-4">
+      <div className={cn(
+        "absolute inset-0 flex justify-center",
+        mobileFullScreen ? "items-end p-0 lg:items-center lg:p-4" : "items-center p-4",
+      )}>
         <div
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
           className={cn(
-            "relative w-full overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF] ",
-            compact ? "rounded-[18px]" : "rounded-[24px]",
+            "relative w-full overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
+            mobileFullScreen
+              ? "flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:h-auto lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
+              : compact ? "rounded-[18px]" : "rounded-[24px]",
             maxWidthClass,
           )}
         >
@@ -84,33 +108,40 @@ export function ModalFrame({
               ) : null}
             </div>
 
-            <button
-              type="button"
-              onClick={onClose}
-              className={cn(
-                "inline-flex shrink-0 items-center justify-center border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]",
-                compact ? "h-[34px] w-[34px] rounded-[12px]" : "h-[40px] w-[40px] rounded-[14px]",
-              )}
-              aria-label="Close dialog"
-            >
-              <Icon name="close" />
-            </button>
+            <div className="flex items-center gap-3">
+              {headerActions}
+              <button
+                type="button"
+                onClick={onClose}
+                className={cn(
+                  "inline-flex shrink-0 items-center justify-center border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]",
+                  compact ? "h-[34px] w-[34px] rounded-[12px]" : "h-[40px] w-[40px] rounded-[14px]",
+                )}
+                aria-label="Close dialog"
+              >
+                <Icon name="close" />
+              </button>
+            </div>
           </div>
 
           {/* modal body content */}
-          <div className={compact ? "px-[18px] py-[14px]" : "px-[24px] py-[20px]"}>
+          <div className={cn(
+            compact ? "px-[18px] py-[14px]" : "px-[16px] py-[14px] lg:px-[24px] lg:py-[20px]",
+            mobileFullScreen && "min-h-0 flex-1 overflow-y-auto",
+          )}>
             {children}
           </div>
 
           {/* optional footer — typically contains action buttons */}
           {footer ? (
-            <div className="flex items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-[24px] py-[16px]">
+            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-[16px] pb-[max(16px,env(safe-area-inset-bottom))] pt-[16px] lg:px-[24px] lg:py-[16px]">
               {footer}
             </div>
           ) : null}
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

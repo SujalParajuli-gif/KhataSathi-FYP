@@ -43,6 +43,8 @@ type BackendProduct = {
   wholesaleQtyThreshold?: number;
   usesDefaultWholesaleQtyThreshold?: boolean;
   stock: number;
+  draftRequestedQty?: number;
+  effectiveAvailableStock?: number;
   lowStockThreshold: number;
   usesDefaultLowStockThreshold?: boolean;
   imageUrl?: string | null;
@@ -88,6 +90,8 @@ function toFrontendProduct(product: BackendProduct): Product {
       ? "default"
       : "custom",
     stock: Number(product.stock ?? 0),
+    draftRequestedQty: Number(product.draftRequestedQty ?? 0),
+    effectiveAvailableStock: Number(product.effectiveAvailableStock ?? product.stock ?? 0),
     lowStockThreshold: Number(product.lowStockThreshold ?? 0),
     lowStockThresholdMode: product.usesDefaultLowStockThreshold
       ? "default"
@@ -114,51 +118,32 @@ function mapStatusToActive(status?: ProductsQuery["status"]): string | undefined
   return undefined;
 }
 
-// filtering products by stock status on the client side
-// the backend does not support all stock filter combinations, so we do this after fetching
-function applyClientSideStockFilter(
-  products: Product[],
-  stockStatus?: ProductsQuery["stockStatus"],
-): Product[] {
-  switch (stockStatus) {
-    case "in":
-      return products.filter((product) => product.stock > product.lowStockThreshold);
-    case "low":
-      return products.filter(
-        (product) => product.stock > 0 && product.stock <= product.lowStockThreshold,
-      );
-    case "out":
-      return products.filter((product) => product.stock <= 0);
-    default:
-      return products;
-  }
-}
-
 // --
 
 // fetching products from the backend and applying filters
-// we map the query filters to the backend format, then apply client-side stock filtering
-export async function fetchProducts(q: ProductsQuery) {
+// we map the query filters to the backend format so pagination totals stay accurate
+export async function fetchProducts(
+  q: ProductsQuery,
+  options?: { signal?: AbortSignal },
+) {
   const response = await listProductsApi({
     search: q.q,
     brand: getBrandIdByName(q.brand),
     category: mapCategoryFilter(q.category),
     active: mapStatusToActive(q.status),
     lowStock: q.lowOnly || q.stockStatus === "low" ? "true" : undefined,
+    stockStatus:
+      q.stockStatus && q.stockStatus !== "all" ? q.stockStatus : undefined,
+    draftReservations: q.includeDraftReservations ? "true" : undefined,
     page: q.page,
     pageSize: q.pageSize,
-  });
+  }, options);
 
   const mapped = (response.products ?? []).map(toFrontendProduct);
-  const filtered = applyClientSideStockFilter(mapped, q.stockStatus);
 
   return {
-    items: filtered,
-    // when filtering by stock status, the total is the filtered count (not the backend total)
-    total:
-      q.stockStatus && q.stockStatus !== "all"
-        ? filtered.length
-        : Number(response.total ?? filtered.length),
+    items: mapped,
+    total: Number(response.total ?? mapped.length),
   };
 }
 

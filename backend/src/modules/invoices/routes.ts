@@ -26,8 +26,8 @@ const router = Router();
 router.use(authGuard); // all invoice routes require authentication
 router.use(denyStaff);
 
-// viewing invoices is available to all authenticated users
-router.get("/", list); // listing invoices with optional filters (status, cashier, date range)
+// viewing invoices is restricted to shop operators; staff use request/product lookup flows instead
+router.get("/", requireRole("ADMIN", "MANAGER", "CASHIER"), list); // listing invoices with optional filters (status, cashier, date range)
 
 // invoice creation and item management is restricted to cashiers
 router.post("/", requireRole("CASHIER", "MANAGER"), createDraft); // creating a new draft invoice
@@ -38,7 +38,7 @@ router.post("/parked", requireRole("CASHIER", "MANAGER"), park); // park the cur
 router.post("/parked/:id/resume", requireRole("CASHIER", "MANAGER"), resumeParked); // resume a parked bill into the billing cart
 router.patch("/parked/:id/transfer", requireRole("ADMIN", "MANAGER"), transferParked); // supervisors transfer a held bill to another cashier
 router.delete("/parked/:id", requireRole("CASHIER", "MANAGER", "ADMIN"), discardParked); // discard a parked bill
-router.get("/:id", getOne); // fetching a single invoice with all its items and customer data
+router.get("/:id", requireRole("ADMIN", "MANAGER", "CASHIER"), getOne); // fetching a single invoice with all its items and customer data
 router.post("/:id/modify", requireRole("CASHIER", "MANAGER", "ADMIN"), modifyFinalized); // modify finalized invoice through credit note + replacement
 router.post("/:id/items", requireRole("CASHIER", "MANAGER"), addItem); // adding a product to the draft
 router.patch("/:id/items/:itemId", requireRole("CASHIER", "MANAGER"), updateItem); // changing the quantity of an item

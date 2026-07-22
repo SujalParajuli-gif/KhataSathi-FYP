@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import { NavLink } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import GIcon from "~/components/ui/GIcon";
@@ -8,163 +9,205 @@ type Props = {
   role: UserRole;
   isMobileOpen: boolean;
   isCollapsed: boolean;
+  mobileEnabled?: boolean;
   onCloseMobile: () => void;
 };
 
-// the sidebar navigation — shows the app's main nav items filtered by the user's role
-// it supports two modes: expanded (showing labels) and collapsed (icon-only)
-// on mobile, it slides in from the left as an overlay
+function SidebarLink({
+  item,
+  isCollapsed,
+  onNavigate,
+}: {
+  item: (typeof navData.sidebar.items)[number];
+  isCollapsed: boolean;
+  onNavigate: () => void;
+}) {
+  return (
+    <NavLink
+      to={item.to}
+      end={item.to === "/"}
+      onClick={onNavigate}
+      title={isCollapsed ? item.label : undefined}
+      className={({ isActive }) =>
+        [
+          "group flex h-11 items-center gap-3 rounded-[10px] border text-[14px] font-semibold transition-colors",
+          isCollapsed
+            ? "px-3 lg:mx-auto lg:w-11 lg:justify-center lg:gap-0 lg:px-0"
+            : "px-3",
+          item.danger
+            ? "border-transparent text-rose-600 hover:border-rose-200 hover:bg-rose-50"
+            : isActive
+              ? "border-[#11120d] bg-[#11120d] text-white"
+              : "border-transparent text-[#565449] hover:border-[#CFCFD3] hover:bg-[#E7E8EA] hover:text-black",
+        ].join(" ")
+      }
+    >
+      {({ isActive }) => (
+        <>
+          <GIcon
+            name={item.icon}
+            className={[
+              "shrink-0 text-[22px]",
+              item.danger
+                ? "text-inherit"
+                : isActive
+                  ? "text-white"
+                  : "text-[#8C8889] group-hover:text-black",
+            ].join(" ")}
+          />
+          <span className={isCollapsed ? "lg:hidden" : ""}>{item.label}</span>
+        </>
+      )}
+    </NavLink>
+  );
+}
+
 export default function Sidebar({
   role,
   isMobileOpen,
   isCollapsed,
+  mobileEnabled = true,
   onCloseMobile,
 }: Props) {
-  // filtering nav items to only show the ones for the current user's role
+  const sidebarRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const returnFocusRef = useRef<HTMLElement | null>(null);
   const items = navData.sidebar.items.filter((item) =>
     item.roles.includes(role),
   );
-  const sidebarWidthClass = isCollapsed ? "w-[80px]" : "w-[260px]";
-
-  // splitting items into main nav items and bottom section items (profile, logout)
   const mainItems = items.filter((item) => item.section !== "bottom");
   const bottomItems = items.filter((item) => item.section === "bottom");
+  const sectionLabel = role === "staff" ? "STAFF MENU" : navData.sidebar.mainLabel;
+
+  useEffect(() => {
+    if (!isMobileOpen) return undefined;
+
+    returnFocusRef.current = document.activeElement as HTMLElement | null;
+    closeButtonRef.current?.focus();
+
+    function keepFocusInDrawer(event: KeyboardEvent) {
+      if (event.key !== "Tab" || !sidebarRef.current) return;
+
+      const focusable = Array.from(
+        sidebarRef.current.querySelectorAll<HTMLElement>(
+          'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ),
+      ).filter((element) => !element.hasAttribute("disabled"));
+
+      if (focusable.length === 0) {
+        event.preventDefault();
+        return;
+      }
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    document.addEventListener("keydown", keepFocusInDrawer);
+    return () => {
+      document.removeEventListener("keydown", keepFocusInDrawer);
+      returnFocusRef.current?.focus();
+      returnFocusRef.current = null;
+    };
+  }, [isMobileOpen]);
 
   return (
     <>
-      {/* mobile overlay backdrop — clicking it closes the sidebar */}
       <button
         type="button"
         onClick={onCloseMobile}
         className={[
-          "fixed inset-0 z-40 bg-slate-900/40 backdrop-blur-sm transition-opacity duration-300",
-          isMobileOpen ? "opacity-100 block" : "opacity-0 hidden",
-          "lg:hidden",
+          "fixed inset-0 z-[40] bg-slate-950/45 backdrop-blur-[2px] transition-opacity duration-200 lg:hidden",
+          mobileEnabled && isMobileOpen
+            ? "pointer-events-auto opacity-100"
+            : "pointer-events-none opacity-0",
         ].join(" ")}
-        aria-label="Close sidebar overlay"
+        aria-label="Close navigation drawer"
+        tabIndex={isMobileOpen ? 0 : -1}
       />
 
       <aside
+        ref={sidebarRef}
+        id="app-sidebar"
+        aria-label="Primary navigation"
         className={[
-          "fixed left-0 top-0 z-50 h-full bg-[#FFFFFF]",
-          "border-r border-[#CFCFD3]  ",
-          sidebarWidthClass,
-          "transition-[width,transform] duration-300 ease-in-out",
-          isMobileOpen ? "translate-x-0" : "-translate-x-full",
-          "lg:translate-x-0", // on desktop, the sidebar is always visible
+          "fixed inset-y-0 left-0 z-[50] flex w-[min(88vw,320px)] flex-col border-r border-[#CFCFD3] bg-white transition-[width,transform] duration-200 ease-out",
+          isCollapsed ? "lg:w-[80px]" : "lg:w-[260px]",
+          mobileEnabled && isMobileOpen ? "translate-x-0" : "-translate-x-full",
+          "lg:translate-x-0",
         ].join(" ")}
       >
-        {/* sidebar header — shows the brand logo (full or icon-only depending on collapse state) */}
-        <div className="flex items-center gap-3 overflow-hidden border-b border-[#CFCFD3] px-[16px] py-[24px]">
-          {isCollapsed ? (
-            <BrandLogo
-              variant="icon"
-              className="h-[40px] w-[40px] border border-[#CFCFD3] bg-[#FFFFFF] p-[4px] "
-            />
-          ) : (
-            <BrandLogo className="h-[40px] w-[174px]" />
-          )}
+        <div className="flex h-[68px] shrink-0 items-center justify-between gap-3 border-b border-[#CFCFD3] px-4 lg:hidden">
+          <BrandLogo className="h-[40px] w-[174px]" />
+          <button
+            ref={closeButtonRef}
+            type="button"
+            onClick={onCloseMobile}
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#E7E8EA] hover:text-black"
+            aria-label="Close navigation drawer"
+          >
+            <GIcon name="close" />
+          </button>
         </div>
 
-        {/* main section label — only visible when sidebar is expanded */}
-        {!isCollapsed && (
-          <div className="mb-[8px] px-[24px] pt-[16px]">
-            <div className="text-[10px] font-extrabold uppercase  text-[#8C8889]">
-              {navData.sidebar.mainLabel}
-            </div>
-          </div>
-        )}
+        <div
+          className={[
+            "hidden h-[68px] shrink-0 items-center overflow-hidden border-b border-[#CFCFD3] lg:flex",
+            isCollapsed ? "justify-center px-3" : "px-4",
+          ].join(" ")}
+        >
+          <BrandLogo
+            variant={isCollapsed ? "icon" : "full"}
+            className={
+              isCollapsed
+                ? "h-10 w-10 border border-[#CFCFD3] bg-white p-1"
+                : "h-10 w-[174px]"
+            }
+          />
+        </div>
 
-        {/* main navigation items */}
-        <nav className="flex flex-col gap-1 px-3">
+        <div
+          className={[
+            "px-5 pb-2 pt-4 text-[10px] font-extrabold uppercase text-[#8C8889]",
+            isCollapsed ? "lg:hidden" : "",
+          ].join(" ")}
+        >
+          {sectionLabel}
+        </div>
+
+        <nav className="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto px-3 py-2 [scrollbar-width:thin]">
           {mainItems.map((item) => (
-            <NavLink
+            <SidebarLink
               key={item.key}
-              to={item.to}
-              end={item.to === "/"} // exact match for the dashboard route
-              onClick={onCloseMobile}
-              title={isCollapsed ? item.label : undefined} // showing tooltip when in collapsed mode
-              className={({ isActive }) =>
-                [
-                  "group relative flex items-center rounded-[16px] border transition-all duration-200",
-                  isCollapsed
-                    ? "justify-center px-0 py-[10px]"
-                    : "gap-[12px] px-[12px] py-[10px]",
-                  "text-[14px] font-semibold",
-                  isActive
-                    ? "border-[#11120d] bg-[#11120d] text-white "
-                    : "border-transparent text-[#565449] hover:border-[#CFCFD3] hover:bg-[#F3F4F6] hover:text-[#000000]",
-                ].join(" ")
-              }
-            >
-              {({ isActive }) => (
-                <>
-                  <GIcon
-                    name={item.icon}
-                    className={[
-                      "transition-colors duration-200",
-                      isActive
-                        ? "text-white"
-                        : "text-[#8C8889] group-hover:text-[#000000]",
-                    ].join(" ")}
-                  />
-
-                  {/* only showing the label text when sidebar is expanded */}
-                  {!isCollapsed && (
-                    <span className="whitespace-nowrap">{item.label}</span>
-                  )}
-                </>
-              )}
-            </NavLink>
+              item={item}
+              isCollapsed={isCollapsed}
+              onNavigate={onCloseMobile}
+            />
           ))}
         </nav>
 
-        {/* bottom section items (profile, logout) — pinned to the bottom of the sidebar */}
-        <div className="absolute bottom-0 left-0 w-full px-[12px] pb-[24px]">
-          <div className="mx-[12px] mb-[16px] h-px bg-[#CFCFD3]" />
-
+        <div className="shrink-0 bg-white px-3 pb-[max(16px,env(safe-area-inset-bottom))] pt-2">
+          <div
+            className={[
+              "mb-2 h-px bg-[#CFCFD3]",
+              isCollapsed ? "lg:mx-auto lg:w-10" : "",
+            ].join(" ")}
+          />
           <div className="flex flex-col gap-1">
             {bottomItems.map((item) => (
-              <NavLink
+              <SidebarLink
                 key={item.key}
-                to={item.to}
-                end
-                onClick={onCloseMobile}
-                title={isCollapsed ? item.label : undefined}
-                className={({ isActive }) =>
-                  [
-                    "group flex items-center rounded-[16px] border transition-all duration-200",
-                    isCollapsed
-                      ? "justify-center px-0 py-[10px]"
-                      : "gap-[12px] px-[12px] py-[10px]",
-                    "text-[14px] font-semibold",
-                    item.danger
-                      ? "border-transparent text-rose-600 hover:border-rose-200 hover:bg-rose-50"
-                      : isActive
-                        ? "border-[#11120d] bg-[#11120d] text-white"
-                        : "border-transparent text-[#565449] hover:border-[#CFCFD3] hover:bg-[#F3F4F6] hover:text-[#000000]",
-                  ].join(" ")
-                }
-              >
-                {({ isActive }) => (
-                  <>
-                    <GIcon
-                      name={item.icon}
-                      className={
-                        item.danger
-                          ? "text-inherit"
-                          : isActive
-                            ? "text-white"
-                            : "text-[#8C8889] group-hover:text-[#000000]"
-                      }
-                    />
-
-                    {!isCollapsed && (
-                      <span className="whitespace-nowrap">{item.label}</span>
-                    )}
-                  </>
-                )}
-              </NavLink>
+                item={item}
+                isCollapsed={isCollapsed}
+                onNavigate={onCloseMobile}
+              />
             ))}
           </div>
         </div>
@@ -172,4 +215,3 @@ export default function Sidebar({
     </>
   );
 }
-

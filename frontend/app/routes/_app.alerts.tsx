@@ -1,10 +1,12 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, useRef } from "react";
 import Icon from "~/components/ui/Icon";
 import PaginationBar from "~/components/ui/PaginationBar";
+import { MobileFilterTabs } from "~/components/ui/MobileFilters";
 import {
   alertColor,
   alertIcon,
   alertTone,
+  type AppAlert,
   type AppAlertType,
 } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
@@ -19,43 +21,194 @@ function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
-// this renders one sidebar filter button with its active state and optional count badge
-function FilterCard({
-  active,
-  title,
-  count,
-  onClick,
+// AlertRow handles the display and interaction (swipe, actions) for a single alert
+function AlertRow({
+  alert,
+  onMarkRead,
+  onMarkUnread,
+  onResolve,
+  onDismiss,
 }: {
-  active: boolean;
-  title: string;
-  count?: number;
-  onClick: () => void;
+  alert: AppAlert;
+  onMarkRead: (key: string) => void;
+  onMarkUnread: (key: string) => void;
+  onResolve: (key: string) => void;
+  onDismiss: (key: string) => void;
 }) {
+  const tone = alertTone(alert);
+  const [swipeOffset, setSwipeOffset] = useState(0);
+  const [isSwiping, setIsSwiping] = useState(false);
+  const [showMobileMenu, setShowMobileMenu] = useState(false);
+  const touchStartRef = useRef<number | null>(null);
+
+  // Constants for swipe
+  const THRESHOLD_LEFT = -160;
+  const THRESHOLD_RIGHT = 80;
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (window.innerWidth >= 768) return;
+    touchStartRef.current = e.touches[0].clientX;
+    setIsSwiping(true);
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (!isSwiping || touchStartRef.current === null || window.innerWidth >= 768) return;
+    const currentX = e.touches[0].clientX - touchStartRef.current;
+    
+    let offset = currentX;
+    // Add resistance if pulling past threshold
+    if (offset < 0) { // Left swipe
+      if (offset < THRESHOLD_LEFT - 40) {
+        offset = (THRESHOLD_LEFT - 40) + (offset - (THRESHOLD_LEFT - 40)) * 0.2;
+      }
+    } else { // Right swipe
+      if (offset > THRESHOLD_RIGHT + 40) {
+        offset = (THRESHOLD_RIGHT + 40) + (offset - (THRESHOLD_RIGHT + 40)) * 0.2;
+      }
+    }
+    
+    setSwipeOffset(offset);
+  };
+
+  const handleTouchEnd = () => {
+    if (!isSwiping || window.innerWidth >= 768) return;
+    setIsSwiping(false);
+    touchStartRef.current = null;
+    
+    if (swipeOffset < -90) {
+      setSwipeOffset(THRESHOLD_LEFT);
+    } else if (swipeOffset > 45) {
+      setSwipeOffset(THRESHOLD_RIGHT);
+    } else {
+      setSwipeOffset(0);
+    }
+  };
+
+  const isUnread = !alert.read;
+  
   return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "w-full rounded-[16px] border px-4 py-3 text-left transition",
-        active
-          ? "border-[#11120d] bg-[#11120d] text-white  "
-          : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
-      )}
-    >
-      <div className="flex items-center justify-between gap-3">
-        <span className="text-[13px] font-extrabold">{title}</span>
-        {typeof count === "number" ? (
-          <span
-            className={cn(
-              "rounded-full px-2 py-0.5 text-[11px] font-extrabold",
-              active ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600",
-            )}
+    <div className="relative group overflow-hidden md:overflow-visible border-b border-slate-100 last:border-b-0">
+      {/* Background Action Buttons (Revealed on Swipe) */}
+      <div className="absolute inset-0 flex justify-between z-0 md:hidden bg-slate-100">
+        {/* Left Side: Right Swipe Action (Read/Unread) */}
+        <div className="flex">
+          <button
+            onClick={() => {
+              isUnread ? onMarkRead(alert.key) : onMarkUnread(alert.key);
+              setSwipeOffset(0);
+            }}
+            className="w-[80px] h-full bg-blue-500 text-white flex flex-col items-center justify-center active:bg-blue-600 transition-colors"
           >
-            {count}
-          </span>
-        ) : null}
+            <Icon name={isUnread ? "check" : "mark_email_unread"} className="text-[20px] mb-1" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">{isUnread ? "Read" : "Unread"}</span>
+          </button>
+        </div>
+        {/* Right Side: Left Swipe Actions (Resolve/Dismiss) */}
+        <div className="flex">
+          <button
+            onClick={() => { onResolve(alert.key); setSwipeOffset(0); }}
+            className="w-[80px] h-full bg-emerald-500 text-white flex flex-col items-center justify-center active:bg-emerald-600 transition-colors"
+          >
+            <Icon name="check_circle" className="text-[20px] mb-1" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Resolve</span>
+          </button>
+          <button
+            onClick={() => { onDismiss(alert.key); setSwipeOffset(0); }}
+            className="w-[80px] h-full bg-rose-500 text-white flex flex-col items-center justify-center active:bg-rose-600 transition-colors"
+          >
+            <Icon name="delete" className="text-[20px] mb-1" />
+            <span className="text-[10px] font-bold uppercase tracking-wider">Dismiss</span>
+          </button>
+        </div>
       </div>
-    </button>
+
+      {/* Swipeable Content Area */}
+      <div
+        className={cn(
+          "relative z-10 flex flex-col md:grid md:grid-cols-12 gap-4 md:gap-4 px-5 py-6 md:px-6 md:py-5 transition-transform items-start w-full",
+          isUnread ? tone.pageUnread : "bg-white hover:bg-[#ECEFF3]",
+          isSwiping ? "transition-none" : "transition-transform duration-300"
+        )}
+        style={{ transform: `translateX(${swipeOffset}px)` }}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+      >
+        {/* TYPE Column */}
+        <div className="md:col-span-2 flex items-center justify-between w-full md:w-auto">
+          <div className="flex items-center gap-3">
+            <div className={cn("w-2 h-2 rounded-full flex-shrink-0", isUnread ? cn(tone.unreadDot, "animate-pulse") : "bg-transparent")} />
+            <div className={cn("flex items-center gap-1.5 px-2 py-1 rounded text-[11px] font-extrabold uppercase tracking-wider", tone.icon)}>
+              <Icon name={alertIcon(alert)} className="text-[14px]" />
+              {alert.type}
+            </div>
+          </div>
+          <div className="md:hidden text-xs font-semibold text-slate-400">
+            {alert.timeLabel}
+          </div>
+        </div>
+
+        {/* SEV. ALERT Column */}
+        <div className="md:col-span-6 space-y-1 w-full">
+          <div className="flex items-start gap-2">
+            {alert.level === "CRITICAL" && (
+              <Icon name="error" className="text-[16px] text-rose-500 flex-shrink-0 mt-0.5" />
+            )}
+            <h3 className="font-bold text-slate-900 text-sm md:text-base leading-tight">
+              {alert.title}
+              {alert.resolved && (
+                <span className="inline-block ml-2 px-1.5 py-0.5 bg-emerald-100 text-emerald-700 text-[10px] uppercase font-bold rounded">
+                  Resolved
+                </span>
+              )}
+            </h3>
+          </div>
+          <p className="text-sm text-slate-500 leading-relaxed">{alert.message}</p>
+        </div>
+
+        {/* TIME Column */}
+        <div className="hidden md:block md:col-span-2 text-xs font-semibold text-slate-400 md:pt-1">
+          {alert.timeLabel}
+        </div>
+
+        {/* ACTIONS Column (Desktop) */}
+        <div className="hidden md:flex md:col-span-2 items-center justify-end gap-2 w-full pt-3 mt-1 md:pt-0 md:mt-0 transition-opacity opacity-70 group-hover:opacity-100 focus-within:opacity-100">
+          {isUnread ? (
+            <button
+              onClick={() => onMarkRead(alert.key)}
+              title="Mark as read"
+              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider"
+            >
+              <Icon name="check" className="text-[14px]" /> Read
+            </button>
+          ) : (
+            <button
+              onClick={() => onMarkUnread(alert.key)}
+              title="Mark as unread"
+              className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition-all flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider"
+            >
+              <Icon name="mark_email_unread" className="text-[14px]" /> Unread
+            </button>
+          )}
+          
+          <button
+            onClick={() => onResolve(alert.key)}
+            title="Resolve = issue handled"
+            className="p-1.5 text-slate-400 hover:text-emerald-600 hover:bg-emerald-50 rounded transition-all flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider"
+          >
+            <Icon name="check_circle" className="text-[14px]" /> Resolve
+          </button>
+          <button
+            onClick={() => onDismiss(alert.key)}
+            title="Dismiss = hide from my view"
+            className="p-1.5 text-slate-400 hover:text-rose-600 hover:bg-rose-50 rounded transition-all flex items-center gap-1 text-[11px] font-bold uppercase tracking-wider"
+          >
+            <Icon name="close" className="text-[14px]" /> Dismiss
+          </button>
+        </div>
+
+      </div>
+    </div>
   );
 }
 
@@ -73,34 +226,49 @@ export default function AlertsPage() {
     resolveAlert,
     dismissAlert,
   } = useAlerts();
-  const [filterType, setFilterType] = useState<"all" | AppAlertType>("all"); // tracks which alert type tab is active
-  const [showUnreadOnly, setShowUnreadOnly] = useState(false); // lets the user hide alerts that were already seen
-  const [page, setPage] = useState(1); // stores the current alerts page in the list
+  
+  const [filterType, setFilterType] = useState<"all" | AppAlertType>("all");
+  const [showUnreadOnly, setShowUnreadOnly] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const [page, setPage] = useState(1);
   const [pageSize, setPageSize] = useState(20);
 
   useEffect(() => {
-    // loading a fresh batch of alerts when the page first opens
-    // we ask for a higher limit here so the user can browse more history without another page-level fetch flow
     refreshAlerts(500);
   }, []);
 
   // resetting the page back to 1 whenever a filter changes
   useEffect(() => {
     setPage(1);
-  }, [filterType, showUnreadOnly]);
+  }, [filterType, showUnreadOnly, searchQuery]);
+
+  // compute global stats for the top banner
+  const globalStats = useMemo(() => {
+    return {
+      total: alerts.length,
+      unread: alerts.filter((a) => !a.read).length,
+      critical: alerts.filter((a) => a.level === "CRITICAL").length,
+      resolved: alerts.filter((a) => a.resolved).length,
+    };
+  }, [alerts]);
 
   // computing the filtered list of alerts based on current selections
   const filteredAlerts = useMemo(() => {
     return alerts.filter((alert) => {
-      const matchesType =
-        filterType === "all" ? true : alert.type === filterType;
+      const matchesType = filterType === "all" ? true : alert.type === filterType;
       const matchesUnread = showUnreadOnly ? !alert.read : true;
-      return matchesType && matchesUnread;
+      const matchesSearch = searchQuery === "" || 
+        alert.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        alert.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        alert.type.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        alert.level.toLowerCase().includes(searchQuery.toLowerCase());
+        
+      return matchesType && matchesUnread && matchesSearch;
     });
-  }, [alerts, filterType, showUnreadOnly]);
+  }, [alerts, filterType, showUnreadOnly, searchQuery]);
 
-  // calculating counts for the sidebar filter tabs
-  const typeFilters: AppAlertType[] = ["Invoice", "Stock", "Product", "Return", "Payment", "System"];
+  // calculating counts for the filter pills
+  const typeFilters: AppAlertType[] = ["Invoice", "Stock", "Product", "Payment", "Return", "System"];
   const typeCounts = useMemo(() => {
     return typeFilters.reduce<Record<AppAlertType, number>>((acc, type) => {
       acc[type] = alerts.filter((alert) => alert.type === type).length;
@@ -120,7 +288,6 @@ export default function AlertsPage() {
   const pageStart = filteredAlerts.length === 0 ? 0 : (pageClamped - 1) * pageSize;
   const pageEnd = filteredAlerts.length === 0 ? 0 : pageStart + pageItems.length;
 
-  // this marks one alert as read, and if that request fails we reload the list so the page stays in sync
   async function handleMarkRead(alertKey: string) {
     try {
       await markAlertRead(alertKey);
@@ -129,7 +296,6 @@ export default function AlertsPage() {
     }
   }
 
-  // this does the reverse action so the user can put an alert back into unread state
   async function handleMarkUnread(alertKey: string) {
     try {
       await markAlertUnread(alertKey);
@@ -138,8 +304,6 @@ export default function AlertsPage() {
     }
   }
 
-  // this finds every unread alert and sends them together in one bulk update call
-  // we skip the request completely when there is nothing left to mark
   async function handleMarkAllRead() {
     const unreadKeys = alerts
       .filter((alert) => !alert.read)
@@ -153,208 +317,173 @@ export default function AlertsPage() {
     }
   }
 
-  // this handles when the alert provider is still fetching data for the first render
   if (loading) {
     return (
       <div className="flex h-[60vh] items-center justify-center">
-        <div className="font-semibold text-slate-400">Loading alerts...</div>
+        <div className="font-semibold text-slate-400 flex items-center gap-2">
+          <Icon name="progress_activity" className="animate-spin text-[24px]" />
+          Loading alerts...
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-full rounded-[28px] bg-[#F1F1F1] p-6 text-slate-900">
-      {/* this top bar keeps the page title and the bulk action button aligned while still wrapping cleanly on smaller screens */}
-      <div className="flex flex-col gap-4 md:flex-row md:items-end md:justify-between">
-        <div>
-          <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-extrabold">
-              Get Notified About Everything!
-            </h1>
-            {unreadCount > 0 ? (
-              <span className="rounded-full bg-[#2F67D8] px-2.5 py-1 text-[11px] font-extrabold text-white">
-                {unreadCount} unread
-              </span>
-            ) : null}
+    <div className="min-h-full rounded-[28px] bg-white p-6 text-slate-900">
+      <div className="w-full">
+        
+        {/* Header Section */}
+        <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 md:mb-8 gap-4">
+          <div>
+            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Alerts</h1>
+            <p className="text-sm md:text-base text-slate-500 mt-1">Stay updated on stock changes, price updates, and your system alerts.</p>
           </div>
-          <p className="mt-1 text-sm text-slate-500">
-            Real stock and invoice activity alerts with persisted read state.
-          </p>
+          <div className="flex flex-wrap items-center gap-2 md:gap-3">
+            <button 
+              onClick={() => refreshAlerts(500)}
+              className="flex-1 md:flex-none inline-flex items-center justify-center px-4 py-2.5 md:py-2 bg-white border border-[#CFCFD3] rounded-lg text-sm font-extrabold text-[#565449] hover:bg-slate-50 transition-colors shadow-sm"
+            >
+              <Icon name="refresh" className="text-[16px] mr-2" />
+              Refresh
+            </button>
+            <button 
+              onClick={handleMarkAllRead}
+              disabled={unreadCount === 0}
+              className="flex-1 md:flex-none inline-flex items-center justify-center px-4 py-2.5 md:py-2 bg-white border border-[#CFCFD3] rounded-lg text-sm font-extrabold text-[#565449] hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50 disabled:pointer-events-none"
+            >
+              <Icon name="done_all" className="text-[16px] mr-2" />
+              Mark all read
+            </button>
+          </div>
         </div>
 
-        <button
-          type="button"
-          onClick={handleMarkAllRead}
-          disabled={unreadCount === 0}
-          className="h-[42px] rounded-[14px] border border-[#CFCFD3] bg-white px-4 text-[13px] font-extrabold text-[#565449] hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-50"
-        >
-          Mark all as read
-        </button>
-      </div>
-
-      <div className="mt-6 grid grid-cols-12 gap-6">
-        {/* the left column holds filters, and the right column gives more width to the alert cards because message text needs more space */}
-        <div className="col-span-12 space-y-4 lg:col-span-3">
-          <div className="space-y-2">
-            <FilterCard
-              active={filterType === "all"}
-              title="All alerts"
-              count={alerts.length}
-              onClick={() => setFilterType("all")}
-            />
-            <FilterCard
-              active={filterType === "Invoice"}
-              title="Invoice"
-              count={typeCounts.Invoice}
-              onClick={() => setFilterType("Invoice")}
-            />
-            {typeFilters.filter((type) => type !== "Invoice").map((type) => (
-              <FilterCard
-                key={type}
-                active={filterType === type}
-                title={type}
-                count={typeCounts[type]}
-                onClick={() => setFilterType(type)}
-              />
-            ))}
+        {/* Global Stats Banner */}
+        <div className="bg-white rounded-[18px] border border-[#CFCFD3] p-5 md:p-6 mb-6 md:mb-8 shadow-sm">
+          <div className="grid grid-cols-2 md:grid-cols-4 gap-5 md:gap-6">
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold">
+                {globalStats.total} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Total</span>
+              </span>
+              <div className="h-1 w-12 bg-slate-200 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-blue-600">
+                {globalStats.unread} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Unread</span>
+              </span>
+              <div className="h-1 w-12 bg-blue-500 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-rose-600">
+                {globalStats.critical} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Critical</span>
+              </span>
+              <div className="h-1 w-12 bg-rose-500 mt-2 rounded-full"></div>
+            </div>
+            <div className="flex flex-col">
+              <span className="text-xl md:text-2xl font-extrabold text-emerald-600">
+                {globalStats.resolved} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Resolved</span>
+              </span>
+              <div className="h-1 w-12 bg-emerald-500 mt-2 rounded-full"></div>
+            </div>
           </div>
+        </div>
 
-          <div className="rounded-[18px] border border-[#CFCFD3] bg-white p-4 ">
-            <label className="flex cursor-pointer items-center justify-between gap-3">
-              <div>
-                <div className="text-[13px] font-extrabold text-slate-900">
-                  Unread only
-                </div>
-                <div className="mt-1 text-[12px] text-slate-500">
-                  Hide alerts that are already marked as read.
-                </div>
-              </div>
-              <div
+        {/* Filters and Search */}
+        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5 md:gap-6 mb-6">
+          <MobileFilterTabs
+            className="lg:hidden"
+            ariaLabel="Alert type"
+            value={filterType}
+            onChange={setFilterType}
+            items={[{ value: "all" as const, label: "All", count: alerts.length }, ...typeFilters.map((type) => ({ value: type, label: type, count: typeCounts[type] }))]}
+          />
+          <div className="hidden overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:pb-0 sm:flex-wrap gap-2 hide-scrollbar w-full xl:w-auto lg:flex">
+            <button 
+              onClick={() => setFilterType("all")}
+              className={cn(
+                "flex-shrink-0 px-4 py-1.5 rounded-full text-[13px] font-extrabold shadow-sm transition-colors",
+                filterType === "all" ? "bg-[#11120d] text-white" : "bg-white border border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"
+              )}
+            >
+              All <span className={cn("ml-1 rounded-full px-2 py-0.5 text-[11px]", filterType === "all" ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600")}>{alerts.length}</span>
+            </button>
+            {typeFilters.map((type) => (
+              <button 
+                key={type}
+                onClick={() => setFilterType(type)}
                 className={cn(
-                  "flex h-7 w-12 items-center rounded-full border p-1 transition",
-                  showUnreadOnly
-                    ? "border-[#11120d] bg-[#11120d]"
-                    : "border-slate-300 bg-slate-200",
+                  "flex-shrink-0 px-4 py-1.5 rounded-full text-[13px] font-extrabold shadow-sm transition-colors",
+                  filterType === type ? "bg-[#11120d] text-white" : "bg-white border border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"
                 )}
               >
-                <div
-                  className={cn(
-                    "h-5 w-5 rounded-full bg-white  transition",
-                    showUnreadOnly ? "translate-x-5" : "translate-x-0",
-                  )}
-                />
-              </div>
-              <input
-                type="checkbox"
-                className="hidden"
-                checked={showUnreadOnly}
-                onChange={() => setShowUnreadOnly((value) => !value)}
+                {type} <span className={cn("ml-1 rounded-full px-2 py-0.5 text-[11px]", filterType === type ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600")}>{typeCounts[type]}</span>
+              </button>
+            ))}
+          </div>
+          
+          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full xl:w-auto">
+            <div className="relative flex-1 sm:min-w-[240px]">
+              <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-[16px] text-slate-400" />
+              <input 
+                type="text" 
+                value={searchQuery}
+                onChange={(e) => setSearchQuery(e.target.value)}
+                placeholder="Search alerts..." 
+                className="w-full pl-9 pr-4 py-2 bg-white border border-[#CFCFD3] rounded-[14px] text-[13px] font-medium focus:outline-none focus:border-[#11120d] transition-all"
               />
+            </div>
+            <label className="flex items-center justify-between sm:justify-start gap-3 cursor-pointer group bg-white sm:bg-transparent border border-[#CFCFD3] sm:border-0 rounded-[14px] px-4 py-2 sm:p-0">
+              <span className="text-[13px] font-extrabold text-[#565449] group-hover:text-[#11120d] transition-colors">Unread only</span>
+              <div className="relative">
+                <input 
+                  type="checkbox" 
+                  className="hidden"
+                  checked={showUnreadOnly}
+                  onChange={() => setShowUnreadOnly(!showUnreadOnly)}
+                />
+                <div className={cn("flex h-6 w-11 items-center rounded-full border p-1 transition", showUnreadOnly ? "border-[#11120d] bg-[#11120d]" : "border-[#CFCFD3] bg-[#F3F4F6]")}>
+                  <div className={cn("h-4 w-4 rounded-full bg-white transition", showUnreadOnly ? "translate-x-5" : "translate-x-0")} />
+                </div>
+              </div>
             </label>
           </div>
         </div>
 
-        <div className="col-span-12 space-y-3 lg:col-span-9">
-          {filteredAlerts.length === 0 ? (
-            /* this empty state uses a dashed card so it looks intentionally inactive instead of feeling like missing content */
-            <div className="flex min-h-[280px] flex-col items-center justify-center rounded-[20px] border border-dashed border-[#CFCFD3] bg-white text-slate-400">
-              <Icon name="notifications_off" className="text-[40px]" />
-              <div className="mt-3 text-[14px] font-semibold">
-                No alerts found.
+        {/* Alerts List */}
+        <div className="bg-white rounded-[20px] border border-[#CFCFD3] shadow-sm overflow-hidden relative">
+          
+          {/* Desktop Table Header */}
+          <div className="hidden md:grid grid-cols-12 gap-4 px-6 py-4 bg-slate-50 border-b border-[#CFCFD3] text-[11px] font-extrabold text-slate-500 uppercase tracking-widest">
+            <div className="col-span-2">TYPE</div>
+            <div className="col-span-6">SEV. ALERT</div>
+            <div className="col-span-2">TIME</div>
+            <div className="col-span-2 text-right">ACTIONS</div>
+          </div>
+
+          <div className="flex flex-col">
+            {filteredAlerts.length === 0 ? (
+              <div className="flex min-h-[280px] flex-col items-center justify-center bg-white text-slate-400 p-6 text-center">
+                <Icon name="notifications_off" className="text-[40px] mb-3 text-[#CFCFD3]" />
+                <div className="text-[14px] font-extrabold text-slate-600">No alerts found.</div>
+                <p className="text-[13px] mt-1 text-slate-500">Try adjusting your filters or search query.</p>
               </div>
-            </div>
-          ) : (
-            pageItems.map((alert) => {
-              const tone = alertTone(alert); // precomputing the alert color set once so the card classes stay readable
+            ) : (
+              pageItems.map((alert) => (
+                <AlertRow 
+                  key={alert.key} 
+                  alert={alert} 
+                  onMarkRead={handleMarkRead}
+                  onMarkUnread={handleMarkUnread}
+                  onResolve={resolveAlert}
+                  onDismiss={dismissAlert}
+                />
+              ))
+            )}
+          </div>
+        </div>
 
-              return (
-                <div
-                  key={alert.key}
-                  className={cn(
-                    "rounded-[18px] border-2 p-4 transition",
-                    alert.read ? "border-[#D7DEE9] bg-white" : tone.pageUnread,
-                  )}
-                >
-                  <div className="flex items-start gap-4">
-                    <div
-                      className={`flex h-11 w-11 shrink-0 items-center justify-center rounded-[14px] ${alertColor(
-                        alert,
-                      )}`}
-                    >
-                      <Icon name={alertIcon(alert)} className="text-[20px]" />
-                    </div>
-
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-start justify-between gap-3">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <h3 className="truncate text-[14px] font-extrabold text-slate-900">
-                              {alert.title}
-                            </h3>
-                            {!alert.read ? (
-                              <span
-                                className={`rounded-full px-2 py-0.5 text-[10px] font-extrabold ${tone.badge}`}
-                              >
-                                New
-                              </span>
-                            ) : null}
-                          </div>
-                          <div className="mt-1 text-[13px] leading-6 text-slate-600">
-                            {alert.message}
-                          </div>
-                        </div>
-
-                        <div
-                          className={cn(
-                            "shrink-0 text-[11px] font-semibold",
-                            alert.read ? "text-slate-400" : tone.time,
-                          )}
-                        >
-                          {alert.timeLabel}
-                        </div>
-                      </div>
-
-                      <div className="mt-4 flex items-center gap-3">
-                        {alert.read ? (
-                          <button
-                            type="button"
-                            onClick={() => handleMarkUnread(alert.key)}
-                            className={`text-[12px] font-extrabold ${tone.action}`}
-                          >
-                            Mark as unread
-                          </button>
-                        ) : (
-                          <button
-                            type="button"
-                            onClick={() => handleMarkRead(alert.key)}
-                            className={`text-[12px] font-extrabold ${tone.action}`}
-                          >
-                            Mark as read
-                          </button>
-                        )}
-                        <button
-                          type="button"
-                          onClick={() => resolveAlert(alert.key)}
-                          className="text-[12px] font-extrabold text-emerald-700 hover:text-emerald-900"
-                        >
-                          Resolve
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => dismissAlert(alert.key)}
-                          className="text-[12px] font-extrabold text-slate-500 hover:text-slate-800"
-                        >
-                          Dismiss
-                        </button>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              );
-            })
-          )}
-
-          {filteredAlerts.length > 0 ? (
+        {/* Pagination */}
+        {filteredAlerts.length > 0 ? (
+          <div className="mt-6">
             <PaginationBar
               page={pageClamped}
               totalPages={totalPages}
@@ -368,10 +497,11 @@ export default function AlertsPage() {
                 setPageSize(nextPageSize);
                 setPage(1);
               }}
-              className="rounded-[18px] border border-[#CFCFD3]"
+              className="rounded-[18px] border border-[#CFCFD3] bg-white"
             />
-          ) : null}
-        </div>
+          </div>
+        ) : null}
+
       </div>
     </div>
   );

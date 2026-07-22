@@ -1,6 +1,12 @@
 // type definitions for invoice display labels
 export type InvoiceStatusLabel = "Paid" | "Partial" | "Unpaid" | "Cancelled";
-export type PaymentMethodLabel = "Cash" | "eSewa" | "None";
+export type PaymentMethodLabel =
+  | "Cash"
+  | "eSewa"
+  | "Fonepay"
+  | "Bank Transfer"
+  | "Mixed"
+  | "None";
 
 // the shape of each item inside an invoice — used for the invoice detail modal
 export type InvoiceItemSummary = {
@@ -173,12 +179,22 @@ export function mapPaymentMethod(payments: any[]): PaymentMethodLabel {
   );
   if (chargePayments.length === 0) return "None";
 
-  const preferred =
-    chargePayments.find((payment) => String(payment.status || "").toUpperCase() === "SUCCESS") ||
-    chargePayments[0];
+  const successfulChargePayments = chargePayments.filter(
+    (payment) => String(payment.status || "").toUpperCase() === "SUCCESS",
+  );
+  const successfulMethods = new Set(
+    successfulChargePayments.map((payment) =>
+      String(payment.method || "").toUpperCase(),
+    ),
+  );
+  if (successfulMethods.size > 1) return "Mixed";
+
+  const preferred = successfulChargePayments[0] || chargePayments[0];
 
   const upper = String(preferred?.method || "").toUpperCase();
   if (upper === "ESEWA") return "eSewa";
+  if (upper === "FONEPAY") return "Fonepay";
+  if (upper === "BANK_TRANSFER") return "Bank Transfer";
   if (upper === "CASH") return "Cash";
   return "None";
 }

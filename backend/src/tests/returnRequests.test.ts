@@ -2,6 +2,7 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   buildReturnReversalStockMessage,
+  calculateDiscountAdjustedReturnAmount,
   calculateRefundReversalAmount,
   calculateRefundAmount,
   calculateRemainingReturnQty,
@@ -19,6 +20,15 @@ test("calculateRefundAmount caps refunds by remaining paid total", () => {
   assert.equal(calculateRefundAmount(1000, 700, 500), 300);
   assert.equal(calculateRefundAmount(1000, 1000, 500), 0);
   assert.equal(calculateRefundAmount(0, 0, 500), 0);
+});
+
+test("calculateDiscountAdjustedReturnAmount allocates invoice discount to partial returns", () => {
+  assert.equal(calculateDiscountAdjustedReturnAmount(1000, 900, 500), 450);
+  assert.equal(calculateDiscountAdjustedReturnAmount(1000, 1000, 250), 250);
+});
+
+test("calculateDiscountAdjustedReturnAmount allocates whole rupee payable rounding", () => {
+  assert.equal(calculateDiscountAdjustedReturnAmount(675.6, 676, 675.6), 676);
 });
 
 test("calculateRefundReversalAmount reverses the successful refund ledger", () => {

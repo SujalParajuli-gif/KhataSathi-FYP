@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { Link } from "react-router";
+import BrandLogo from "~/components/ui/BrandLogo";
 import GIcon from "~/components/ui/GIcon";
 import UserAvatar from "~/components/ui/UserAvatar";
 import navData from "~/config/ui.nav.json";
@@ -12,11 +13,15 @@ type Props = {
   greetingText?: string;
   onOpenMobileSidebar: () => void;
   onToggleCollapse: () => void;
+  isMobileSidebarOpen?: boolean;
   isCollapsed: boolean;
   userName?: string;
   roleLabel?: string;
   profileImage?: string | null;
   profileHref?: string;
+  showNotifications?: boolean;
+  staffMode?: boolean;
+  showDesktopCollapseToggle?: boolean;
 };
 
 // the top navigation bar — shows the page title, greeting, notification bell, and user profile link
@@ -25,14 +30,20 @@ export default function Topbar({
   greetingText = "Welcome back",
   onOpenMobileSidebar,
   onToggleCollapse,
+  isMobileSidebarOpen = false,
   isCollapsed,
   userName = "User",
   roleLabel = "Admin",
   profileImage,
   profileHref = "/profile",
+  showNotifications = true,
+  staffMode = false,
+  showDesktopCollapseToggle = true,
 }: Props) {
   const [bellOpen, setBellOpen] = useState(false); // whether the notification dropdown is visible
+  const [accountOpen, setAccountOpen] = useState(false);
   const bellRef = useRef<HTMLDivElement>(null);
+  const accountRef = useRef<HTMLDivElement>(null);
   const { alerts, loading, refreshAlerts, unreadCount } = useAlerts();
 
   // closing the notification dropdown when the user clicks outside of it
@@ -41,17 +52,35 @@ export default function Topbar({
       if (bellRef.current && !bellRef.current.contains(event.target as Node)) {
         setBellOpen(false);
       }
+      if (
+        accountRef.current &&
+        !accountRef.current.contains(event.target as Node)
+      ) {
+        setAccountOpen(false);
+      }
     }
 
-    if (bellOpen) {
+    function handleEscape(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        setBellOpen(false);
+        setAccountOpen(false);
+      }
+    }
+
+    if (bellOpen || accountOpen) {
       document.addEventListener("mousedown", handleClickOutside);
+      document.addEventListener("keydown", handleEscape);
     }
 
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, [bellOpen]);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleEscape);
+    };
+  }, [accountOpen, bellOpen]);
 
   // toggling the bell dropdown — refreshing alerts when opening
   function toggleBell() {
+    if (!showNotifications) return;
     const nextOpen = !bellOpen;
     setBellOpen(nextOpen);
     if (nextOpen) {
@@ -63,33 +92,49 @@ export default function Topbar({
   const previewAlerts = alerts.slice(0, 4);
 
   return (
-    <header className="sticky top-0 z-[60] border-b border-[#CFCFD3] bg-[rgba(255,255,255,0.9)] backdrop-blur-md">
-      <div className="px-[20px] py-[12px]">
-        <div className="flex items-center justify-between gap-4">
+    <header className="relative z-[30] h-[68px] shrink-0 border-b border-[#CFCFD3] bg-white/95 backdrop-blur-md">
+      <div
+        className={
+          staffMode
+            ? "flex h-full items-center px-[14px] sm:px-[20px]"
+            : "flex h-full items-center px-[20px]"
+        }
+      >
+        <div className="flex w-full items-center justify-between gap-4">
           <div className="min-w-0 flex items-center gap-4">
             <div className="flex items-center gap-3">
               {/* mobile hamburger menu button — only visible on small screens */}
-              <button
-                type="button"
-                onClick={onOpenMobileSidebar}
-                className="flex h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]  transition hover:bg-[#F3F4F6] hover:text-[#000000] active:scale-95 lg:hidden"
-                aria-label="Open sidebar"
-              >
-                <GIcon name="menu" />
-              </button>
+              {staffMode ? (
+                <BrandLogo className="h-9 w-[126px] lg:hidden" />
+              ) : (
+                <button
+                  type="button"
+                  onClick={onOpenMobileSidebar}
+                  className="flex h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000] active:scale-95 lg:hidden"
+                  aria-label="Open sidebar"
+                  aria-expanded={isMobileSidebarOpen}
+                  aria-controls="app-sidebar"
+                >
+                  <GIcon name="menu" />
+                </button>
+              )}
 
               {/* desktop sidebar collapse toggle button */}
-              <button
-                type="button"
-                onClick={onToggleCollapse}
-                className="hidden h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]  transition hover:bg-[#F3F4F6] hover:text-[#000000] active:scale-95 lg:flex"
-                aria-label="Toggle sidebar collapse"
-              >
-                <GIcon name={isCollapsed ? "menu" : "menu_open"} />
-              </button>
+              {showDesktopCollapseToggle ? (
+                <button
+                  type="button"
+                  onClick={onToggleCollapse}
+                  className="hidden h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#E7E8EA] hover:text-[#000000] active:scale-95 lg:flex"
+                  aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-expanded={!isCollapsed}
+                  aria-controls="app-sidebar"
+                >
+                  <GIcon name={isCollapsed ? "menu" : "menu_open"} />
+                </button>
+              ) : null}
 
               {/* page title and greeting text */}
-              <div className="min-w-0">
+              <div className={staffMode ? "hidden min-w-0 sm:block" : "min-w-0"}>
                 <h1 className="truncate text-[16px] font-bold  text-[#000000]">
                   {pageTitle}
                 </h1>
@@ -102,7 +147,8 @@ export default function Topbar({
 
           <div className="flex items-center gap-3">
             {/* notification bell with dropdown */}
-            <div className="relative" ref={bellRef}>
+            {showNotifications ? (
+              <div className="relative" ref={bellRef}>
               <button
                 type="button"
                 onClick={toggleBell}
@@ -120,7 +166,7 @@ export default function Topbar({
 
               {/* notification dropdown panel — shows a preview of recent alerts */}
               {bellOpen ? (
-                <div className="absolute right-0 top-[48px] z-50 w-[360px] overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-[#FFFFFF] ">
+                <div className="absolute -right-[54px] sm:-right-2 top-[48px] z-50 w-[calc(100vw-32px)] sm:w-[calc(100vw-40px)] max-w-[360px] overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-lg">
                   <div className="flex items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[12px]">
                     <span className="text-[13px] font-bold text-[#000000]">
                       Notifications
@@ -206,12 +252,56 @@ export default function Topbar({
                   </Link>
                 </div>
               ) : null}
-            </div>
+              </div>
+            ) : null}
 
             {/* user profile link — shows avatar, name, and role badge */}
+            {staffMode ? (
+              <div ref={accountRef} className="relative lg:hidden">
+                <button
+                  type="button"
+                  onClick={() => setAccountOpen((current) => !current)}
+                  className="flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white transition hover:bg-[#F3F4F6]"
+                  aria-label="Open account menu"
+                  aria-expanded={accountOpen}
+                >
+                  <UserAvatar
+                    src={profileImage ? `${API_BASE_URL}${profileImage}` : undefined}
+                    alt="Profile"
+                    className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[10px] bg-[#F3F4F6]"
+                    fallback={<GIcon name="person" className="text-[#565449]" />}
+                  />
+                </button>
+
+                {accountOpen ? (
+                  <div className="absolute right-0 top-12 z-50 w-[248px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white shadow-xl">
+                    <div className="border-b border-[#CFCFD3] px-4 py-3">
+                      <div className="truncate text-[13px] font-bold text-black">
+                        {userName}
+                      </div>
+                      <div className="mt-0.5 text-[10px] font-extrabold uppercase text-[#8C8889]">
+                        {roleLabel} account
+                      </div>
+                    </div>
+                    <Link
+                      to="/logout"
+                      onClick={() => setAccountOpen(false)}
+                      className="flex items-center gap-3 px-4 py-3 text-[13px] font-bold text-rose-600 transition hover:bg-rose-50"
+                    >
+                      <GIcon name="logout" className="text-[19px]" />
+                      Log out
+                    </Link>
+                  </div>
+                ) : null}
+              </div>
+            ) : null}
+
             <Link
               to={profileHref}
-              className="flex items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[6px] pr-[12px]  transition hover:border-[#8C8889] hover:bg-[#F3F4F6] active:scale-[0.98]"
+              className={[
+                "items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[6px] transition hover:border-[#8C8889] hover:bg-[#F3F4F6] active:scale-[0.98] sm:pr-[12px]",
+                staffMode ? "hidden lg:flex" : "flex",
+              ].join(" ")}
               aria-label="Open profile"
             >
               <UserAvatar
@@ -224,26 +314,14 @@ export default function Topbar({
                 <div className="whitespace-nowrap text-[13px] font-bold text-[#000000]">
                   {userName}
                 </div>
-                <div className="text-[10px] font-extrabold uppercase  text-[#8C8889]">
+                <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
                   {roleLabel}
                 </div>
               </div>
             </Link>
           </div>
         </div>
-
-        {/* mobile search bar — only visible on small screens */}
-        <div className="mt-3 md:hidden">
-          <div className="flex items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.9)] px-[16px] py-[10px]">
-            <GIcon name="search" className="text-[#8C8889]" />
-            <input
-              className="w-full bg-transparent text-[14px] font-medium text-[#565449] outline-none placeholder:text-[#8C8889]"
-              placeholder={navData.topbar.searchPlaceholder}
-            />
-          </div>
-        </div>
       </div>
     </header>
   );
 }
-

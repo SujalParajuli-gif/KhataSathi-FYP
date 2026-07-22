@@ -7,6 +7,8 @@ import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
 import {
   list,
   getOne,
+  getMany,
+  getByCode,
   create,
   update,
   deactivate,
@@ -48,8 +50,10 @@ const imgUpload = multer({ storage: imgStorage, limits: { fileSize: 5 * 1024 * 1
 
 router.use(authGuard); // all product routes require authentication
 
-router.get("/", list); // listing products with optional filters (search, brand, category, etc.)
-router.get("/categories", categories); // returning all unique product categories
+router.get("/", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), list); // listing products with optional filters (search, brand, category, etc.)
+router.get("/categories", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), categories); // returning all unique product categories
+router.get("/lookup", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getMany); // batch refresh for products already in a billing cart
+router.get("/lookup-code", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getByCode); // exact scanner lookup by SKU or barcode
 router.get("/import-batches", requireRole("ADMIN", "MANAGER"), listImportBatches); // recent CSV/PDF/image import batches
 router.get("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), getImportBatch); // returning extracted import rows for review
 router.delete("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), deleteImportBatch); // deleting import review history only, not products
@@ -65,7 +69,7 @@ router.post("/import-documents/:documentId", requireRole("ADMIN", "MANAGER"), im
 router.post("/import-batches/:batchId/import", requireRole("ADMIN", "MANAGER"), importReviewedBatchRows); // admin and managers can import reviewed rows
 router.get("/:id/delete-safety", requireRole("ADMIN", "MANAGER"), deleteSafety); // explains whether a product can be permanently deleted
 router.delete("/:id", requireRole("ADMIN"), permanentDelete); // admin-only permanent delete for safe mistake records
-router.get("/:id", getOne); // fetching a single product with its brand info
+router.get("/:id", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getOne); // fetching a single product with its brand info
 router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can edit product info
 router.patch("/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivate); // admin and managers can deactivate products
 

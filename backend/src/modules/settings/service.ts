@@ -6,6 +6,7 @@ const BUSINESS_SETTINGS_ID = 1; // there is only one settings row in the databas
 const OVERRIDE_PIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
 const OVERRIDE_PIN_MAX_FAILURES = 5;
 const OVERRIDE_PIN_LOCKOUT_MS = 10 * 60 * 1000;
+const BUSINESS_SETTINGS_CACHE_TTL_MS = 30_000;
 
 // this type allows functions to accept either the main Prisma client or a transaction client
 // so the same function can be used both inside and outside of database transactions
@@ -33,6 +34,10 @@ type OverridePolicyRow = BusinessSettingsSnapshot & {
   overridePinHash?: string | null;
   overridePinUpdatedAt?: Date | null;
 };
+
+let businessSettingsCache:
+  | { value: BusinessSettingsSnapshot; expiresAt: number }
+  | null = null;
 
 // defining the shape of product threshold fields used when resolving which threshold to apply
 type ProductThresholdShape = {
@@ -107,6 +112,10 @@ export function normalizeBusinessSettingsInput(data: {
 export async function getBusinessSettings(
   client: PrismaLike = prisma,
 ): Promise<BusinessSettingsSnapshot> {
+  if (client === prisma && businessSettingsCache && businessSettingsCache.expiresAt > Date.now()) {
+    return businessSettingsCache.value;
+  }
+
   const settings = await client.businessSettings.upsert({
     where: { id: BUSINESS_SETTINGS_ID },
     update: {}, // no changes if it already exists — just return the current data
@@ -118,6 +127,12 @@ export async function getBusinessSettings(
 
   const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
     settings as OverridePolicyRow;
+  if (client === prisma) {
+    businessSettingsCache = {
+      value: safe,
+      expiresAt: Date.now() + BUSINESS_SETTINGS_CACHE_TTL_MS,
+    };
+  }
   return safe;
 }
 
@@ -147,6 +162,14 @@ export async function updateBusinessSettings(
 
   const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
     settings as OverridePolicyRow;
+  if (client === prisma) {
+    businessSettingsCache = {
+      value: safe,
+      expiresAt: Date.now() + BUSINESS_SETTINGS_CACHE_TTL_MS,
+    };
+  } else {
+    businessSettingsCache = null;
+  }
   return safe;
 }
 
@@ -462,6 +485,7 @@ export type CashierPrivilegeInput = {
   canOverrideBillingPrice?: boolean;
   canApplyManualDiscount?: boolean;
   canVoidPayment?: boolean;
+  canViewWholesalePrice?: boolean;
 };
 
 function normalizePrivilegePercent(value: unknown, fallback: number) {
@@ -472,35 +496,69 @@ function normalizePrivilegePercent(value: unknown, fallback: number) {
   return normalized;
 }
 
-function normalizeCashierPrivilegeInput(data: CashierPrivilegeInput = {}) {
+function getDefaultPrivilegeInputForRole(role?: string | null): CashierPrivilegeInput {
+  if (role === "MANAGER") {
+    return {
+      canCreateDiscountedCustomer: true,
+      canRequestCustomerDiscount: true,
+      canOverrideBillingPrice: true,
+      canApplyManualDiscount: true,
+      canVoidPayment: true,
+      canViewWholesalePrice: true,
+      maxCustomerLoyaltyPercent: 100,
+      maxCustomerWholesalePercent: 100,
+    };
+  }
+
+  if (role === "STAFF") {
+    return {
+      canCreateDiscountedCustomer: false,
+      canRequestCustomerDiscount: false,
+      canOverrideBillingPrice: false,
+      canApplyManualDiscount: false,
+      canVoidPayment: false,
+      canViewWholesalePrice: true,
+      maxCustomerLoyaltyPercent: 0,
+      maxCustomerWholesalePercent: 0,
+    };
+  }
+
+  return {};
+}
+
+function normalizeCashierPrivilegeInput(data: CashierPrivilegeInput = {}, role?: string | null) {
+  const defaults = getDefaultPrivilegeInputForRole(role);
+  const merged = { ...defaults, ...data };
   return {
-    canCreateDiscountedCustomer: data.canCreateDiscountedCustomer === true,
+    canCreateDiscountedCustomer: merged.canCreateDiscountedCustomer === true,
     maxCustomerLoyaltyPercent: normalizePrivilegePercent(
-      data.maxCustomerLoyaltyPercent,
-      5,
+      merged.maxCustomerLoyaltyPercent,
+      Number(defaults.maxCustomerLoyaltyPercent ?? 5),
     ),
     maxCustomerWholesalePercent: normalizePrivilegePercent(
-      data.maxCustomerWholesalePercent,
-      10,
+      merged.maxCustomerWholesalePercent,
+      Number(defaults.maxCustomerWholesalePercent ?? 10),
     ),
-    canRequestCustomerDiscount: data.canRequestCustomerDiscount !== false,
-    canOverrideBillingPrice: data.canOverrideBillingPrice === true,
-    canApplyManualDiscount: data.canApplyManualDiscount === true,
-    canVoidPayment: data.canVoidPayment === true,
+    canRequestCustomerDiscount: merged.canRequestCustomerDiscount !== false,
+    canOverrideBillingPrice: merged.canOverrideBillingPrice === true,
+    canApplyManualDiscount: merged.canApplyManualDiscount === true,
+    canVoidPayment: merged.canVoidPayment === true,
+    canViewWholesalePrice: merged.canViewWholesalePrice !== false,
   };
 }
 
 export async function getCashierPrivilege(userId: string) {
-  const existing = await prisma.cashierPrivilege.findUnique({
-    where: { userId },
+  const user = await prisma.user.findUnique({
+    where: { id: userId },
+    select: { role: true, cashierPrivilege: true },
   });
 
-  if (existing) return existing;
+  if (user?.cashierPrivilege) return user.cashierPrivilege;
 
   return {
     id: "",
     userId,
-    ...normalizeCashierPrivilegeInput({}),
+    ...normalizeCashierPrivilegeInput({}, user?.role),
     updatedById: null,
     createdAt: new Date(),
     updatedAt: new Date(),
@@ -509,13 +567,14 @@ export async function getCashierPrivilege(userId: string) {
 
 export async function listCashierPrivileges() {
   const cashiers = await prisma.user.findMany({
-    where: { role: "CASHIER" },
+    where: { role: { in: ["MANAGER", "CASHIER", "STAFF"] } },
     orderBy: { name: "asc" },
     select: {
       id: true,
       name: true,
       email: true,
       phone: true,
+      role: true,
       isActive: true,
       cashierPrivilege: true,
     },
@@ -526,7 +585,7 @@ export async function listCashierPrivileges() {
     privilege: cashier.cashierPrivilege || {
       id: "",
       userId: cashier.id,
-      ...normalizeCashierPrivilegeInput({}),
+      ...normalizeCashierPrivilegeInput({}, cashier.role),
       updatedById: null,
       createdAt: null,
       updatedAt: null,
@@ -541,14 +600,14 @@ export async function updateCashierPrivilege(
   updatedById: string,
 ) {
   const cashier = await prisma.user.findFirst({
-    where: { id: userId, role: "CASHIER" },
-    select: { id: true, name: true, email: true },
+    where: { id: userId, role: { in: ["MANAGER", "CASHIER", "STAFF"] } },
+    select: { id: true, name: true, email: true, role: true },
   });
   if (!cashier) {
-    throw new Error("Cashier not found");
+    throw new Error("User not found");
   }
 
-  const normalized = normalizeCashierPrivilegeInput(data);
+  const normalized = normalizeCashierPrivilegeInput(data, cashier.role);
 
   const privilege = await prisma.cashierPrivilege.upsert({
     where: { userId },
@@ -566,6 +625,7 @@ export async function updateCashierPrivilege(
         cashierId: cashier.id,
         cashierName: cashier.name,
         cashierEmail: cashier.email,
+        cashierRole: cashier.role,
         privilege: normalized,
       },
     },

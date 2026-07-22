@@ -53,7 +53,64 @@ function normalizeDiscountReason(value: unknown) {
 // sorted alphabetically by name so the frontend displays them in a consistent order
 export async function listCustomers(activeOnly?: boolean) {
   const where = activeOnly ? { isActive: true } : {};
-  return prisma.customer.findMany({ where, orderBy: { name: "asc" } });
+  const completedInvoiceWhere = {
+    status: "FINALIZED" as const,
+    paymentStatus: { not: "CANCELLED" as const },
+  };
+
+  const [customers, finalizedCounts] = await Promise.all([
+    prisma.customer.findMany({
+      where,
+      orderBy: { name: "asc" },
+      include: {
+        _count: {
+          select: { invoices: { where: completedInvoiceWhere } },
+        },
+        invoices: {
+          where: completedInvoiceWhere,
+          orderBy: { createdAt: "desc" },
+          take: 1,
+          select: { createdAt: true, netTotal: true },
+        },
+      },
+    }),
+    prisma.invoice.groupBy({
+      by: ["customerId"],
+      where: {
+        customerId: { not: null },
+        status: "FINALIZED",
+      },
+      _count: { _all: true },
+    }),
+  ]);
+
+  const finalizedCountByCustomer = new Map<string, number>();
+  finalizedCounts.forEach((row) => {
+    if (row.customerId) {
+      finalizedCountByCustomer.set(row.customerId, row._count._all);
+    }
+  });
+
+  return customers.map(({ _count, invoices, ...customer }) => {
+    const latest = invoices[0];
+    const completedCount = _count.invoices;
+    const finalizedCount = finalizedCountByCustomer.get(customer.id) || 0;
+    return {
+      ...customer,
+      purchaseSummary: {
+        completedCount,
+        finalizedCount,
+        state:
+          completedCount > 0
+            ? ("history" as const)
+            : finalizedCount > 0
+              ? ("cancelled_only" as const)
+              : ("none" as const),
+        latestCompletedAt: latest?.createdAt || null,
+        latestCompletedNetTotal: latest?.netTotal ?? null,
+      },
+    };
+  });
 }
 
 // fetching a single customer record by their ID

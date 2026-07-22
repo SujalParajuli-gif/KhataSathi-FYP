@@ -10,6 +10,7 @@ import {
   getDocumentFile,
   deleteDocumentHandler,
   getStorageInfo,
+  updateDocumentMetadataHandler,
   updateDocumentVisibilityHandler,
 } from "./controller";
 import { getTempUploadDir } from "./service";
@@ -67,6 +68,7 @@ router.get("/storage-info", requireRole("ADMIN"), getStorageInfo);
 
 // getting a single document's metadata — any authenticated user
 router.patch("/:id/visibility", requireRole("ADMIN"), updateDocumentVisibilityHandler);
+router.patch("/:id/metadata", requireRole("ADMIN", "MANAGER"), updateDocumentMetadataHandler);
 
 router.get("/:id", getDocument);
 

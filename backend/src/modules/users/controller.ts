@@ -27,6 +27,30 @@ export async function list(req: Request, res: Response) {
   }
 }
 
+export async function touchPresence(req: Request, res: Response) {
+  try {
+    const presence = await userService.touchUserPresence(req.user!.id);
+    res.json({ presence });
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "User not found" });
+      return;
+    }
+    console.error("Update user presence error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function listCashierPresence(_req: Request, res: Response) {
+  try {
+    const cashiers = await userService.listCashierPresence();
+    res.json({ cashiers });
+  } catch (err) {
+    console.error("List cashier presence error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
 // creating a new user — the admin uses this to add new cashier accounts
 export async function create(req: Request, res: Response) {
   try {

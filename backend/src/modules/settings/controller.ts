@@ -142,6 +142,7 @@ export async function updateCashierPrivilegeSettings(req: Request, res: Response
         canOverrideBillingPrice: req.body?.canOverrideBillingPrice,
         canApplyManualDiscount: req.body?.canApplyManualDiscount,
         canVoidPayment: req.body?.canVoidPayment,
+        canViewWholesalePrice: req.body?.canViewWholesalePrice,
       },
       req.user!.id,
     );

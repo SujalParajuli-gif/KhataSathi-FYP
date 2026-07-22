@@ -140,7 +140,14 @@ export async function receiveBatch(req: Request, res: Response) {
     } catch (err: any) {
         await cleanupUploadedFiles(req);
 
-        if (err.message?.includes("required") || err.message?.includes("not found")) {
+        if (
+            err.message?.includes("required") ||
+            err.message?.includes("not found") ||
+            err.message?.includes("greater than zero") ||
+            err.message?.includes("negative") ||
+            err.message?.includes("quantity") ||
+            err.message?.includes("Product is required")
+        ) {
             res.status(400).json({ error: err.message });
             return;
         }
@@ -238,7 +245,12 @@ export async function adjust(req: Request, res: Response) {
         res.json(product);
     } catch (err: any) {
         // checking for "not found" and "negative stock" errors which are known business rule violations
-        if (err.message.includes("not found") || err.message.includes("negative")) {
+        if (
+            err.message.includes("not found") ||
+            err.message.includes("negative") ||
+            err.message.includes("cannot be zero") ||
+            err.message.includes("Product is required")
+        ) {
             res.status(400).json({ error: err.message });
             return;
         }

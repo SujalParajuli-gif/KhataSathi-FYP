@@ -10,6 +10,7 @@ import React, {
 } from "react";
 import { useLocation } from "react-router";
 import Icon from "~/components/ui/Icon";
+import { isRateLimited } from "~/lib/api/client";
 
 export type ToastTone = "success" | "info" | "danger" | "warning";
 
@@ -68,6 +69,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   const location = useLocation();
   const [items, setItems] = useState<ToastItem[]>([]);
   const nextIdRef = useRef(1);
+  const recentToastRef = useRef<Map<string, number>>(new Map());
 
   const removeToast = useCallback((id: number) => {
     setItems((current) => current.filter((item) => item.id !== id));
@@ -75,10 +77,46 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
   const clearToasts = useCallback(() => {
     setItems([]);
+    recentToastRef.current.clear();
   }, []);
 
   const showToast = useCallback<ToastContextValue["showToast"]>(
     (tone, message, options) => {
+      const normalizedMessage = message.trim();
+      // Route changes intentionally cancel work owned by the previous screen.
+      // This is normal lifecycle cleanup, not an error the user can act on.
+      if (
+        tone === "danger" &&
+        /request skipped after leaving its route|request cancel(?:led|ed)|background refresh skipped/i.test(
+          normalizedMessage,
+        )
+      ) {
+        return;
+      }
+      if (
+        tone === "danger" &&
+        isRateLimited() &&
+        /429|too many requests|rate limit|temporarily paused/i.test(
+          normalizedMessage,
+        )
+      ) {
+        return;
+      }
+      const now = Date.now();
+      const dedupeKey = `${tone}:${normalizedMessage}`;
+      const lastShownAt = recentToastRef.current.get(dedupeKey);
+
+      if (lastShownAt && now - lastShownAt < 1800) {
+        return;
+      }
+
+      recentToastRef.current.set(dedupeKey, now);
+      recentToastRef.current.forEach((shownAt, key) => {
+        if (now - shownAt > 6000) {
+          recentToastRef.current.delete(key);
+        }
+      });
+
       const id = nextIdRef.current;
       nextIdRef.current += 1;
       const durationMs =
@@ -89,7 +127,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
 
       setItems((current) => [
         ...current.slice(-2),
-        { id, tone, message, durationMs },
+        { id, tone, message: normalizedMessage, durationMs },
       ]);
     },
     [],

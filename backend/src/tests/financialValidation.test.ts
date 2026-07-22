@@ -31,6 +31,7 @@ test("checkout validation accepts valid split-payment payloads", () => {
     payments: [
       { method: "CASH", amount: 100, tenderedAmount: 100 },
       { method: "ESEWA", amount: 90, reference: "online" },
+      { method: "FONEPAY", amount: 50, reference: "fonepay-ref" },
     ],
   });
 

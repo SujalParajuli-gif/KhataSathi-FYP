@@ -4,7 +4,7 @@ import path from "path";
 import crypto from "crypto";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
-import type { CreateDocumentInput, ListDocumentsInput } from "./validation";
+import type { CreateDocumentInput, ListDocumentsInput, UpdateDocumentMetadataInput } from "./validation";
 import type { DocumentType, DocumentVisibility, Prisma } from "@prisma/client";
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
@@ -479,6 +479,131 @@ export async function updateDocumentVisibility(
       processingLabel: getDocumentProcessingLabel(document),
     },
     changed: true,
+  };
+}
+
+function cleanNullableText(value: string | null | undefined) {
+  if (value === undefined) return undefined;
+  const cleaned = value?.trim() || "";
+  return cleaned ? cleaned : null;
+}
+
+function parseNullableDate(value: string | null | undefined) {
+  if (value === undefined) return undefined;
+  if (value === null || !value.trim()) return null;
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    throw new Error("Invalid bill date");
+  }
+  return parsed;
+}
+
+function nullableDateChanged(current: Date | null, next: Date | null | undefined) {
+  if (next === undefined) return false;
+  if (!current && !next) return false;
+  if (!current || !next) return true;
+  return current.getTime() !== next.getTime();
+}
+
+export async function updateDocumentMetadata(
+  id: string,
+  input: UpdateDocumentMetadataInput,
+  userId: string,
+) {
+  const existing = await prisma.document.findFirst({
+    where: { id, deletedAt: null },
+    include: { uploadedBy: { select: { id: true, name: true } } },
+  });
+  if (!existing) throw new Error("Document not found");
+
+  const supplierName = cleanNullableText(input.supplierName);
+  const billNumber = cleanNullableText(input.billNumber);
+  const remarks = cleanNullableText(input.remarks);
+  const billDate = parseNullableDate(input.billDate);
+
+  const data: Prisma.DocumentUpdateInput = {};
+  const changedFields: string[] = [];
+
+  if (input.documentType && input.documentType !== existing.documentType) {
+    data.documentType = input.documentType as DocumentType;
+    changedFields.push("documentType");
+  }
+  if (supplierName !== undefined && supplierName !== existing.supplierName) {
+    data.supplierName = supplierName;
+    changedFields.push("supplierName");
+  }
+  if (billNumber !== undefined && billNumber !== existing.billNumber) {
+    data.billNumber = billNumber;
+    changedFields.push("billNumber");
+  }
+  if (nullableDateChanged(existing.billDate, billDate)) {
+    data.billDate = billDate;
+    changedFields.push("billDate");
+  }
+  if (input.billAmount !== undefined && input.billAmount !== existing.billAmount) {
+    data.billAmount = input.billAmount;
+    changedFields.push("billAmount");
+  }
+  if (remarks !== undefined && remarks !== existing.remarks) {
+    data.remarks = remarks;
+    changedFields.push("remarks");
+  }
+
+  if (changedFields.length === 0) {
+    return {
+      document: {
+        ...existing,
+        processingStatus: getDocumentProcessingStatus(existing),
+        processingLabel: getDocumentProcessingLabel(existing),
+      },
+      changed: false,
+      changedFields,
+    };
+  }
+
+  const document = await prisma.document.update({
+    where: { id },
+    data,
+    include: { uploadedBy: { select: { id: true, name: true } } },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      actorId: userId,
+      action: "DOCUMENT_METADATA_UPDATED",
+      entityType: "Document",
+      entityId: id,
+      meta: {
+        fileName: existing.fileName,
+        changedFields,
+        previous: {
+          documentType: existing.documentType,
+          supplierName: existing.supplierName,
+          billNumber: existing.billNumber,
+          billDate: existing.billDate,
+          billAmount: existing.billAmount,
+        },
+        next: {
+          documentType: document.documentType,
+          supplierName: document.supplierName,
+          billNumber: document.billNumber,
+          billDate: document.billDate,
+          billAmount: document.billAmount,
+        },
+      },
+    },
+  }).catch((err) => {
+    logger.error("Document metadata audit log error", err);
+  });
+
+  return {
+    document: {
+      ...document,
+      processingStatus: getDocumentProcessingStatus(document),
+      processingLabel: getDocumentProcessingLabel(document),
+    },
+    changed: true,
+    changedFields,
   };
 }
 

@@ -196,7 +196,8 @@ export async function park(req: Request, res: Response) {
       err.message.includes("Customer") ||
       err.message.includes("Product") ||
       err.message.includes("stock") ||
-      err.message.includes("Insufficient")
+      err.message.includes("Insufficient") ||
+      err.message.includes("hold up to")
     ) {
       res.status(400).json({ error: err.message });
       return;
@@ -349,7 +350,11 @@ export async function list(req: Request, res: Response) {
 
     const filters = {
       status: req.query.status as string | undefined,
+      paymentStatus: req.query.paymentStatus as string | undefined,
       cashierId: req.query.cashierId as string | undefined,
+      customerType: req.query.customerType as string | undefined,
+      paymentMethod: req.query.paymentMethod as string | undefined,
+      search: req.query.search as string | undefined,
       from: req.query.from as string | undefined, // start of date range in YYYY-MM-DD format
       to: req.query.to as string | undefined, // end of date range in YYYY-MM-DD format
       page,

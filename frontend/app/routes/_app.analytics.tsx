@@ -1,4 +1,12 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
+import {
+  ActiveFilterChips,
+  MobileFilterButton,
+  MobileFilterSheet,
+  type MobileFilterChip,
+} from "~/components/ui/MobileFilters";
 import {
   Area,
   Bar,
@@ -25,6 +33,8 @@ import {
   exportAnalyticsWorkbook,
 } from "~/lib/analyticsExport";
 import { getAuthUser } from "~/lib/auth";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { formatNpr } from "~/lib/invoices";
 import {
   getRangeFromPreset,
@@ -43,6 +53,8 @@ type RangeSelection = AnalyticsRangePreset | "custom";
 const PAYMENT_COLORS: Record<AnalyticsPaymentMethod, string> = {
   CASH: "#11120d",
   ESEWA: "#179b4d",
+  FONEPAY: "#2F67D8",
+  BANK_TRANSFER: "#B7791F",
 };
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -123,27 +135,28 @@ function MetricCard({
   tone: string;
 }) {
   return (
-    <div className="rounded-[20px] border border-[#CFCFD3] bg-white p-4">
-      <div className="flex items-start justify-between gap-3">
-        <div>
-          <div className="text-[11px] font-extrabold uppercase  text-[#8C8889]">
-            {title}
-          </div>
-          <div className="mt-2 text-[26px] font-extrabold  text-[#000000]">
-            {value}
-          </div>
-          <div className="mt-2 text-[12px] font-semibold text-[#8C8889]">
-            {subtitle}
-          </div>
-        </div>
+    <div className="min-h-[108px] rounded-[16px] border border-[#DADDE3] bg-white p-4 shadow-sm [container-type:inline-size]">
+      <div className="flex items-center gap-2">
         <div
           className={cn(
-            "flex h-[44px] w-[44px] items-center justify-center rounded-[14px] border text-[20px]",
+            "flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] border",
             tone,
           )}
         >
-          <Icon name={icon} className="text-[20px]" />
+          <Icon name={icon} className="text-[16px]" />
         </div>
+        <div className="min-w-0 flex-1 truncate text-[10px] font-extrabold uppercase leading-snug tracking-[0.08em] text-[#64748B]">
+          {title}
+        </div>
+      </div>
+      <div
+        className="mt-3 truncate font-mono text-[clamp(20px,12cqi,32px)] font-extrabold leading-none tracking-tight text-[#000000]"
+        title={value}
+      >
+        {value}
+      </div>
+      <div className="mt-2 truncate text-[11px] font-semibold text-[#8C8889]" title={subtitle}>
+        {subtitle}
       </div>
     </div>
   );
@@ -261,17 +274,25 @@ export default function AnalyticsPage() {
   const initialPreset: AnalyticsRangePreset = "month";
   const [rangeSelection, setRangeSelection] =
     useState<RangeSelection>(initialPreset);
+  const [appliedRangeSelection, setAppliedRangeSelection] =
+    useState<RangeSelection>(initialPreset);
   const [draftFilters, setDraftFilters] = useState<AnalyticsFilters>({
     ...getRangeFromPreset(initialPreset),
   });
   const [filters, setFilters] = useState<AnalyticsFilters>({
     ...getRangeFromPreset(initialPreset),
   });
+  const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
+  const [mobileOriginalRange, setMobileOriginalRange] = useState<RangeSelection>(initialPreset);
   const [report, setReport] = useState<AnalyticsReport | null>(null); // latest analytics payload returned by the backend
   const [loading, setLoading] = useState(true); // first load and filter-apply loading state
   const [error, setError] = useState(""); // page-level fetch/export error
   const [filterError, setFilterError] = useState(""); // validation message for invalid custom date ranges
   const [exportBusy, setExportBusy] = useState<"" | "excel" | "csv">(""); // tracks which export action is currently running
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
 
   useEffect(() => {
     let cancelled = false;
@@ -285,8 +306,12 @@ export default function AnalyticsPage() {
         if (!cancelled) setReport(analyticsResponse as AnalyticsReport);
       } catch (err) {
         if (!cancelled) {
-          setReport(null);
-          setError(errorMessage(err));
+          if (isRateLimitError(err)) requestRateLimitRecovery();
+          setError(
+            isRateLimitError(err)
+              ? "Analytics are temporarily paused and will resume automatically."
+              : errorMessage(err),
+          );
         }
       } finally {
         if (!cancelled) setLoading(false);
@@ -297,7 +322,7 @@ export default function AnalyticsPage() {
     return () => {
       cancelled = true;
     };
-  }, [filters]);
+  }, [filters, rateLimitRecoveryKey]);
 
   // pre-computing and sorting the data given by the backend for our charts
   // this keeps things fast and ensures we only do the heavy lifting when new data arrives
@@ -348,13 +373,15 @@ export default function AnalyticsPage() {
   }
 
   // this validates the custom filter state before we commit it as the active analytics query
-  function apply(next: AnalyticsFilters) {
-    if (!next.from || !next.to)
-      return setFilterError("Select both a start and end date.");
-    if (next.from > next.to)
-      return setFilterError(
-        "The start date must be on or before the end date.",
-      );
+  function apply(next: AnalyticsFilters, nextRange: RangeSelection = rangeSelection) {
+    if (!next.from || !next.to) {
+      setFilterError("Select both a start and end date.");
+      return false;
+    }
+    if (next.from > next.to) {
+      setFilterError("The start date must be on or before the end date.");
+      return false;
+    }
     setFilterError("");
     setFilters({
       from: next.from,
@@ -362,6 +389,8 @@ export default function AnalyticsPage() {
       cashierId: next.cashierId || undefined,
       paymentStatus: next.paymentStatus || undefined,
     });
+    setAppliedRangeSelection(nextRange);
+    return true;
   }
 
   // selecting a preset automatically overrides draft changes and applies new active boundaries immediately
@@ -369,7 +398,33 @@ export default function AnalyticsPage() {
     const next = { ...draftFilters, ...getRangeFromPreset(preset) };
     setRangeSelection(preset);
     setDraftFilters(next);
-    apply(next);
+    apply(next, preset);
+  }
+
+  const mobileFilterCount = [
+    appliedRangeSelection === "custom",
+    Boolean(filters.cashierId),
+    Boolean(filters.paymentStatus),
+  ].filter(Boolean).length;
+  const mobileFilterChips: MobileFilterChip[] = [
+    ...(appliedRangeSelection === "custom" ? [{ id: "dates", label: `${filters.from} – ${filters.to}`, onRemove: () => pickPreset(initialPreset) }] : []),
+    ...(filters.cashierId ? [{ id: "cashier", label: report?.cashiers.find((cashier) => cashier.id === filters.cashierId)?.name || "Cashier", onRemove: () => { const next = { ...filters, cashierId: undefined }; setDraftFilters(next); apply(next); } }] : []),
+    ...(filters.paymentStatus ? [{ id: "payment", label: paymentStatusLabel(filters.paymentStatus), onRemove: () => { const next = { ...filters, paymentStatus: undefined }; setDraftFilters(next); apply(next); } }] : []),
+  ];
+
+  function openMobileFilters() {
+    setDraftFilters(filters);
+    setRangeSelection(appliedRangeSelection);
+    setMobileOriginalRange(appliedRangeSelection);
+    setFilterError("");
+    setMobileFiltersOpen(true);
+  }
+
+  function closeMobileFilters() {
+    setDraftFilters(filters);
+    setRangeSelection(mobileOriginalRange);
+    setFilterError("");
+    setMobileFiltersOpen(false);
   }
 
   // export analytics to excel sheet flow
@@ -450,25 +505,26 @@ export default function AnalyticsPage() {
                       : "Last 90 days"}
               </button>
             ))}
+            <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="ml-auto lg:hidden" />
           </div>
 
+          <ActiveFilterChips items={mobileFilterChips} className="lg:hidden" />
+
           {/* the filter row wraps on smaller screens so date and dropdown controls stay usable without shrinking too hard */}
-          <div className="grid grid-cols-1 gap-4 xl:flex xl:flex-wrap xl:items-center">
-            <input
-              type="date"
+          <div className="hidden grid-cols-1 gap-4 lg:grid xl:flex xl:flex-wrap xl:items-center">
+            <ProjectDateInput
               aria-label="From date"
               value={draftFilters.from}
               onChange={(e) => setDraft({ from: e.target.value }, "custom")}
               className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
             />
-            <input
-              type="date"
+            <ProjectDateInput
               aria-label="To date"
               value={draftFilters.to}
               onChange={(e) => setDraft({ to: e.target.value }, "custom")}
               className="h-[44px] rounded-[14px] border border-[#CFCFD3] px-4 text-[13px] font-semibold outline-none focus:border-[#11120d] xl:w-[220px]"
             />
-            <select
+            <ProjectSelect
               value={draftFilters.cashierId || ""}
               aria-label="Select cashier"
               onChange={(e) =>
@@ -482,8 +538,8 @@ export default function AnalyticsPage() {
                   {cashier.name}
                 </option>
               ))}
-            </select>
-            <select
+            </ProjectSelect>
+            <ProjectSelect
               value={draftFilters.paymentStatus || ""}
               aria-label="Select payment status"
               onChange={(e) =>
@@ -507,7 +563,7 @@ export default function AnalyticsPage() {
                   {paymentStatusLabel(status)}
                 </option>
               ))}
-            </select>
+            </ProjectSelect>
             <div className="flex gap-2 xl:w-[180px]">
               <ActionButton
                 icon="sync"
@@ -535,8 +591,32 @@ export default function AnalyticsPage() {
         </div>
       </Panel>
 
+      <MobileFilterSheet
+        open={mobileFiltersOpen}
+        onClose={closeMobileFilters}
+        onClear={() => {
+          const next = { ...getRangeFromPreset(initialPreset) };
+          setRangeSelection(initialPreset);
+          setDraftFilters(next);
+          setFilterError("");
+        }}
+        onApply={() => {
+          if (apply(draftFilters, rangeSelection)) setMobileFiltersOpen(false);
+        }}
+        footerMessage={filterError}
+      >
+        <div className="space-y-5">
+          <div className="grid grid-cols-2 gap-3">
+            <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={draftFilters.from} max={draftFilters.to || undefined} onChange={(event) => setDraft({ from: event.target.value }, "custom")} /></label>
+            <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={draftFilters.to} min={draftFilters.from || undefined} onChange={(event) => setDraft({ to: event.target.value }, "custom")} /></label>
+          </div>
+          <label className="block space-y-2"><span className="text-[13px] font-bold">Cashier</span><ProjectSelect value={draftFilters.cashierId || ""} onChange={(event) => setDraft({ cashierId: event.target.value || undefined })}><option value="">All cashiers</option>{(report?.cashiers || []).map((cashier) => <option key={cashier.id} value={cashier.id}>{cashier.name}</option>)}</ProjectSelect></label>
+          <label className="block space-y-2"><span className="text-[13px] font-bold">Payment status</span><ProjectSelect value={draftFilters.paymentStatus || ""} onChange={(event) => setDraft({ paymentStatus: (event.target.value as AnalyticsPaymentStatus) || undefined })}><option value="">All payment statuses</option>{(["PAID", "PARTIALLY_PAID", "UNPAID", "CANCELLED"] as AnalyticsPaymentStatus[]).map((status) => <option key={status} value={status}>{paymentStatusLabel(status)}</option>)}</ProjectSelect></label>
+        </div>
+      </MobileFilterSheet>
+
       {loading && !report ? (
-        <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+        <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
           {Array.from({ length: 6 }).map((_, index) => (
             <div
               key={index}
@@ -567,7 +647,7 @@ export default function AnalyticsPage() {
       ) : (
         <>
           {/* these metric cards lead the page because they answer the main business questions before the user studies the charts */}
-          <div className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-6">
+          <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
             <MetricCard
               title="Net Sales"
               value={formatNpr(report.summary.netSales)}

@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import GIcon from "~/components/ui/GIcon";
+import { MobileFilterTabs } from "~/components/ui/MobileFilters";
 import { useToast } from "~/components/ui/Toast";
 import {
   approveCustomerDiscountRequestApi,
@@ -13,6 +14,8 @@ import {
   type ReturnStatusCode,
 } from "~/lib/api/endpoints";
 import { formatNpr } from "~/lib/invoices";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
 type HubFilter = "all" | "returns" | "discounts";
 
@@ -92,35 +95,6 @@ function normalizeReturnRequest(raw: any): ReturnRequestRow {
       : [],
   };
 }
-
-function StatCard({
-  icon,
-  label,
-  value,
-}: {
-  icon: string;
-  label: string;
-  value: number;
-}) {
-  return (
-    <div className="rounded-[20px] border border-[#CFCFD3] bg-white p-4">
-      <div className="flex items-center justify-between gap-3">
-        <div>
-          <div className="text-[24px] font-extrabold text-[#000000]">
-            {value}
-          </div>
-          <div className="mt-1 text-[11px] font-extrabold uppercase text-[#8C8889]">
-            {label}
-          </div>
-        </div>
-        <div className="flex h-[42px] w-[42px] items-center justify-center rounded-[14px] bg-[#F3F4F6] text-[#565449]">
-          <GIcon name={icon} sizePx={20} />
-        </div>
-      </div>
-    </div>
-  );
-}
-
 function EmptyState({ filter }: { filter: HubFilter }) {
   const label =
     filter === "returns"
@@ -154,6 +128,10 @@ export default function RequestsPage() {
   const [discountPercents, setDiscountPercents] = useState<Record<string, number>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState("");
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
 
   async function loadRequests() {
     setLoading(true);
@@ -182,9 +160,12 @@ export default function RequestsPage() {
         ),
       );
     } catch (error: any) {
-      setReturnRequests([]);
-      setDiscountRequests([]);
-      setLoadError(errorMessage(error, "Failed to load pending requests."));
+      if (isRateLimitError(error)) requestRateLimitRecovery();
+      setLoadError(
+        isRateLimitError(error)
+          ? "Request data is temporarily paused and will resume automatically."
+          : errorMessage(error, "Failed to load pending requests."),
+      );
     } finally {
       setLoading(false);
     }
@@ -192,7 +173,7 @@ export default function RequestsPage() {
 
   useEffect(() => {
     void loadRequests();
-  }, []);
+  }, [rateLimitRecoveryKey]);
 
   const totalPending = returnRequests.length + discountRequests.length;
   const visibleReturns = filter === "all" || filter === "returns";
@@ -289,28 +270,49 @@ export default function RequestsPage() {
           </button>
         </div>
 
-        <div className="grid grid-cols-1 gap-[14px] md:grid-cols-3">
-          <StatCard icon="pending_actions" label="Total pending" value={totalPending} />
-          <StatCard icon="assignment_return" label="Return requests" value={returnRequests.length} />
-          <StatCard icon="loyalty" label="Discount requests" value={discountRequests.length} />
+        {/* Stats Banner */}
+        <div className="mb-6 md:mb-8 rounded-[18px] border border-[#CFCFD3] bg-white p-5 md:p-6 shadow-sm">
+          <div className="flex snap-x snap-mandatory gap-5 overflow-x-auto pb-2 md:grid md:grid-cols-3 md:gap-6 md:overflow-visible md:pb-0 [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
+            <div className="flex w-[60vw] shrink-0 snap-start flex-col sm:w-[200px] md:w-auto">
+              <span className="text-xl font-extrabold md:text-2xl text-[#11120d]">
+                {totalPending} <span className="ml-1 text-xs font-semibold uppercase tracking-wider text-[#8C8889] md:text-sm">Total pending</span>
+              </span>
+              <div className="mt-2 h-1 w-12 rounded-full bg-slate-200"></div>
+            </div>
+            <div className="flex w-[60vw] shrink-0 snap-start flex-col sm:w-[200px] md:w-auto">
+              <span className="text-xl font-extrabold text-amber-600 md:text-2xl">
+                {returnRequests.length} <span className="ml-1 text-xs font-semibold uppercase tracking-wider text-[#8C8889] md:text-sm">Return requests</span>
+              </span>
+              <div className="mt-2 h-1 w-12 rounded-full bg-amber-500"></div>
+            </div>
+            <div className="flex w-[60vw] shrink-0 snap-start flex-col sm:w-[200px] md:w-auto">
+              <span className="text-xl font-extrabold text-emerald-600 md:text-2xl">
+                {discountRequests.length} <span className="ml-1 text-xs font-semibold uppercase tracking-wider text-[#8C8889] md:text-sm">Discount requests</span>
+              </span>
+              <div className="mt-2 h-1 w-12 rounded-full bg-emerald-500"></div>
+            </div>
+          </div>
         </div>
 
-        <div className="flex flex-wrap gap-2">
-          {(["all", "returns", "discounts"] as HubFilter[]).map((key) => (
-            <button
-              key={key}
-              type="button"
-              onClick={() => setFilter(key)}
-              className={cn(
-                "h-[38px] rounded-full border px-4 text-[12px] font-extrabold capitalize transition",
-                filter === key
-                  ? "border-[#11120d] bg-[#11120d] text-white"
-                  : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
-              )}
-            >
-              {key}
-            </button>
-          ))}
+        <div className="mb-6 rounded-[18px] border border-[#CFCFD3] bg-white p-4 shadow-sm">
+          <MobileFilterTabs className="lg:hidden" ariaLabel="Request type" value={filter} onChange={setFilter} items={[{ value: "all", label: "All" }, { value: "returns", label: "Returns" }, { value: "discounts", label: "Discounts" }]} />
+          <div className="hidden flex-wrap gap-2 lg:flex">
+            {(["all", "returns", "discounts"] as HubFilter[]).map((key) => (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setFilter(key)}
+                className={cn(
+                  "h-[38px] rounded-full border px-4 text-[12px] font-extrabold capitalize transition",
+                  filter === key
+                    ? "border-[#11120d] bg-[#11120d] text-white"
+                    : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                )}
+              >
+                {key}
+              </button>
+            ))}
+          </div>
         </div>
 
         {loadError ? (

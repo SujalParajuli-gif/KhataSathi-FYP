@@ -1,4 +1,4 @@
-import type { Prisma } from "@prisma/client";
+import { DraftRequestStatus, type Prisma } from "@prisma/client";
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
 import {
@@ -13,9 +13,20 @@ interface ProductFilters {
     category?: string;
     isActive?: boolean;
     lowStockOnly?: boolean;
+    stockStatus?: "in" | "low" | "out";
+    includeDraftReservations?: boolean;
     page?: number;
     pageSize?: number;
 }
+
+type BulkPriceFilterInput = {
+    search?: string;
+    brand?: string;
+    category?: string;
+    isActive?: boolean;
+    lowStockOnly?: boolean;
+    stockStatus?: "in" | "low" | "out";
+};
 
 type ProductImportPreviewRowDraft = {
     rowNumber: number;
@@ -44,7 +55,17 @@ export type ProductDeleteSafety = {
 // low stock mode requires special handling because we need to resolve each product's threshold
 // before we can determine if it is below the threshold
 export async function listProducts(filters: ProductFilters) {
-    const { search, brand, category, isActive, lowStockOnly, page = 1, pageSize = 50 } = filters;
+    const {
+        search,
+        brand,
+        category,
+        isActive,
+        lowStockOnly,
+        stockStatus,
+        includeDraftReservations,
+        page = 1,
+        pageSize = 50,
+    } = filters;
 
     const where: any = {};
 
@@ -65,6 +86,7 @@ export async function listProducts(filters: ProductFilters) {
     if (brand) where.brandId = brand; // filtering by brand ID
     if (category) where.category = category; // filtering by category
     if (isActive !== undefined) where.isActive = isActive; // filtering by active status
+    if (stockStatus === "out") where.stock = { lte: 0 };
 
     if (lowStockOnly) {
     }
@@ -72,8 +94,8 @@ export async function listProducts(filters: ProductFilters) {
     const skip = (page - 1) * pageSize; // calculating how many records to skip for pagination
     const settings = await getBusinessSettings(); // fetching business settings to resolve thresholds
 
-    if (lowStockOnly) {
-        // for low stock filtering, we fetch all matching products first because we need to
+    if (lowStockOnly || stockStatus === "low" || stockStatus === "in") {
+        // for threshold-aware stock filtering, we fetch all matching products first because we need to
         // resolve each product's effective threshold (custom or default) before filtering
         // this cannot be done in a single database query since thresholds are conditional
         const allProducts = await prisma.product.findMany({
@@ -87,14 +109,22 @@ export async function listProducts(filters: ProductFilters) {
             withAvailableStock(applyBusinessThresholds(product, settings)),
         );
 
-        // filtering to only include products where available stock is above 0 but at or below the threshold
-        // products with 0 stock are considered "out of stock", not "low stock"
-        const filtered = resolvedProducts.filter((p) => p.availableStock > 0 && p.availableStock <= p.lowStockThreshold);
+        const filtered =
+            stockStatus === "in"
+                ? resolvedProducts.filter((p) => p.availableStock > p.lowStockThreshold)
+                : resolvedProducts.filter((p) => p.availableStock > 0 && p.availableStock <= p.lowStockThreshold);
         const total = filtered.length;
 
         const paged = filtered.slice(skip, skip + pageSize); // applying manual pagination on the filtered results
 
-        return { products: paged, total, page, pageSize };
+        return {
+            products: includeDraftReservations
+                ? await withPendingDraftQuantities(paged)
+                : paged,
+            total,
+            page,
+            pageSize,
+        };
     } else {
         // normal listing with database-level pagination
         const [products, total] = await Promise.all([
@@ -108,10 +138,14 @@ export async function listProducts(filters: ProductFilters) {
             prisma.product.count({ where }), // getting total count for pagination info
         ]);
 
-        return {
-            products: products.map((product) =>
+        const resolvedProducts = products.map((product) =>
                 withAvailableStock(applyBusinessThresholds(product, settings)),
-            ), // resolving thresholds on each product
+            ); // resolving thresholds on each product
+
+        return {
+            products: includeDraftReservations
+                ? await withPendingDraftQuantities(resolvedProducts)
+                : resolvedProducts,
             total,
             page,
             pageSize,
@@ -127,6 +161,43 @@ export async function getProduct(id: string) {
         include: { brand: { select: { id: true, name: true } } },
     });
     return product ? withAvailableStock(applyBusinessThresholds(product, settings)) : product; // only apply thresholds if product exists
+}
+
+// Billing refreshes only the products in its cart, preserving input order so
+// the frontend can reconcile results deterministically.
+export async function getProductsByIds(ids: string[]) {
+    const uniqueIds = [...new Set(ids.map((id) => id.trim()).filter(Boolean))];
+    if (uniqueIds.length === 0) return [];
+
+    const settings = await getBusinessSettings();
+    const products = await prisma.product.findMany({
+        where: { id: { in: uniqueIds } },
+        include: { brand: { select: { id: true, name: true } } },
+    });
+    const byId = new Map(
+        products.map((product) => [
+            product.id,
+            withAvailableStock(applyBusinessThresholds(product, settings)),
+        ]),
+    );
+    return uniqueIds.flatMap((id) => {
+        const product = byId.get(id);
+        return product ? [product] : [];
+    });
+}
+
+// Scanner lookup is exact so one SKU cannot accidentally match a similarly
+// prefixed catalog item.
+export async function getProductByCode(code: string) {
+    const settings = await getBusinessSettings();
+    const product = await prisma.product.findFirst({
+        where: {
+            isActive: true,
+            OR: [{ sku: code }, { barcode: code }],
+        },
+        include: { brand: { select: { id: true, name: true } } },
+    });
+    return product ? withAvailableStock(applyBusinessThresholds(product, settings)) : null;
 }
 
 // fetching a product by its barcode — used for barcode scanning in the billing page
@@ -154,6 +225,39 @@ function roundCurrency(value: number) {
     return Math.round(Number(value || 0) * 100) / 100;
 }
 
+async function normalizeBulkPriceFilters(input: BulkPriceFilterInput): Promise<ProductFilters> {
+    const filters: ProductFilters = {};
+    const search = String(input.search || "").trim();
+    const brand = String(input.brand || "").trim();
+    const category = String(input.category || "").trim();
+
+    if (search) filters.search = search;
+    if (category && category !== "All Categories") filters.category = category;
+    if (typeof input.isActive === "boolean") filters.isActive = input.isActive;
+    if (input.lowStockOnly) filters.lowStockOnly = true;
+    if (input.stockStatus === "in" || input.stockStatus === "low" || input.stockStatus === "out") {
+        filters.stockStatus = input.stockStatus;
+    }
+
+    if (brand && brand !== "All Brands") {
+        const brandRecord = await prisma.brand.findFirst({
+            where: {
+                OR: [
+                    { id: brand },
+                    { name: brand },
+                ],
+            },
+            select: { id: true },
+        });
+        if (!brandRecord) {
+            throw new Error(`Brand not found: ${brand}`);
+        }
+        filters.brand = brandRecord.id;
+    }
+
+    return filters;
+}
+
 function applyImportRetailMargin(basePrice: number, marginPercent = 18) {
     const normalizedBase = Number(basePrice || 0);
     const normalizedMargin = Number(marginPercent);
@@ -177,6 +281,48 @@ function withAvailableStock<T extends { stock: number; reservedStock?: number | 
         reservedStock,
         availableStock: Math.max(0, Number(product.stock || 0) - reservedStock),
     };
+}
+
+async function getPendingDraftQuantities(productIds: string[]) {
+    if (productIds.length === 0) return new Map<string, number>();
+
+    const rows = await prisma.draftRequestItem.groupBy({
+        by: ["productId"],
+        where: {
+            productId: { in: productIds },
+            draftRequest: {
+                status: {
+                    in: [
+                        DraftRequestStatus.PENDING,
+                        DraftRequestStatus.MODIFIED,
+                    ],
+                },
+            },
+        },
+        _sum: { qty: true },
+    });
+
+    return new Map(
+        rows.map((row) => [row.productId, Math.max(0, Number(row._sum.qty || 0))]),
+    );
+}
+
+async function withPendingDraftQuantities<
+    T extends { id: string; availableStock?: number; stock: number; reservedStock?: number | null },
+>(products: T[]) {
+    const requestedByProduct = await getPendingDraftQuantities(
+        products.map((product) => product.id),
+    );
+
+    return products.map((product) => {
+        const draftRequestedQty = Number(requestedByProduct.get(product.id) || 0);
+        const availableStock = Number(product.availableStock ?? product.stock ?? 0);
+        return {
+            ...product,
+            draftRequestedQty,
+            effectiveAvailableStock: Math.max(0, availableStock - draftRequestedQty),
+        };
+    });
 }
 
 // defining the shape of data needed to create a new product
@@ -454,12 +600,14 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
         stockTransactions,
         returnItems,
         priceOverrides,
+        draftRequestItems,
         linkedDocuments,
     ] = await Promise.all([
         prisma.invoiceItem.count({ where: { productId: id } }),
         prisma.stockTransaction.count({ where: { productId: id } }),
         prisma.returnItem.count({ where: { productId: id } }),
         prisma.priceOverrideAuthorization.count({ where: { productId: id } }),
+        prisma.draftRequestItem.count({ where: { productId: id } }),
         prisma.document.count({
             where: {
                 linkedEntityType: "Product",
@@ -474,6 +622,7 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
         { label: "stock transaction(s)", count: stockTransactions },
         { label: "return item(s)", count: returnItems },
         { label: "price override authorization(s)", count: priceOverrides },
+        { label: "draft request item(s)", count: draftRequestItems },
         { label: "linked document(s)", count: linkedDocuments },
     ].filter((item) => item.count > 0);
 
@@ -2011,12 +2160,16 @@ export async function deleteProductImportTemplate(id: string) {
 }
 
 export async function bulkUpdateProductPrices(input: {
-    updates: Array<{
+    updates?: Array<{
         productId: string;
         retailPrice?: number;
         wholesalePrice?: number;
         ratePerPiece?: number;
     }>;
+    scope?: "IDS" | "FILTERED";
+    filters?: BulkPriceFilterInput;
+    wholesaleMarginPercent?: number;
+    retailMarginPercent?: number;
     reason: string;
     actorId: string;
     actorRole?: string;
@@ -2026,7 +2179,26 @@ export async function bulkUpdateProductPrices(input: {
         throw new Error("Reason is required for bulk price updates.");
     }
 
-    const updates = Array.isArray(input.updates) ? input.updates : [];
+    let updates = Array.isArray(input.updates) ? input.updates : [];
+    if (input.scope === "FILTERED") {
+        const filters = await normalizeBulkPriceFilters(input.filters || {});
+        const productsResult = await listProducts({
+            ...filters,
+            page: 1,
+            pageSize: 100000,
+        });
+        const wholesaleMargin = Number(input.wholesaleMarginPercent || 0);
+        const retailMargin = Number(input.retailMarginPercent || 0);
+        updates = productsResult.products.map((product: any) => {
+            const baseRate = Number(product.ratePerPiece || product.wholesalePrice || product.retailPrice || 0);
+            return {
+                productId: product.id,
+                ratePerPiece: baseRate,
+                wholesalePrice: roundCurrency(baseRate * (1 + wholesaleMargin / 100)),
+                retailPrice: roundCurrency(baseRate * (1 + retailMargin / 100)),
+            };
+        });
+    }
     if (updates.length === 0) {
         throw new Error("At least one product price update is required.");
     }

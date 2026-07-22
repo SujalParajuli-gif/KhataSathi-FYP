@@ -1,6 +1,8 @@
 import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
-import ProductImage from "~/components/ui/ProductImage";
+import Icon from "~/components/ui/Icon";
+import PreviewableImage from "~/components/ui/PreviewableImage";
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import type {
   DocumentRecord,
@@ -574,7 +576,7 @@ function Select({
   error?: string;
 }) {
   return (
-    <select
+    <ProjectSelect
       value={value}
       onChange={(event) => onChange(event.target.value)}
       className={cn(
@@ -587,7 +589,7 @@ function Select({
           {option.label}
         </option>
       ))}
-    </select>
+    </ProjectSelect>
   );
 }
 
@@ -681,6 +683,7 @@ function ModalShell({
   landscape = false,
   headerLeft,
   maxWidthClass,
+  contentClassName,
 }: {
   open: boolean;
   title: string;
@@ -690,6 +693,7 @@ function ModalShell({
   landscape?: boolean;
   headerLeft?: React.ReactNode;
   maxWidthClass?: string;
+  contentClassName?: string;
 }) {
   useBodyScrollLock(open);
 
@@ -703,17 +707,17 @@ function ModalShell({
         onClick={onClose}
         className="absolute inset-0 z-0 bg-black/50 backdrop-blur-[2px]"
       />
-      <div className="absolute inset-0 z-10 flex items-center justify-center p-[12px]">
+      <div className="absolute inset-0 z-10 flex items-end justify-center p-0 lg:items-center lg:p-[12px]">
         <div
           className={cn(
-            "relative z-10 flex max-h-[calc(100vh-28px)] w-full flex-col overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)]",
-            maxWidthClass || (landscape ? "max-w-[1500px]" : "max-w-[1040px]"),
+            "relative z-10 flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)] lg:h-auto lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
+            maxWidthClass || (landscape ? "max-w-[1180px]" : "max-w-[1040px]"),
           )}
         >
-          <div className="shrink-0 flex items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[10px]">
+          <div className="shrink-0 flex min-h-[62px] items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[10px] lg:min-h-0">
             <div className="flex min-w-0 items-center gap-[10px]">
               {headerLeft}
-              <div className="truncate text-[15px] font-semibold text-[#000000]">
+              <div className="truncate text-[19px] font-extrabold text-[#000000] lg:text-[15px] lg:font-semibold">
                 {title}
               </div>
             </div>
@@ -729,7 +733,8 @@ function ModalShell({
 
           <div
             className={cn(
-              "min-h-0 flex-1 bg-[#F8FAFC] px-[14px] py-[12px]",
+              "min-h-0 flex-1",
+              contentClassName ?? "bg-white px-[14px] py-[12px] lg:bg-[#F8FAFC]",
               landscape
                 ? "overflow-y-auto xl:overflow-hidden"
                 : "overflow-y-auto",
@@ -739,7 +744,7 @@ function ModalShell({
           </div>
 
           {footer ? (
-            <div className="shrink-0 border-t border-[#CFCFD3] bg-white px-[16px] py-[10px]">
+            <div className="shrink-0 border-t border-[#CFCFD3] bg-white px-[16px] pb-[max(10px,env(safe-area-inset-bottom))] pt-[10px] lg:py-[10px]">
               {footer}
             </div>
           ) : null}
@@ -784,6 +789,7 @@ export default function ProductsModals({
   deleteBusy,
   onConfirmPermanentDelete,
   bulkAction,
+  bulkProducts,
   onCloseBulkAction,
   onConfirmBulkAction,
   onEditActiveProduct,
@@ -861,6 +867,7 @@ export default function ProductsModals({
     message: string;
     confirmLabel: string;
   } | null;
+  bulkProducts: Product[];
   onCloseBulkAction: () => void;
   onConfirmBulkAction: () => void;
   onEditActiveProduct: () => void;
@@ -910,6 +917,8 @@ export default function ProductsModals({
     cn(inputBase, error ? "border-rose-300" : "border-[#CFCFD3]");
   const compactInputClass =
     "h-[38px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
+  const [importTab, setImportTab] = React.useState<"csv" | "pdf" | "image">("csv");
+  const [mobileEditorTab, setMobileEditorTab] = React.useState<"basic" | "units" | "pricing" | "stock">("basic");
   const [pdfReviewRows, setPdfReviewRows] = React.useState<PdfReviewDraft[]>(
     [],
   );
@@ -944,6 +953,18 @@ export default function ProductsModals({
     null;
   const deleteImportBatch =
     importBatches.find((batch) => batch.id === deleteImportBatchId) || null;
+
+  React.useEffect(() => {
+    if (openAddEdit) setMobileEditorTab("basic");
+  }, [openAddEdit, activeProductId]);
+
+  React.useEffect(() => {
+    if (!openAddEdit || Object.keys(formErrors).length === 0) return;
+    if (formErrors.name || formErrors.sku || formErrors.image) setMobileEditorTab("basic");
+    else if (formErrors.packageQuantity || formErrors.quantityStep) setMobileEditorTab("units");
+    else if (formErrors.retailPrice || formErrors.wholesalePrice || formErrors.thresholdQty) setMobileEditorTab("pricing");
+    else if (formErrors.stock || formErrors.lowStockThreshold) setMobileEditorTab("stock");
+  }, [formErrors, openAddEdit]);
   const selectedReviewRows = pdfReviewRows.filter(
     (row) => row.selected && !row.ignored && row.status !== "IMPORTED",
   );
@@ -1131,23 +1152,125 @@ export default function ProductsModals({
         onClose={() => setOpenAddEdit(false)}
         landscape
         footer={
-          <div className="flex items-center justify-end gap-[10px]">
-            <Button onClick={() => setOpenAddEdit(false)}>Cancel</Button>
-            <Button variant="primary" icon="save" onClick={onSave}>
-              Save Product
-            </Button>
-          </div>
+          <>
+            <div className="w-full md:hidden [&>button]:w-full">
+              <Button variant="primary" icon="save" onClick={onSave}>
+                Save Product
+              </Button>
+            </div>
+            <div className="hidden w-full items-center justify-end gap-[10px] md:flex">
+              <Button onClick={() => setOpenAddEdit(false)}>Cancel</Button>
+              <Button variant="primary" icon="save" onClick={onSave}>
+                Save Product
+              </Button>
+            </div>
+          </>
         }
       >
+        <div className="grid shrink-0 grid-cols-4 border-b border-[#E5E7EB] bg-white md:hidden">
+          {([
+            ["basic", "Basic"],
+            ["units", "Units"],
+            ["pricing", "Pricing"],
+            ["stock", "Stock"],
+          ] as const).map(([value, label]) => (
+            <button
+              key={value}
+              type="button"
+              onClick={() => setMobileEditorTab(value)}
+              className={cn(
+                "relative h-[52px] text-[13px] font-bold",
+                mobileEditorTab === value ? "text-[#11120d]" : "text-[#8C8889]",
+              )}
+            >
+              {label}
+              {mobileEditorTab === value ? <span className="absolute inset-x-2 bottom-0 h-[3px] rounded-t-full bg-[#11120d]" /> : null}
+            </button>
+          ))}
+        </div>
         <div className="h-full min-h-0 overflow-y-auto px-[20px] py-[16px]">
-          <div className="grid grid-cols-1 md:grid-cols-2 gap-[32px]">
+          <div className="flex flex-col gap-[24px]">
             
-            {/* Left Column */}
-            <div className="space-y-[24px]">
+            {/* Top row: Image & Basic Info */}
+            <div className={cn("grid grid-cols-1 gap-[18px] md:grid-cols-[200px_minmax(0,1fr)] md:gap-[24px]", mobileEditorTab !== "basic" && "hidden md:grid")}>
               
-              {/* BASIC INFORMATION */}
-              <div className="space-y-[16px]">
-                <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
+              {/* Product Image - Smaller, more compact */}
+              <div className="space-y-[10px]">
+                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
+                  PRODUCT IMAGE
+                </h3>
+                <div className="flex min-h-[96px] flex-col items-center justify-center rounded-[12px] border-2 border-dashed border-[#CFCFD3] bg-[#F8FAFC] p-[12px] transition hover:bg-gray-50 md:p-[16px]">
+                  <input
+                    id="product-image-dropzone"
+                    type="file"
+                    accept="image/*"
+                    onChange={(event) => {
+                      onProductImageChange(event.target.files?.[0] || null);
+                      event.currentTarget.value = "";
+                    }}
+                    className="sr-only"
+                  />
+                  {productImagePreview || form.imageUrl ? (
+                    <div className="flex flex-col items-center gap-[8px] w-full">
+                      <PreviewableImage
+                        src={productImagePreview || form.imageUrl}
+                        alt={form.name || "Product preview"}
+                        title={form.name || "Product preview"}
+                        subtitle={form.sku ? `SKU: ${form.sku}` : undefined}
+                        enablePreview="desktop"
+                        imgClassName="h-full w-full object-contain p-2"
+                        className="flex h-[88px] w-full max-w-[180px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#CFCFD3] bg-white shadow-sm md:h-[132px] md:max-w-full"
+                        fallback={
+                          <GoogleIcon
+                            name="inventory_2"
+                            sizePx={36}
+                            className="text-[#8C8889]"
+                          />
+                        }
+                      />
+                      <div className="flex flex-col gap-[6px] w-full mt-[4px]">
+                        <label
+                          htmlFor="product-image-dropzone"
+                          className="inline-flex w-full cursor-pointer items-center justify-center rounded-[8px] bg-[#3B82F6] px-[12px] py-[6px] text-[12px] font-bold text-white transition hover:bg-[#2563EB]"
+                        >
+                          Change
+                        </label>
+                        <button
+                          type="button"
+                          onClick={onClearProductImage}
+                          className="inline-flex w-full items-center justify-center rounded-[8px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[6px] text-[12px] font-bold text-[#BE123C] transition hover:bg-rose-100"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    </div>
+                  ) : (
+                    <label
+                      htmlFor="product-image-dropzone"
+                      className="flex flex-col items-center gap-[8px] cursor-pointer text-center w-full py-[16px]"
+                    >
+                      <div className="flex h-[44px] w-[44px] items-center justify-center rounded-full border border-[#CFCFD3] bg-white text-[#565449]">
+                        <GoogleIcon name="cloud_upload" className="text-[22px]" />
+                      </div>
+                      <div className="text-[12px] font-bold text-[#11120d] leading-tight mt-[4px]">
+                        Upload Image
+                      </div>
+                      <div className="text-[10px] font-medium text-[#8C8889] leading-tight">
+                        JPG/PNG &lt; 5MB
+                      </div>
+                    </label>
+                  )}
+                  {formErrors.image ? (
+                    <div className="mt-[6px] text-[11px] font-semibold text-rose-600 text-center">
+                      {formErrors.image}
+                    </div>
+                  ) : null}
+                </div>
+              </div>
+
+              {/* Basic Information */}
+              <div className="space-y-[12px]">
+                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   BASIC INFORMATION
                 </h3>
                 
@@ -1162,7 +1285,7 @@ export default function ProductsModals({
                   />
                 </Field>
 
-                <div className="grid grid-cols-2 gap-[10px]">
+                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
                   <Field label="SKU" error={formErrors.sku}>
                     <input
                       value={form.sku}
@@ -1185,7 +1308,7 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-2 gap-[10px]">
+                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
                   <Field label="Brand">
                     <Select
                       value={form.brand}
@@ -1210,7 +1333,7 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-2 gap-[10px]">
+                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
                   <Field label="Category Group">
                     <input
                       value={form.categoryGroup || ""}
@@ -1244,14 +1367,18 @@ export default function ProductsModals({
                   />
                 </Field>
               </div>
+            </div>
+
+            {/* Bottom Row: Rest of the details */}
+            <div className="grid grid-cols-1 gap-[18px] md:grid-cols-3 md:gap-[24px]">
 
               {/* SIZE & PACKAGING */}
-              <div className="space-y-[16px]">
-                <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
+              <div className={cn("space-y-[12px]", mobileEditorTab !== "units" && "hidden md:block")}>
+                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   SIZE & PACKAGING
                 </h3>
 
-                <div className="grid grid-cols-[minmax(0,1fr)_116px] gap-[10px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
                   <Field label="Size Value">
                     <input
                       type="number"
@@ -1279,7 +1406,7 @@ export default function ProductsModals({
                         }))
                       }
                       options={[
-                        { value: "STANDARD", label: "Standard" },
+                        { value: "STANDARD", label: "Std" },
                         { value: "LTR", label: "Ltr" },
                         { value: "ML", label: "ML" },
                         { value: "KG", label: "KG" },
@@ -1292,8 +1419,8 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-[minmax(0,1fr)_116px] gap-[10px]">
-                  <Field label="Package Qty" error={formErrors.packageQuantity}>
+                <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
+                  <Field label="Pack Qty" error={formErrors.packageQuantity}>
                     <input
                       type="number"
                       min={0.001}
@@ -1305,7 +1432,7 @@ export default function ProductsModals({
                       className={inputClass(formErrors.packageQuantity)}
                     />
                   </Field>
-                  <Field label="Package Unit">
+                  <Field label="Pack Unit">
                     <Select
                       value={form.packageUnit || "PIECE"}
                       onChange={(value) =>
@@ -1331,7 +1458,7 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-[minmax(0,1fr)_116px] gap-[10px]">
+                <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
                   <Field label="Sale Unit">
                     <Select
                       value={form.saleUnit || "PIECE"}
@@ -1372,7 +1499,7 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <label className="flex h-[38px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold text-[#11120d]">
+                <label className="flex h-[38px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[12px] font-bold text-[#11120d]">
                   <input
                     type="checkbox"
                     checked={form.allowFractionalQty}
@@ -1385,19 +1512,15 @@ export default function ProductsModals({
                           : 1,
                       }))
                     }
-                    className="h-[18px] w-[18px] rounded border-[#CFCFD3] accent-[#3B82F6]"
+                    className="h-[16px] w-[16px] rounded border-[#CFCFD3] accent-[#3B82F6]"
                   />
-                  Decimal quantity (fractional units)
+                  Decimal quantity (fractions)
                 </label>
               </div>
-            </div>
 
-            {/* Right Column */}
-            <div className="space-y-[24px]">
-              
               {/* PRICING */}
-              <div className="space-y-[16px]">
-                <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
+              <div className={cn("space-y-[12px]", mobileEditorTab !== "pricing" && "hidden md:block")}>
+                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   PRICING
                 </h3>
                 
@@ -1420,7 +1543,7 @@ export default function ProductsModals({
                   />
                 </Field>
 
-                <div className="grid grid-cols-2 gap-[10px]">
+                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
                   <Field label="Retail Price" error={formErrors.retailPrice}>
                     <input
                       type="number"
@@ -1448,70 +1571,71 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-2 gap-[10px]">
-                  <label className="flex h-[38px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold text-[#11120d]">
+                <div className="grid grid-cols-1 gap-[10px]">
+                  <label className="flex h-[38px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[12px] font-bold text-[#11120d]">
                     <input
                       type="checkbox"
                       checked={form.wholesaleEligible}
                       onChange={(event) =>
                         setForm((product) => ({ ...product, wholesaleEligible: event.target.checked }))
                       }
-                      className="h-[18px] w-[18px] rounded border-[#CFCFD3] accent-[#3B82F6]"
+                      className="h-[16px] w-[16px] rounded border-[#CFCFD3] accent-[#3B82F6]"
                     />
                     Wholesale Eligible
                   </label>
                   
-                  <Field label="Wholesale Threshold" error={formErrors.thresholdQty}>
-                    <input
-                      type="number"
-                      min={1}
-                      value={form.thresholdQtyMode === 'default' ? businessDefaults.defaultWholesaleQtyThreshold : form.thresholdQty}
-                      onChange={(event) =>
-                        setForm((product) => ({
-                          ...product,
-                          thresholdQtyMode: 'custom',
-                          thresholdQty: Number(event.target.value),
-                        }))
-                      }
-                      className={inputClass(formErrors.thresholdQty)}
-                    />
-                  </Field>
+                  {form.wholesaleEligible && (
+                    <Field label="Wholesale Threshold" error={formErrors.thresholdQty}>
+                      <input
+                        type="number"
+                        min={1}
+                        value={form.thresholdQtyMode === 'default' ? businessDefaults.defaultWholesaleQtyThreshold : form.thresholdQty}
+                        onChange={(event) =>
+                          setForm((product) => ({
+                            ...product,
+                            thresholdQtyMode: 'custom',
+                            thresholdQty: Number(event.target.value),
+                          }))
+                        }
+                        className={inputClass(formErrors.thresholdQty)}
+                      />
+                    </Field>
+                  )}
                 </div>
               </div>
 
               {/* STOCK & STATUS */}
-              <div className="space-y-[16px]">
-                <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
+              <div className={cn("space-y-[12px]", mobileEditorTab !== "stock" && "hidden md:block")}>
+                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   STOCK & STATUS
                 </h3>
                 
-                <div className="grid grid-cols-2 gap-[10px]">
-                  <Field label="Initial Stock" error={formErrors.stock}>
-                    <input
-                      type="number"
-                      value={form.stock}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, stock: Number(event.target.value) }))
-                      }
-                      className={inputClass(formErrors.stock)}
-                    />
-                  </Field>
-                  <Field label="Low Stock Threshold" error={formErrors.lowStockThreshold}>
-                    <input
-                      type="number"
-                      min={0}
-                      value={form.lowStockThresholdMode === 'default' ? businessDefaults.defaultLowStockThreshold : form.lowStockThreshold}
-                      onChange={(event) =>
-                        setForm((product) => ({
-                          ...product,
-                          lowStockThresholdMode: 'custom',
-                          lowStockThreshold: Number(event.target.value),
-                        }))
-                      }
-                      className={inputClass(formErrors.lowStockThreshold)}
-                    />
-                  </Field>
-                </div>
+                <Field label="Initial Stock" error={formErrors.stock}>
+                  <input
+                    type="number"
+                    value={form.stock}
+                    onChange={(event) =>
+                      setForm((product) => ({ ...product, stock: Number(event.target.value) }))
+                    }
+                    className={inputClass(formErrors.stock)}
+                  />
+                </Field>
+
+                <Field label="Low Stock Threshold" error={formErrors.lowStockThreshold}>
+                  <input
+                    type="number"
+                    min={0}
+                    value={form.lowStockThresholdMode === 'default' ? businessDefaults.defaultLowStockThreshold : form.lowStockThreshold}
+                    onChange={(event) =>
+                      setForm((product) => ({
+                        ...product,
+                        lowStockThresholdMode: 'custom',
+                        lowStockThreshold: Number(event.target.value),
+                      }))
+                    }
+                    className={inputClass(formErrors.lowStockThreshold)}
+                  />
+                </Field>
 
                 <Field label="Status">
                   <Select
@@ -1526,72 +1650,8 @@ export default function ProductsModals({
                   />
                 </Field>
               </div>
-            </div>
 
-            {/* PRODUCT IMAGE */}
-            <div className="md:col-span-2 space-y-[12px] pt-[8px]">
-              <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
-                PRODUCT IMAGE
-              </h3>
-              
-              <div className="flex flex-col items-center justify-center rounded-[14px] border-2 border-dashed border-[#CFCFD3] bg-[#F8FAFC] py-[32px] px-[20px] transition hover:bg-gray-50">
-                <input
-                  id="product-image-dropzone"
-                  type="file"
-                  accept="image/*"
-                  onChange={(event) => onProductImageChange(event.target.files?.[0] || null)}
-                  className="sr-only"
-                />
-                
-                {productImagePreview || form.imageUrl ? (
-                  <div className="flex flex-col items-center gap-[12px]">
-                    <ProductImage
-                      src={productImagePreview || form.imageUrl}
-                      alt={form.name || "Product preview"}
-                      className="flex h-[120px] w-[120px] shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-white shadow-sm"
-                      iconSizePx={40}
-                      iconClassName="text-[#8C8889]"
-                    />
-                    <div className="flex items-center gap-[8px]">
-                      <label
-                        htmlFor="product-image-dropzone"
-                        className="inline-flex cursor-pointer items-center justify-center rounded-[8px] bg-[#3B82F6] px-[16px] py-[6px] text-[13px] font-bold text-white transition hover:bg-[#2563EB]"
-                      >
-                        Change Image
-                      </label>
-                      <button
-                        type="button"
-                        onClick={onClearProductImage}
-                        className="inline-flex items-center justify-center rounded-[8px] border border-[#FECDD3] bg-[#FFF1F2] px-[16px] py-[6px] text-[13px] font-bold text-[#BE123C] transition hover:bg-rose-100"
-                      >
-                        Remove
-                      </button>
-                    </div>
-                  </div>
-                ) : (
-                  <label
-                    htmlFor="product-image-dropzone"
-                    className="flex flex-col items-center gap-[8px] cursor-pointer"
-                  >
-                    <div className="flex h-[48px] w-[48px] items-center justify-center rounded-full bg-blue-50 text-[#3B82F6]">
-                      <GoogleIcon name="cloud_upload" className="text-[24px]" />
-                    </div>
-                    <div className="text-[14px] font-bold text-[#11120d]">
-                      Click to upload product image
-                    </div>
-                    <div className="text-[12px] font-medium text-[#8C8889]">
-                      SVG, PNG, JPG or GIF (max. 5MB)
-                    </div>
-                  </label>
-                )}
-                {formErrors.image ? (
-                  <div className="mt-[8px] text-[12px] font-semibold text-rose-600">
-                    {formErrors.image}
-                  </div>
-                ) : null}
-              </div>
             </div>
-
           </div>
         </div>
       </ModalShell>
@@ -1686,7 +1746,7 @@ export default function ProductsModals({
                     placeholder="Search extracted rows..."
                     className="h-[36px] rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold text-[#000000] outline-none"
                   />
-                  <select
+                  <ProjectSelect
                     value={reviewStatusFilter}
                     onChange={(event) =>
                       setReviewStatusFilter(event.target.value as any)
@@ -1698,7 +1758,7 @@ export default function ProductsModals({
                     <option value="ISSUES">Issues</option>
                     <option value="DUPLICATE">Duplicates</option>
                     <option value="IGNORED">Ignored</option>
-                  </select>
+                  </ProjectSelect>
                 </div>
               </div>
 
@@ -1715,7 +1775,7 @@ export default function ProductsModals({
                         "grid min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0",
                         active
                           ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]"
-                          : "bg-white hover:bg-[#F8FAFC]",
+                          : "bg-white hover:bg-[#ECEFF3]",
                         row.ignored ? "opacity-60" : "",
                       )}
                     >
@@ -2255,216 +2315,218 @@ export default function ProductsModals({
               )}
             </section>
           </div>        ) : (
-          <div className="space-y-[24px]">
-            {/* Header Section */}
-            <div className="bg-[#F8FAFC] border border-[#E5E7EB] rounded-[16px] p-[20px]">
-              <h3 className="text-[16px] font-extrabold text-[#11120d] mb-[8px]">Select Import Method</h3>
-              <p className="text-[13px] text-[#565449] mb-[16px]">
-                Upload your supplier's rate list in any format. Every file opens in a review screen first, allowing you to catch duplicates and missing prices before updating your catalog.
-              </p>
-              
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-[12px]">
-                <div className="bg-white rounded-[12px] p-[16px] border border-[#E5E7EB] shadow-sm flex flex-col items-start gap-[12px]">
-                  <div className="w-[40px] h-[40px] rounded-full bg-[#EFF6FF] text-[#2563EB] flex items-center justify-center">
-                    <GoogleIcon name="table_chart" className="text-[20px]" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-bold text-[#11120d]">CSV File</h4>
-                    <p className="text-[11px] font-medium text-[#8C8889] mt-[4px]">Best for clean, structured data. Maps directly to your catalog.</p>
-                  </div>
-                </div>
-                
-                <div className="bg-white rounded-[12px] p-[16px] border border-[#E5E7EB] shadow-sm flex flex-col items-start gap-[12px]">
-                  <div className="w-[40px] h-[40px] rounded-full bg-[#FEF2F2] text-[#DC2626] flex items-center justify-center">
-                    <GoogleIcon name="picture_as_pdf" className="text-[20px]" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-bold text-[#11120d]">PDF Document</h4>
-                    <p className="text-[11px] font-medium text-[#8C8889] mt-[4px]">KhataSathi will extract tables and text automatically.</p>
-                  </div>
-                </div>
-
-                <div className="bg-white rounded-[12px] p-[16px] border border-[#E5E7EB] shadow-sm flex flex-col items-start gap-[12px]">
-                  <div className="w-[40px] h-[40px] rounded-full bg-[#F0FDF4] text-[#16A34A] flex items-center justify-center">
-                    <GoogleIcon name="image_search" className="text-[20px]" />
-                  </div>
-                  <div>
-                    <h4 className="text-[13px] font-bold text-[#11120d]">Image Rate List</h4>
-                    <p className="text-[11px] font-medium text-[#8C8889] mt-[4px]">Uses AI to read photos of supplier invoices or lists.</p>
-                  </div>
-                </div>
-              </div>
+          <div className="flex flex-col h-full bg-[#F8FAFC]">
+            {/* Tabs */}
+            <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
+              <button
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "csv" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                onClick={() => setImportTab("csv")}
+              >
+                <Icon name="table_chart" className="text-[18px]" />
+                CSV File
+              </button>
+              <button
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "pdf" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                onClick={() => setImportTab("pdf")}
+              >
+                <Icon name="picture_as_pdf" className="text-[18px]" />
+                PDF Rate List
+              </button>
+              <button
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "image" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                onClick={() => setImportTab("image")}
+              >
+                <Icon name="image" className="text-[18px]" />
+                Image Rate List
+              </button>
             </div>
 
-            {/* Upload Area */}
-            <div className="bg-white border-2 border-dashed border-[#CFCFD3] rounded-[16px] p-[32px] text-center hover:border-[#3B82F6] hover:bg-[#F8FAFC] transition group">
-              <GoogleIcon name="cloud_upload" className="text-[48px] text-[#CFCFD3] group-hover:text-[#3B82F6] transition mb-[16px]" />
-              <input
-                type="file"
-                accept=".csv,.pdf,.png,.jpg,.jpeg,.webp,text/csv,application/pdf,image/png,image/jpeg,image/webp"
-                onChange={(event) => setImportFile(event.target.files?.[0] || null)}
-                className="hidden"
-                id="file-upload"
-              />
-              <label htmlFor="file-upload" className="cursor-pointer inline-flex items-center justify-center bg-[#11120d] text-white px-[20px] py-[10px] rounded-[10px] text-[13px] font-bold hover:bg-[#2a2c27] transition">
-                Browse Files
-              </label>
-              <div className="mt-[12px] text-[13px] font-bold text-[#11120d]">
-                {importFile ? importFile.name : "or drag and drop your file here"}
-              </div>
-              <div className="mt-[4px] text-[12px] font-medium text-[#8C8889]">
-                Supports .csv, .pdf, .png, .jpg up to 10MB
-              </div>
-            </div>
-
-            {/* Two Column Layout for Settings & Documents */}
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-[16px]">
-              
-              {/* Left Column: Template & Settings */}
-              <div className="space-y-[16px]">
-                <div className="bg-white border border-[#E5E7EB] rounded-[16px] p-[16px] shadow-sm">
-                  <div className="flex items-center justify-between mb-[16px]">
-                    <div>
-                      <h4 className="text-[13px] font-extrabold text-[#11120d]">CSV Column Mapping</h4>
-                      <p className="text-[11px] font-medium text-[#8C8889] mt-[2px]">Map supplier columns to KhataSathi fields</p>
-                    </div>
-                    <div className="flex gap-[8px]">
-                      <button onClick={onSaveImportTemplate} className="text-[11px] font-bold bg-[#F3F4F6] px-[8px] py-[4px] rounded-[6px] hover:bg-[#E5E7EB]">Save</button>
-                      {importTemplateId && (
-                        <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="text-[11px] font-bold bg-[#FEF2F2] text-[#DC2626] px-[8px] py-[4px] rounded-[6px]">Delete</button>
-                      )}
-                    </div>
-                  </div>
-
-                  <div className="space-y-[12px]">
-                    <div className="grid grid-cols-2 gap-[8px]">
-                      <select
-                        value={importTemplateId}
-                        onChange={(event) => setImportTemplateId(event.target.value)}
-                        className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-[#F8FAFC] px-[10px] text-[12px] font-bold outline-none"
-                      >
-                        <option value="">No template</option>
-                        {importTemplates.map((t) => <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>)}
-                      </select>
-                      <input
-                        value={importSupplier}
-                        onChange={(event) => setImportSupplier(event.target.value)}
-                        placeholder="Supplier / Brand"
-                        className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold outline-none"
-                      />
-                    </div>
-                    
-                    <div className="grid grid-cols-2 gap-[8px] max-h-[160px] overflow-y-auto pr-[4px]">
-                      {[
-                        ["productName", "Name col"], ["serial", "Serial col"], ["variant", "Variant col"],
-                        ["packageQuantity", "Pack Qty"], ["retailPrice", "MRP col"], ["wholesalePrice", "Rate col"], ["stock", "Stock col"]
-                      ].map(([key, label]) => (
-                        <div key={key} className="space-y-[4px]">
-                          <label className="text-[10px] font-bold text-[#8C8889]">{label}</label>
-                          <input
-                            value={importFieldMap[key] || ""}
-                            onChange={(event) => setImportFieldMap((current) => ({...current, [key]: event.target.value}))}
-                            className="h-[32px] w-full rounded-[6px] border border-[#CFCFD3] bg-white px-[8px] text-[11px] font-semibold outline-none"
-                            placeholder="Header name"
-                          />
-                        </div>
-                      ))}
-                    </div>
-                  </div>
+            {importError && (
+              <div className="mx-[24px] mt-[18px] flex items-start justify-between gap-[12px] rounded-[14px] border border-[#FCA5A5] bg-[#FEF2F2] px-[14px] py-[12px] text-[12px] font-bold leading-5 text-[#DC2626]">
+                <div className="flex items-start gap-[8px]">
+                  <Icon name="error" className="mt-[1px] text-[17px]" />
+                  <span>{importError}</span>
                 </div>
               </div>
+            )}
 
-              {/* Right Column: Documents & History */}
-              <div className="space-y-[16px]">
-                {/* Uploaded Documents */}
-                <div className="bg-white border border-[#E5E7EB] rounded-[16px] p-[16px] shadow-sm flex flex-col h-[200px]">
-                  <div className="flex items-center justify-between mb-[12px] shrink-0">
-                    <div>
-                      <h4 className="text-[13px] font-extrabold text-[#11120d]">Uploaded Documents</h4>
-                      <p className="text-[11px] font-medium text-[#8C8889] mt-[2px]">Use files from your document center</p>
+            {/* Tab Content */}
+            <div className="p-[24px] overflow-y-auto space-y-[24px]">
+              {importTab === "csv" && (
+                <div className="space-y-[24px]">
+                  {/* CSV Upload */}
+                  <div className="border-2 border-dashed border-[#CFCFD3] rounded-[16px] p-[32px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative bg-white">
+                    <div className="w-[48px] h-[48px] rounded-[12px] bg-[#F1F5F9] border border-[#E2E8F0] flex items-center justify-center mx-auto mb-[16px] group-hover:scale-110 transition-transform">
+                      <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#3B82F6]" />
                     </div>
-                    <button onClick={onRefreshImportDocuments} disabled={importDocumentsLoading || importBusy} className="text-[#3B82F6]">
-                      <GoogleIcon name="refresh" className="text-[18px]" />
-                    </button>
+                    <h4 className="text-[14px] font-bold text-[#1E293B] mb-[6px]">Upload CSV rate list</h4>
+                    <p className="text-[12px] text-[#64748B] mb-[16px]">Standard .csv file mapping to KhataSathi format</p>
+                    <label htmlFor="csv-upload" className="inline-flex cursor-pointer bg-[#F1F5F9] text-[#0F172A] font-bold px-[20px] py-[8px] rounded-[8px] text-[12px] border border-[#E2E8F0] shadow-sm hover:bg-[#E2E8F0] transition">
+                      {importFile ? "Change CSV File" : "Choose CSV File"}
+                    </label>
+                    <input
+                      type="file"
+                      accept=".csv,text/csv"
+                      onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+                      className="hidden"
+                      id="csv-upload"
+                    />
+                    {importFile && (
+                      <div className="mt-[12px] text-[12px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                        <Icon name="check_circle" className="text-[14px]" /> {importFile.name}
+                      </div>
+                    )}
                   </div>
-                  
-                  <div className="flex-1 overflow-y-auto space-y-[8px]">
-                    {importDocumentsLoading ? (
-                      <div className="text-[12px] text-[#8C8889] text-center mt-[20px]">Loading...</div>
-                    ) : importDocuments.length === 0 ? (
-                      <div className="text-[11px] text-[#8C8889] text-center mt-[20px]">No unprocessed documents found.</div>
-                    ) : (
-                      importDocuments.map((doc) => (
-                        <div key={doc.id} onClick={() => onOpenImportDocument(doc)} className="flex items-center gap-[12px] p-[10px] border border-[#E5E7EB] rounded-[10px] hover:border-[#3B82F6] cursor-pointer transition">
-                          <GoogleIcon name={doc.mimeType === "application/pdf" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#565449]" />
-                          <div className="flex-1 min-w-0">
-                            <div className="truncate text-[12px] font-bold text-[#11120d]">{doc.fileName}</div>
-                            <div className="text-[10px] text-[#8C8889] mt-[2px]">{doc.supplierName || "No supplier"}</div>
+
+                  {/* CSV Field Mapping & Template Settings */}
+                  <div className="bg-white border border-[#E5E7EB] rounded-[16px] p-[20px] shadow-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-[12px] mb-[16px]">
+                      <div>
+                        <h4 className="text-[14px] font-bold text-[#11120d]">CSV Column Mapping</h4>
+                        <p className="text-[12px] text-[#8C8889] mt-[2px]">Map supplier columns to KhataSathi fields</p>
+                      </div>
+                      <div className="flex gap-[8px]">
+                        <button onClick={onSaveImportTemplate} className="text-[12px] font-bold bg-[#F3F4F6] text-[#565449] px-[12px] py-[6px] rounded-[8px] hover:bg-[#E5E7EB] transition">Save Template</button>
+                        {importTemplateId && (
+                          <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="text-[12px] font-bold bg-[#FEF2F2] text-[#DC2626] px-[12px] py-[6px] rounded-[8px] hover:bg-[#FEE2E2] transition">Delete</button>
+                        )}
+                      </div>
+                    </div>
+
+                    <div className="space-y-[16px]">
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-[12px]">
+                        <ProjectSelect
+                          value={importTemplateId}
+                          onChange={(event) => setImportTemplateId(event.target.value)}
+                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold outline-none focus:border-[#3B82F6]"
+                        >
+                          <option value="">No template</option>
+                          {importTemplates.map((t) => <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>)}
+                        </ProjectSelect>
+                        <input
+                          value={importSupplier}
+                          onChange={(event) => setImportSupplier(event.target.value)}
+                          placeholder="Supplier / Brand Name"
+                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold outline-none focus:border-[#3B82F6]"
+                        />
+                      </div>
+
+                      <div className="grid grid-cols-2 md:grid-cols-4 gap-[12px] p-[16px] bg-[#F8FAFC] rounded-[12px] border border-[#E5E7EB]">
+                        {[
+                          ["productName", "Name Col"], ["serial", "SKU/Serial"], ["variant", "Variant"],
+                          ["packageQuantity", "Pack Qty"], ["retailPrice", "MRP Col"], ["wholesalePrice", "Rate Col"], ["stock", "Stock"]
+                        ].map(([key, label]) => (
+                          <div key={key} className="space-y-[6px]">
+                            <label className="text-[11px] font-bold text-[#8C8889] uppercase tracking-wider">{label}</label>
+                            <input
+                              value={importFieldMap[key] || ""}
+                              onChange={(event) => setImportFieldMap((current) => ({...current, [key]: event.target.value}))}
+                              className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                              placeholder="Header name"
+                            />
                           </div>
-                        </div>
-                      ))
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Import History */}
+                  <div className="bg-white border border-[#E5E7EB] rounded-[16px] overflow-hidden shadow-sm">
+                    <div className="px-[20px] py-[16px] border-b border-[#E5E7EB] bg-[#F8FAFC]">
+                      <h4 className="text-[14px] font-bold text-[#11120d]">Recent Import History</h4>
+                    </div>
+                    {importBatches.length > 0 ? (
+                      <div className="divide-y divide-[#E5E7EB]">
+                        {importBatches.map((batch) => (
+                          <div key={batch.id} className="flex min-w-0 items-center justify-between gap-3 p-[16px] transition-colors hover:bg-[#ECEFF3]">
+                            <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
+                              <div className="h-[40px] w-[40px] shrink-0 rounded-[10px] bg-[#F1F5F9] flex items-center justify-center border border-[#E2E8F0]">
+                                <Icon name={batch.sourceType === "csv" ? "table_chart" : batch.sourceType === "pdf" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#64748B]" />
+                              </div>
+                              <div className="min-w-0 flex-1">
+                                <div className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">{batch.fileName || "Supplier import"}</div>
+                                <div className="text-[11px] font-medium text-[#64748B] mt-[2px]">{batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""} • {displaySourceType(batch.sourceType)}</div>
+                              </div>
+                            </div>
+                            <div className="flex shrink-0 items-center gap-2 sm:gap-[24px]">
+                              <div className="text-right hidden sm:block">
+                                <div className="text-[12px] font-bold text-[#334155]">{batch.totalRows} Rows</div>
+                                <div className="text-[11px] font-medium text-[#10B981] mt-[2px]">{batch.importedRows} Processed</div>
+                              </div>
+                              <div className="flex shrink-0 items-center gap-[8px]">
+                                <button onClick={() => setDeleteImportBatchId(batch.id)} className="w-[32px] h-[32px] flex items-center justify-center rounded-[8px] text-[#64748B] hover:text-[#EF4444] hover:bg-[#FEE2E2] transition">
+                                  <Icon name="delete" className="text-[18px]" />
+                                </button>
+                                <button onClick={() => onOpenImportBatch(batch.id)} className="px-[16px] h-[32px] flex items-center justify-center rounded-[8px] text-[12px] font-bold bg-[#F1F5F9] text-[#0F172A] hover:bg-[#E2E8F0] transition">
+                                  Open
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="p-[40px] text-center">
+                        <Icon name="history" className="text-[40px] text-[#CBD5E1] mx-auto mb-[12px]" />
+                        <div className="text-[14px] font-bold text-[#475569]">No Recent Imports</div>
+                        <div className="text-[13px] text-[#64748B] mt-[4px]">Your imported rate lists and history will appear here.</div>
+                      </div>
                     )}
                   </div>
                 </div>
-              </div>
+              )}
+
+              {importTab === "pdf" && (
+                <div className="border-2 border-dashed border-[#CFCFD3] bg-white rounded-[16px] p-[48px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative">
+                  <div className="w-[64px] h-[64px] rounded-[16px] bg-[#F1F5F9] border border-[#E2E8F0] shadow-sm flex items-center justify-center mx-auto mb-[20px] group-hover:scale-110 transition-transform">
+                    <Icon name="picture_as_pdf" className="text-[32px] text-[#94A3B8] group-hover:text-[#3B82F6]" />
+                  </div>
+                  <h4 className="text-[16px] font-bold text-[#1E293B] mb-[8px]">Upload PDF supplier rate list</h4>
+                  <p className="text-[13px] text-[#64748B] mb-[24px]">PDF files up to 10MB — AI will parse and extract product data</p>
+                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer bg-[#2563EB] text-white font-bold px-[24px] py-[10px] rounded-[10px] text-[13px] shadow-sm hover:bg-[#1D4ED8] transition">
+                    {importFile ? "Change PDF File" : "Choose PDF File"}
+                  </label>
+                  <input
+                    type="file"
+                    accept=".pdf,application/pdf"
+                    onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+                    className="hidden"
+                    id="pdf-upload"
+                  />
+                  {importFile && (
+                    <div className="mt-[16px] text-[13px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                      <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
+                    </div>
+                  )}
+                </div>
+              )}
+
+              {importTab === "image" && (
+                <div className="border-2 border-dashed border-[#CFCFD3] bg-white rounded-[16px] p-[48px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative">
+                  <div className="w-[64px] h-[64px] rounded-[16px] bg-[#F1F5F9] border border-[#E2E8F0] shadow-sm flex items-center justify-center mx-auto mb-[20px] group-hover:scale-110 transition-transform">
+                    <Icon name="image" className="text-[32px] text-[#94A3B8] group-hover:text-[#3B82F6]" />
+                  </div>
+                  <h4 className="text-[16px] font-bold text-[#1E293B] mb-[8px]">Upload image of printed rate list</h4>
+                  <p className="text-[13px] text-[#64748B] mb-[24px]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
+                  <label htmlFor="img-upload" className="inline-flex cursor-pointer bg-[#2563EB] text-white font-bold px-[24px] py-[10px] rounded-[10px] text-[13px] shadow-sm hover:bg-[#1D4ED8] transition">
+                    {importFile ? "Change Image" : "Choose Image"}
+                  </label>
+                  <input
+                    type="file"
+                    accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                    onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+                    className="hidden"
+                    id="img-upload"
+                  />
+                  {importFile && (
+                    <div className="mt-[16px] text-[13px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                      <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
 
-            {/* Import History */}
-            {importBatches.length > 0 && (
-              <div className="bg-[#F8FAFC] border border-[#E5E7EB] rounded-[16px] overflow-hidden">
-                <div className="flex items-center justify-between px-[16px] py-[12px] border-b border-[#E5E7EB] bg-white">
-                  <h4 className="text-[13px] font-extrabold text-[#11120d]">Recent Import History</h4>
-                  <span className="bg-[#EFF6FF] text-[#2563EB] text-[11px] font-bold px-[8px] py-[2px] rounded-[6px]">{importBatches.length} Drafts</span>
-                </div>
-                <div className="p-[16px] max-h-[200px] overflow-y-auto grid grid-cols-1 md:grid-cols-2 gap-[12px]">
-                  {importBatches.slice(0, 4).map((batch) => (
-                    <div key={batch.id} className="bg-white border border-[#E5E7EB] rounded-[12px] p-[12px] hover:border-[#11120d] transition">
-                      <div className="flex justify-between items-start mb-[8px]">
-                        <div className="min-w-0">
-                          <div className="truncate text-[12px] font-bold text-[#11120d]">{batch.fileName || "Supplier import"}</div>
-                          <div className="text-[10px] text-[#8C8889] mt-[2px]">{batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""}</div>
-                        </div>
-                        <span className="bg-[#F3F4F6] text-[#565449] text-[9px] font-bold px-[6px] py-[2px] rounded-[4px] uppercase">{displaySourceType(batch.sourceType)}</span>
-                      </div>
-                      <div className="flex gap-[4px] mb-[12px]">
-                        <span className="text-[10px] font-bold bg-[#E5E7EB] text-[#565449] px-[6px] py-[2px] rounded-[4px]">{batch.totalRows} rows</span>
-                        <span className="text-[10px] font-bold bg-[#D1FAE5] text-[#065F46] px-[6px] py-[2px] rounded-[4px]">{batch.importedRows} done</span>
-                      </div>
-                      <div className="flex justify-end gap-[8px]">
-                        <button onClick={() => setDeleteImportBatchId(batch.id)} className="text-[11px] font-bold text-[#DC2626] hover:underline">Delete</button>
-                        <button onClick={() => onOpenImportBatch(batch.id)} className="text-[11px] font-bold text-[#2563EB] hover:underline">Open Review</button>
-                      </div>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-
-            {importError && (
-              <div className="bg-[#FEF2F2] border border-[#FCA5A5] text-[#DC2626] p-[12px] rounded-[12px] text-[12px] font-bold">
-                {importError}
-              </div>
-            )}
-            
-            {importResult && (
-              <div className="bg-[#F0FDF4] border border-[#86EFAC] p-[16px] rounded-[12px]">
-                <div className="text-[14px] font-bold text-[#16A34A] mb-[12px]">{importResult.message || "Import completed"}</div>
-                <div className="grid grid-cols-3 gap-[12px]">
-                  <div className="bg-white p-[12px] rounded-[8px] text-center border border-[#E5E7EB]">
-                    <div className="text-[11px] font-bold text-[#8C8889] uppercase">Processed</div>
-                    <div className="text-[18px] font-extrabold text-[#11120d]">{importResult.totalRows}</div>
-                  </div>
-                  <div className="bg-[#D1FAE5] p-[12px] rounded-[8px] text-center border border-[#A7F3D0]">
-                    <div className="text-[11px] font-bold text-[#065F46] uppercase">Imported</div>
-                    <div className="text-[18px] font-extrabold text-[#065F46]">{importResult.createdCount}</div>
-                  </div>
-                  <div className="bg-[#FEF2F2] p-[12px] rounded-[8px] text-center border border-[#FECACA]">
-                    <div className="text-[11px] font-bold text-[#DC2626] uppercase">Errors</div>
-                    <div className="text-[18px] font-extrabold text-[#DC2626]">{importResult.errorCount}</div>
-                  </div>
-                </div>
-              </div>
-            )}
           </div>
         )}
       </ModalShell>
@@ -2474,7 +2536,7 @@ export default function ProductsModals({
         title="Delete Import Review"
         onClose={() => setDeleteImportBatchId(null)}
         footer={
-          <div className="flex items-center justify-end gap-[10px]">
+          <div className="flex w-full items-center justify-end gap-[10px] [&>button]:flex-1 md:[&>button]:flex-none">
             <Button onClick={() => setDeleteImportBatchId(null)}>Cancel</Button>
             <Button
               variant="danger"
@@ -2522,161 +2584,254 @@ export default function ProductsModals({
         open={openView}
         title="Product Details"
         onClose={() => setOpenView(false)}
+        contentClassName="bg-white p-[20px]"
         footer={
-          <div className="flex items-center justify-end gap-[10px]">
-            <Button onClick={() => setOpenView(false)}>Close</Button>
-            {activeProduct ? (
-              <Button
-                variant="primary"
-                icon="edit"
-                onClick={onEditActiveProduct}
-              >
-                Edit Product
-              </Button>
-            ) : null}
-          </div>
+          <>
+            <div className="w-full md:hidden [&>button]:w-full">
+              {activeProduct ? <Button variant="primary" icon="edit" onClick={onEditActiveProduct}>Edit Product</Button> : null}
+            </div>
+            <div className="hidden items-center justify-end gap-[10px] md:flex">
+              <Button onClick={() => setOpenView(false)}>Close</Button>
+              {activeProduct ? <Button variant="primary" icon="edit" onClick={onEditActiveProduct}>Edit Product</Button> : null}
+            </div>
+          </>
         }
       >
         {activeProduct ? (
-          <div className="h-full min-h-0 overflow-y-auto px-[20px] py-[16px]">
-            <div className="grid grid-cols-1 md:grid-cols-[250px_minmax(0,1fr)] gap-[32px]">
-              
-              {/* Left Column - Image & Status */}
-              <div className="flex flex-col gap-[20px]">
-                <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[16px] shadow-sm flex flex-col items-center">
-                  <ProductImage
-                    src={activeProduct.imageUrl}
-                    alt={activeProduct.name}
-                    className="flex h-[160px] w-[160px] items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC]"
-                    iconSizePx={64}
-                    iconClassName="text-[#8C8889]"
-                  />
-                  <div className="mt-[16px] text-center">
-                    <div className="text-[16px] font-bold text-[#11120d]">
-                      {activeProduct.name}
-                    </div>
-                    <div className="mt-[4px] text-[13px] font-semibold text-[#8C8889]">
-                      SKU: {activeProduct.sku}
-                    </div>
-                  </div>
-                  <div className="mt-[12px]">
-                    <StatusPill status={activeProduct.status} />
+          <>
+          <div className="space-y-4 md:hidden">
+            <PreviewableImage
+              src={activeProduct.imageUrl}
+              alt={activeProduct.name}
+              title={activeProduct.name}
+              subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
+              enablePreview="desktop"
+              imgClassName="h-full w-full object-contain p-3"
+              className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC]"
+              fallback={<GoogleIcon name="inventory_2" sizePx={70} className="text-[#8C8889]" />}
+            />
+            <div>
+              <h2 className="text-[25px] font-black leading-8 text-[#11120d]">{activeProduct.name}</h2>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <span className="rounded-[8px] bg-[#F3F4F6] px-2.5 py-1.5 font-mono text-[12px] font-bold text-[#6B7280]">{activeProduct.sku || "NO-SKU"}</span>
+                <StatusPill status={activeProduct.status} />
+              </div>
+            </div>
+
+            {([
+              {
+                icon: "badge",
+                title: "Identity",
+                rows: [
+                  ["Brand", activeProduct.brand || "-"],
+                  ["Category", activeProduct.category || "-"],
+                  ["Variant", activeProduct.productCodeVariant || "-"],
+                  ["Barcode", activeProduct.barcode || "-"],
+                  ["Supplier", activeProduct.vendorSource || "-"],
+                ],
+              },
+              {
+                icon: "sell",
+                title: "Pricing",
+                rows: [
+                  ["Rate per Piece", formatNpr(activeProduct.ratePerPiece)],
+                  ["Retail Price", formatNpr(activeProduct.retailPrice)],
+                  ["Wholesale Price", formatNpr(activeProduct.wholesalePrice)],
+                  ["Wholesale Threshold", `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}${activeProduct.thresholdQtyMode === "default" ? " (Default)" : ""}`],
+                ],
+              },
+              {
+                icon: "deployed_code",
+                title: "Units & Packaging",
+                rows: [
+                  ["Size", formatProductSize(activeProduct)],
+                  ["Pack", formatPackage(activeProduct)],
+                  ["Sale Unit", activeProduct.saleUnit || "-"],
+                  ["Quantity Step", formatQty(activeProduct.quantityStep)],
+                  ["Fractional quantities", activeProduct.allowFractionalQty ? "Allowed" : "Not allowed"],
+                ],
+              },
+              {
+                icon: "inventory_2",
+                title: "Stock",
+                rows: [
+                  ["Current Stock", `${formatQty(activeProduct.stock)} ${activeProduct.saleUnit || "PIECE"}`],
+                  ["Low-stock Threshold", `${formatQty(activeProduct.lowStockThreshold)}${activeProduct.lowStockThresholdMode === "default" ? " (Default)" : " (Custom)"}`],
+                  ["Availability", getStockFlag(activeProduct)],
+                ],
+              },
+            ] as const).map((section) => (
+              <section key={section.title} className="rounded-[16px] border border-[#E5E7EB] bg-white p-3.5">
+                <div className="flex items-start gap-3">
+                  <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#11120d]"><GoogleIcon name={section.icon} className="text-[22px]" /></span>
+                  <div className="min-w-0 flex-1">
+                    <h3 className="text-[15px] font-extrabold text-[#11120d]">{section.title}</h3>
+                    <dl className="mt-2 space-y-2">
+                      {section.rows.map(([label, value]) => (
+                        <div key={label} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] gap-3 text-[13px]">
+                          <dt className="font-semibold text-[#6B7280]">{label}</dt>
+                          <dd className="break-words text-right font-bold text-[#11120d]">{value}</dd>
+                        </div>
+                      ))}
+                    </dl>
                   </div>
                 </div>
+              </section>
+            ))}
+          </div>
 
-                <div className="rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC] p-[16px]">
-                  <h4 className="text-[12px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px]">Inventory Status</h4>
-                  <div className="space-y-[12px]">
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Current Stock</div>
-                      <div className="flex items-center gap-[8px] mt-[2px]">
-                        <div className="text-[16px] font-bold text-[#11120d]">
-                          {formatQty(activeProduct.stock)} <span className="text-[13px] font-semibold">{activeProduct.saleUnit.toLowerCase()}</span>
-                        </div>
-                        <StockPill flag={getStockFlag(activeProduct)} />
-                      </div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Low Stock Alert</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">
-                        {formatQty(activeProduct.lowStockThreshold)} {activeProduct.saleUnit.toLowerCase()}
-                      </div>
-                    </div>
-                  </div>
+          <div className="hidden bg-white md:block md:max-h-[85vh] md:overflow-y-auto">
+            <div className="flex flex-col gap-[20px] md:flex-row">
+
+              {/* Left - Image & Quick Actions */}
+              <div className="w-full flex-shrink-0 md:w-[152px] flex flex-col items-center">
+                <PreviewableImage
+                  src={activeProduct.imageUrl}
+                  alt={activeProduct.name}
+                  title={activeProduct.name}
+                  subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
+                  enablePreview="desktop"
+                  imgClassName="h-full w-full object-contain p-2"
+                  className="flex w-full aspect-square items-center justify-center overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-white shadow-sm"
+                  fallback={
+                    <GoogleIcon
+                      name="inventory_2"
+                      sizePx={64}
+                      className="text-[#8C8889]"
+                    />
+                  }
+                />
+                <div className="mt-[12px]">
+                  <StatusPill status={activeProduct.status} />
                 </div>
               </div>
 
-              {/* Right Column - Details */}
-              <div className="space-y-[24px]">
+              {/* Right - Details */}
+              <div className="flex-1 space-y-[16px]">
                 
-                {/* Basic Details */}
-                <div className="space-y-[12px]">
-                  <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
-                    BASIC DETAILS
-                  </h3>
-                  <div className="grid grid-cols-2 gap-[16px]">
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Brand</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{activeProduct.brand || "-"}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Category</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{activeProduct.category || "-"}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Supplier / Source</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{activeProduct.vendorSource || "-"}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Barcode</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{activeProduct.barcode || "-"}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Group / Variant</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">
-                        {[activeProduct.categoryGroup, activeProduct.productCodeVariant].filter(Boolean).join(" | ") || "-"}
-                      </div>
-                    </div>
+                {/* Header Info */}
+                <div>
+                  <h3 className="text-[20px] font-extrabold leading-6 text-[#11120d]">{activeProduct.name}</h3>
+                  <div className="flex items-center gap-[8px] mt-[4px]">
+                    <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[7px] py-[3px] font-mono text-[13px] font-bold text-[#565449]">
+                      {activeProduct.sku || "NO-SKU"}
+                    </span>
+                    {activeProduct.barcode && (
+                      <span className="text-[12px] text-[#565449]">Barcode: {activeProduct.barcode}</span>
+                    )}
                   </div>
                 </div>
 
-                {/* Size & Packaging */}
-                <div className="space-y-[12px]">
-                  <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
-                    SIZE & PACKAGING
-                  </h3>
-                  <div className="grid grid-cols-2 gap-[16px]">
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Size</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{formatProductSize(activeProduct)}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Package</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">{formatPackage(activeProduct)}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Sale Unit</div>
-                      <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">
-                        {activeProduct.saleUnit}{" "}
-                        {activeProduct.allowFractionalQty ? <span className="text-[#8C8889] font-medium">(step {formatQty(activeProduct.quantityStep)})</span> : null}
-                      </div>
-                    </div>
+                {/* Details Grid */}
+                <div className="grid grid-cols-1 gap-x-[28px] gap-y-[8px] text-[14px] sm:grid-cols-2">
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Brand</span>
+                    <span className="text-right font-extrabold text-[#11120d]">
+                      {activeProduct.brand ? (
+                        <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[8px] py-[2px] text-[12px] uppercase tracking-wider text-[#11120d]">{activeProduct.brand}</span>
+                      ) : "-"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Category</span>
+                    <span className="text-right font-extrabold text-[#11120d]">
+                      {activeProduct.category ? (
+                        <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[8px] py-[2px] text-[12px] uppercase tracking-wider text-[#11120d]">{activeProduct.category}</span>
+                      ) : "-"}
+                    </span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Variant</span>
+                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.productCodeVariant || "-"}</span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Vendor</span>
+                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.vendorSource || "-"}</span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Size</span>
+                    <span className="text-right font-extrabold text-[#11120d]">{formatProductSize(activeProduct)}</span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Package</span>
+                    <span className="text-right font-extrabold text-[#11120d]">{formatPackage(activeProduct)}</span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Sale Unit</span>
+                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.saleUnit}</span>
+                  </div>
+                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
+                    <span className="text-[#565449]">Fractional Qty</span>
+                    <span className="text-right font-extrabold text-[#11120d]">
+                      {activeProduct.allowFractionalQty ? (
+                        <span className="text-[#16A34A]">Yes (step {activeProduct.quantityStep})</span>
+                      ) : "No"}
+                    </span>
                   </div>
                 </div>
 
-                {/* Pricing */}
-                <div className="space-y-[12px]">
-                  <h3 className="text-[13px] font-extrabold text-[#11120d] border-b border-[#E5E7EB] pb-[8px]">
-                    PRICING
-                  </h3>
-                  <div className="grid grid-cols-2 gap-[16px] bg-[#F8FAFC] p-[16px] rounded-[12px] border border-[#E5E7EB]">
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Retail Price</div>
-                      <div className="text-[18px] font-extrabold text-[#11120d] mt-[2px]">{formatNpr(activeProduct.retailPrice)}</div>
-                    </div>
-                    <div>
-                      <div className="text-[12px] font-semibold text-[#8C8889]">Wholesale Price</div>
-                      <div className="text-[18px] font-extrabold text-[#11120d] mt-[2px]">
-                        {activeProduct.wholesaleEligible ? formatNpr(activeProduct.wholesalePrice) : <span className="text-[#8C8889] text-[14px] font-semibold">Qty pricing off</span>}
+                <div className="grid grid-cols-1 gap-[14px] pt-[4px] sm:grid-cols-2">
+                  {/* Pricing Card */}
+                  <div className="rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
+                    <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
+                      <GoogleIcon name="sell" className="text-[15px] text-[#565449]" />
+                      Pricing
+                    </h4>
+                    <div className="space-y-[8px] text-[14px]">
+                      <div className="flex justify-between">
+                        <span className="text-[#565449]">Rate per Piece</span>
+                        <span className="font-extrabold text-[15px] text-[#11120d]">{formatNpr(activeProduct.ratePerPiece)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#565449]">Retail Price</span>
+                        <span className="font-extrabold text-[15px] text-[#16A34A]">{formatNpr(activeProduct.retailPrice)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#565449]">Wholesale Price</span>
+                        <span className="font-extrabold text-[15px] text-[#11120d]">{formatNpr(activeProduct.wholesalePrice)}</span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#565449]">Wholesale Eligible</span>
+                        <span className="font-bold text-[#11120d]">
+                          {activeProduct.wholesaleEligible ? (
+                            <span className="text-[#16A34A] flex items-center gap-[4px]"><GoogleIcon name="check" className="text-[14px]" /> Yes</span>
+                          ) : "No"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span className="text-[#565449]">Threshold</span>
+                        <span className="font-medium text-[#8C8889]">
+                          {activeProduct.thresholdQtyMode === "default" ? "Default " : ""}
+                          ({activeProduct.thresholdQty} qty)
+                        </span>
                       </div>
                     </div>
-                    {activeProduct.wholesaleEligible && (
-                      <div className="col-span-2 pt-[12px] border-t border-[#E5E7EB] mt-[4px]">
-                        <div className="text-[12px] font-semibold text-[#8C8889]">Wholesale Activation Threshold</div>
-                        <div className="text-[14px] font-bold text-[#11120d] mt-[2px]">
-                          {formatQty(activeProduct.thresholdQty)} {activeProduct.saleUnit.toLowerCase()}
-                          <span className="ml-[8px] rounded-full border border-[#CFCFD3] bg-white px-[8px] py-[2px] text-[11px] font-semibold text-[#565449]">
-                            {activeProduct.thresholdQtyMode === "default" ? "Business default" : "Custom"}
-                          </span>
+                  </div>
+
+                  {/* Stock Card */}
+                  <div className="flex flex-col justify-between rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
+                    <div>
+                      <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
+                        <GoogleIcon name="inventory_2" className="text-[15px] text-[#565449]" />
+                        Stock
+                      </h4>
+                      <div className="flex items-center gap-[12px] mb-[12px]">
+                        <div className="flex items-center gap-[8px]">
+                          <span className="text-[38px] font-black leading-none text-[#11120d]">{formatQty(activeProduct.stock)}</span>
+                          <StockPill flag={getStockFlag(activeProduct)} />
                         </div>
                       </div>
-                    )}
+                    </div>
+                    <div className="text-[12px] text-[#8C8889] font-medium border-t border-[#E5E7EB] pt-[12px]">
+                      Low Stock Threshold: {activeProduct.lowStockThresholdMode === 'default' ? 'Default ' : ''} ({formatQty(activeProduct.lowStockThreshold)})
+                    </div>
                   </div>
                 </div>
 
               </div>
             </div>
           </div>
+          </>
         ) : (
           <div className="flex h-full items-center justify-center text-[14px] font-semibold text-[#8C8889]">
             No product selected.
@@ -2684,112 +2839,125 @@ export default function ProductsModals({
         )}
       </ModalShell>
 
-      <ModalShell
-        open={openConfirmDelete}
-        title="Delete product"
-        onClose={() => setOpenConfirmDelete(false)}
-        maxWidthClass="max-w-[560px]"
-        footer={
-          <div className="flex items-center justify-end gap-[10px]">
-            <Button onClick={() => setOpenConfirmDelete(false)}>Cancel</Button>
-            {isAdmin && deleteSafetyLoading ? (
-              <Button disabled icon="hourglass_empty">
-                Checking...
-              </Button>
-            ) : isAdmin && deleteSafety?.canPermanentDelete ? (
-              <Button
-                variant="danger"
-                icon="delete_forever"
-                onClick={onConfirmPermanentDelete}
-                disabled={deleteBusy}
-              >
-                {deleteBusy ? "Deleting..." : "Delete Forever"}
-              </Button>
-            ) : (
-              <Button
-                variant="danger"
-                icon="do_not_disturb_on"
-                onClick={onConfirmDelete}
-                disabled={deleteBusy}
-              >
-                Set Inactive
-              </Button>
-            )}
-          </div>
-        }
-      >
-        <div className="space-y-[12px]">
-          <div className="text-[14px] font-semibold text-[#11120d]">
-            {activeProduct?.name || "Selected product"}
-          </div>
-
-          {deleteSafetyLoading ? (
-            <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8FAFC] px-3 py-2 text-[12px] font-semibold text-[#565449]">
-              Checking whether this product is safe to permanently delete...
+      {openConfirmDelete && (
+        <div className="fixed inset-0 z-[120] flex items-end justify-center p-0 sm:items-center sm:p-[16px]">
+          <div className="absolute inset-0 bg-[#0F172A]/45 backdrop-blur-[2px]" onClick={() => setOpenConfirmDelete(false)} />
+          <div className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] bg-white px-[20px] pb-[env(safe-area-inset-bottom)] pt-[20px] text-center shadow-2xl sm:max-w-[440px] sm:rounded-[24px] sm:p-[32px]">
+            <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
+            <div className="w-[56px] h-[56px] rounded-full bg-red-50 flex items-center justify-center mx-auto mb-[20px]">
+              <GoogleIcon name="warning" className="text-[28px] text-red-600" />
             </div>
-          ) : isAdmin && deleteSafety?.canPermanentDelete ? (
-            <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 px-3 py-2 text-[12px] font-semibold text-emerald-700">
-              {deleteSafety.safeReason}
-            </div>
-          ) : null}
 
-          {isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? (
-            <div className="space-y-[8px] rounded-[12px] border border-[#F6D28B] bg-[#FFF7E8] px-3 py-2">
-              <div className="text-[12px] font-extrabold text-[#B7791F]">
-                Permanent delete is blocked
+            <h3 className="text-[20px] font-extrabold text-slate-900 mb-[12px]">
+              {isAdmin && deleteSafety?.canPermanentDelete ? "Delete product?" : "Deactivate product?"}
+            </h3>
+
+            <div className="text-[14px] text-slate-500 mb-[28px] leading-relaxed">
+              <div className="mb-[16px] flex items-center gap-3 rounded-[14px] border border-[#E5E7EB] bg-white p-3 text-left">
+                <PreviewableImage src={activeProduct?.imageUrl || ""} alt={activeProduct?.name || "Selected product"} title={activeProduct?.name || "Selected product"} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[11px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                <div className="min-w-0"><div className="truncate text-[15px] font-extrabold text-[#11120d]">{activeProduct?.name || "Selected product"}</div><div className="mt-1 truncate font-mono text-[11px] text-[#8C8889]">SKU: {activeProduct?.sku || "-"}</div></div>
               </div>
-              {deleteSafety.stockBlocker ? (
-                <div className="text-[12px] font-semibold text-[#565449]">
-                  {deleteSafety.stockBlocker}
+
+              {deleteSafetyLoading ? (
+                <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8FAFC] px-[16px] py-[12px] text-[13px] font-semibold text-[#565449] mb-[16px] text-left">
+                  Checking whether this product is safe to permanently delete...
+                </div>
+              ) : isAdmin && deleteSafety?.canPermanentDelete ? (
+                <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 px-[16px] py-[12px] text-[13px] font-semibold text-emerald-700 mb-[16px] text-left">
+                  {deleteSafety.safeReason}
+                </div>
+              ) : isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? (
+                <div className="mb-[16px] space-y-[8px] rounded-[12px] border border-[#FCA5A5] bg-[#FEF2F2] px-[16px] py-[12px] text-left">
+                  <div className="text-[13px] font-extrabold text-[#DC2626]">Permanent deletion blocked</div>
+                  {deleteSafety.stockBlocker ? <div className="text-[13px] font-semibold text-[#565449]">{deleteSafety.stockBlocker}</div> : null}
+                  {deleteSafety.references.length > 0 ? (
+                    <ul className="space-y-[4px] text-[13px] font-semibold text-[#565449] ml-[16px] list-disc">
+                      {deleteSafety.references.map((r) => <li key={r.label}>{r.count} {r.label}</li>)}
+                    </ul>
+                  ) : null}
                 </div>
               ) : null}
-              {deleteSafety.references.length > 0 ? (
-                <ul className="space-y-[4px] text-[12px] font-semibold text-[#565449]">
-                  {deleteSafety.references.map((reference) => (
-                    <li key={reference.label}>
-                      {reference.count} {reference.label}
-                    </li>
-                  ))}
-                </ul>
-              ) : null}
+
+              <p>
+                {isAdmin && deleteSafety?.canPermanentDelete
+                  ? "This action cannot be undone. The product will be permanently removed from the catalog."
+                  : "This action cannot be undone. The product will be set to inactive and remain in the catalog."}
+              </p>
             </div>
-          ) : null}
 
-          <div className="text-[13px] leading-[22px] text-[#565449]">
-            {isAdmin && deleteSafety?.canPermanentDelete
-              ? "This looks like a safe mistake record. Delete Forever removes it from the catalog permanently."
-              : "Set Inactive removes this product from active selling flows while preserving history."}
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-[12px]">
+              <button onClick={() => setOpenConfirmDelete(false)} className="w-full sm:w-auto px-[24px] py-[10px] border border-slate-300 text-slate-700 rounded-[12px] text-[14px] font-bold hover:bg-slate-50 transition-colors">
+                Cancel
+              </button>
+              {isAdmin && deleteSafetyLoading ? (
+                <button disabled className="w-full sm:w-auto px-[24px] py-[10px] bg-red-400 text-white rounded-[12px] text-[14px] font-bold transition-colors cursor-not-allowed">
+                  Checking...
+                </button>
+              ) : isAdmin && deleteSafety?.canPermanentDelete ? (
+                <button onClick={onConfirmPermanentDelete} disabled={deleteBusy} className="w-full sm:w-auto px-[24px] py-[10px] bg-red-600 text-white rounded-[12px] text-[14px] font-bold hover:bg-red-700 transition-colors">
+                  {deleteBusy ? "Deleting..." : "Delete Forever"}
+                </button>
+              ) : (
+                <button onClick={onConfirmDelete} disabled={deleteBusy} className={cn("w-full rounded-[12px] px-[24px] py-[10px] text-[14px] font-bold text-white transition-colors sm:w-auto", isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? "bg-[#11120d] hover:bg-[#2a2c27]" : "bg-red-600 hover:bg-red-700")}>
+                  {deleteBusy ? "Deactivating..." : isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? "Deactivate instead" : "Deactivate"}
+                </button>
+              )}
+            </div>
+            {isAdmin && deleteSafety && !deleteSafety.canPermanentDelete && !deleteSafetyLoading ? (
+              <button type="button" disabled className="mt-3 inline-flex h-11 w-full cursor-not-allowed items-center justify-center gap-2 rounded-[12px] bg-[#F3F4F6] text-[13px] font-bold text-[#A3A3A3]"><GoogleIcon name="delete_forever" className="text-[19px]" />Delete Forever</button>
+            ) : null}
           </div>
         </div>
-      </ModalShell>
+      )}
 
-      <ModalShell
-        open={!!bulkAction}
-        title={bulkAction?.title || "Confirm action"}
-        onClose={onCloseBulkAction}
-        footer={
-          <div className="flex items-center justify-end gap-[10px]">
-            <Button onClick={onCloseBulkAction}>Cancel</Button>
-            <Button
-              variant="danger"
-              icon="warning"
-              onClick={onConfirmBulkAction}
-            >
-              {bulkAction?.confirmLabel || "Confirm"}
-            </Button>
-          </div>
-        }
-      >
-        <div className="space-y-[10px]">
-          <div className="text-[14px] text-[#565449]">
-            {bulkAction?.message}
-          </div>
-          <div className="text-[12px] text-[#8C8889]">
-            This keeps invoice history and audit logs intact while removing
-            these products from active selling flows.
+      {!!bulkAction && (
+        <div className="fixed inset-0 z-[100] flex items-end justify-center p-0 sm:items-center sm:p-[20px]">
+          <div
+            className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
+            onClick={onCloseBulkAction}
+          ></div>
+          <div className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] border border-slate-100 bg-white px-[20px] pb-[env(safe-area-inset-bottom)] pt-[20px] text-center shadow-2xl transition-all sm:max-w-[440px] sm:rounded-[24px] sm:p-[32px]">
+            <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
+            <div className="w-[56px] h-[56px] rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-[20px]">
+              <Icon name="warning" className="text-[28px] text-amber-500" />
+            </div>
+
+            <h3 className="text-[20px] font-extrabold text-[#11120d] mb-[8px] leading-tight">
+              {bulkAction?.title || "Confirm action"}
+            </h3>
+
+            <p className="text-[14px] text-[#565449] mb-[12px] leading-relaxed">
+              {bulkAction?.message}
+            </p>
+
+            {bulkProducts.length > 0 ? (
+              <div className="mb-[14px] overflow-hidden rounded-[14px] border border-[#E5E7EB] bg-white text-left">
+                {bulkProducts.slice(0, 5).map((product) => (
+                  <div key={product.id} className="flex min-h-[58px] items-center gap-3 border-b border-[#E5E7EB] px-3 py-2 last:border-0">
+                    <PreviewableImage src={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                    <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
+                  </div>
+                ))}
+                {bulkProducts.length > 5 ? <div className="px-3 py-2 text-center text-[11px] font-bold text-[#565449]">+{bulkProducts.length - 5} more selected products</div> : null}
+              </div>
+            ) : null}
+
+            <p className="text-[13px] text-[#8C8889] mb-[28px] leading-relaxed bg-slate-50 p-[12px] rounded-[12px]">
+              This keeps invoice history and audit logs intact while removing
+              these products from active selling flows.
+            </p>
+
+            <div className="flex flex-col sm:flex-row items-center justify-center gap-[12px]">
+              <button onClick={onCloseBulkAction} className="w-full sm:w-auto px-[24px] py-[10px] bg-slate-100 text-[#565449] rounded-[12px] text-[14px] font-bold hover:bg-slate-200 transition-colors">
+                Cancel
+              </button>
+              <button onClick={onConfirmBulkAction} className="w-full sm:w-auto px-[24px] py-[10px] bg-amber-500 text-white rounded-[12px] text-[14px] font-bold hover:bg-amber-600 transition-colors shadow-sm shadow-amber-500/20">
+                {bulkAction?.confirmLabel || "Confirm"}
+              </button>
+            </div>
           </div>
         </div>
-      </ModalShell>
+      )}
     </>
   );
 }

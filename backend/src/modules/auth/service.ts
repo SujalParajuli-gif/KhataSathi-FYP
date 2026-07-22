@@ -2,6 +2,7 @@ import prisma from "../../db/prisma";
 import bcrypt from "bcryptjs";
 import jwt from "jsonwebtoken";
 import { deleteReplacedUpload } from "../../lib/uploads";
+import { reconcileProfileImage } from "../../lib/profileImages";
 import { JWT_EXPIRES_IN, JWT_SECRET } from "../../config/env";
 
 // handling the login process — verifies credentials, logs the attempt, and issues a JWT token on success
@@ -35,6 +36,8 @@ export async function loginUser(email: string, password: string, ip?: string) {
   });
 
   // returning the token and a safe subset of user fields (no passwordHash)
+  const safeUser = await reconcileProfileImage(user);
+
   return {
     success: true,
     token,
@@ -46,7 +49,7 @@ export async function loginUser(email: string, password: string, ip?: string) {
       gender: user.gender,
       address: user.address,
       role: user.role,
-      profileImage: user.profileImage,
+      profileImage: safeUser.profileImage,
       lastLogin: now,
     },
   };
@@ -72,7 +75,7 @@ export async function getMe(userId: string) {
   });
 
   if (!user || !user.isActive) return null; // returning null if the user was deactivated since they logged in
-  return user;
+  return reconcileProfileImage(user);
 }
 
 // updating the logged-in user's own profile — they can change name, phone, gender, address, password, or profile image

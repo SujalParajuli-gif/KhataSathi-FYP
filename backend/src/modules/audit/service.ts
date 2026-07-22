@@ -69,7 +69,14 @@ const HISTORY_CATEGORY_FILTERS: Record<string, { actions?: string[]; entityTypes
         entityTypes: ["ProductImportBatch", "ProductImportRow"],
     },
     document: {
-        actions: ["DOCUMENT_UPLOADED", "DOCUMENT_DELETED", "DOCUMENT_RESTORED", "DOCUMENT_PURGED"],
+        actions: [
+            "DOCUMENT_UPLOADED",
+            "DOCUMENT_METADATA_UPDATED",
+            "DOCUMENT_VISIBILITY_UPDATED",
+            "DOCUMENT_DELETED",
+            "DOCUMENT_RESTORED",
+            "DOCUMENT_PURGED",
+        ],
         entityTypes: ["Document"],
     },
     return: {
@@ -123,6 +130,15 @@ function importBatchIdFromLog(log: any) {
     return log.meta?.batchId || log.meta?.productImportBatchId || null;
 }
 
+function invoiceIdFromLog(log: any) {
+    return log.meta?.invoiceId || log.entityId || null;
+}
+
+function documentIdFromLog(log: any) {
+    const id = String(log.entityId || "");
+    return id && !id.includes(",") ? id : null;
+}
+
 export function buildHistoryDisplay(log: any, category: string) {
     const actorName = log.actor?.name || log.meta?.actorName || "System";
     const meta = log.meta || {};
@@ -138,14 +154,23 @@ export function buildHistoryDisplay(log: any, category: string) {
         case "INVOICE_FINALIZED":
             title = `Invoice generated: ${meta.invoiceNo || log.entityId}`;
             description = `${actorName} finalized invoice ${meta.invoiceNo || log.entityId} for ${formatCurrency(meta.netTotal)}.`;
+            detailType = "invoice";
+            detailId = invoiceIdFromLog(log);
+            actionLabel = "Open invoice";
             break;
         case "INVOICE_PAYMENT_UPDATED":
             title = `Payment updated: ${meta.invoiceNo || log.entityId}`;
             description = `${actorName} added ${formatCurrency(meta.amountAdded)}. Remaining due ${formatCurrency(meta.remainingDue)}.`;
+            detailType = "invoice";
+            detailId = invoiceIdFromLog(log);
+            actionLabel = "Open invoice";
             break;
         case "INVOICE_CANCELLED":
             title = `Invoice cancelled: ${meta.invoiceNo || log.entityId}`;
             description = `${actorName} cancelled invoice ${meta.invoiceNo || log.entityId}; stock and payment history were preserved.`;
+            detailType = "invoice";
+            detailId = invoiceIdFromLog(log);
+            actionLabel = "Open invoice";
             break;
         case "STOCK_RECEIVE_BATCH_CREATED":
             title = `Stock received from ${meta.supplierName || "supplier"}`;
@@ -208,6 +233,20 @@ export function buildHistoryDisplay(log: any, category: string) {
             title = `Document moved to bin: ${meta.fileName || log.entityId}`;
             description = `${actorName} moved this document to the bin.`;
             break;
+        case "DOCUMENT_METADATA_UPDATED":
+            title = `Document details updated: ${meta.fileName || log.entityId}`;
+            description = `${actorName} updated ${Array.isArray(meta.changedFields) ? meta.changedFields.length : 0} document detail(s).`;
+            detailType = "document";
+            detailId = documentIdFromLog(log);
+            actionLabel = "Open document";
+            break;
+        case "DOCUMENT_VISIBILITY_UPDATED":
+            title = `Document visibility changed: ${meta.fileName || log.entityId}`;
+            description = `${actorName} changed visibility from ${meta.previousVisibility || "-"} to ${meta.visibility || "-"}.`;
+            detailType = "document";
+            detailId = documentIdFromLog(log);
+            actionLabel = "Open document";
+            break;
         case "RETURN_REQUEST_CREATED":
             title = "Return request created";
             description = `${actorName} created a return request.`;
@@ -223,6 +262,16 @@ export function buildHistoryDisplay(log: any, category: string) {
         case "PAYMENT_VOIDED":
             title = `Payment voided: ${formatCurrency(meta.voidedAmount)}`;
             description = `${actorName} voided payment on invoice ${meta.invoiceNo || log.entityId}.`;
+            detailType = "invoice";
+            detailId = invoiceIdFromLog(log);
+            actionLabel = "Open invoice";
+            break;
+        case "ESEWA_PAYMENT_EXPIRED":
+            title = `ESEWA payment expired: ${meta.invoiceNo || log.entityId}`;
+            description = `${actorName} marked a pending ESEWA payment as expired.`;
+            detailType = "invoice";
+            detailId = invoiceIdFromLog(log);
+            actionLabel = "Open invoice";
             break;
         case "CASH_DRAWER_CLOSED":
             title = "Cash drawer discrepancy";
@@ -245,6 +294,12 @@ export function buildHistoryDisplay(log: any, category: string) {
             title = "Bin auto purge completed";
             description = `Purged ${meta.purgedDocuments || 0} document(s), ${meta.purgedProductImportBatches || 0} import review(s), and ${meta.purgedAlerts || 0} dismissed alert(s). Failed: ${meta.failedCount || 0}.`;
             break;
+    }
+
+    if (!detailId && (log.entityType === "Invoice" || meta.invoiceId)) {
+        detailType = "invoice";
+        detailId = invoiceIdFromLog(log);
+        actionLabel = "Open invoice";
     }
 
     return { title, description, detailType, detailId, actionLabel };

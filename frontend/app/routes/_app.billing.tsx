@@ -6,6 +6,7 @@ import React, {
   useState,
 } from "react";
 import Icon from "~/components/ui/Icon";
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import { useToast } from "~/components/ui/Toast";
 import {
   ConfirmDialog,
@@ -15,6 +16,8 @@ import {
 } from "~/components/ui/Modal";
 import {
   getMyCashierPrivilegesApi,
+  getProductByCodeApi,
+  getProductsByIdsApi,
   listProductsApi,
   checkoutInvoiceApi,
   listCustomersApi,
@@ -28,8 +31,10 @@ import {
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
 import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
+import { isRateLimitError } from "~/lib/api/client";
+import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
-const PRODUCT_REFRESH_INTERVAL_MS = 60_000; // refreshing the product catalog every 60 seconds to prevent stale stock and prices
+const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog every 2 minutes to prevent stale stock and prices while keeping request volume low
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
 const MANUAL_SEARCH_LIMIT = 12;
 const BILLING_VIEW_SIZE_STORAGE_KEY = "khatasathi:billingViewSize";
@@ -122,7 +127,7 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[32px] text-[15px]",
     qtyInput: "w-[46px] text-[12px]",
     rowAction: "h-[28px] w-[28px]",
-    rightPanel: "w-[340px]",
+    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
     rightPanelInner: "gap-[9px] px-[12px] py-[10px]",
     rightTopStack: "space-y-[10px] shrink-0",
     rightCheckoutStack: "mt-auto space-y-[10px]",
@@ -160,7 +165,7 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[34px] text-[16px]",
     qtyInput: "w-[48px] text-[12px]",
     rowAction: "h-[30px] w-[30px]",
-    rightPanel: "w-[350px]",
+    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
     rightPanelInner: "gap-[10px] px-[14px] py-[11px]",
     rightTopStack: "space-y-[11px] shrink-0",
     rightCheckoutStack: "mt-auto space-y-[11px]",
@@ -198,7 +203,7 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[36px] text-[17px]",
     qtyInput: "w-[50px] text-[12px]",
     rowAction: "h-[30px] w-[30px]",
-    rightPanel: "w-[370px]",
+    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
     rightPanelInner: "gap-[12px] px-[16px] py-[12px]",
     rightTopStack: "space-y-[12px] shrink-0",
     rightCheckoutStack: "mt-auto space-y-[12px]",
@@ -225,7 +230,7 @@ const BILLING_VIEW_DENSITY: Record<
     tableCols:
       "grid-cols-[44px_minmax(260px,1fr)_118px_132px_150px_120px_54px]",
     header:
-      "gap-4 border-b border-[#DADDE3] bg-[#F8FAFC] px-[18px] py-[10px] mt-[3px]",
+      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[18px] py-[10px] mt-[3px]",
     headerHash: "text-center text-[18px] font-extrabold",
     headerTitle: "text-[15px] font-extrabold leading-5",
     headerSub: "mt-0.5 text-[12px] font-bold leading-4 text-[#565449]",
@@ -236,7 +241,7 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[38px] text-[18px]",
     qtyInput: "w-[54px] text-[13px]",
     rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[390px]",
+    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
     rightPanelInner: "gap-[14px] px-[20px] py-[15px]",
     rightTopStack: "space-y-[14px] shrink-0",
     rightCheckoutStack: "mt-auto space-y-[14px]",
@@ -274,10 +279,10 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[38px] text-[18px]",
     qtyInput: "w-[54px] text-[14px]",
     rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[390px]",
+    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
     rightPanelInner: "gap-[13px] px-[18px] py-[14px]",
     rightTopStack: "space-y-[12px] shrink-0",
-    rightCheckoutStack: "space-y-[12px]",
+    rightCheckoutStack: "mt-auto space-y-[12px]",
     customerCard: "p-[14px]",
     billSummary: "py-[22px] px-[24px]",
     billSummaryTitle: "mb-[12px] text-[18px]",
@@ -312,10 +317,10 @@ const BILLING_VIEW_DENSITY: Record<
     qtyButton: "w-[38px] text-[18px]",
     qtyInput: "w-[54px] text-[14px]",
     rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[385px]",
+    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
     rightPanelInner: "gap-[12px] px-[17px] py-[13px]",
     rightTopStack: "space-y-[12px] shrink-0",
-    rightCheckoutStack: "space-y-[12px]",
+    rightCheckoutStack: "mt-auto space-y-[12px]",
     customerCard: "p-[14px]",
     billSummary: "py-[22px] px-[24px]",
     billSummaryTitle: "mb-[12px] text-[18px]",
@@ -341,14 +346,15 @@ function readStoredBillingViewSize(): BillingViewSize {
     : "100";
 }
 
-type PaymentMethod = "Cash" | "eSewa" | "Split";
+type PaymentMethod = "Cash" | "Fonepay" | "eSewa" | "Split";
 type PaymentStatus = "Paid" | "Partial" | "Unpaid";
 type PendingBillingConfirm = "checkout" | "clear-cart" | "park-cart" | null;
 type SplitPaymentDraft = {
   id: string;
-  method: "CASH" | "ESEWA";
+  method: "CASH" | "FONEPAY" | "ESEWA";
   amount: string;
   tenderedAmount: string;
+  reference?: string;
 };
 type StockConflictReason =
   | "NOT_FOUND"
@@ -917,6 +923,10 @@ function Segmented({
 // we wrote this to handle adding items to a cart, selecting customers, applying discounts, and generating invoices
 export default function BillingPage() {
   const { showToast } = useToast();
+  const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
+  const requestRateLimitRecovery = useRateLimitRecovery(() => {
+    setRateLimitRecoveryKey((current) => current + 1);
+  });
   const currentUser = useMemo(() => getAuthUser(), []);
   const [billingViewSize, setBillingViewSize] = useState<BillingViewSize>(() =>
     readStoredBillingViewSize(),
@@ -982,29 +992,6 @@ export default function BillingPage() {
 
   // this fetches every page of active products because the billing screen needs the full active catalog for search and barcode scans
   // extracted as a reusable callback so it can also be called by the periodic refresh interval
-  const fetchAllActiveProducts = useCallback(async () => {
-    const pageSize = 300;
-    let page = 1;
-    let total = 0;
-    const collected: any[] = [];
-
-    do {
-      const response = await listProductsApi({
-        page,
-        pageSize,
-        active: "true",
-      });
-      const items = Array.isArray(response?.products) ? response.products : [];
-      collected.push(...items);
-      total = Number(response?.total ?? collected.length);
-      page += 1;
-
-      if (items.length === 0) break;
-    } while (collected.length < total);
-
-    return collected;
-  }, []);
-
   // mapping the raw API product response into the exact shape the billing cart logic expects
   const mapRawProducts = useCallback((raw: any[]) => {
     return raw.map((p: any) => ({
@@ -1037,6 +1024,33 @@ export default function BillingPage() {
       imageUrl: p.imageUrl || "",
     }));
   }, []);
+
+  const mergeProducts = useCallback((incoming: Product[]) => {
+    if (incoming.length === 0) return;
+    setProducts((current) => {
+      const merged = new Map(current.map((product) => [product.id, product]));
+      incoming.forEach((product) => merged.set(product.id, product));
+      return [...merged.values()];
+    });
+  }, []);
+
+  const fetchProductsByIds = useCallback(
+    async (ids: string[], options?: { signal?: AbortSignal }) => {
+      const uniqueIds = [...new Set(ids.filter(Boolean))];
+      const collected: any[] = [];
+      for (let index = 0; index < uniqueIds.length; index += 50) {
+        const response = await getProductsByIdsApi(
+          uniqueIds.slice(index, index + 50),
+          options,
+        );
+        collected.push(
+          ...(Array.isArray(response?.products) ? response.products : []),
+        );
+      }
+      return collected;
+    },
+    [],
+  );
 
   const mapRawCustomers = useCallback((raw: any[]) => {
     return raw.map((c: any) => ({
@@ -1097,19 +1111,14 @@ export default function BillingPage() {
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
   useEffect(() => {
+    const controller = new AbortController();
     async function load() {
       try {
-        const [prodData, custData, parkedData, privilegeData] =
-          await Promise.allSettled([
-            fetchAllActiveProducts(),
-            listCustomersApi(true),
-            listParkedDraftsApi(),
-            getMyCashierPrivilegesApi(),
-          ]);
-
-        if (prodData.status === "fulfilled" && prodData.value) {
-          setProducts(mapRawProducts(prodData.value));
-        }
+        const [custData, parkedData, privilegeData] = await Promise.allSettled([
+          listCustomersApi(true, { signal: controller.signal }),
+          listParkedDraftsApi({ signal: controller.signal }),
+          getMyCashierPrivilegesApi({ signal: controller.signal }),
+        ]);
 
         if (custData.status === "fulfilled" && custData.value) {
           // mapping customers into a lighter billing shape keeps the rest of the page simpler
@@ -1129,36 +1138,25 @@ export default function BillingPage() {
         if (privilegeData.status === "fulfilled") {
           setCashierPrivilege(privilegeData.value.privilege);
         }
+
+        const rejected = [custData, parkedData, privilegeData].find(
+          (result) => result.status === "rejected" && isRateLimitError(result.reason),
+        );
+        if (rejected) requestRateLimitRecovery();
       } catch {
       } finally {
-        setLoading(false);
+        if (!controller.signal.aborted) setLoading(false);
       }
     }
-    load();
-  }, [
-    fetchAllActiveProducts,
-    mapRawCustomers,
-    mapRawProducts,
-    normalizeParkedDraft,
-  ]);
-
-  // silently refreshing the product catalog every 60 seconds so the cashier always sees up-to-date stock and prices
-  // if admin restocks or changes prices while a cashier is billing, this ensures the data stays fresh
-  useEffect(() => {
-    const timer = setInterval(async () => {
-      try {
-        const raw = await fetchAllActiveProducts();
-        setProducts(mapRawProducts(raw));
-      } catch {
-        // silently ignore refresh failures — the next cycle will retry
-      }
-    }, PRODUCT_REFRESH_INTERVAL_MS);
-
-    return () => clearInterval(timer);
-  }, [fetchAllActiveProducts, mapRawProducts]);
+    void load();
+    return () => controller.abort();
+  }, [mapRawCustomers, normalizeParkedDraft, rateLimitRecoveryKey]);
 
   const [skuInput, setSkuInput] = useState(""); // scanner/manual barcode input
   const [productQuery, setProductQuery] = useState(""); // text search for the product picker
+  const [manualSearchProductIds, setManualSearchProductIds] = useState<string[]>([]);
+  const [manualSearchTotal, setManualSearchTotal] = useState(0);
+  const [manualSearchLoading, setManualSearchLoading] = useState(false);
   const [manualSearchIndex, setManualSearchIndex] = useState(0);
   const [openRowActionProductId, setOpenRowActionProductId] = useState<
     string | null
@@ -1186,6 +1184,7 @@ export default function BillingPage() {
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid"); // current paid/partial/unpaid selection
   const [paidAmount, setPaidAmount] = useState<string>(""); // manual partial payment amount typed by the cashier
   const [cashTendered, setCashTendered] = useState<string>(""); // cash received from customer, used to calculate change
+  const [fonepayReference, setFonepayReference] = useState<string>(""); // manual Fonepay reference/remarks recorded with the invoice payment
   const [splitCashAmount, setSplitCashAmount] = useState<string>(""); // cash portion when the bill is split between cash and eSewa
   const [splitPayments, setSplitPayments] = useState<SplitPaymentDraft[]>([]);
   const [invoiceNote, setInvoiceNote] = useState("");
@@ -1203,6 +1202,7 @@ export default function BillingPage() {
   const customerResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const cartRowRefs = useRef<Array<HTMLDivElement | null>>([]);
   const pendingCartFocusProductIdRef = useRef<string | null>(null);
+  const scannerLookupBusyRef = useRef(false);
   const cartAlertMessage = billingError || cartIssueMessage;
 
   const visibleParkedDrafts = useMemo(() => {
@@ -1325,22 +1325,58 @@ export default function BillingPage() {
     }
   }
 
-  // filtering the product list based on the search query
-  const productListFiltered = useMemo(() => {
-    const s = productQuery.trim().toLowerCase();
-    if (!s) return products.filter((p) => p.active);
-    return products.filter(
-      (p) =>
-        p.active &&
-        `${p.name} ${p.sku} ${p.barcode || ""} ${p.brand} ${p.categoryGroup || ""} ${p.productCodeVariant || ""}`
-          .toLowerCase()
-          .includes(s),
-    );
-  }, [products, productQuery]);
+  useEffect(() => {
+    const search = productQuery.trim();
+    setManualSearchIndex(0);
+    if (!search) {
+      setManualSearchProductIds([]);
+      setManualSearchTotal(0);
+      setManualSearchLoading(false);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setManualSearchProductIds([]);
+    setManualSearchTotal(0);
+    setManualSearchLoading(true);
+    const timer = window.setTimeout(() => {
+      void listProductsApi(
+        { search, active: "true", page: 1, pageSize: MANUAL_SEARCH_LIMIT },
+        { signal: controller.signal },
+      )
+        .then((response) => {
+          if (controller.signal.aborted) return;
+          const mapped = mapRawProducts(
+            Array.isArray(response?.products) ? response.products : [],
+          );
+          mergeProducts(mapped);
+          setManualSearchProductIds(mapped.map((product) => product.id));
+          setManualSearchTotal(Number(response?.total ?? mapped.length));
+        })
+        .catch((error: any) => {
+          if (controller.signal.aborted || error?.code === "ERR_CANCELED") return;
+          if (isRateLimitError(error)) requestRateLimitRecovery();
+          // Keep billing usable during a transient failure; the global rate
+          // limit banner explains cooldowns without adding duplicate errors.
+        })
+        .finally(() => {
+          if (!controller.signal.aborted) setManualSearchLoading(false);
+        });
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [mapRawProducts, mergeProducts, productQuery, rateLimitRecoveryKey]);
 
   const manualResults = useMemo(() => {
-    return productListFiltered.slice(0, MANUAL_SEARCH_LIMIT);
-  }, [productListFiltered]);
+    const byId = new Map(products.map((product) => [product.id, product]));
+    return manualSearchProductIds.flatMap((id) => {
+      const product = byId.get(id);
+      return product ? [product] : [];
+    });
+  }, [manualSearchProductIds, products]);
 
   useEffect(() => {
     setManualSearchIndex(0);
@@ -1376,6 +1412,49 @@ export default function BillingPage() {
     }
     setCartPersistenceReady(true);
   }, []);
+
+  const cartProductIds = useMemo(
+    () => [...new Set(cart.map((line) => line.productId).filter(Boolean))],
+    [cart],
+  );
+
+  // Restored and resumed carts may contain products that are not in the small
+  // search cache yet. Hydrate just those rows in one focused request.
+  useEffect(() => {
+    const missingIds = cartProductIds.filter((id) => !productsById.has(id));
+    if (missingIds.length === 0) return undefined;
+    const controller = new AbortController();
+    void fetchProductsByIds(missingIds, { signal: controller.signal })
+      .then((raw) => {
+        if (!controller.signal.aborted) {
+          mergeProducts(mapRawProducts(raw));
+        }
+      })
+      .catch((error: any) => {
+        if (isRateLimitError(error)) requestRateLimitRecovery();
+        // Checkout performs a final authoritative refresh and will surface any
+        // missing or inactive product as a stock conflict.
+      });
+    return () => controller.abort();
+  }, [cartProductIds, fetchProductsByIds, mapRawProducts, mergeProducts, productsById, rateLimitRecoveryKey]);
+
+  // Keep only the active cart fresh. Search results are fetched on demand and
+  // checkout performs another authoritative refresh before finalization.
+  useEffect(() => {
+    if (cartProductIds.length === 0) return undefined;
+    const controller = new AbortController();
+    const timer = window.setInterval(() => {
+      void fetchProductsByIds(cartProductIds, { signal: controller.signal })
+        .then((raw) => {
+          if (!controller.signal.aborted) mergeProducts(mapRawProducts(raw));
+        })
+        .catch(() => {});
+    }, PRODUCT_REFRESH_INTERVAL_MS);
+    return () => {
+      window.clearInterval(timer);
+      controller.abort();
+    };
+  }, [cartProductIds, fetchProductsByIds, mapRawProducts, mergeProducts]);
 
   // once the latest product catalog is available, we reconcile the restored cart against active products and current stock
   useEffect(() => {
@@ -1619,6 +1698,13 @@ export default function BillingPage() {
           .filter((payment) => payment.method === "ESEWA")
           .reduce((sum, payment) => sum + payment.amountNum, 0)
       : Math.max(0, payableTotal - splitCashNum);
+  const splitFonepayAmount =
+    normalizedSplitPayments.length > 0
+      ? normalizedSplitPayments
+          .filter((payment) => payment.method === "FONEPAY")
+          .reduce((sum, payment) => sum + payment.amountNum, 0)
+      : 0;
+  const splitDigitalAmount = splitEsewaAmount + splitFonepayAmount;
   const splitBalance = Math.round((payableTotal - splitTotal) * 100) / 100;
 
   // payment status controls the real paid amount:
@@ -1660,7 +1746,9 @@ export default function BillingPage() {
         ? "Saved without payment"
         : paymentStatus === "Partial"
           ? "Partial payment"
-          : paymentMethod === "eSewa"
+          : paymentMethod === "Fonepay"
+            ? "Fonepay collection"
+            : paymentMethod === "eSewa"
             ? "eSewa collection"
             : cashShort > 0
               ? "Cash short"
@@ -1669,12 +1757,14 @@ export default function BillingPage() {
                 : "Exact cash ready";
   const paymentStateDetail =
     paymentMethod === "Split"
-      ? `Cash ${formatNpr(splitCashNum)} + eSewa ${formatNpr(splitEsewaAmount)}.`
+      ? `Cash ${formatNpr(splitCashNum)} + digital ${formatNpr(splitDigitalAmount)}.`
       : paymentStatus === "Unpaid"
         ? "No payment recorded now."
         : paymentStatus === "Partial"
           ? `Balance due ${formatNpr(balanceDue)}.`
-          : paymentMethod === "eSewa"
+          : paymentMethod === "Fonepay"
+            ? `Collect ${formatNpr(payableTotal)} by Fonepay.`
+            : paymentMethod === "eSewa"
             ? `Collect ${formatNpr(payableTotal)} online.`
             : cashShort > 0
               ? `Need ${formatNpr(cashShort)} more.`
@@ -1684,6 +1774,8 @@ export default function BillingPage() {
   const paymentStateTone =
     paymentMethod === "Cash" && paymentStatus === "Paid" && changeDue > 0
       ? "success"
+      : paymentMethod === "Fonepay" && paymentStatus === "Paid"
+        ? "fonepay"
       : paymentMethod === "eSewa" && paymentStatus === "Paid"
         ? "esewa"
         : paymentStatus === "Partial" ||
@@ -1935,9 +2027,9 @@ export default function BillingPage() {
   }
 
   async function refreshProductsForCheckout() {
-    const raw = await fetchAllActiveProducts();
+    const raw = await fetchProductsByIds(cart.map((line) => line.productId));
     const mapped = mapRawProducts(raw);
-    setProducts(mapped);
+    mergeProducts(mapped);
     return mapped;
   }
 
@@ -1947,8 +2039,8 @@ export default function BillingPage() {
   }
 
   // this adds one product into the cart while checking stock, active status, and current quantity first
-  function addToCart(productId: string, qty = 1) {
-    const product = productsById.get(productId);
+  function addToCart(productId: string, qty = 1, explicitProduct?: Product) {
+    const product = explicitProduct || productsById.get(productId);
     // this handles when the product is inactive or missing from the lookup table
     if (!product || !product.active) {
       showCartIssue("That product is not available for billing.");
@@ -2132,23 +2224,37 @@ export default function BillingPage() {
     }
   }
 
-  function addBySku() {
+  async function addBySku() {
     const s = skuInput.trim();
-    if (!s) return;
-    const normalized = s.toLowerCase(); // matching in lowercase lets barcode and SKU search stay case-insensitive
-    // searching both SKU and barcode helps the cashier use whichever code is available on the product
-    const p = products.find(
-      (x) =>
-        x.active &&
-        (x.sku.toLowerCase() === normalized ||
-          (x.barcode || "").toLowerCase() === normalized),
-    );
-    if (p) {
-      addToCart(p.id, getProductQtyStep(p));
+    if (!s || scannerLookupBusyRef.current) return;
+    scannerLookupBusyRef.current = true;
+    try {
+      const raw = await getProductByCodeApi(s);
+      const product = mapRawProducts([raw])[0];
+      if (!product) {
+        showCartIssue(`No active product found for "${s}".`);
+        return;
+      }
+      mergeProducts([product]);
+      addToCart(
+        product.id,
+        getProductQtyStep(product),
+        product,
+      );
       setSkuInput("");
       skuRef.current?.focus();
-    } else {
-      showCartIssue(`No active product found for "${s}".`);
+    } catch (error: any) {
+      if (error?.response?.status === 404) {
+        showCartIssue(`No active product found for "${s}".`);
+      } else if (
+        error?.code !== "ERR_CANCELED" &&
+        error?.code !== "ERR_RATE_LIMIT_COOLDOWN" &&
+        error?.response?.status !== 429
+      ) {
+        showCartIssue("Product lookup failed. Check the connection and try again.");
+      }
+    } finally {
+      scannerLookupBusyRef.current = false;
     }
   }
 
@@ -2198,6 +2304,7 @@ export default function BillingPage() {
     setPaymentStatus("Paid");
     setPaidAmount("");
     setCashTendered("");
+    setFonepayReference("");
     setSplitCashAmount("");
     setSplitPayments([]);
     setInvoiceNote("");
@@ -2285,6 +2392,7 @@ export default function BillingPage() {
     setPaymentStatus("Paid");
     setPaidAmount("");
     setCashTendered("");
+    setFonepayReference("");
     setSplitCashAmount("");
     setSplitPayments([]);
     setInvoiceNote("");
@@ -2445,6 +2553,7 @@ export default function BillingPage() {
     // when a shortcut button passes a payment method, we switch the modal into that method before opening it
     if (nextMethod) {
       setPaymentMethod(nextMethod);
+      if (nextMethod === "Fonepay") setShowEsewaQr(false);
       if (nextMethod === "eSewa") setShowEsewaQr(true);
       if (nextMethod === "Split") ensureDefaultSplitPayments();
     }
@@ -2482,6 +2591,16 @@ export default function BillingPage() {
         return false;
       }
 
+      if (
+        normalizedSplitPayments.filter((row) => row.method === "FONEPAY")
+          .length > 1
+      ) {
+        setPaymentError(
+          "Only one Fonepay row can be used in one split payment.",
+        );
+        return false;
+      }
+
       if (Math.abs(splitBalance) > 0.01) {
         setPaymentError(
           splitBalance > 0
@@ -2502,7 +2621,17 @@ export default function BillingPage() {
       }
 
       if (normalizedSplitPayments.every((row) => row.method !== "CASH")) {
-        setPaymentError("Use eSewa when the full invoice amount is online.");
+        setPaymentError(
+          "Use eSewa or Fonepay when the full invoice amount is online.",
+        );
+        return false;
+      }
+
+      const missingFonepayReference = normalizedSplitPayments.find(
+        (row) => row.method === "FONEPAY" && !row.reference?.trim(),
+      );
+      if (missingFonepayReference) {
+        setPaymentError("Enter the Fonepay reference for the split payment.");
         return false;
       }
 
@@ -2519,6 +2648,13 @@ export default function BillingPage() {
         return false;
       }
       return true;
+    }
+
+    if (paymentMethod === "Fonepay" && paymentStatus !== "Unpaid") {
+      if (!fonepayReference.trim()) {
+        setPaymentError("Enter the Fonepay reference or remarks.");
+        return false;
+      }
     }
 
     if (paymentStatus !== "Partial") {
@@ -2620,8 +2756,11 @@ export default function BillingPage() {
       current.map((payment) => {
         if (payment.id !== id) return payment;
         const next = { ...payment, ...patch };
-        if (patch.method === "ESEWA") {
+        if (patch.method === "ESEWA" || patch.method === "FONEPAY") {
           next.tenderedAmount = "";
+        }
+        if (patch.method && patch.method !== "FONEPAY") {
+          next.reference = "";
         }
         return next;
       }),
@@ -2682,16 +2821,31 @@ export default function BillingPage() {
           ? normalizedSplitPayments.map((payment) => ({
               method: payment.method,
               amount: payment.amountNum,
+              reference:
+                payment.method === "FONEPAY"
+                  ? payment.reference?.trim()
+                  : undefined,
               tenderedAmount:
                 payment.method === "CASH" ? payment.tenderedNum : undefined,
             }))
           : paymentStatus !== "Unpaid" && effectivePaidAmount > 0
             ? [
                 {
-                  method: (paymentMethod === "eSewa" ? "ESEWA" : "CASH") as
+                  method: (
+                    paymentMethod === "eSewa"
+                      ? "ESEWA"
+                      : paymentMethod === "Fonepay"
+                        ? "FONEPAY"
+                        : "CASH"
+                  ) as
                     | "CASH"
+                    | "FONEPAY"
                     | "ESEWA",
                   amount: effectivePaidAmount,
+                  reference:
+                    paymentMethod === "Fonepay"
+                      ? fonepayReference.trim()
+                      : undefined,
                   tenderedAmount:
                     paymentMethod === "Cash" && paymentStatus === "Paid"
                       ? cashTenderedNum
@@ -2843,14 +2997,18 @@ export default function BillingPage() {
           ? "Confirm split payment?"
           : paymentStatus === "Unpaid"
             ? "Create unpaid invoice?"
+            : paymentMethod === "Fonepay"
+              ? "Confirm Fonepay payment?"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa?"
               : "Finalize this invoice?",
       message:
         paymentMethod === "Split"
-          ? "This will record the cash portion now and send the remaining amount to eSewa."
+          ? "This will record the cash portion now and attach the selected digital payment row."
           : paymentStatus === "Unpaid"
             ? "This will create the invoice without recording a payment."
+            : paymentMethod === "Fonepay"
+              ? "This will finalize the invoice and record this Fonepay reference."
             : paymentMethod === "eSewa"
               ? "KhataSathi will create the invoice and send this payment to eSewa."
               : "This will finalize the invoice and record the selected payment immediately.",
@@ -2859,6 +3017,8 @@ export default function BillingPage() {
           ? "Confirm Split"
           : paymentStatus === "Unpaid"
             ? "Create Invoice"
+            : paymentMethod === "Fonepay"
+              ? "Confirm Fonepay"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa"
               : `Confirm ${formatNpr(effectivePaidAmount)}`,
@@ -2868,6 +3028,8 @@ export default function BillingPage() {
           ? "call_split"
           : paymentStatus === "Unpaid"
             ? "receipt_long"
+            : paymentMethod === "Fonepay"
+              ? "qr_code_2"
             : paymentMethod === "eSewa"
               ? "qr_code_2"
               : "payments",
@@ -2899,6 +3061,22 @@ export default function BillingPage() {
               <span>eSewa amount</span>
               <span className="font-extrabold text-slate-900">
                 {formatNpr(splitEsewaAmount)}
+              </span>
+            </div>
+          ) : null}
+          {paymentMethod === "Split" && splitFonepayAmount > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Fonepay amount</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(splitFonepayAmount)}
+              </span>
+            </div>
+          ) : null}
+          {paymentMethod === "Fonepay" && fonepayReference.trim() ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Reference</span>
+              <span className="max-w-[220px] truncate font-extrabold text-slate-900">
+                {fonepayReference.trim()}
               </span>
             </div>
           ) : null}
@@ -2937,6 +3115,8 @@ export default function BillingPage() {
     selectedCustomer,
     splitCashNum,
     splitEsewaAmount,
+    splitFonepayAmount,
+    fonepayReference,
   ]);
 
   // setting up global hotkeys (F2, F3, F4, F5, F6, F9, Enter) so the cashier can work fully via keyboard
@@ -3163,11 +3343,17 @@ export default function BillingPage() {
           }
           if (key === "2") {
             e.preventDefault();
+            setPaymentMethod("Fonepay");
+            setShowEsewaQr(false);
+            return;
+          }
+          if (key === "3") {
+            e.preventDefault();
             setPaymentMethod("eSewa");
             setShowEsewaQr(true);
             return;
           }
-          if (key === "3") {
+          if (key === "4") {
             e.preventDefault();
             setPaymentMethod("Split");
             setPaymentStatus("Paid");
@@ -3260,9 +3446,11 @@ export default function BillingPage() {
                         Quick product search
                       </div>
                       <div className="mt-0.5 text-[11px] font-bold text-[#565449]">
-                        {productListFiltered.length > MANUAL_SEARCH_LIMIT
-                          ? `${productListFiltered.length} matches. Keep typing to narrow.`
-                          : `${productListFiltered.length} match${productListFiltered.length === 1 ? "" : "es"}. Use arrows and Enter.`}
+                        {manualSearchLoading
+                          ? "Searching active products..."
+                          : manualSearchTotal > MANUAL_SEARCH_LIMIT
+                            ? `${manualSearchTotal} matches. Keep typing to narrow.`
+                            : `${manualSearchTotal} match${manualSearchTotal === 1 ? "" : "es"}. Use arrows and Enter.`}
                       </div>
                     </div>
                     <div className="flex items-center gap-2">
@@ -3285,7 +3473,11 @@ export default function BillingPage() {
                   </div>
 
                   <div className="flex-1 overflow-y-auto p-2">
-                    {manualResults.length === 0 ? (
+                    {manualSearchLoading ? (
+                      <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
+                        Searching products...
+                      </div>
+                    ) : manualResults.length === 0 ? (
                       <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
                         No products found. Try another name, SKU, or brand.
                       </div>
@@ -3350,7 +3542,7 @@ export default function BillingPage() {
                     )}
                   </div>
 
-                  {productListFiltered.length > MANUAL_SEARCH_LIMIT && (
+                  {!manualSearchLoading && manualSearchTotal > MANUAL_SEARCH_LIMIT && (
                     <div className="border-t border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2 text-[11px] font-semibold text-[#8C8889]">
                       Showing first {MANUAL_SEARCH_LIMIT}. Type more letters for
                       faster selection.
@@ -3778,7 +3970,7 @@ export default function BillingPage() {
           {/* RIGHT: SUMMARY PANEL */}
           <div
             className={cn(
-              "flex shrink-0 flex-col border-l border-[#CFCFD3] bg-[#F8F9FA]",
+              "flex shrink-0 flex-col border-l border-[#CFCFD3] bg-[#FFFFFF]",
               billingView.rightPanel,
             )}
           >
@@ -3792,7 +3984,7 @@ export default function BillingPage() {
                 {/* Customer Card */}
                 <div
                   className={cn(
-                    "relative rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    "relative border-b border-[#E5E7EB] bg-[#FFFFFF] pb-[12px]",
                     billingView.customerCard,
                   )}
                 >
@@ -3940,7 +4132,7 @@ export default function BillingPage() {
                 {/* Bill Summary */}
                 <div
                   className={cn(
-                    "rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    "border-b border-[#E5E7EB] bg-[#FFFFFF] pb-[10px]",
                     billingView.billSummary,
                   )}
                 >
@@ -4035,7 +4227,7 @@ export default function BillingPage() {
               <div className={billingView.rightCheckoutStack}>
                 <div
                   className={cn(
-                    "rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF]",
+                    "border-b border-[#E5E7EB] bg-[#FFFFFF]",
                     billingView.statusCard,
                   )}
                 >
@@ -4083,7 +4275,7 @@ export default function BillingPage() {
                 </div>
                 <div
                   className={cn(
-                    "rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm",
+                    "rounded-[14px] bg-[#FFFFFF]",
                     billingView.grandCard,
                   )}
                 >
@@ -4297,6 +4489,8 @@ export default function BillingPage() {
                       ? "SAVE PARTIAL PAYMENT (Shift + Enter)"
                       : paymentStatus === "Unpaid"
                         ? "CREATE UNPAID INVOICE (Shift + Enter)"
+                        : paymentMethod === "Fonepay"
+                          ? "CONFIRM FONEPAY (Shift + Enter)"
                         : paymentMethod === "eSewa"
                           ? "CONTINUE TO ESEWA (Shift + Enter)"
                           : "FINAL CHECKOUT (Shift + Enter)"}
@@ -4358,7 +4552,7 @@ export default function BillingPage() {
                 <div className="mb-[8px] text-[14px] font-extrabold text-[#000000]">
                   Payment Method
                 </div>
-                <div className="grid grid-cols-3 gap-3">
+                <div className="grid grid-cols-4 gap-3">
                   <button
                     type="button"
                     onClick={() => {
@@ -4373,6 +4567,31 @@ export default function BillingPage() {
                     <span className="text-[14px] font-extrabold">Cash</span>
                     {paymentMethod === "Cash" && (
                       <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#11120d] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setPaymentMethod("Fonepay");
+                      setShowEsewaQr(false);
+                      setPaymentError("");
+                    }}
+                    className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Fonepay" ? "border-[#E11D48] bg-[#FFF7F8]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
+                  >
+                    <img
+                      src="/assets/images/fonepay.png"
+                      alt="Fonepay"
+                      className="h-[21px] max-w-[74px] object-contain"
+                    />
+                    <span
+                      className={`text-[13px] font-extrabold ${paymentMethod === "Fonepay" ? "text-[#334155]" : "text-[#565449]"}`}
+                    >
+                      Fonepay
+                    </span>
+                    {paymentMethod === "Fonepay" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#E11D48] flex items-center justify-center text-white">
                         <Icon name="check" className="text-[12px]" />
                       </div>
                     )}
@@ -4454,6 +4673,22 @@ export default function BillingPage() {
                 </div>
               )}
 
+              {paymentMethod === "Fonepay" && paymentStatus !== "Unpaid" ? (
+                <Input
+                  label="Fonepay reference / remarks"
+                  value={fonepayReference}
+                  onChange={(v) => {
+                    setFonepayReference(v.slice(0, 160));
+                    setPaymentError("");
+                    setBillingError("");
+                  }}
+                  placeholder="Transaction ID, payer phone, or cashier note"
+                  leftIcon="receipt_long"
+                  invalid={!!paymentError && !fonepayReference.trim()}
+                  helperText="Required for manual Fonepay collection and invoice history."
+                />
+              ) : null}
+
               {paymentMethod === "Split" ? (
                 <div className="space-y-2">
                   <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8F9FA] p-2">
@@ -4489,7 +4724,7 @@ export default function BillingPage() {
                             key={row.id}
                             className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[80px_minmax(0,1fr)_minmax(0,1fr)_32px]"
                           >
-                            <select
+                            <ProjectSelect
                               value={row.method}
                               onChange={(e) =>
                                 updateSplitPayment(row.id, {
@@ -4500,8 +4735,9 @@ export default function BillingPage() {
                               className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-extrabold text-[#565449] outline-none"
                             >
                               <option value="CASH">Cash</option>
+                              <option value="FONEPAY">Fonepay</option>
                               <option value="ESEWA">eSewa</option>
-                            </select>
+                            </ProjectSelect>
                             <input
                               value={row.amount}
                               onChange={(e) =>
@@ -4526,6 +4762,17 @@ export default function BillingPage() {
                                 }
                                 inputMode="numeric"
                                 placeholder="Tendered"
+                                className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
+                              />
+                            ) : row.method === "FONEPAY" ? (
+                              <input
+                                value={row.reference || ""}
+                                onChange={(e) =>
+                                  updateSplitPayment(row.id, {
+                                    reference: e.target.value.slice(0, 160),
+                                  })
+                                }
+                                placeholder="Fonepay ref"
                                 className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
                               />
                             ) : (
@@ -4568,6 +4815,16 @@ export default function BillingPage() {
                         className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449] disabled:opacity-40"
                       >
                         + eSewa row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addSplitPayment("FONEPAY")}
+                        disabled={splitPayments.some(
+                          (row) => row.method === "FONEPAY",
+                        )}
+                        className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449] disabled:opacity-40"
+                      >
+                        + Fonepay row
                       </button>
                     </div>
                   </div>
@@ -4760,6 +5017,14 @@ export default function BillingPage() {
                           {formatNpr(splitEsewaAmount)}
                         </span>
                       </div>
+                      {splitFonepayAmount > 0 ? (
+                        <div className="flex justify-between items-center text-[#2F67D8]">
+                          <span>Fonepay amount</span>
+                          <span className="font-mono font-bold">
+                            {formatNpr(splitFonepayAmount)}
+                          </span>
+                        </div>
+                      ) : null}
                       <div className="flex justify-between items-center text-[#000000]">
                         <span>Total collected</span>
                         <span className="font-mono font-extrabold">
@@ -4823,6 +5088,8 @@ export default function BillingPage() {
                         ? "border-[#9DD8B2] bg-[#EAF8EF]"
                         : paymentStateTone === "warning"
                           ? "border-[#F6D28B] bg-[#FFF7E8]"
+                          : paymentStateTone === "fonepay"
+                            ? "border-[#F7C6D0] bg-[#FFF7F8]"
                           : paymentStateTone === "esewa"
                             ? "border-[#BDE5B2] bg-[#f2faf0]"
                             : "border-[#CFCFD3] bg-[#FFFFFF]"
@@ -4834,12 +5101,20 @@ export default function BillingPage() {
                           ? "bg-[#DDF3E6] text-[#179B4D]"
                           : paymentStateTone === "warning"
                             ? "bg-[#FFF1D6] text-[#B7791F]"
+                            : paymentStateTone === "fonepay"
+                              ? "bg-white text-[#E11D48]"
                             : paymentStateTone === "esewa"
                               ? "bg-white text-[#60bb46]"
                               : "bg-[#E8F2FF] text-[#2F67D8]"
                       }`}
                     >
-                      {paymentStateTone === "esewa" ? (
+                      {paymentStateTone === "fonepay" ? (
+                        <img
+                          src="/assets/images/fonepay.png"
+                          alt="Fonepay"
+                          className="h-[18px] w-[26px] object-contain"
+                        />
+                      ) : paymentStateTone === "esewa" ? (
                         <img
                           src="/assets/images/esewa/logo.png"
                           alt="eSewa"
@@ -4934,7 +5209,7 @@ export default function BillingPage() {
                   Reason
                 </label>
                 <div className="relative">
-                  <select
+                  <ProjectSelect
                     value={priceOverrideDraftReason}
                     onChange={(event) => {
                       setPriceOverrideDraftReason(event.target.value);
@@ -4951,7 +5226,7 @@ export default function BillingPage() {
                         {reason}
                       </option>
                     ))}
-                  </select>
+                  </ProjectSelect>
                   <Icon
                     name="expand_more"
                     className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[18px] text-[#8C8889]"
