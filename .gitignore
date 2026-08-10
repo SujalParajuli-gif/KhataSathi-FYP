@@ -7,6 +7,7 @@ Thumbs.db
 .env.*
 !.env.example
 deploy/production.env
+deploy/backup-output/
 
 # dependencies
 node_modules/

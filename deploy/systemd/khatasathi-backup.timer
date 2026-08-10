@@ -1,0 +1,11 @@
+[Unit]
+Description=Run the KhataSathi backup every night
+
+[Timer]
+OnCalendar=*-*-* 02:15:00 Asia/Kathmandu
+Persistent=true
+RandomizedDelaySec=5m
+Unit=khatasathi-backup.service
+
+[Install]
+WantedBy=timers.target

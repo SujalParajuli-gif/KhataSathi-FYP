@@ -1,0 +1,16 @@
+[Unit]
+Description=KhataSathi encrypted application backup
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/opt/khatasathi
+EnvironmentFile=/opt/khatasathi/deploy/production.env
+Environment=KHATASATHI_BACKUP_DIR=/var/backups/khatasathi
+ExecStart=/opt/khatasathi/deploy/scripts/backup.sh
+User=root
+Group=root
+
+[Install]
+WantedBy=multi-user.target
