@@ -64,7 +64,7 @@ test("login attempt audit value is bounded without storing passwords", () => {
 });
 
 test("temporary account passwords use a bounded length policy", () => {
-  assert.equal(validateUserPassword("Admin@123"), "Admin@123");
+  assert.equal(validateUserPassword("ValidPass@483"), "ValidPass@483");
   assert.throws(() => validateUserPassword("short"), /at least 8/);
   assert.throws(() => validateUserPassword("x".repeat(129)), /no more than 128/);
 });
