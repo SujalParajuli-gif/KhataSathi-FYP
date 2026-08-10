@@ -19,7 +19,9 @@ router.use(authGuard);
 router.use(requireRole("ADMIN"));
 
 const BACKUP_SETTINGS_ID = 1;
-const BACKUP_ROOT = path.resolve(__dirname, "../../../backups");
+const BACKUP_ROOT = process.env.BACKUP_ROOT?.trim()
+    ? path.resolve(process.env.BACKUP_ROOT)
+    : path.resolve(__dirname, "../../../backups");
 
 type MySqlTool = "mysql" | "mysqldump";
 type BackupActor = { id: string; isSystem?: boolean };

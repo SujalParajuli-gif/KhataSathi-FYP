@@ -3,7 +3,6 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import rateLimit from "express-rate-limit";
-import path from "path";
 import { randomUUID } from "crypto";
 
 import authRoutes from "./modules/auth/routes";
@@ -32,7 +31,11 @@ import { runDueBinPurge } from "./modules/bin/service";
 import { purgeExpiredProductSearchLogs } from "./modules/products/searchLogging";
 import { purgeDeadAuthSessions } from "./modules/auth/session";
 import prisma from "./db/prisma";
-import { getAllowedCorsOrigins, getRateLimitConfig } from "./config/env";
+import {
+  getAllowedCorsOrigins,
+  getRateLimitConfig,
+  validateProductionEnvironment,
+} from "./config/env";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { sanitizeBody } from "./middleware/sanitize";
 import {
@@ -40,6 +43,7 @@ import {
   requireBusinessCapability,
 } from "./modules/settings/capabilities";
 import { logger } from "./lib/logger";
+import { uploadsRoot } from "./lib/uploads";
 import {
   attachRateLimitIdentity,
   generalApiRateLimitKey,
@@ -47,6 +51,8 @@ import {
   isGeneralApiRateLimitExempt,
   isMediaRateLimitRequest,
 } from "./lib/rateLimit";
+
+validateProductionEnvironment();
 
 const app = express(); // creating the express application instance
 const PORT = Number(process.env.PORT) || 4000; // reading port from env, defaults to 4000 for local dev
@@ -221,7 +227,7 @@ app.use(express.urlencoded({ extended: true, limit: "1mb" })); // parsing URL-en
 app.use(sanitizeBody);
 // serving uploaded files (product images, profile photos) as static files
 // the uploads folder sits at the project root, two levels up from this file's compiled location
-app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
+app.use("/uploads", express.static(uploadsRoot));
 
 // simple health check endpoint so we can verify the backend is running
 // hitting http://localhost:4000/api/health should return { status: "OK" }

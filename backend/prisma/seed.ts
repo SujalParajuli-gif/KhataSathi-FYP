@@ -8,8 +8,18 @@ const prisma = new PrismaClient();
 async function main() {
   console.log("Seeding KhataSathi database...\n");
 
-  const adminPw = await bcrypt.hash("Admin@123", 10);
-  const cashierPw = await bcrypt.hash("Cashier@123", 10);
+  if (process.env.NODE_ENV === "production") {
+    throw new Error("The development seed must never run against production.");
+  }
+  const adminPassword = String(process.env.SEED_ADMIN_PASSWORD || "");
+  const cashierPassword = String(process.env.SEED_CASHIER_PASSWORD || "");
+  if (adminPassword.length < 8 || cashierPassword.length < 8) {
+    throw new Error(
+      "Set SEED_ADMIN_PASSWORD and SEED_CASHIER_PASSWORD to local-only values of at least 8 characters.",
+    );
+  }
+  const adminPw = await bcrypt.hash(adminPassword, 10);
+  const cashierPw = await bcrypt.hash(cashierPassword, 10);
 
   await prisma.user.upsert({
     where: { email: "admin@khatasathi.com" },
@@ -48,8 +58,8 @@ async function main() {
   });
 
   console.log("Users seeded:");
-  console.log("   Admin:   admin@khatasathi.com   / Admin@123");
-  console.log("   Cashier: cashier@khatasathi.com / Cashier@123\n");
+  console.log("   Local Admin:   admin@khatasathi.com");
+  console.log("   Local Cashier: cashier@khatasathi.com\n");
 
   const brandNames = [
     "CG Foods",

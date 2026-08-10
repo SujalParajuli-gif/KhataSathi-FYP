@@ -1,0 +1,9 @@
+.env
+.env.*
+node_modules
+dist
+backups
+document-storage
+uploads
+*.log
+.pnpm-store

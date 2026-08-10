@@ -354,10 +354,11 @@ pnpm exec prisma db seed
 
 ### Seeded Demo Accounts
 
-The seed file provides two accounts for local testing:
-
-- Admin: `admin@khatasathi.com` / `Admin@123`
-- Cashier: `cashier@khatasathi.com` / `Cashier@123`
+The seed file can create two local testing accounts. Before running it, set
+`SEED_ADMIN_PASSWORD` and `SEED_CASHIER_PASSWORD` in `backend/.env` to your own
+local-only passwords of at least eight characters. Seed passwords are not kept
+in Git, are not printed by the seed command, and the development seed refuses to
+run when `NODE_ENV=production`.
 
 ## Folder Structure Overview
 

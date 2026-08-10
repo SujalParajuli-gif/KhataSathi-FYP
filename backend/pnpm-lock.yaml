@@ -44,6 +44,9 @@ importers:
       pdf-parse:
         specifier: ^2.4.5
         version: 2.4.5
+      prisma:
+        specifier: ^5.22.0
+        version: 5.22.0
       zod:
         specifier: ^4.3.6
         version: 4.3.6
@@ -63,9 +66,6 @@ importers:
       '@types/node':
         specifier: ^25.0.3
         version: 25.5.0
-      prisma:
-        specifier: ^5.22.0
-        version: 5.22.0
       ts-node-dev:
         specifier: ^2.0.0
         version: 2.0.0(@types/node@25.5.0)(typescript@5.9.3)

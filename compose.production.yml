@@ -1,0 +1,114 @@
+name: khatasathi
+
+services:
+  mysql:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      TZ: ${TZ:-Asia/Kathmandu}
+      MYSQL_DATABASE: ${DB_NAME:?Set DB_NAME in the production environment file}
+      MYSQL_USER: ${DB_USER:?Set DB_USER in the production environment file}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the production environment file}
+      MYSQL_ROOT_PASSWORD: ${DB_ROOT_PASSWORD:?Set DB_ROOT_PASSWORD in the production environment file}
+    command:
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    volumes:
+      - mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping --host=127.0.0.1 --user=root --password=$$MYSQL_ROOT_PASSWORD --silent"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    networks:
+      - data
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      TZ: ${TZ:-Asia/Kathmandu}
+      PORT: 4000
+      DATABASE_URL: mysql://${DB_USER}:${DB_PASSWORD}@mysql:3306/${DB_NAME}
+      SESSION_SECRET: ${SESSION_SECRET:?Set a random SESSION_SECRET of at least 32 characters}
+      SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
+      FRONTEND_BASE_URL: ${APP_ORIGIN:?Set APP_ORIGIN to the exact public origin}
+      CORS_ORIGINS: ${APP_ORIGIN}
+      UPLOADS_ROOT: /uploads
+      DOCUMENT_STORAGE_ROOT: /document-storage
+      BACKUP_ROOT: /backups
+      LOGIN_RATE_LIMIT_PER_MINUTE: ${LOGIN_RATE_LIMIT_PER_MINUTE:-5}
+      API_RATE_LIMIT_REQUESTS: ${API_RATE_LIMIT_REQUESTS:-600}
+      API_RATE_LIMIT_WINDOW_MINUTES: ${API_RATE_LIMIT_WINDOW_MINUTES:-15}
+      BACKGROUND_RATE_LIMIT_REQUESTS: ${BACKGROUND_RATE_LIMIT_REQUESTS:-200}
+      MEDIA_RATE_LIMIT_REQUESTS: ${MEDIA_RATE_LIMIT_REQUESTS:-600}
+      ESEWA_ENV: ${ESEWA_ENV:-sandbox}
+      ESEWA_PRODUCT_CODE: ${ESEWA_PRODUCT_CODE:-EPAYTEST}
+      ESEWA_SECRET_KEY: "${ESEWA_SECRET_KEY:-8gBm/:&EnhH.1/q}"
+      ESEWA_SUCCESS_URL: ${ESEWA_SUCCESS_URL:-}
+      ESEWA_FAILURE_URL: ${ESEWA_FAILURE_URL:-}
+    volumes:
+      - uploads:/uploads
+      - document_storage:/document-storage
+      - backup_staging:/backups
+    depends_on:
+      mysql:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:4000/api/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))"
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 45s
+    networks:
+      - edge
+      - data
+
+  web:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+      args:
+        VITE_API_BASE_URL: ""
+    restart: unless-stopped
+    environment:
+      APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN to :80 locally or the production hostname}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      backend:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/api/health"]
+      interval: 15s
+      timeout: 5s
+      retries: 8
+      start_period: 15s
+    networks:
+      - edge
+
+volumes:
+  mysql_data:
+  uploads:
+  document_storage:
+  backup_staging:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+  data:
+    internal: true

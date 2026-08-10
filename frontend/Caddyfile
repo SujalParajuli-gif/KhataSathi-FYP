@@ -1,0 +1,30 @@
+{
+	admin off
+}
+
+{$APP_DOMAIN} {
+	encode zstd gzip
+
+	@backend path /api/* /uploads/*
+	handle @backend {
+		reverse_proxy backend:4000
+	}
+
+	handle {
+		root * /srv
+		try_files {path} /index.html
+		file_server
+	}
+
+	header {
+		Referrer-Policy "strict-origin-when-cross-origin"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		-Server
+	}
+
+	log {
+		output stdout
+		format json
+	}
+}

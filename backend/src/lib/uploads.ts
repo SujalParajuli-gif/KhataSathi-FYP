@@ -4,7 +4,9 @@ import path from "path";
 const UPLOADS_PREFIX = "/uploads/"; // the URL prefix that all uploaded file paths start with
 // Profile and product uploads are written to the repository-level uploads folder.
 // This path works from both src/lib (development) and dist/lib (production).
-const uploadsRoot = path.resolve(__dirname, "../../../uploads");
+export const uploadsRoot = process.env.UPLOADS_ROOT?.trim()
+  ? path.resolve(process.env.UPLOADS_ROOT)
+  : path.resolve(__dirname, "../../../uploads");
 
 // converting a public URL like "/uploads/products/image.png" to the actual file path on disk
 // we added multiple safety checks here to prevent path traversal attacks
