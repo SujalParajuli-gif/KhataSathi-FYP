@@ -15,6 +15,9 @@ type PrismaLike = PrismaClient | Prisma.TransactionClient;
 // defining the shape of the business settings object returned from the database
 export type BusinessSettingsSnapshot = {
   id: number;
+  businessMode: "CATALOG_ONLY" | "INVENTORY_ONLY" | "FULL_POS";
+  staffDraftRequestsEnabled: boolean;
+  defaultInitialStock: number;
   defaultLowStockThreshold: number;
   defaultWholesaleQtyThreshold: number;
   loyaltyDiscountPercent: number;
@@ -39,6 +42,10 @@ let businessSettingsCache:
   | { value: BusinessSettingsSnapshot; expiresAt: number }
   | null = null;
 
+export function invalidateBusinessSettingsCache() {
+  businessSettingsCache = null;
+}
+
 // defining the shape of product threshold fields used when resolving which threshold to apply
 type ProductThresholdShape = {
   wholesaleQtyThreshold: number;
@@ -47,8 +54,6 @@ type ProductThresholdShape = {
   usesDefaultLowStockThreshold?: boolean | null;
 };
 
-// normalizing a number with a minimum value
-// if the input is not a valid number, we fall back to the provided default
 function normalizeDecimalNumber(
   value: number | undefined,
   fallback: number,
@@ -59,13 +64,118 @@ function normalizeDecimalNumber(
   return Math.max(min, normalized);
 }
 
-// clamping a percentage value between 0 and 100
-// if the input is invalid, we use the fallback value
-function clampPercent(value: number | undefined, fallback: number) {
-  const normalized = Number(value ?? fallback);
-  if (!Number.isFinite(normalized)) return fallback;
-  if (normalized < 0) return 0;
-  if (normalized > 100) return 100;
+// normalizing a number with a minimum value
+// if the input is not a valid number, we fall back to the provided default
+const DEFAULT_BUSINESS_SETTINGS = {
+  defaultInitialStock: 30,
+  defaultLowStockThreshold: 5,
+  defaultWholesaleQtyThreshold: 15,
+  loyaltyDiscountPercent: 2,
+  returnWindowDays: 7,
+  parkedBillExpiryHours: 8,
+  draftRequestExpiryMinutes: 30,
+} as const;
+
+type BusinessDefaultsInput = {
+  defaultInitialStock?: number;
+  defaultLowStockThreshold?: number;
+  defaultWholesaleQtyThreshold?: number;
+  loyaltyDiscountPercent?: number;
+  returnWindowDays?: number;
+  parkedBillExpiryHours?: number;
+  draftRequestExpiryMinutes?: number;
+};
+
+export class BusinessSettingsValidationError extends Error {
+  field: keyof BusinessDefaultsInput;
+
+  constructor(field: keyof BusinessDefaultsInput, message: string) {
+    super(message);
+    this.name = "BusinessSettingsValidationError";
+    this.field = field;
+  }
+}
+
+function validateSettingNumber(
+  field: keyof BusinessDefaultsInput,
+  value: number,
+  options: { label: string; min: number; max?: number; integer?: boolean },
+) {
+  if (!Number.isFinite(value)) {
+    throw new BusinessSettingsValidationError(
+      field,
+      `${options.label} must be a valid number.`,
+    );
+  }
+  if (value < options.min || (options.max !== undefined && value > options.max)) {
+    const range = options.max === undefined
+      ? `at least ${options.min}`
+      : `between ${options.min} and ${options.max}`;
+    throw new BusinessSettingsValidationError(
+      field,
+      `${options.label} must be ${range}.`,
+    );
+  }
+  if (options.integer && !Number.isInteger(value)) {
+    throw new BusinessSettingsValidationError(
+      field,
+      `${options.label} must be a whole number.`,
+    );
+  }
+  return value;
+}
+
+export function normalizeBusinessSettingsPatch(data: BusinessDefaultsInput) {
+  const normalized: BusinessDefaultsInput = {};
+  if (data.defaultInitialStock !== undefined) {
+    normalized.defaultInitialStock = validateSettingNumber(
+      "defaultInitialStock",
+      Number(data.defaultInitialStock),
+      { label: "New product initial stock", min: 0 },
+    );
+  }
+  if (data.defaultLowStockThreshold !== undefined) {
+    normalized.defaultLowStockThreshold = validateSettingNumber(
+      "defaultLowStockThreshold",
+      Number(data.defaultLowStockThreshold),
+      { label: "Stock alert threshold", min: 0 },
+    );
+  }
+  if (data.defaultWholesaleQtyThreshold !== undefined) {
+    normalized.defaultWholesaleQtyThreshold = validateSettingNumber(
+      "defaultWholesaleQtyThreshold",
+      Number(data.defaultWholesaleQtyThreshold),
+      { label: "Wholesale quantity threshold", min: 1 },
+    );
+  }
+  if (data.loyaltyDiscountPercent !== undefined) {
+    normalized.loyaltyDiscountPercent = validateSettingNumber(
+      "loyaltyDiscountPercent",
+      Number(data.loyaltyDiscountPercent),
+      { label: "Loyalty discount", min: 0, max: 100 },
+    );
+  }
+  if (data.returnWindowDays !== undefined) {
+    normalized.returnWindowDays = validateSettingNumber(
+      "returnWindowDays",
+      Number(data.returnWindowDays),
+      { label: "Return window", min: 0, integer: true },
+    );
+  }
+  if (data.parkedBillExpiryHours !== undefined) {
+    normalized.parkedBillExpiryHours = validateSettingNumber(
+      "parkedBillExpiryHours",
+      Number(data.parkedBillExpiryHours),
+      { label: "Parked bill expiry", min: 1, integer: true },
+    );
+  }
+  if (data.draftRequestExpiryMinutes !== undefined) {
+    normalized.draftRequestExpiryMinutes = validateSettingNumber(
+      "draftRequestExpiryMinutes",
+      Number(data.draftRequestExpiryMinutes),
+      { label: "Draft request expiry", min: 1, integer: true },
+    );
+  }
   return normalized;
 }
 
@@ -74,36 +184,11 @@ function clampPercent(value: number | undefined, fallback: number) {
 // - low stock threshold defaults to 5
 // - wholesale qty threshold defaults to 15 (minimum 1 because 0 does not make sense for quantity)
 // - loyalty discount percent defaults to 2%
-export function normalizeBusinessSettingsInput(data: {
-  defaultLowStockThreshold?: number;
-  defaultWholesaleQtyThreshold?: number;
-  loyaltyDiscountPercent?: number;
-  returnWindowDays?: number;
-  parkedBillExpiryHours?: number;
-  draftRequestExpiryMinutes?: number;
-}) {
-  return {
-    defaultLowStockThreshold: normalizeDecimalNumber(
-      data.defaultLowStockThreshold,
-      5,
-      0,
-    ),
-    defaultWholesaleQtyThreshold: normalizeDecimalNumber(
-      data.defaultWholesaleQtyThreshold,
-      15,
-      1,
-    ),
-    loyaltyDiscountPercent: clampPercent(data.loyaltyDiscountPercent, 2),
-    returnWindowDays: Math.floor(
-      normalizeDecimalNumber(data.returnWindowDays, 7, 0),
-    ),
-    parkedBillExpiryHours: Math.floor(
-      normalizeDecimalNumber(data.parkedBillExpiryHours, 8, 1),
-    ),
-    draftRequestExpiryMinutes: Math.floor(
-      normalizeDecimalNumber(data.draftRequestExpiryMinutes, 30, 1),
-    ),
-  };
+export function normalizeBusinessSettingsInput(data: BusinessDefaultsInput) {
+  return normalizeBusinessSettingsPatch({
+    ...DEFAULT_BUSINESS_SETTINGS,
+    ...data,
+  }) as Required<BusinessDefaultsInput>;
 }
 
 // fetching the business settings from the database
@@ -139,37 +224,51 @@ export async function getBusinessSettings(
 // updating the business settings with new values
 // we use upsert again so it works even if the settings row was never created before
 export async function updateBusinessSettings(
-  data: {
-    defaultLowStockThreshold?: number;
-    defaultWholesaleQtyThreshold?: number;
-    loyaltyDiscountPercent?: number;
-    returnWindowDays?: number;
-    parkedBillExpiryHours?: number;
-    draftRequestExpiryMinutes?: number;
-  },
-  client: PrismaLike = prisma,
+  data: BusinessDefaultsInput,
+  actorId: string,
 ) {
-  const normalized = normalizeBusinessSettingsInput(data); // normalizing input before saving
-
-  const settings = await client.businessSettings.upsert({
-    where: { id: BUSINESS_SETTINGS_ID },
-    update: normalized,
-    create: {
-      id: BUSINESS_SETTINGS_ID,
-      ...normalized,
-    },
+  const normalized = normalizeBusinessSettingsPatch(data);
+  const settings = await prisma.$transaction(async (tx) => {
+    const before = await getBusinessSettings(tx);
+    const updated = await tx.businessSettings.upsert({
+      where: { id: BUSINESS_SETTINGS_ID },
+      update: normalized,
+      create: {
+        id: BUSINESS_SETTINGS_ID,
+        ...normalizeBusinessSettingsInput(normalized),
+      },
+    });
+    const changes = Object.fromEntries(
+      Object.entries(normalized)
+        .filter(([key, value]) => before[key as keyof BusinessSettingsSnapshot] !== value)
+        .map(([key, value]) => [
+          key,
+          {
+            before: before[key as keyof BusinessSettingsSnapshot],
+            after: value,
+          },
+        ]),
+    );
+    if (Object.keys(changes).length > 0) {
+      await tx.auditLog.create({
+        data: {
+          actorId,
+          action: "BUSINESS_DEFAULTS_CHANGED",
+          entityType: "BusinessSettings",
+          entityId: String(BUSINESS_SETTINGS_ID),
+          meta: { changes },
+        },
+      });
+    }
+    return updated;
   });
 
   const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
     settings as OverridePolicyRow;
-  if (client === prisma) {
-    businessSettingsCache = {
-      value: safe,
-      expiresAt: Date.now() + BUSINESS_SETTINGS_CACHE_TTL_MS,
-    };
-  } else {
-    businessSettingsCache = null;
-  }
+  businessSettingsCache = {
+    value: safe,
+    expiresAt: Date.now() + BUSINESS_SETTINGS_CACHE_TTL_MS,
+  };
   return safe;
 }
 

@@ -27,6 +27,7 @@ export default [
   ]),
 
   route("login", "routes/login.tsx"), // standalone login page (no layout wrapper)
+  route("change-password", "routes/change-password.tsx"),
   route("invoices/:id/print", "routes/invoices.print.tsx"), // printable invoice view (opens in new tab)
   route("payments/esewa/result", "routes/payments.esewa.result.tsx"), // eSewa payment result callback page
 ] satisfies RouteConfig;

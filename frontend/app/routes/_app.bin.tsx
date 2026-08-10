@@ -130,7 +130,7 @@ export default function BinPage() {
   const pageEnd = total === 0 ? 0 : pageStart + records.length;
 
   return (
-    <div className="min-h-full rounded-[28px] bg-white p-6 text-slate-900">
+    <div className="-mx-2 min-h-full bg-white px-1 pb-6 pt-3 text-slate-900 md:mx-0 md:rounded-[28px] md:p-6">
       <div className="mb-6 flex flex-col gap-4 md:mb-8 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex items-center gap-3">

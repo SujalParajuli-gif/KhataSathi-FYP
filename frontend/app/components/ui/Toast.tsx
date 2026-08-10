@@ -11,6 +11,7 @@ import React, {
 import { useLocation } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { isRateLimited } from "~/lib/api/client";
+import { overlayLayers } from "~/lib/ui/overlayLayers";
 
 export type ToastTone = "success" | "info" | "danger" | "warning";
 
@@ -145,7 +146,7 @@ export function ToastProvider({ children }: { children: ReactNode }) {
   return (
     <ToastContext.Provider value={value}>
       {children}
-      <div className="fixed left-1/2 top-4 z-[90] flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-3">
+      <div className={`fixed left-1/2 top-4 flex w-[min(420px,calc(100vw-32px))] -translate-x-1/2 flex-col gap-3 ${overlayLayers.toast}`}>
         {items.map((item) => (
           <ToastCard key={item.id} item={item} onClose={removeToast} />
         ))}

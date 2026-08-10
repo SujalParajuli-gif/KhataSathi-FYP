@@ -8,6 +8,7 @@ import { randomUUID } from "crypto";
 
 import authRoutes from "./modules/auth/routes";
 import brandRoutes from "./modules/brands/routes";
+import productSearchAliasRoutes from "./modules/products/searchAliasRoutes";
 import productRoutes from "./modules/products/routes";
 import customerRoutes from "./modules/customers/routes";
 import invoiceRoutes from "./modules/invoices/routes";
@@ -28,10 +29,16 @@ import { cleanupStaleEsewaPayments } from "./modules/payments/service";
 import { expireDueParkedDrafts } from "./modules/invoices/service";
 import { expireDueDraftRequests } from "./modules/draft-requests/service";
 import { runDueBinPurge } from "./modules/bin/service";
+import { purgeExpiredProductSearchLogs } from "./modules/products/searchLogging";
+import { purgeDeadAuthSessions } from "./modules/auth/session";
 import prisma from "./db/prisma";
 import { getAllowedCorsOrigins, getRateLimitConfig } from "./config/env";
 import { errorHandler, notFoundHandler } from "./middleware/errorHandler";
 import { sanitizeBody } from "./middleware/sanitize";
+import {
+  getBusinessCapabilities,
+  requireBusinessCapability,
+} from "./modules/settings/capabilities";
 import { logger } from "./lib/logger";
 import {
   attachRateLimitIdentity,
@@ -222,22 +229,27 @@ app.use("/uploads", express.static(path.join(__dirname, "../../uploads")));
 // each module handles its own route definitions, controllers, and services
 app.use("/api/auth", authRoutes);
 app.use("/api/brands", brandRoutes);
+app.use("/api/product-search", productSearchAliasRoutes);
 app.use("/api/products", productRoutes);
-app.use("/api/customers", customerRoutes);
-app.use("/api/invoices", invoiceRoutes);
+app.use("/api/customers", requireBusinessCapability("POS"), customerRoutes);
+app.use("/api/invoices", requireBusinessCapability("POS"), invoiceRoutes);
 app.use("/api", paymentRoutes); // payment routes handle both /api/payments and /api/invoices/:id/payments internally
-app.use("/api/inventory", inventoryRoutes);
-app.use("/api/reports", reportRoutes);
+app.use("/api/inventory", requireBusinessCapability("INVENTORY"), inventoryRoutes);
+app.use("/api/reports", requireBusinessCapability("POS"), reportRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/alerts", alertRoutes);
+app.use("/api/alerts", requireBusinessCapability("INVENTORY"), alertRoutes);
 app.use("/api/settings", settingsRoutes);
-app.use("/api/returns", returnRoutes);
-app.use("/api/cash-drawers", cashDrawerRoutes);
+app.use("/api/returns", requireBusinessCapability("POS"), returnRoutes);
+app.use("/api/cash-drawers", requireBusinessCapability("POS"), cashDrawerRoutes);
 app.use("/api/documents", documentRoutes);
 app.use("/api/bin", binRoutes);
-app.use("/api/draft-requests", draftRequestRoutes);
+app.use(
+  "/api/draft-requests",
+  requireBusinessCapability("STAFF_DRAFT_REQUESTS"),
+  draftRequestRoutes,
+);
 
 app.use(notFoundHandler);
 app.use(errorHandler);
@@ -253,6 +265,7 @@ const server = app.listen(PORT, "0.0.0.0", () => {
 
 async function runEsewaCleanup() {
   try {
+    if (!(await getBusinessCapabilities()).posEnabled) return;
     const result = await cleanupStaleEsewaPayments(30);
     if (result.expired > 0) {
       logger.info("Expired stale eSewa payments", result);
@@ -270,6 +283,7 @@ esewaCleanupTimer.unref();
 
 async function runDraftRequestExpiryCheck() {
   try {
+    if (!(await getBusinessCapabilities()).staffDraftRequestsEnabled) return;
     const result = await expireDueDraftRequests();
     if (result.expired > 0) {
       logger.info("Expired due draft requests", result);
@@ -287,6 +301,7 @@ draftRequestExpiryTimer.unref();
 
 async function runParkedBillExpiryCheck() {
   try {
+    if (!(await getBusinessCapabilities()).posEnabled) return;
     const result = await expireDueParkedDrafts();
     if (result.expired > 0) {
       logger.info("Expired due parked bills", result);
@@ -344,6 +359,40 @@ const binPurgeTimer = setInterval(() => {
 }, 60 * 60 * 1000);
 binPurgeTimer.unref();
 
+async function runProductSearchLogPurgeCheck() {
+  try {
+    const result = await purgeExpiredProductSearchLogs();
+    if (result.deleted > 0) {
+      logger.info("Expired product search logs purged", result);
+    }
+  } catch (error) {
+    logger.error("Product search log purge failed", error);
+  }
+}
+
+void runProductSearchLogPurgeCheck();
+const productSearchLogPurgeTimer = setInterval(() => {
+  void runProductSearchLogPurgeCheck();
+}, 24 * 60 * 60 * 1000);
+productSearchLogPurgeTimer.unref();
+
+async function runAuthSessionPurgeCheck() {
+  try {
+    const result = await purgeDeadAuthSessions();
+    if (result.count > 0) {
+      logger.info("Expired or old revoked auth sessions purged", result);
+    }
+  } catch (error) {
+    logger.error("Auth session purge failed", error);
+  }
+}
+
+void runAuthSessionPurgeCheck();
+const authSessionPurgeTimer = setInterval(() => {
+  void runAuthSessionPurgeCheck();
+}, 24 * 60 * 60 * 1000);
+authSessionPurgeTimer.unref();
+
 let shuttingDown = false;
 
 async function shutdown(signal: string) {
@@ -356,6 +405,8 @@ async function shutdown(signal: string) {
   clearInterval(parkedBillExpiryTimer);
   clearInterval(backupScheduleTimer);
   clearInterval(binPurgeTimer);
+  clearInterval(productSearchLogPurgeTimer);
+  clearInterval(authSessionPurgeTimer);
 
   const forceExit = setTimeout(() => {
     logger.error("Forced shutdown timeout reached");

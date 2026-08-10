@@ -1,23 +1,9 @@
-import type { SignOptions } from "jsonwebtoken";
-
-function requireEnv(name: string) {
-  const value = process.env[name]?.trim();
-  if (!value) {
-    throw new Error(`${name} is required. Set it in the backend environment.`);
-  }
-  return value;
-}
-
 function parseOriginList(value?: string) {
   return String(value || "")
     .split(",")
     .map((origin) => origin.trim().replace(/\/+$/, ""))
     .filter(Boolean);
 }
-
-export const JWT_SECRET = requireEnv("JWT_SECRET");
-export const JWT_EXPIRES_IN = (process.env.JWT_EXPIRES_IN ||
-  "8h") as SignOptions["expiresIn"];
 
 export function getAllowedCorsOrigins() {
   const configured = parseOriginList(
@@ -54,5 +40,27 @@ export function getRateLimitConfig() {
       process.env.MEDIA_RATE_LIMIT_REQUESTS || 600,
     ),
     apiWindowMinutes: Number(process.env.API_RATE_LIMIT_WINDOW_MINUTES || 15),
+  };
+}
+
+export function getSessionConfig() {
+  const ttlHours = Number(process.env.SESSION_TTL_HOURS || 168);
+  if (!Number.isFinite(ttlHours) || ttlHours < 1 || ttlHours > 24 * 30) {
+    throw new Error("SESSION_TTL_HOURS must be between 1 and 720 hours.");
+  }
+  const configuredSecret = process.env.SESSION_SECRET?.trim();
+  if (process.env.NODE_ENV === "production" && !configuredSecret) {
+    throw new Error("SESSION_SECRET is required in production.");
+  }
+  const sessionSecret =
+    configuredSecret || "khatasathi-local-development-session-secret-change-me";
+  if (sessionSecret.length < 32) {
+    throw new Error("SESSION_SECRET must contain at least 32 characters.");
+  }
+
+  return {
+    ttlHours,
+    secureCookies: process.env.NODE_ENV === "production",
+    sessionSecret,
   };
 }

@@ -3,13 +3,18 @@ import api from "./client";
 
 // --- Auth endpoints ---
 
-// logging in with email and password — returns the JWT token and user object
-export async function loginApi(email: string, password: string) {
-    const res = await api.post("/api/auth/login", { email, password });
+// Login establishes an HttpOnly server session and returns the user profile.
+export async function loginApi(identifier: string, password: string) {
+    const res = await api.post("/api/auth/login", { identifier, password });
     return res.data;
 }
 
-// fetching the currently logged-in user's profile data using the JWT token
+export async function logoutApi() {
+    const res = await api.post("/api/auth/logout");
+    return res.data as { success: boolean };
+}
+
+// fetching the currently logged-in user's profile through the server session
 export async function getMeApi(options?: { signal?: AbortSignal }) {
     const res = await api.get("/api/auth/me", { signal: options?.signal });
     return res.data;
@@ -17,12 +22,33 @@ export async function getMeApi(options?: { signal?: AbortSignal }) {
 
 // the shape of business settings that the admin can configure
 export type BusinessSettings = {
+    businessMode: BusinessMode;
+    staffDraftRequestsEnabled: boolean;
+    defaultInitialStock: number;
     defaultLowStockThreshold: number;
     defaultWholesaleQtyThreshold: number;
     loyaltyDiscountPercent: number;
     returnWindowDays: number;
     parkedBillExpiryHours: number;
     draftRequestExpiryMinutes: number;
+};
+
+export type BusinessMode = "CATALOG_ONLY" | "INVENTORY_ONLY" | "FULL_POS";
+
+export type BusinessCapabilities = {
+    businessMode: BusinessMode;
+    catalogEnabled: true;
+    inventoryEnabled: boolean;
+    posEnabled: boolean;
+    staffDraftRequestsEnabled: boolean;
+    stockTracked: boolean;
+};
+
+export type BusinessModePreflight = {
+    currentMode: BusinessMode;
+    targetMode: BusinessMode;
+    allowed: boolean;
+    blockers: Array<{ key: string; count: number; message: string }>;
 };
 
 export type CashierPrivilege = {
@@ -44,7 +70,7 @@ export type CashierPrivilege = {
 export type CashierPrivilegeRow = {
     id: string;
     name: string;
-    email: string;
+    email?: string | null;
     phone?: string | null;
     role: "MANAGER" | "CASHIER" | "STAFF";
     isActive: boolean;
@@ -83,12 +109,17 @@ export async function updateProfileApi(data: { name?: string; phone?: string; ge
     return res.data;
 }
 
-// helper to get the Bearer token header for fetch calls (used where we can't use the axios client)
+// helper to attach CSRF protection to raw file-upload requests
 // we use raw fetch for file uploads because axios doesn't handle FormData content-type properly
-function getBearerHeaders() {
+function getSessionMutationHeaders() {
     if (typeof window === "undefined") return {} as Record<string, string>;
-    const token = localStorage.getItem("khatasathi_token");
-    return token ? { Authorization: `Bearer ${token}` } : ({} as Record<string, string>);
+    const csrfCookie = document.cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("khatasathi_csrf="));
+    return csrfCookie
+        ? { "X-CSRF-Token": decodeURIComponent(csrfCookie.slice("khatasathi_csrf=".length)) }
+        : ({} as Record<string, string>);
 }
 
 // uploading a profile photo — uses raw fetch instead of axios because FormData needs
@@ -109,7 +140,8 @@ export async function uploadProfilePhotoApi(file: File) {
     formData.append("photo", file);
     const res = await fetch(API_BASE_URL + "/api/auth/profile/photo", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: formData
     });
     if (!res.ok) {
@@ -204,6 +236,20 @@ interface ProductFilters {
     pageSize?: number;
 }
 
+const PRODUCT_SEARCH_SESSION_KEY = "khatasathi:product-search-session";
+
+function productSearchSessionHeader() {
+    if (typeof window === "undefined") return undefined;
+    let sessionId = window.sessionStorage.getItem(PRODUCT_SEARCH_SESSION_KEY);
+    if (!sessionId) {
+        sessionId = typeof window.crypto?.randomUUID === "function"
+            ? window.crypto.randomUUID()
+            : `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+        window.sessionStorage.setItem(PRODUCT_SEARCH_SESSION_KEY, sessionId);
+    }
+    return { "X-Product-Search-Session": sessionId };
+}
+
 // listing products with optional search, brand filter, category filter, and pagination
 export async function listProductsApi(
     filters?: ProductFilters,
@@ -212,7 +258,105 @@ export async function listProductsApi(
     const res = await api.get("/api/products", {
         params: filters,
         signal: options?.signal,
+        headers: productSearchSessionHeader(),
     });
+    return res.data;
+}
+
+export async function listPriceLookupProductsApi(
+    filters?: ProductFilters,
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products/price-lookup", {
+        params: filters,
+        signal: options?.signal,
+        headers: productSearchSessionHeader(),
+    });
+    return res.data as {
+        products: any[];
+        total: number;
+        page: number;
+        pageSize: number;
+        searchLogId: string | null;
+        visibility: {
+            canViewPurchaseCost: boolean;
+            canViewWholesalePrice: boolean;
+        };
+    };
+}
+
+export type ProductSearchSelectionAction =
+    | "VIEW_DETAILS"
+    | "VIEW_IMAGE"
+    | "EDIT_PRODUCT"
+    | "ADD_TO_DRAFT";
+
+export async function recordProductSearchSelectionApi(input: {
+    searchLogId?: string | null;
+    productId: string;
+    action: ProductSearchSelectionAction;
+}) {
+    if (!input.searchLogId) return;
+    await api.post("/api/products/search-selections", input);
+}
+
+export type ProductSearchInsight = {
+    rawQuery: string;
+    normalizedQuery: string;
+    filters: {
+        brand?: string | null;
+        category?: string | null;
+        isActive?: boolean | null;
+        lowStockOnly?: boolean;
+        stockStatus?: string | null;
+    } | null;
+    searches: number;
+    resultCount: number;
+    selectedSearches: number;
+    selectionRate: number;
+    sources: string[];
+    averageDurationMs: number;
+    lastSearchedAt: string;
+};
+
+export async function getProductSearchInsightsApi(days = 30, limit = 30) {
+    const res = await api.get("/api/product-search/insights", {
+        params: { days, limit },
+    });
+    return res.data as {
+        periodDays: number;
+        retentionDays: number;
+        aliasApprovalRequired: boolean;
+        noResults: ProductSearchInsight[];
+        usefulResults: ProductSearchInsight[];
+    };
+}
+
+export type SearchAliasProductOption = {
+    id: string;
+    name: string;
+    sku: string;
+    imageUrl?: string | null;
+    brand?: { id?: string; name?: string } | null;
+    category?: string | null;
+};
+
+export async function getSearchAliasProductOptionsApi(
+    query: string,
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/product-search/product-options", {
+        params: { q: query },
+        signal: options?.signal,
+    });
+    return (res.data?.products || []) as SearchAliasProductOption[];
+}
+
+export async function createProductSearchAliasApi(input: {
+    productId: string;
+    alias: string;
+}) {
+    const res = await api.post("/api/product-search/product-aliases", input);
     return res.data;
 }
 
@@ -270,6 +414,7 @@ export type ProductDeleteSafety = {
     canPermanentDelete: boolean;
     references: Array<{ label: string; count: number }>;
     stockBlocker: string | null;
+    canDiscardStockAndDelete: boolean;
     safeReason: string | null;
     recommendedAction: "PERMANENT_DELETE" | "SET_INACTIVE";
 };
@@ -286,6 +431,18 @@ export async function permanentlyDeleteProductApi(id: string) {
         safety: ProductDeleteSafety;
         message: string;
     }>(`/api/products/${id}`);
+    invalidateProductReferenceCache();
+    return res.data;
+}
+
+export async function discardStockAndDeleteProductApi(id: string) {
+    const res = await api.post<{
+        deleted: boolean;
+        product: { id: string; name: string; sku: string };
+        discardedStock: number;
+        safety: ProductDeleteSafety;
+        message: string;
+    }>(`/api/products/${id}/discard-stock-and-delete`);
     invalidateProductReferenceCache();
     return res.data;
 }
@@ -352,7 +509,8 @@ export async function importCsvApi(
     if (options?.defaults) formData.append("defaults", JSON.stringify(options.defaults));
     const res = await fetch(API_BASE_URL + "/api/products/import-csv", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: formData,
     });
     if (!res.ok) {
@@ -399,6 +557,7 @@ export async function bulkUpdateProductPricesApi(payload: {
         lowStockOnly?: boolean;
         stockStatus?: "in" | "low" | "out";
     };
+    excludedProductIds?: string[];
     wholesaleMarginPercent?: number;
     retailMarginPercent?: number;
 }) {
@@ -417,7 +576,8 @@ export async function importPdfApi(file: File) {
     formData.append("file", file);
     const res = await fetch(API_BASE_URL + "/api/products/import-pdf", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: formData,
     });
     if (!res.ok) {
@@ -432,7 +592,8 @@ export async function importImageRateListApi(file: File) {
     formData.append("file", file);
     const res = await fetch(API_BASE_URL + "/api/products/import-image", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: formData,
     });
     if (!res.ok) {
@@ -538,6 +699,16 @@ export async function deleteProductImportBatchApi(batchId: string) {
     };
 }
 
+export async function saveReviewedProductImportRowsApi(
+    batchId: string,
+    rows: ReviewedPdfImportRowPayload[],
+) {
+    const res = await api.put(`/api/products/import-batches/${batchId}/rows`, {
+        rows,
+    });
+    return res.data as { rows: ProductImportRow[]; savedCount: number };
+}
+
 export async function importReviewedPdfRowsApi(
     batchId: string,
     payload: { rows: ReviewedPdfImportRowPayload[]; ignoredRowIds?: string[] },
@@ -577,6 +748,36 @@ export async function getBusinessSettingsApi() {
             });
     }
     return businessSettingsRequest;
+}
+
+export async function getBusinessCapabilitiesApi(options?: { signal?: AbortSignal }) {
+    const res = await api.get("/api/settings/capabilities", {
+        signal: options?.signal,
+    });
+    return res.data as BusinessCapabilities;
+}
+
+export async function getBusinessModePreflightApi(
+    targetMode: BusinessMode,
+    staffDraftRequestsEnabled?: boolean,
+) {
+    const res = await api.get("/api/settings/business-mode/preflight", {
+        params: { targetMode, staffDraftRequestsEnabled },
+    });
+    return res.data as BusinessModePreflight;
+}
+
+export async function updateBusinessModeApi(data: {
+    businessMode: BusinessMode;
+    reason: string;
+    staffDraftRequestsEnabled?: boolean;
+}) {
+    const res = await api.put("/api/settings/business-mode", data);
+    invalidateBusinessSettingsCache();
+    return res.data as {
+        settings: BusinessSettings;
+        capabilities: BusinessCapabilities;
+    };
 }
 
 // updating business settings — only admin can access this
@@ -1054,7 +1255,8 @@ export async function restockApi(
         }
         const res = await fetch(API_BASE_URL + "/api/inventory/restock", {
             method: "POST",
-            headers: getBearerHeaders(),
+            headers: getSessionMutationHeaders(),
+            credentials: "include",
             body: fd,
         });
         if (!res.ok) {
@@ -1095,7 +1297,8 @@ export async function receiveStockBatchApi(data: {
 
     const res = await fetch(API_BASE_URL + "/api/inventory/receive-batch", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: fd,
     });
     if (!res.ok) {
@@ -1348,7 +1551,7 @@ export async function listUsersApi(params?: { role?: string }) {
 export type CashierPresence = {
     id: string;
     name: string;
-    email: string;
+    email?: string | null;
     phone?: string | null;
     isActive: boolean;
     lastPresenceAt?: string | null;
@@ -1399,9 +1602,16 @@ export type BillingDraftRequest = {
     createdBy?: { id: string; name: string; role?: string | null } | null;
     assignedCashier?: { id: string; name: string; role?: string | null; isActive?: boolean } | null;
     acceptedBy?: { id: string; name: string; role?: string | null } | null;
+    cancelledBy?: { id: string; name: string; role?: string | null } | null;
     completedInvoice?: { id: string; invoiceNo: string; netTotal?: number } | null;
     expiresAt?: string | null;
+    firstViewedAt?: string | null;
+    queuedOfflineAt?: string | null;
+    deliveryState?: "QUEUED" | "VIEWED" | "NEEDS_REASSIGNMENT" | "CLOSED";
     acceptedAt?: string | null;
+    cancelledAt?: string | null;
+    cancelledById?: string | null;
+    cancellationReason?: string | null;
     modifiedAt?: string | null;
     createdAt: string;
     itemCount?: number;
@@ -1470,6 +1680,13 @@ export async function getDraftRequestApi(id: string) {
     return res.data;
 }
 
+export async function markDraftRequestViewedApi(id: string) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/viewed`,
+    );
+    return res.data;
+}
+
 export async function updateDraftRequestApi(id: string, data: Partial<DraftRequestPayload>) {
     const res = await api.put<{ request: BillingDraftRequest }>(
         `/api/draft-requests/${id}`,
@@ -1509,6 +1726,17 @@ export async function completeDraftRequestApi(id: string, invoiceId: string) {
     return res.data;
 }
 
+export async function resolveAcceptedDraftRequestApi(
+    id: string,
+    data: { action: "RETURN_TO_QUEUE" | "CANCEL"; reason: string },
+) {
+    const res = await api.patch<{ request: BillingDraftRequest }>(
+        `/api/draft-requests/${id}/resolve-accepted`,
+        data,
+    );
+    return res.data;
+}
+
 // creating a new user account (admin creates cashiers here)
 export async function createUserApi(data: any) {
     const res = await api.post("/api/users", data);
@@ -1541,7 +1769,7 @@ export async function getUserDeleteSafetyApi(id: string) {
 export async function permanentlyDeleteUserApi(id: string) {
     const res = await api.delete<{
         deleted: boolean;
-        user: { id: string; name: string; email: string; role: string };
+        user: { id: string; name: string; email?: string | null; role: string };
         safety: UserDeleteSafety;
         message: string;
     }>(`/api/users/${id}`);
@@ -1643,7 +1871,8 @@ export async function uploadUserPhotoApi(userId: string, file: File) {
     fd.append("photo", file);
     const res = await fetch(API_BASE_URL + `/api/users/${userId}/photo`, {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: fd,
     });
     if (!res.ok) {
@@ -1660,7 +1889,8 @@ export async function uploadProductImageApi(productId: string, file: File) {
     fd.append("image", file);
     const res = await fetch(API_BASE_URL + `/api/products/${productId}/image`, {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: fd,
     });
     if (!res.ok) {
@@ -1679,6 +1909,7 @@ export type DocumentVisibility = "ALL_AUTHENTICATED" | "ADMIN_MANAGER" | "ADMIN_
 export type DocumentRecord = {
     id: string;
     documentType: DocumentType;
+    title: string | null;
     fileName: string;
     storedFileName: string;
     storedPath: string;
@@ -1723,6 +1954,7 @@ export type StorageInfo = {
 export async function uploadDocumentsApi(
     files: File[],
     metadata: {
+        titles?: string[];
         documentType: DocumentType;
         supplierName?: string;
         billNumber?: string;
@@ -1739,6 +1971,7 @@ export async function uploadDocumentsApi(
         fd.append("files", file);
     }
     fd.append("documentType", metadata.documentType);
+    if (metadata.titles) fd.append("titles", JSON.stringify(metadata.titles));
     if (metadata.supplierName) fd.append("supplierName", metadata.supplierName);
     if (metadata.billNumber) fd.append("billNumber", metadata.billNumber);
     if (metadata.billDate) fd.append("billDate", metadata.billDate);
@@ -1750,7 +1983,8 @@ export async function uploadDocumentsApi(
 
     const res = await fetch(API_BASE_URL + "/api/documents", {
         method: "POST",
-        headers: getBearerHeaders(),
+        headers: getSessionMutationHeaders(),
+        credentials: "include",
         body: fd,
     });
     if (!res.ok) {
@@ -1762,6 +1996,7 @@ export async function uploadDocumentsApi(
 
 // listing documents with optional filters and pagination
 export async function listDocumentsApi(filters?: {
+    q?: string;
     documentType?: DocumentType;
     processingStatus?: "PROCESSED" | "UNPROCESSED";
     visibility?: DocumentVisibility;
@@ -1861,6 +2096,7 @@ export async function updateDocumentVisibilityApi(id: string, visibility: Docume
 export async function updateDocumentMetadataApi(
     id: string,
     metadata: {
+        title?: string;
         documentType?: DocumentType;
         supplierName?: string | null;
         billNumber?: string | null;

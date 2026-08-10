@@ -1,5 +1,6 @@
 import { NavLink } from "react-router";
 import GIcon from "~/components/ui/GIcon";
+import type { BusinessCapabilities } from "~/lib/api/endpoints";
 
 const items = [
   { to: "/product-lookup", label: "Lookup", icon: "search" },
@@ -7,14 +8,20 @@ const items = [
   { to: "/cashier-profile", label: "Profile", icon: "person" },
 ] as const;
 
-export default function StaffBottomNav() {
+export default function StaffBottomNav({ capabilities }: { capabilities: BusinessCapabilities }) {
+  const visibleItems = capabilities.staffDraftRequestsEnabled
+    ? items
+    : items.filter((item) => item.to !== "/staff-requests");
   return (
     <nav
       aria-label="Staff navigation"
       className="fixed inset-x-0 bottom-0 z-[30] border-t border-[#CFCFD3] bg-white/95 pb-[env(safe-area-inset-bottom)] shadow-[0_-8px_24px_rgba(15,23,42,0.08)] backdrop-blur lg:hidden"
     >
-      <div className="grid h-[64px] grid-cols-3">
-        {items.map((item) => (
+      <div
+        className="grid h-[64px]"
+        style={{ gridTemplateColumns: `repeat(${visibleItems.length}, minmax(0, 1fr))` }}
+      >
+        {visibleItems.map((item) => (
           <NavLink
             key={item.to}
             to={item.to}

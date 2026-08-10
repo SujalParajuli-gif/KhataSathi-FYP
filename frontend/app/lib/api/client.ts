@@ -13,6 +13,7 @@ type RateLimitRequestConfig = InternalAxiosRequestConfig & {
 
 const api = axios.create({
   baseURL: API_BASE_URL,
+  withCredentials: true,
   headers: {
     "Content-Type": "application/json",
   },
@@ -271,8 +272,18 @@ export function isRateLimitError(error: unknown) {
 
 api.interceptors.request.use(async (config: RateLimitRequestConfig) => {
   if (typeof window !== "undefined") {
-    const token = localStorage.getItem("khatasathi_token");
-    if (token) config.headers.Authorization = `Bearer ${token}`;
+    const method = String(config.method || "get").toUpperCase();
+    if (!["GET", "HEAD", "OPTIONS"].includes(method)) {
+      const csrfCookie = document.cookie
+        .split(";")
+        .map((part) => part.trim())
+        .find((part) => part.startsWith("khatasathi_csrf="));
+      if (csrfCookie) {
+        config.headers["X-CSRF-Token"] = decodeURIComponent(
+          csrfCookie.slice("khatasathi_csrf=".length),
+        );
+      }
+    }
     config._routeAtRequest ||= currentRoutePath();
   }
 
@@ -348,6 +359,16 @@ api.interceptors.response.use(
       }
     }
 
+    if (
+      error.response?.status === 428 &&
+      (error.response.data as { code?: string } | undefined)?.code ===
+        "PASSWORD_CHANGE_REQUIRED" &&
+      typeof window !== "undefined" &&
+      window.location.pathname !== "/change-password"
+    ) {
+      window.location.href = "/change-password";
+    }
+
     return Promise.reject(error);
   },
 );
@@ -360,15 +381,11 @@ const originalGet = api.get.bind(api);
 api.get = ((url: string, config?: Parameters<typeof api.get>[1]) => {
   if (config?.signal) return originalGet(url, config);
 
-  const token =
-    typeof window === "undefined"
-      ? "server"
-      : localStorage.getItem("khatasathi_token") || "anonymous";
   const key = [
     currentRoutePath(),
     url,
     stableSerialize(config?.params),
-    token,
+    typeof window === "undefined" ? "server" : "browser-session",
   ].join("|");
   const existing = inFlightReads.get(key);
   if (existing) return existing;

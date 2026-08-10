@@ -7,21 +7,85 @@ import {
   updateCashierPrivilege,
   updateBusinessSettings,
   updateOverridePin,
+  BusinessSettingsValidationError,
 } from "./service";
+import {
+  getBusinessCapabilities,
+  getBusinessModePreflight,
+  isBusinessMode,
+  updateBusinessMode,
+} from "./capabilities";
+
+export async function getCapabilities(_req: Request, res: Response) {
+  try {
+    res.json(await getBusinessCapabilities());
+  } catch (err) {
+    console.error("Get business capabilities error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getModePreflight(req: Request, res: Response) {
+  const targetMode = req.query.targetMode;
+  if (!isBusinessMode(targetMode)) {
+    res.status(400).json({ error: "A valid targetMode is required" });
+    return;
+  }
+
+  try {
+    res.json(
+      await getBusinessModePreflight(targetMode, {
+        staffDraftRequestsEnabled:
+          req.query.staffDraftRequestsEnabled === "false"
+            ? false
+            : req.query.staffDraftRequestsEnabled === "true"
+              ? true
+              : undefined,
+      }),
+    );
+  } catch (err) {
+    console.error("Business mode preflight error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function changeBusinessMode(req: Request, res: Response) {
+  const targetMode = req.body?.businessMode;
+  if (!isBusinessMode(targetMode)) {
+    res.status(400).json({ error: "A valid businessMode is required" });
+    return;
+  }
+
+  try {
+    res.json(
+      await updateBusinessMode({
+        targetMode,
+        reason: req.body?.reason,
+        actorId: req.user!.id,
+        staffDraftRequestsEnabled: req.body?.staffDraftRequestsEnabled,
+      }),
+    );
+  } catch (err: any) {
+    const statusCode = Number(err?.statusCode);
+    if (statusCode === 400 || statusCode === 409) {
+      res.status(statusCode).json({
+        error: err.message,
+        ...(err.preflight ? { preflight: err.preflight } : {}),
+      });
+      return;
+    }
+    console.error("Change business mode error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
 
 // safely converting an input value to a number, returning undefined if not provided
 // we use this so that empty or missing fields do not overwrite existing settings values
-function parseOptionalNumber(value: unknown, label: string) {
+function parseOptionalNumber(value: unknown, _label: string) {
   if (value === undefined || value === null || value === "") {
     return undefined;
   }
-
-  const normalized = Number(value);
-  if (!Number.isFinite(normalized)) {
-    throw new Error(`${label} must be a valid number`);
-  }
-
-  return normalized;
+  return Number(value);
 }
 
 // returning the current business settings (thresholds and discount defaults)
@@ -40,6 +104,10 @@ export async function getBusinessDefaults(_req: Request, res: Response) {
 export async function updateBusinessDefaults(req: Request, res: Response) {
   try {
     const settings = await updateBusinessSettings({
+      defaultInitialStock: parseOptionalNumber(
+        req.body?.defaultInitialStock,
+        "defaultInitialStock",
+      ),
       defaultLowStockThreshold: parseOptionalNumber(
         req.body?.defaultLowStockThreshold,
         "defaultLowStockThreshold",
@@ -64,13 +132,13 @@ export async function updateBusinessDefaults(req: Request, res: Response) {
         req.body?.draftRequestExpiryMinutes,
         "draftRequestExpiryMinutes",
       ),
-    });
+    }, req.user!.id);
 
     res.json(settings);
   } catch (err: any) {
     // checking if the error is a validation error from our parse function
-    if (String(err?.message || "").includes("must be")) {
-      res.status(400).json({ error: err.message });
+    if (err instanceof BusinessSettingsValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
       return;
     }
 

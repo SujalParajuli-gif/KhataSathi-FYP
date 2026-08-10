@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ConfirmDialog } from "~/components/ui/Modal";
 import { clearAuthUser } from "~/lib/auth";
+import { logoutApi } from "~/lib/api/endpoints";
 
 // simple logout route that shows a confirmation dialog
 export default function LogoutPage() {
@@ -15,11 +16,15 @@ export default function LogoutPage() {
   }
 
   // clearing auth data and dispatching the event so AppShell rerenders
-  function confirm() {
+  async function confirm() {
     setBusy(true);
-    clearAuthUser();
-    window.dispatchEvent(new Event("auth_change"));
-    navigate("/login", { replace: true });
+    try {
+      await logoutApi();
+    } finally {
+      clearAuthUser();
+      window.dispatchEvent(new Event("auth_change"));
+      navigate("/login", { replace: true });
+    }
   }
 
   // showing the confirmation modal as the whole page content

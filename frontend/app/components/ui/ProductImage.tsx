@@ -1,5 +1,4 @@
-import { useEffect, useState } from "react";
-import { API_BASE_URL } from "~/lib/api/baseUrl";
+import { useResilientImage } from "~/hooks/useResilientImage";
 import Icon from "./Icon";
 
 type Props = {
@@ -9,52 +8,51 @@ type Props = {
   imgClassName?: string;
   iconSizePx?: number;
   iconClassName?: string;
+  loading?: "eager" | "lazy";
+  showRetryOnFailure?: boolean;
 };
 
-// resolving the image URL — if it is a relative path (like "/uploads/products/abc.jpg"),
-// we prepend the API base URL so the browser can fetch it from the backend's static file server
-function resolveImageUrl(src?: string | null) {
-  if (!src) return "";
-  if (
-    src.startsWith("blob:") ||
-    src.startsWith("http://") ||
-    src.startsWith("https://")
-  ) {
-    return src; // already a full URL, no need to prepend
-  }
-  return `${API_BASE_URL}${src}`;
-}
-
-// product image component — shows the product's image or a placeholder icon if no image exists
-// works the same way as UserAvatar — tracks broken state and resets when the source changes
 export default function ProductImage({
   src,
   alt,
   className = "",
-  imgClassName = "h-full w-full object-cover",
+  imgClassName = "h-full w-full object-contain",
   iconSizePx = 24,
   iconClassName = "text-[#8C8889]",
+  loading = "lazy",
+  showRetryOnFailure = false,
 }: Props) {
-  const imageUrl = resolveImageUrl(src);
-  const [broken, setBroken] = useState(false);
-
-  // resetting broken state when the image URL changes (e.g., after uploading a new image)
-  useEffect(() => {
-    setBroken(false);
-  }, [imageUrl]);
+  const image = useResilientImage(src);
 
   return (
-    <div className={className}>
-      {imageUrl && !broken ? (
+    <div className={`relative ${className}`}>
+      {image.requestUrl && !image.failed ? (
         <img
-          src={imageUrl}
+          src={image.requestUrl}
           alt={alt}
-          className={imgClassName}
-          onError={() => setBroken(true)} // falling back to the icon if the image fails to load
+          className={`${imgClassName} transition-opacity duration-200 ${image.ready ? "opacity-100" : "opacity-0"}`}
+          loading={loading}
+          decoding="async"
+          onLoad={image.markLoaded}
+          onError={image.markFailed}
         />
-      ) : (
-        <Icon name="inventory_2" sizePx={iconSizePx} className={iconClassName} />
-      )}
+      ) : null}
+      {!image.ready ? (
+        <div className="absolute inset-0 flex items-center justify-center bg-inherit">
+          {image.failed && showRetryOnFailure ? (
+            <button
+              type="button"
+              onClick={image.retryNow}
+              className="inline-flex min-h-11 items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449]"
+            >
+              <Icon name="refresh" sizePx={17} />
+              Retry image
+            </button>
+          ) : (
+            <Icon name="inventory_2" sizePx={iconSizePx} className={iconClassName} />
+          )}
+        </div>
+      ) : null}
     </div>
   );
 }

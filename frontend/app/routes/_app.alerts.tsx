@@ -10,6 +10,7 @@ import {
   type AppAlertType,
 } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
+import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
 
 // utility to cleanly join tailwind classes
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -38,58 +39,41 @@ function AlertRow({
   const tone = alertTone(alert);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
-  const [showMobileMenu, setShowMobileMenu] = useState(false);
-  const touchStartRef = useRef<number | null>(null);
 
   // Constants for swipe
   const THRESHOLD_LEFT = -160;
   const THRESHOLD_RIGHT = 80;
 
-  const handleTouchStart = (e: React.TouchEvent) => {
-    if (window.innerWidth >= 768) return;
-    touchStartRef.current = e.touches[0].clientX;
-    setIsSwiping(true);
-  };
-
-  const handleTouchMove = (e: React.TouchEvent) => {
-    if (!isSwiping || touchStartRef.current === null || window.innerWidth >= 768) return;
-    const currentX = e.touches[0].clientX - touchStartRef.current;
-    
-    let offset = currentX;
+  const swipeGesture = useHorizontalGesture<HTMLDivElement>({
+    enabled: typeof window !== "undefined" && window.innerWidth < 768,
+    threshold: 48,
+    onStart: () => setIsSwiping(true),
+    onMove: (currentX) => {
+      let offset = currentX;
     // Add resistance if pulling past threshold
-    if (offset < 0) { // Left swipe
-      if (offset < THRESHOLD_LEFT - 40) {
-        offset = (THRESHOLD_LEFT - 40) + (offset - (THRESHOLD_LEFT - 40)) * 0.2;
-      }
-    } else { // Right swipe
-      if (offset > THRESHOLD_RIGHT + 40) {
+      if (offset < 0) {
+        if (offset < THRESHOLD_LEFT - 40) {
+          offset = (THRESHOLD_LEFT - 40) + (offset - (THRESHOLD_LEFT - 40)) * 0.2;
+        }
+      } else if (offset > THRESHOLD_RIGHT + 40) {
         offset = (THRESHOLD_RIGHT + 40) + (offset - (THRESHOLD_RIGHT + 40)) * 0.2;
       }
-    }
-    
-    setSwipeOffset(offset);
-  };
-
-  const handleTouchEnd = () => {
-    if (!isSwiping || window.innerWidth >= 768) return;
-    setIsSwiping(false);
-    touchStartRef.current = null;
-    
-    if (swipeOffset < -90) {
-      setSwipeOffset(THRESHOLD_LEFT);
-    } else if (swipeOffset > 45) {
-      setSwipeOffset(THRESHOLD_RIGHT);
-    } else {
-      setSwipeOffset(0);
-    }
-  };
+      setSwipeOffset(offset);
+    },
+    onSwipeLeft: () => setSwipeOffset(THRESHOLD_LEFT),
+    onSwipeRight: () => setSwipeOffset(THRESHOLD_RIGHT),
+    onEnd: (completed) => {
+      setIsSwiping(false);
+      if (!completed) setSwipeOffset(0);
+    },
+  });
 
   const isUnread = !alert.read;
   
   return (
-    <div className="relative group overflow-hidden md:overflow-visible border-b border-slate-100 last:border-b-0">
+    <div className="group relative overflow-hidden rounded-[16px] border border-[#DADDE3] shadow-sm md:overflow-visible md:rounded-none md:border-x-0 md:border-t-0 md:border-b md:border-slate-100 md:shadow-none md:last:border-b-0">
       {/* Background Action Buttons (Revealed on Swipe) */}
-      <div className="absolute inset-0 flex justify-between z-0 md:hidden bg-slate-100">
+      <div className="absolute inset-0 z-0 flex justify-between overflow-hidden rounded-[16px] bg-slate-100 md:hidden">
         {/* Left Side: Right Swipe Action (Read/Unread) */}
         <div className="flex">
           <button
@@ -124,15 +108,16 @@ function AlertRow({
 
       {/* Swipeable Content Area */}
       <div
+        {...swipeGesture}
         className={cn(
-          "relative z-10 flex flex-col md:grid md:grid-cols-12 gap-4 md:gap-4 px-5 py-6 md:px-6 md:py-5 transition-transform items-start w-full",
+          "relative z-10 flex w-full flex-col items-start gap-3 px-4 py-4 md:grid md:grid-cols-12 md:gap-4 md:px-6 md:py-5",
           isUnread ? tone.pageUnread : "bg-white hover:bg-[#ECEFF3]",
           isSwiping ? "transition-none" : "transition-transform duration-300"
         )}
-        style={{ transform: `translateX(${swipeOffset}px)` }}
-        onTouchStart={handleTouchStart}
-        onTouchMove={handleTouchMove}
-        onTouchEnd={handleTouchEnd}
+        style={{ ...swipeGesture.style, transform: `translateX(${swipeOffset}px)` }}
+        onClick={() => {
+          if (swipeOffset !== 0) setSwipeOffset(0);
+        }}
       >
         {/* TYPE Column */}
         <div className="md:col-span-2 flex items-center justify-between w-full md:w-auto">
@@ -231,7 +216,8 @@ export default function AlertsPage() {
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(10);
+  const alertsListRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     refreshAlerts(500);
@@ -328,20 +314,27 @@ export default function AlertsPage() {
     );
   }
 
+  function changeAlertPage(nextPage: number) {
+    setPage(nextPage);
+    window.requestAnimationFrame(() => {
+      alertsListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
+  }
+
   return (
-    <div className="min-h-full rounded-[28px] bg-white p-6 text-slate-900">
+    <div className="-mx-2 min-h-full bg-white px-1 pb-6 pt-3 text-slate-900 md:mx-0 md:rounded-[28px] md:p-6">
       <div className="w-full">
         
         {/* Header Section */}
-        <div className="flex flex-col md:flex-row md:items-center justify-between mb-6 md:mb-8 gap-4">
-          <div>
+        <div className="mb-4 flex flex-col justify-between gap-3 md:mb-8 md:flex-row md:items-center md:gap-4">
+          <div className="hidden md:block">
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Alerts</h1>
             <p className="text-sm md:text-base text-slate-500 mt-1">Stay updated on stock changes, price updates, and your system alerts.</p>
           </div>
-          <div className="flex flex-wrap items-center gap-2 md:gap-3">
+          <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:gap-3">
             <button 
               onClick={() => refreshAlerts(500)}
-              className="flex-1 md:flex-none inline-flex items-center justify-center px-4 py-2.5 md:py-2 bg-white border border-[#CFCFD3] rounded-lg text-sm font-extrabold text-[#565449] hover:bg-slate-50 transition-colors shadow-sm"
+              className="inline-flex min-h-12 flex-1 items-center justify-center rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-sm font-extrabold text-[#565449] shadow-sm transition-colors hover:bg-slate-50 md:min-h-0 md:flex-none md:py-2"
             >
               <Icon name="refresh" className="text-[16px] mr-2" />
               Refresh
@@ -349,7 +342,7 @@ export default function AlertsPage() {
             <button 
               onClick={handleMarkAllRead}
               disabled={unreadCount === 0}
-              className="flex-1 md:flex-none inline-flex items-center justify-center px-4 py-2.5 md:py-2 bg-white border border-[#CFCFD3] rounded-lg text-sm font-extrabold text-[#565449] hover:bg-slate-50 transition-colors shadow-sm disabled:opacity-50 disabled:pointer-events-none"
+              className="inline-flex min-h-12 flex-1 items-center justify-center rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-sm font-extrabold text-[#565449] shadow-sm transition-colors hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50 md:min-h-0 md:flex-none md:py-2"
             >
               <Icon name="done_all" className="text-[16px] mr-2" />
               Mark all read
@@ -358,8 +351,8 @@ export default function AlertsPage() {
         </div>
 
         {/* Global Stats Banner */}
-        <div className="bg-white rounded-[18px] border border-[#CFCFD3] p-5 md:p-6 mb-6 md:mb-8 shadow-sm">
-          <div className="grid grid-cols-2 md:grid-cols-4 gap-5 md:gap-6">
+        <div className="mb-4 rounded-[16px] border border-[#CFCFD3] bg-[#F8FAFC] p-4 shadow-sm md:mb-8 md:rounded-[18px] md:bg-white md:p-6">
+          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 md:gap-6">
             <div className="flex flex-col">
               <span className="text-xl md:text-2xl font-extrabold">
                 {globalStats.total} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Total</span>
@@ -388,7 +381,7 @@ export default function AlertsPage() {
         </div>
 
         {/* Filters and Search */}
-        <div className="flex flex-col xl:flex-row xl:items-center justify-between gap-5 md:gap-6 mb-6">
+        <div className="mb-4 flex flex-col justify-between gap-3 md:mb-6 md:gap-6 xl:flex-row xl:items-center">
           <MobileFilterTabs
             className="lg:hidden"
             ariaLabel="Alert type"
@@ -420,7 +413,7 @@ export default function AlertsPage() {
             ))}
           </div>
           
-          <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-4 w-full xl:w-auto">
+          <div className="flex w-full flex-col items-stretch gap-3 sm:flex-row sm:items-center xl:w-auto">
             <div className="relative flex-1 sm:min-w-[240px]">
               <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-[16px] text-slate-400" />
               <input 
@@ -428,7 +421,7 @@ export default function AlertsPage() {
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search alerts..." 
-                className="w-full pl-9 pr-4 py-2 bg-white border border-[#CFCFD3] rounded-[14px] text-[13px] font-medium focus:outline-none focus:border-[#11120d] transition-all"
+                className="h-12 w-full rounded-[14px] border border-[#CFCFD3] bg-white pl-9 pr-4 text-[16px] font-medium transition-all focus:border-[#11120d] focus:outline-none md:h-auto md:py-2 md:text-[13px]"
               />
             </div>
             <label className="flex items-center justify-between sm:justify-start gap-3 cursor-pointer group bg-white sm:bg-transparent border border-[#CFCFD3] sm:border-0 rounded-[14px] px-4 py-2 sm:p-0">
@@ -449,7 +442,7 @@ export default function AlertsPage() {
         </div>
 
         {/* Alerts List */}
-        <div className="bg-white rounded-[20px] border border-[#CFCFD3] shadow-sm overflow-hidden relative">
+        <div ref={alertsListRef} className="relative scroll-mt-4 bg-transparent md:overflow-hidden md:rounded-[20px] md:border md:border-[#CFCFD3] md:bg-white md:shadow-sm">
           
           {/* Desktop Table Header */}
           <div className="hidden md:grid grid-cols-12 gap-4 px-6 py-4 bg-slate-50 border-b border-[#CFCFD3] text-[11px] font-extrabold text-slate-500 uppercase tracking-widest">
@@ -459,7 +452,7 @@ export default function AlertsPage() {
             <div className="col-span-2 text-right">ACTIONS</div>
           </div>
 
-          <div className="flex flex-col">
+          <div className="flex flex-col gap-3 md:gap-0">
             {filteredAlerts.length === 0 ? (
               <div className="flex min-h-[280px] flex-col items-center justify-center bg-white text-slate-400 p-6 text-center">
                 <Icon name="notifications_off" className="text-[40px] mb-3 text-[#CFCFD3]" />
@@ -492,12 +485,17 @@ export default function AlertsPage() {
               end={pageEnd}
               label="alerts"
               pageSize={pageSize}
-              onPageChange={setPage}
+              pageSizeOptions={[10, 20, 50]}
+              showSinglePageControls
+              onPageChange={changeAlertPage}
               onPageSizeChange={(nextPageSize) => {
                 setPageSize(nextPageSize);
                 setPage(1);
+                window.requestAnimationFrame(() => {
+                  alertsListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                });
               }}
-              className="rounded-[18px] border border-[#CFCFD3] bg-white"
+              className="border-y border-[#CFCFD3] bg-white md:rounded-[18px] md:border"
             />
           </div>
         ) : null}

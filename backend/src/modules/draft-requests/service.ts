@@ -1,9 +1,11 @@
 import { DraftRequestItemStatus, DraftRequestStatus } from "@prisma/client";
-import { toBusinessClock } from "../../lib/businessDate";
+import { toBusinessClock, toBusinessRangeEnd } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
+import { isPresenceActive } from "../users/service";
 import type {
   AcceptDraftRequestInput,
   CreateDraftRequestInput,
+  ResolveAcceptedDraftRequestInput,
   UpdateDraftRequestInput,
 } from "./validation";
 
@@ -14,14 +16,29 @@ const ACTIVE_DRAFT_STATUSES: DraftRequestStatus[] = [
   "PENDING",
   "MODIFIED",
 ];
+const CASHIER_ACTIONABLE_STATUSES: DraftRequestStatus[] = [
+  ...ACTIVE_DRAFT_STATUSES,
+  "ACCEPTED",
+  "PARTIALLY_ACCEPTED",
+];
+const OPEN_DRAFT_STATUSES: DraftRequestStatus[] = [
+  ...CASHIER_ACTIONABLE_STATUSES,
+];
 
 const DRAFT_STATUSES = Object.values(DraftRequestStatus);
+
+export type DraftDeliveryState =
+  | "QUEUED"
+  | "VIEWED"
+  | "NEEDS_REASSIGNMENT"
+  | "CLOSED";
 
 export const draftRequestInclude = {
   customer: { select: { id: true, name: true, phone: true } },
   createdBy: { select: { id: true, name: true, role: true } },
   assignedCashier: { select: { id: true, name: true, role: true, isActive: true } },
   acceptedBy: { select: { id: true, name: true, role: true } },
+  cancelledBy: { select: { id: true, name: true, role: true } },
   completedInvoice: { select: { id: true, invoiceNo: true, netTotal: true } },
   items: {
     include: {
@@ -59,13 +76,19 @@ const draftRequestListSelect = {
   assignedCashierId: true,
   completedInvoiceId: true,
   expiresAt: true,
+  firstViewedAt: true,
+  queuedOfflineAt: true,
   acceptedAt: true,
+  cancelledAt: true,
+  cancelledById: true,
+  cancellationReason: true,
   modifiedAt: true,
   createdAt: true,
   customer: { select: { id: true, name: true, phone: true } },
   createdBy: { select: { id: true, name: true, role: true } },
   assignedCashier: { select: { id: true, name: true, role: true, isActive: true } },
   acceptedBy: { select: { id: true, name: true, role: true } },
+  cancelledBy: { select: { id: true, name: true, role: true } },
   completedInvoice: { select: { id: true, invoiceNo: true, netTotal: true } },
   _count: { select: { items: true } },
   items: {
@@ -93,6 +116,43 @@ const draftRequestListSelect = {
 function normalizeOptionalText(value?: string | null) {
   const normalized = String(value || "").trim();
   return normalized || null;
+}
+
+export function getBusinessDayQueueExpiry(now: Date = new Date()) {
+  const businessClock = toBusinessClock(now);
+  const businessDate = new Date(
+    Date.UTC(
+      businessClock.getUTCFullYear(),
+      businessClock.getUTCMonth(),
+      businessClock.getUTCDate(),
+    ),
+  );
+  return toBusinessRangeEnd(businessDate);
+}
+
+export function getDraftDeliveryState(request: {
+  status: DraftRequestStatus | string;
+  firstViewedAt?: Date | string | null;
+  assignedCashier?: { isActive?: boolean | null } | null;
+}): DraftDeliveryState {
+  if (!ACTIVE_DRAFT_STATUSES.includes(request.status as DraftRequestStatus)) {
+    return "CLOSED";
+  }
+  if (request.assignedCashier && request.assignedCashier.isActive === false) {
+    return "NEEDS_REASSIGNMENT";
+  }
+  return request.firstViewedAt ? "VIEWED" : "QUEUED";
+}
+
+function withDeliveryState<T extends {
+  status: DraftRequestStatus | string;
+  firstViewedAt?: Date | string | null;
+  assignedCashier?: { isActive?: boolean | null } | null;
+}>(request: T) {
+  return {
+    ...request,
+    deliveryState: getDraftDeliveryState(request),
+  };
 }
 
 function normalizePositiveQuantity(value: number, label: string) {
@@ -147,11 +207,18 @@ export function buildDraftRequestWhereForActor(
   filters: { status?: string; scope?: string } = {},
 ) {
   const normalizedStatus = String(filters.status || "").trim().toUpperCase();
-  const status = DRAFT_STATUSES.includes(normalizedStatus as DraftRequestStatus)
-    ? (normalizedStatus as DraftRequestStatus)
-    : undefined;
+  const statusFilter =
+    normalizedStatus === "OPEN"
+      ? { in: OPEN_DRAFT_STATUSES }
+      : normalizedStatus === "ACTIVE"
+      ? { in: ACTIVE_DRAFT_STATUSES }
+      : normalizedStatus === "ACTIONABLE"
+        ? { in: CASHIER_ACTIONABLE_STATUSES }
+      : DRAFT_STATUSES.includes(normalizedStatus as DraftRequestStatus)
+        ? (normalizedStatus as DraftRequestStatus)
+        : undefined;
   const scope = String(filters.scope || "").trim().toLowerCase();
-  const base: any = status ? { status } : {};
+  const base: any = statusFilter ? { status: statusFilter } : {};
 
   if (actor.role === "ADMIN" || actor.role === "MANAGER") {
     return base;
@@ -192,6 +259,24 @@ function assertActiveDraftStatus(status: DraftRequestStatus, action: string) {
   }
 }
 
+async function expireDraftRequestIfDue(
+  id: string,
+  now: Date = new Date(),
+) {
+  const result = await prisma.billingDraftRequest.updateMany({
+    where: {
+      id,
+      status: { in: ACTIVE_DRAFT_STATUSES },
+      expiresAt: { not: null, lte: now },
+    },
+    data: {
+      status: "EXPIRED",
+      modifiedAt: now,
+    },
+  });
+  return result.count > 0;
+}
+
 function assertProductQuantityAllowed(product: any, qty: number) {
   if (!product.isActive) {
     throw new Error(`"${product.name}" is inactive and cannot be requested.`);
@@ -211,7 +296,13 @@ async function assertAssignedCashier(tx: any, cashierId?: string | null) {
 
   const cashier = await tx.user.findUnique({
     where: { id: cashierId },
-    select: { id: true, name: true, role: true, isActive: true },
+    select: {
+      id: true,
+      name: true,
+      role: true,
+      isActive: true,
+      lastPresenceAt: true,
+    },
   });
 
   if (!cashier || cashier.role !== "CASHIER" || !cashier.isActive) {
@@ -265,13 +356,33 @@ async function buildDraftItemCreates(tx: any, rawItems: DraftItemInput[]) {
   }));
 }
 
-async function getDraftRequestExpiry(tx: any) {
+async function getDraftRequestExpiry(tx: any, now: Date = new Date()) {
   const settings = await tx.businessSettings.findUnique({
     where: { id: 1 },
     select: { draftRequestExpiryMinutes: true },
   });
   const minutes = Math.max(1, Number(settings?.draftRequestExpiryMinutes || 30));
-  return new Date(Date.now() + minutes * 60 * 1000);
+  return new Date(now.getTime() + minutes * 60 * 1000);
+}
+
+async function buildDeliveryTiming(
+  tx: any,
+  assignedCashier: { lastPresenceAt?: Date | string | null } | null,
+  now: Date = new Date(),
+) {
+  if (assignedCashier && !isPresenceActive(assignedCashier.lastPresenceAt, now)) {
+    return {
+      queuedOfflineAt: now,
+      firstViewedAt: null,
+      expiresAt: getBusinessDayQueueExpiry(now),
+    };
+  }
+
+  return {
+    queuedOfflineAt: null,
+    firstViewedAt: null,
+    expiresAt: await getDraftRequestExpiry(tx, now),
+  };
 }
 
 async function generateDraftRequestNo(tx: any) {
@@ -359,14 +470,14 @@ export async function listDraftRequests(actor: Actor, filters: {
           const price = Number(item.product?.retailPrice || 0);
           return sum + qty * price;
         }, 0);
-        return {
+        return withDeliveryState({
           ...request,
           itemCount: request._count?.items ?? items.length,
           totalQty,
           estimatedTotal,
-        };
+        });
       })
-    : requests;
+    : requests.map((request: any) => withDeliveryState(request));
 
   return {
     requests: mapped,
@@ -389,7 +500,7 @@ export async function getDraftRequest(id: string, actor: Actor) {
     throw error;
   }
 
-  return request;
+  return withDeliveryState(request);
 }
 
 export async function createDraftRequest(actor: Actor, input: CreateDraftRequestInput) {
@@ -414,13 +525,13 @@ export async function createDraftRequest(actor: Actor, input: CreateDraftRequest
       throw new Error("Please wait a moment before sending another request.");
     }
 
-    const [items, customer, assignedCashier, requestNo, expiresAt] = await Promise.all([
+    const [items, customer, assignedCashier, requestNo] = await Promise.all([
       buildDraftItemCreates(tx, input.items),
       assertCustomer(tx, input.customerId),
       assertAssignedCashier(tx, input.assignedCashierId),
       generateDraftRequestNo(tx),
-      getDraftRequestExpiry(tx),
     ]);
+    const deliveryTiming = await buildDeliveryTiming(tx, assignedCashier);
 
     const request = await tx.billingDraftRequest.create({
       data: {
@@ -433,7 +544,7 @@ export async function createDraftRequest(actor: Actor, input: CreateDraftRequest
         notes: normalizeOptionalText(input.notes),
         createdById: actor.id,
         assignedCashierId: assignedCashier?.id || null,
-        expiresAt,
+        ...deliveryTiming,
         items: { create: items },
       },
       include: draftRequestInclude,
@@ -449,12 +560,13 @@ export async function createDraftRequest(actor: Actor, input: CreateDraftRequest
           requestNo,
           assignedCashierId: request.assignedCashierId,
           itemCount: request.items.length,
-          expiresAt,
+          expiresAt: request.expiresAt,
+          queuedOfflineAt: request.queuedOfflineAt,
         },
       },
     });
 
-    return request;
+    return withDeliveryState(request);
   });
 }
 
@@ -482,6 +594,16 @@ export async function updateDraftRequest(
       input.assignedCashierId === undefined
         ? undefined
         : await assertAssignedCashier(tx, input.assignedCashierId);
+    const nextAssignedCashierId =
+      input.assignedCashierId === undefined
+        ? request.assignedCashierId
+        : assignedCashier?.id || null;
+    const assignmentChanged =
+      input.assignedCashierId !== undefined &&
+      nextAssignedCashierId !== request.assignedCashierId;
+    const deliveryTiming = assignmentChanged
+      ? await buildDeliveryTiming(tx, assignedCashier || null)
+      : null;
     const nextItems =
       input.items === undefined ? undefined : await buildDraftItemCreates(tx, input.items);
 
@@ -503,8 +625,9 @@ export async function updateDraftRequest(
           : {}),
         ...(input.notes !== undefined ? { notes: normalizeOptionalText(input.notes) } : {}),
         ...(input.assignedCashierId !== undefined
-          ? { assignedCashierId: assignedCashier?.id || null }
+          ? { assignedCashierId: nextAssignedCashierId }
           : {}),
+        ...(deliveryTiming || {}),
         ...(nextItems ? { items: { create: nextItems } } : {}),
       },
       include: draftRequestInclude,
@@ -520,11 +643,13 @@ export async function updateDraftRequest(
           requestNo: updated.requestNo,
           itemCount: updated.items.length,
           assignedCashierId: updated.assignedCashierId,
+          assignmentChanged,
+          deliveryState: getDraftDeliveryState(updated),
         },
       },
     });
 
-    return updated;
+    return withDeliveryState(updated);
   });
 }
 
@@ -541,7 +666,13 @@ export async function cancelDraftRequest(id: string, actor: Actor) {
 
     const cancelled = await tx.billingDraftRequest.update({
       where: { id },
-      data: { status: "CANCELLED_BY_STAFF", modifiedAt: new Date() },
+      data: {
+        status: "CANCELLED_BY_STAFF",
+        modifiedAt: new Date(),
+        cancelledAt: new Date(),
+        cancelledById: actor.id,
+        cancellationReason: "Cancelled by the staff member who created the request.",
+      },
       include: draftRequestInclude,
     });
 
@@ -555,7 +686,104 @@ export async function cancelDraftRequest(id: string, actor: Actor) {
       },
     });
 
-    return cancelled;
+    return withDeliveryState(cancelled);
+  });
+}
+
+export async function resolveAcceptedDraftRequest(
+  id: string,
+  actor: Actor,
+  input: ResolveAcceptedDraftRequestInput,
+) {
+  const reason = normalizeOptionalText(input.reason);
+  if (!reason) throw new Error("Add a reason for resolving this request.");
+
+  return prisma.$transaction(async (tx: any) => {
+    const request = await tx.billingDraftRequest.findUnique({ where: { id } });
+    if (!request) throw new Error("Draft request not found.");
+    assertCashierCanReview(actor, request);
+    if (request.status !== "ACCEPTED" && request.status !== "PARTIALLY_ACCEPTED") {
+      throw new Error("Only accepted draft requests can be returned or cancelled.");
+    }
+
+    const now = new Date();
+    if (input.action === "RETURN_TO_QUEUE") {
+      const deliveryTiming = await buildDeliveryTiming(tx, null, now);
+      const updated = await tx.billingDraftRequest.updateMany({
+        where: {
+          id,
+          status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
+        },
+        data: {
+          status: "MODIFIED",
+          assignedCashierId: null,
+          acceptedById: null,
+          acceptedAt: null,
+          modifiedAt: now,
+          cancelledAt: null,
+          cancelledById: null,
+          cancellationReason: null,
+          ...deliveryTiming,
+        },
+      });
+      if (updated.count !== 1) {
+        throw new Error("This request changed while you were resolving it. Refresh and try again.");
+      }
+      await tx.draftRequestItem.updateMany({
+        where: { draftRequestId: id },
+        data: {
+          reviewStatus: "PENDING",
+          acceptedQty: null,
+          rejectionReason: null,
+          reviewedAt: null,
+        },
+      });
+      const returned = await tx.billingDraftRequest.findUnique({
+        where: { id },
+        include: draftRequestInclude,
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: actor.id,
+          action: "DRAFT_REQUEST_RETURNED_TO_QUEUE",
+          entityType: "BillingDraftRequest",
+          entityId: id,
+          meta: { requestNo: request.requestNo, reason },
+        },
+      });
+      return withDeliveryState(returned!);
+    }
+
+    const updated = await tx.billingDraftRequest.updateMany({
+      where: {
+        id,
+        status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
+      },
+      data: {
+        status: "CANCELLED_BY_CASHIER",
+        modifiedAt: now,
+        cancelledAt: now,
+        cancelledById: actor.id,
+        cancellationReason: reason,
+      },
+    });
+    if (updated.count !== 1) {
+      throw new Error("This request changed while you were resolving it. Refresh and try again.");
+    }
+    const cancelled = await tx.billingDraftRequest.findUnique({
+      where: { id },
+      include: draftRequestInclude,
+    });
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.id,
+        action: "DRAFT_REQUEST_CANCELLED_BY_CASHIER",
+        entityType: "BillingDraftRequest",
+        entityId: id,
+        meta: { requestNo: request.requestNo, reason },
+      },
+    });
+    return withDeliveryState(cancelled!);
   });
 }
 
@@ -571,15 +799,91 @@ function assertCashierCanReview(actor: Actor, request: {
   throw error;
 }
 
+export async function markDraftRequestViewed(id: string, actor: Actor) {
+  if (actor.role !== "CASHIER") {
+    const error: any = new Error("Only the assigned cashier can mark this request as viewed.");
+    error.statusCode = 403;
+    throw error;
+  }
+
+  if (await expireDraftRequestIfDue(id)) {
+    throw new Error("This draft request has expired.");
+  }
+
+  return prisma.$transaction(async (tx: any) => {
+    const request = await tx.billingDraftRequest.findUnique({
+      where: { id },
+      include: draftRequestInclude,
+    });
+    if (!request) throw new Error("Draft request not found.");
+    assertCashierCanReview(actor, request);
+    assertActiveDraftStatus(request.status, "viewed");
+
+    if (request.expiresAt && request.expiresAt <= new Date()) {
+      throw new Error("This draft request has expired.");
+    }
+
+    if (request.firstViewedAt) {
+      return withDeliveryState(request);
+    }
+
+    const viewedAt = new Date();
+    const responseExpiry = request.queuedOfflineAt
+      ? await getDraftRequestExpiry(tx, viewedAt)
+      : request.expiresAt;
+    const viewed = await tx.billingDraftRequest.update({
+      where: { id },
+      data: {
+        firstViewedAt: viewedAt,
+        expiresAt: responseExpiry,
+      },
+      include: draftRequestInclude,
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: actor.id,
+        action: "DRAFT_REQUEST_VIEWED",
+        entityType: "BillingDraftRequest",
+        entityId: id,
+        meta: {
+          requestNo: viewed.requestNo,
+          firstViewedAt: viewedAt,
+          expiresAt: responseExpiry,
+        },
+      },
+    });
+
+    return withDeliveryState(viewed);
+  });
+}
+
 export async function acceptDraftRequest(
   id: string,
   actor: Actor,
   input: AcceptDraftRequestInput = {},
 ) {
+  if (await expireDraftRequestIfDue(id)) {
+    throw new Error("This draft request has expired.");
+  }
+
   return prisma.$transaction(async (tx: any) => {
     const request = await tx.billingDraftRequest.findUnique({
       where: { id },
-      include: { items: true },
+      include: {
+        items: {
+          include: {
+            product: {
+              select: {
+                name: true,
+                isActive: true,
+                allowFractionalQty: true,
+                quantityStep: true,
+              },
+            },
+          },
+        },
+      },
     });
     if (!request) throw new Error("Draft request not found.");
     assertCashierCanReview(actor, request);
@@ -630,6 +934,7 @@ export async function acceptDraftRequest(
       if (acceptedQty > item.qty) {
         throw new Error("Accepted quantity cannot be greater than requested quantity.");
       }
+      assertProductQuantityAllowed(item.product, acceptedQty);
       acceptedItemCount += 1;
       if (acceptedQty < item.qty) partiallyAcceptedItemCount += 1;
       await tx.draftRequestItem.update({
@@ -656,6 +961,9 @@ export async function acceptDraftRequest(
         status: nextStatus,
         acceptedById: actor.id,
         acceptedAt: new Date(),
+        ...(actor.role === "CASHIER" && !request.firstViewedAt
+          ? { firstViewedAt: reviewedAt }
+          : {}),
         modifiedAt: nextStatus === "PARTIALLY_ACCEPTED" || nextStatus === "REJECTED"
           ? new Date()
           : null,
@@ -686,7 +994,7 @@ export async function acceptDraftRequest(
       },
     });
 
-    return accepted;
+    return withDeliveryState(accepted);
   });
 }
 
@@ -695,6 +1003,10 @@ export async function rejectDraftRequest(
   actor: Actor,
   note?: string | null,
 ) {
+  if (await expireDraftRequestIfDue(id)) {
+    throw new Error("This draft request has expired.");
+  }
+
   return prisma.$transaction(async (tx: any) => {
     const request = await tx.billingDraftRequest.findUnique({ where: { id } });
     if (!request) throw new Error("Draft request not found.");
@@ -709,6 +1021,9 @@ export async function rejectDraftRequest(
         modifiedAt: new Date(),
         acceptedById: actor.id,
         acceptedAt: new Date(),
+        ...(actor.role === "CASHIER" && !request.firstViewedAt
+          ? { firstViewedAt: new Date() }
+          : {}),
         ...(rejectionNote
           ? {
               notes: request.notes
@@ -730,7 +1045,7 @@ export async function rejectDraftRequest(
       },
     });
 
-    return rejected;
+    return withDeliveryState(rejected);
   });
 }
 
@@ -775,7 +1090,7 @@ export async function completeDraftRequest(
       },
     });
 
-    return completed;
+    return withDeliveryState(completed);
   });
 }
 

@@ -1,6 +1,7 @@
 import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import {
   ActiveFilterChips,
   MobileFilterButton,
@@ -117,18 +118,13 @@ export default function ProductsFiltersCard({
   setStockStatus,
   status,
   setStatus,
-  lowOnly,
-  setLowOnly,
   onClear,
-  selectedCount,
 
   onAdd,
   onImport,
   onManageStock,
-  onBulkPrice,
-  onActivate,
-  onDeactivate,
-  onSoftDelete,
+  onSearchInsights,
+  stockTracked,
 }: {
   q: string;
   setQ: (v: string) => void;
@@ -147,20 +143,13 @@ export default function ProductsFiltersCard({
   status: "all" | "active" | "inactive";
   setStatus: (v: "all" | "active" | "inactive") => void;
 
-  lowOnly: boolean;
-  setLowOnly: (v: boolean) => void;
-
   onClear: () => void;
-
-  selectedCount: number;
 
   onAdd: () => void;
   onImport: () => void;
   onManageStock: () => void;
-  onBulkPrice: () => void;
-  onActivate: () => void;
-  onDeactivate: () => void;
-  onSoftDelete: () => void;
+  onSearchInsights?: () => void;
+  stockTracked: boolean;
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false);
@@ -172,14 +161,14 @@ export default function ProductsFiltersCard({
   const filterCount = [
     brand !== "All Brands",
     category !== "All Categories",
-    stockStatus !== "all" || lowOnly,
+    stockTracked && stockStatus !== "all",
     status !== "all",
   ].filter(Boolean).length;
 
   function openMobileFilters() {
     setDraftBrand(brand);
     setDraftCategory(category);
-    setDraftStockStatus(lowOnly ? "low" : stockStatus);
+    setDraftStockStatus(stockStatus);
     setDraftStatus(status);
     setMobileFiltersOpen(true);
   }
@@ -188,7 +177,6 @@ export default function ProductsFiltersCard({
     setBrand(draftBrand);
     setCategory(draftCategory);
     setStockStatus(draftStockStatus);
-    setLowOnly(false);
     setStatus(draftStatus);
     setMobileFiltersOpen(false);
   }
@@ -203,10 +191,10 @@ export default function ProductsFiltersCard({
   const mobileFilterChips: MobileFilterChip[] = [
     ...(brand !== "All Brands" ? [{ id: "brand", label: `Brand: ${brand}`, onRemove: () => setBrand("All Brands") }] : []),
     ...(category !== "All Categories" ? [{ id: "category", label: `Category: ${category}`, onRemove: () => setCategory("All Categories") }] : []),
-    ...(stockStatus !== "all" || lowOnly ? [{
+    ...(stockTracked && stockStatus !== "all" ? [{
       id: "stock",
-      label: lowOnly || stockStatus === "low" ? "Low Stock" : stockStatus === "in" ? "In Stock" : "Out of Stock",
-      onRemove: () => { setStockStatus("all"); setLowOnly(false); },
+      label: stockStatus === "low" ? "Low Stock" : stockStatus === "in" ? "In Stock" : "Out of Stock",
+      onRemove: () => setStockStatus("all"),
     }] : []),
     ...(status !== "all" ? [{ id: "status", label: status === "active" ? "Active" : "Inactive", onRemove: () => setStatus("all") }] : []),
   ];
@@ -228,13 +216,13 @@ export default function ProductsFiltersCard({
 
         <ActiveFilterChips items={mobileFilterChips} />
 
-        <div className="flex gap-2.5">
-          <button type="button" onClick={onAdd} className="inline-flex h-[50px] min-w-0 flex-1 items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 text-[15px] font-bold text-white active:scale-[0.99]">
-            <GoogleIcon name="add_circle" className="text-[22px]" />
+        <div className="flex gap-2">
+          <button type="button" onClick={onAdd} className="inline-flex h-11 min-w-0 flex-1 items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 text-[13px] font-extrabold text-white transition active:scale-[0.99]">
+            <GoogleIcon name="add_circle" className="text-[20px]" />
             Add Product
           </button>
-          <button type="button" onClick={() => setMobileActionsOpen(true)} className="inline-flex h-[50px] w-[50px] shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449]" aria-label="More product actions">
-            <GoogleIcon name="more_horiz" className="text-[24px]" />
+          <button type="button" onClick={() => setMobileActionsOpen(true)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]" aria-label="More product actions">
+            <GoogleIcon name="more_horiz" className="text-[22px]" />
           </button>
         </div>
       </section>
@@ -246,17 +234,17 @@ export default function ProductsFiltersCard({
         onApply={applyMobileFilters}
       >
             <div className="space-y-5">
-              <label className="block space-y-2"><span className="text-[14px] font-bold">Brand</span><Select value={draftBrand} onChange={setDraftBrand} options={brands.map((item) => ({ value: item, label: item }))} /></label>
-              <label className="block space-y-2"><span className="text-[14px] font-bold">Category</span><Select value={draftCategory} onChange={setDraftCategory} options={categories.map((item) => ({ value: item, label: item }))} /></label>
+              <div className="block space-y-2"><span className="text-[14px] font-bold">Brand</span><CreatableCombobox value={draftBrand} onChange={setDraftBrand} options={brands} placeholder="Search brands" ariaLabel="Filter products by brand" allowCreate={false} selectOnFocus /></div>
+              <div className="block space-y-2"><span className="text-[14px] font-bold">Category</span><CreatableCombobox value={draftCategory} onChange={setDraftCategory} options={categories} placeholder="Search categories" ariaLabel="Filter products by category" allowCreate={false} selectOnFocus /></div>
 
-              <fieldset className="space-y-2">
+              {stockTracked ? <fieldset className="space-y-2">
                 <legend className="text-[14px] font-bold">Stock Status</legend>
                 <div className="grid grid-cols-4 overflow-hidden rounded-[12px] border border-[#CFCFD3]">
                   {([['all','All'],['in','In Stock'],['low','Low Stock'],['out','Out of Stock']] as const).map(([value, label]) => (
                     <button key={value} type="button" onClick={() => setDraftStockStatus(value)} className={cn("min-h-[52px] border-r border-[#CFCFD3] px-1 text-[11px] font-bold last:border-r-0", draftStockStatus === value ? "bg-[#238A32] text-white" : "bg-white text-[#11120d]")}>{label}</button>
                   ))}
                 </div>
-              </fieldset>
+              </fieldset> : null}
 
               <fieldset className="space-y-2">
                 <legend className="text-[14px] font-bold">Product Status</legend>
@@ -276,7 +264,8 @@ export default function ProductsFiltersCard({
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[20px] font-extrabold">Product actions</h2><button type="button" onClick={() => setMobileActionsOpen(false)} className="h-11 w-11" aria-label="Close actions"><GoogleIcon name="close" className="text-[26px]" /></button></div>
             <button type="button" onClick={() => { setMobileActionsOpen(false); onImport(); }} className="flex min-h-[58px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="upload_file" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Import products</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button>
-            <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[calc(58px+env(safe-area-inset-bottom))] w-full items-center gap-3 pb-[env(safe-area-inset-bottom)] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button>
+            {onSearchInsights ? <button type="button" onClick={() => { setMobileActionsOpen(false); onSearchInsights(); }} className="flex min-h-[58px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="search_off" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Unmatched searches</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button> : null}
+            {stockTracked ? <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[calc(58px+env(safe-area-inset-bottom))] w-full items-center gap-3 pb-[env(safe-area-inset-bottom)] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button> : null}
           </section>
         </div>
       ) : null}
@@ -303,57 +292,35 @@ export default function ProductsFiltersCard({
               Import
             </Button>
 
-            <Button
+            {stockTracked ? <Button
               icon="inventory_2"
               onClick={onManageStock}
             >
               Stock Movement
-            </Button>
+            </Button> : null}
 
-            <Button
-              icon="sell"
-              onClick={onBulkPrice}
-              disabled={selectedCount === 0}
-            >
-              Price & Margin
-            </Button>
+            {onSearchInsights ? (
+              <Button icon="search_off" onClick={onSearchInsights}>
+                Unmatched Searches
+              </Button>
+            ) : null}
 
-            <div className="flex items-center gap-[8px]">
-              <Button
-                disabled={selectedCount === 0}
-                icon="check_circle"
-                onClick={onActivate}
-              >
-                Activate
-              </Button>
-              <Button
-                disabled={selectedCount === 0}
-                icon="do_not_disturb_on"
-                onClick={onDeactivate}
-              >
-                Deactivate
-              </Button>
-              <Button
-                variant="danger"
-                disabled={selectedCount === 0}
-                icon="do_not_disturb_on"
-                onClick={onSoftDelete}
-              >
-                Set Inactive
-              </Button>
-            </div>
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-5 gap-[12px]">
+        <div className={cn("grid grid-cols-1 gap-[12px] md:grid-cols-2", stockTracked ? "xl:grid-cols-[repeat(4,minmax(0,1fr))_auto]" : "xl:grid-cols-[repeat(3,minmax(0,1fr))_auto]")}>
           <div className="space-y-[6px]">
             <div className="text-[12px] font-semibold text-[#8C8889]">
               Brand
             </div>
-            <Select
+            <CreatableCombobox
               value={brand}
               onChange={setBrand}
-              options={brands.map((b) => ({ value: b, label: b }))}
+              options={brands}
+              placeholder="Search brands"
+              ariaLabel="Filter products by brand"
+              allowCreate={false}
+              selectOnFocus
             />
           </div>
 
@@ -361,14 +328,18 @@ export default function ProductsFiltersCard({
             <div className="text-[12px] font-semibold text-[#8C8889]">
               Category
             </div>
-            <Select
+            <CreatableCombobox
               value={category}
               onChange={setCategory}
-              options={categories.map((c) => ({ value: c, label: c }))}
+              options={categories}
+              placeholder="Search categories"
+              ariaLabel="Filter products by category"
+              allowCreate={false}
+              selectOnFocus
             />
           </div>
 
-          <div className="space-y-[6px]">
+          {stockTracked ? <div className="space-y-[6px]">
             <div className="text-[12px] font-semibold text-[#8C8889]">
               Stock Status
             </div>
@@ -382,7 +353,7 @@ export default function ProductsFiltersCard({
                 { value: "out", label: "Out of Stock" },
               ]}
             />
-          </div>
+          </div> : null}
 
           <div className="space-y-[6px]">
             <div className="text-[12px] font-semibold text-[#8C8889]">
@@ -399,23 +370,14 @@ export default function ProductsFiltersCard({
             />
           </div>
 
-          <div className="flex items-end justify-between gap-[10px]">
-            <label className="inline-flex items-center gap-[8px] text-[13px] font-semibold text-[#565449] select-none">
-              <input
-                type="checkbox"
-                checked={lowOnly}
-                onChange={(e) => setLowOnly(e.target.checked)}
-                className="h-[16px] w-[16px] accent-[#11120d]"
-              />
-              Low stock only
-            </label>
-
+          <div className="flex items-end">
             <button
               type="button"
               onClick={onClear}
-              className="inline-flex items-center gap-[6px] text-[13px] font-semibold text-[#565449] hover:text-[#000000]"
+              disabled={filterCount === 0 && !q.trim()}
+              className="inline-flex h-[42px] w-full items-center justify-center gap-[7px] rounded-[12px] border border-[#CFCFD3] bg-white px-[14px] text-[13px] font-bold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000] disabled:pointer-events-none disabled:opacity-45 xl:w-auto"
             >
-              <GoogleIcon name="close" className="text-[#8C8889]" />
+              <GoogleIcon name="filter_alt_off" className="text-[18px] text-[#8C8889]" />
               Clear filters
             </button>
           </div>

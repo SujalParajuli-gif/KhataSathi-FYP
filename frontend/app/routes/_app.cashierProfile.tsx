@@ -300,6 +300,7 @@ export default function CashierProfileSection() {
           id: user.id,
           name: user.name,
           email: user.email,
+          phone: user.phone,
           role: user.role,
           profileImage: user.profileImage,
         });
@@ -373,6 +374,10 @@ export default function CashierProfileSection() {
       setError("No personal profile changes to save.");
       return;
     }
+    if (tab === "personal" && !profile.phone.trim()) {
+      setError("Phone number is required.");
+      return;
+    }
 
     // security updates need a stricter set of checks because the backend expects both the current and new password
     if (tab === "security") {
@@ -386,6 +391,10 @@ export default function CashierProfileSection() {
       }
       if (!pwd.next) {
         setError("Enter the new password.");
+        return;
+      }
+      if (pwd.next.length < 8) {
+        setError("Password must be at least 8 characters.");
         return;
       }
       if (isPwdMismatch) {
@@ -676,7 +685,7 @@ export default function CashierProfileSection() {
                                   </span>
                                 ) : (
                                   <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase  text-slate-500">
-                                    Sign-in Email
+                                    {profile.email ? "Sign-in email" : "Optional"}
                                   </span>
                                 )
                               }

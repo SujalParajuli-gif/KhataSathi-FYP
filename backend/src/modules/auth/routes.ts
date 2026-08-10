@@ -1,5 +1,5 @@
 import { Router } from "express";
-import { login, me, updateProfile, uploadPhoto } from "./controller";
+import { login, logout, me, updateProfile, uploadPhoto } from "./controller";
 import { authGuard } from "../../middleware/auth";
 import multer from "multer";
 import path from "path";
@@ -28,6 +28,8 @@ const upload = multer({ storage });
 const router: ReturnType<typeof Router> = Router();
 
 router.post("/login", login); // public route — no auth needed for logging in
+
+router.post("/logout", authGuard, logout);
 
 router.get("/me", authGuard, me); // protected — returns the currently logged-in user's profile data
 

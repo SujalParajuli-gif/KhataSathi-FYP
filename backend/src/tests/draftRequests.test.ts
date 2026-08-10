@@ -3,8 +3,11 @@ import assert from "node:assert/strict";
 import {
   buildDraftRequestWhereForActor,
   canActorReadDraftRequest,
+  getBusinessDayQueueExpiry,
+  getDraftDeliveryState,
   normalizeDraftItems,
 } from "../modules/draft-requests/service";
+import { resolveAcceptedDraftRequestSchema } from "../modules/draft-requests/validation";
 
 test("normalizeDraftItems merges duplicate products and preserves the first note", () => {
   const items = normalizeDraftItems([
@@ -37,6 +40,40 @@ test("buildDraftRequestWhereForActor applies role visibility rules", () => {
     { createdById: "staff-1" },
   );
   assert.deepEqual(
+    buildDraftRequestWhereForActor(
+      { id: "cashier-1", role: "CASHIER" },
+      { status: "active" },
+    ),
+    {
+      status: { in: ["PENDING", "MODIFIED"] },
+      OR: [{ assignedCashierId: "cashier-1" }, { assignedCashierId: null }],
+    },
+  );
+  assert.deepEqual(
+    buildDraftRequestWhereForActor(
+      { id: "cashier-1", role: "CASHIER" },
+      { status: "open" },
+    ),
+    {
+      status: {
+        in: ["PENDING", "MODIFIED", "ACCEPTED", "PARTIALLY_ACCEPTED"],
+      },
+      OR: [{ assignedCashierId: "cashier-1" }, { assignedCashierId: null }],
+    },
+  );
+  assert.deepEqual(
+    buildDraftRequestWhereForActor(
+      { id: "cashier-1", role: "CASHIER" },
+      { status: "actionable" },
+    ),
+    {
+      status: {
+        in: ["PENDING", "MODIFIED", "ACCEPTED", "PARTIALLY_ACCEPTED"],
+      },
+      OR: [{ assignedCashierId: "cashier-1" }, { assignedCashierId: null }],
+    },
+  );
+  assert.deepEqual(
     buildDraftRequestWhereForActor({ id: "cashier-1", role: "CASHIER" }),
     { OR: [{ assignedCashierId: "cashier-1" }, { assignedCashierId: null }] },
   );
@@ -59,4 +96,54 @@ test("canActorReadDraftRequest allows staff creators and assigned or open cashie
   assert.equal(canActorReadDraftRequest({ id: "cashier-1", role: "CASHIER" }, assignedRequest), true);
   assert.equal(canActorReadDraftRequest({ id: "cashier-2", role: "CASHIER" }, assignedRequest), false);
   assert.equal(canActorReadDraftRequest({ id: "cashier-2", role: "CASHIER" }, openRequest), true);
+});
+
+test("delivery state distinguishes queued, viewed, inactive assignment, and closed requests", () => {
+  assert.equal(getDraftDeliveryState({ status: "PENDING" }), "QUEUED");
+  assert.equal(
+    getDraftDeliveryState({
+      status: "MODIFIED",
+      firstViewedAt: "2026-07-23T10:00:00.000Z",
+    }),
+    "VIEWED",
+  );
+  assert.equal(
+    getDraftDeliveryState({
+      status: "PENDING",
+      assignedCashier: { isActive: false },
+    }),
+    "NEEDS_REASSIGNMENT",
+  );
+  assert.equal(getDraftDeliveryState({ status: "ACCEPTED" }), "CLOSED");
+});
+
+test("offline queue expiry is the end of the current Kathmandu business day", () => {
+  assert.equal(
+    getBusinessDayQueueExpiry(new Date("2026-07-23T10:00:00.000Z")).toISOString(),
+    "2026-07-23T18:14:59.999Z",
+  );
+});
+
+test("accepted request resolution requires an explicit supported action and reason", () => {
+  assert.equal(
+    resolveAcceptedDraftRequestSchema.safeParse({
+      action: "RETURN_TO_QUEUE",
+      reason: "Cashier shift ended",
+    }).success,
+    true,
+  );
+  assert.equal(
+    resolveAcceptedDraftRequestSchema.safeParse({
+      action: "CANCEL",
+      reason: "Customer left before payment",
+    }).success,
+    true,
+  );
+  assert.equal(
+    resolveAcceptedDraftRequestSchema.safeParse({
+      action: "DELETE",
+      reason: "No",
+    }).success,
+    false,
+  );
 });

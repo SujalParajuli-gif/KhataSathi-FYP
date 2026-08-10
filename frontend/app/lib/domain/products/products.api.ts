@@ -2,8 +2,11 @@ import {
   createProductApi,
   deactivateProductApi,
   getCategoriesApi,
+  getProductsByIdsApi,
   getProductDeleteSafetyApi,
+  discardStockAndDeleteProductApi,
   listBrandsApi,
+  listPriceLookupProductsApi,
   listProductsApi,
   permanentlyDeleteProductApi,
   uploadProductImageApi,
@@ -100,6 +103,29 @@ function toFrontendProduct(product: BackendProduct): Product {
   };
 }
 
+/** Resolve products that may no longer be on the visible catalog page. */
+export async function fetchProductsByIds(
+  ids: string[],
+  options?: { signal?: AbortSignal },
+) {
+  const uniqueIds = [...new Set(ids)].filter(Boolean);
+  if (uniqueIds.length === 0) return [];
+
+  const chunks: string[][] = [];
+  for (let index = 0; index < uniqueIds.length; index += 50) {
+    chunks.push(uniqueIds.slice(index, index + 50));
+  }
+
+  const responses = await Promise.all(
+    chunks.map((chunk) => getProductsByIdsApi(chunk, options)),
+  );
+  const products = responses.flatMap((response) =>
+    (response?.products ?? response ?? []).map(toFrontendProduct),
+  );
+  const byId = new Map(products.map((product) => [product.id, product]));
+  return uniqueIds.map((id) => byId.get(id)).filter(Boolean) as Product[];
+}
+
 // looking up a brand's ID from the cached list by its display name
 function getBrandIdByName(name?: string): string | undefined {
   if (!name || name === "All Brands") return undefined;
@@ -144,6 +170,33 @@ export async function fetchProducts(
   return {
     items: mapped,
     total: Number(response.total ?? mapped.length),
+    searchLogId: response.searchLogId ? String(response.searchLogId) : null,
+  };
+}
+
+export async function fetchPriceLookupProducts(
+  q: ProductsQuery,
+  options?: { signal?: AbortSignal },
+) {
+  const response = await listPriceLookupProductsApi({
+    search: q.q,
+    brand: getBrandIdByName(q.brand),
+    category: mapCategoryFilter(q.category),
+    active: mapStatusToActive(q.status),
+    lowStock: q.lowOnly || q.stockStatus === "low" ? "true" : undefined,
+    stockStatus:
+      q.stockStatus && q.stockStatus !== "all" ? q.stockStatus : undefined,
+    draftReservations: q.includeDraftReservations ? "true" : undefined,
+    page: q.page,
+    pageSize: q.pageSize,
+  }, options);
+
+  const mapped = (response.products ?? []).map(toFrontendProduct);
+  return {
+    items: mapped,
+    total: Number(response.total ?? mapped.length),
+    searchLogId: response.searchLogId ? String(response.searchLogId) : null,
+    visibility: response.visibility,
   };
 }
 
@@ -166,9 +219,6 @@ export async function fetchProductsMeta() {
 // converting a frontend Product object back into the format the backend expects for create/update
 function toBackendPayload(product: Omit<Product, "id">) {
   const brandId = getBrandIdByName(product.brand);
-  if (!brandId) {
-    throw new Error(`Brand not found: ${product.brand}`);
-  }
 
   return {
     name: product.name,
@@ -177,6 +227,7 @@ function toBackendPayload(product: Omit<Product, "id">) {
     barcode: product.barcode || undefined,
     imageUrl: product.imageUrl || null,
     brandId,
+    brandName: brandId ? undefined : product.brand,
     category: product.category || undefined,
     categoryGroup: product.categoryGroup || undefined,
     vendorSource: product.vendorSource || undefined,
@@ -211,7 +262,9 @@ export async function createProduct(product: Omit<Product, "id">) {
 
 // updating an existing product and returning the frontend-normalized version
 export async function updateProduct(id: string, product: Omit<Product, "id">) {
-  const updated = await updateProductApi(id, toBackendPayload(product));
+  const payload = toBackendPayload(product);
+  delete (payload as { stock?: number }).stock;
+  const updated = await updateProductApi(id, payload);
   return toFrontendProduct(updated);
 }
 
@@ -257,4 +310,8 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
 
 export async function permanentlyDeleteProduct(id: string) {
   return permanentlyDeleteProductApi(id);
+}
+
+export async function discardStockAndDeleteProduct(id: string) {
+  return discardStockAndDeleteProductApi(id);
 }

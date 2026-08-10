@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate } from "react-router";
 import {
   InvoiceStatusChip,
@@ -17,6 +17,7 @@ import {
 } from "~/components/ui/MobileFilters";
 import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
+import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
 import { getAuthUser } from "~/lib/auth";
 import {
   getInvoiceApi,
@@ -34,6 +35,12 @@ import {
 } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
+import { useBusinessCapabilities } from "~/lib/businessCapabilities";
+import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
+import {
+  getVisibleHistoryCategoryKeys,
+  type HistoryCategoryKey as HistoryCategory,
+} from "~/lib/routeAccess";
 
 // we use this helper function to easily join multiple tailwind class strings
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -70,16 +77,6 @@ function getInvoiceCustomerType(invoice: Pick<AppInvoice, "customerId">) {
 }
 
 type HistoryCustomerTypeFilter = "All" | "Walk-in" | "Registered";
-type HistoryCategory =
-  | "sales"
-  | "product"
-  | "stock"
-  | "import"
-  | "document"
-  | "return"
-  | "payment"
-  | "system";
-
 const HISTORY_CATEGORIES: Array<{ key: HistoryCategory; label: string }> = [
   { key: "sales", label: "Sales" },
   { key: "product", label: "Products" },
@@ -288,7 +285,15 @@ function getSectionAction(category: HistoryCategory, isAdminView: boolean) {
 export default function HistoryPage() {
   const authUser = getAuthUser();
   const navigate = useNavigate();
+  const capabilities = useBusinessCapabilities();
   const isAdminView = authUser?.role === "admin";
+  const visibleHistoryCategories = useMemo(
+    () => {
+      const visibleKeys = new Set(getVisibleHistoryCategoryKeys(capabilities));
+      return HISTORY_CATEGORIES.filter((category) => visibleKeys.has(category.key));
+    },
+    [capabilities.inventoryEnabled, capabilities.posEnabled],
+  );
   const [invoices, setInvoices] = useState<AppInvoice[]>([]); // stores the normalized invoice list used by all filters and summary cards
   const [invoiceTotal, setInvoiceTotal] = useState(0);
   const [invoiceSummary, setInvoiceSummary] = useState({
@@ -300,8 +305,11 @@ export default function HistoryPage() {
     esewa: 0,
     withReference: 0,
   });
-  const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
-  const [historyCategory, setHistoryCategory] = useState<HistoryCategory>("sales");
+  const [loading, setLoading] = useState(capabilities.posEnabled); // tracks whether the initial data fetch is still running
+  const [historyCategory, setHistoryCategory] = useState<HistoryCategory>(
+    capabilities.posEnabled ? "sales" : "product",
+  );
+  const historyTabRailRef = useRef<SwipeableTabRailController | null>(null);
   const [eventRows, setEventRows] = useState<HistoryEventRow[]>([]);
   const [eventLoading, setEventLoading] = useState(false);
   const [eventTotal, setEventTotal] = useState(0);
@@ -393,7 +401,7 @@ export default function HistoryPage() {
   }
 
   useEffect(() => {
-    if (!isAdminView) return;
+    if (!isAdminView || !capabilities.posEnabled) return;
     void listUsersApi({ role: "CASHIER" })
       .then((users) => {
         const rows = Array.isArray(users) ? users : [];
@@ -408,7 +416,15 @@ export default function HistoryPage() {
         );
       })
       .catch(() => {});
-  }, [isAdminView]);
+  }, [capabilities.posEnabled, isAdminView]);
+
+  useEffect(() => {
+    if (visibleHistoryCategories.some((category) => category.key === historyCategory)) return;
+    setHistoryCategory(visibleHistoryCategories[0]?.key || "product");
+    setPage(1);
+    setLoading(false);
+    setContextNotice("");
+  }, [historyCategory, visibleHistoryCategories]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -419,7 +435,7 @@ export default function HistoryPage() {
   }, [query]);
 
   useEffect(() => {
-    if (historyCategory !== "sales") return;
+    if (historyCategory !== "sales" || !capabilities.posEnabled) return;
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       setLoading(true);
@@ -439,6 +455,7 @@ export default function HistoryPage() {
     };
   }, [
     activeTab,
+    capabilities.posEnabled,
     cashierFilter,
     customerTypeFilter,
     debouncedQuery,
@@ -677,30 +694,61 @@ export default function HistoryPage() {
 
   const activeHistoryInfo = HISTORY_CATEGORY_INFO[historyCategory];
 
+  function moveHistoryCategory(direction: -1 | 1) {
+    const currentIndex = visibleHistoryCategories.findIndex(
+      (category) => category.key === historyCategory,
+    );
+    const nextCategory = visibleHistoryCategories[currentIndex + direction];
+    if (!nextCategory) return;
+    setHistoryCategory(nextCategory.key);
+    setPage(1);
+  }
+
+  const historySwipeGesture = useHorizontalGesture<HTMLDivElement>({
+    enabled: !mobileFiltersOpen && !selectedInvoiceId && !stockBatchDetail,
+    threshold: 72,
+    edgeGuard: 24,
+    allowMouse: true,
+    maxViewportWidth: 1023,
+    onMove: (offsetX) => {
+      const direction: -1 | 1 = offsetX < 0 ? 1 : -1;
+      const currentIndex = visibleHistoryCategories.findIndex(
+        (category) => category.key === historyCategory,
+      );
+      if (!visibleHistoryCategories[currentIndex + direction]) {
+        historyTabRailRef.current?.settle();
+        return;
+      }
+      historyTabRailRef.current?.setGestureProgress(
+        direction,
+        Math.min(1, Math.abs(offsetX) / 140),
+      );
+    },
+    onSwipeLeft: () => moveHistoryCategory(1),
+    onSwipeRight: () => moveHistoryCategory(-1),
+    onEnd: () => window.requestAnimationFrame(() => historyTabRailRef.current?.settle()),
+  });
+
   const categoryTabs = (
     <div className="border-b border-slate-200 bg-white shadow-sm">
-      <div className="overflow-x-auto px-5 sm:px-7">
-        <div className="flex min-w-max gap-6 sm:gap-8">
-          {HISTORY_CATEGORIES.map((category) => (
-            <button
-              key={category.key}
-              type="button"
-              onClick={() => {
-                setHistoryCategory(category.key);
-                setPage(1);
-              }}
-              className={cn(
-                "border-b-[3px] px-1 py-4 text-[14px] font-extrabold transition sm:text-[15px]",
-                historyCategory === category.key
-                  ? "border-black-600 text-black-600"
-                  : "border-transparent text-slate-500 hover:text-slate-800",
-              )}
-            >
-              {category.label}
-            </button>
-          ))}
-        </div>
-      </div>
+      <SwipeableTabRail
+        items={visibleHistoryCategories.map((category) => ({
+          value: category.key,
+          label: category.label,
+        }))}
+        value={historyCategory}
+        controllerRef={historyTabRailRef}
+        onChange={(category) => {
+          setHistoryCategory(category);
+          setPage(1);
+        }}
+        ariaLabel="History categories"
+        className="px-5 sm:px-7"
+        railClassName="gap-6 sm:gap-8"
+        buttonClassName="px-1 py-4 text-[14px] font-extrabold sm:text-[15px]"
+        activeClassName="text-[#11120D]"
+        inactiveClassName="text-slate-500 hover:text-slate-800"
+      />
     </div>
   );
 
@@ -718,7 +766,7 @@ export default function HistoryPage() {
     const eventPageEnd = eventTotal === 0 ? 0 : eventPageStart + eventRows.length;
 
     return (
-      <div className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
+      <div {...historySwipeGesture} className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
         {categoryTabs}
 
         <main className="px-5 py-7 sm:px-7">
@@ -752,7 +800,7 @@ export default function HistoryPage() {
           <div className="mt-6 overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm">
             <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 lg:flex-row lg:items-center lg:justify-between">
               <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
-                Browse {HISTORY_CATEGORIES.find((item) => item.key === historyCategory)?.label || "records"}
+                Browse {visibleHistoryCategories.find((item) => item.key === historyCategory)?.label || "records"}
               </div>
               <div className="flex w-full gap-2 lg:w-[520px]">
                 <div className="relative min-w-0 flex-1">
@@ -1070,7 +1118,7 @@ export default function HistoryPage() {
   }
 
   return (
-    <div className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
+    <div {...historySwipeGesture} className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
       {categoryTabs}
 
       <main className="px-5 py-7 sm:px-7">
@@ -1372,7 +1420,7 @@ export default function HistoryPage() {
         </MobileFilterSheet>
 
         <div className="mt-5 overflow-hidden rounded-[18px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
-          <div className="overflow-x-auto">
+          <div className="hidden overflow-x-auto lg:block">
             <table className="w-full min-w-[1200px]">
               <thead>
                 <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-left text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
@@ -1496,6 +1544,128 @@ export default function HistoryPage() {
               </tbody>
             </table>
           </div>
+
+          <div className="space-y-3 p-3 lg:hidden">
+            {pageItems.map((invoice) => {
+              const reference = getInvoiceReference(invoice);
+
+              return (
+                <article
+                  key={invoice.id}
+                  className="min-w-0 rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm"
+                >
+                  <div className="flex min-w-0 items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="break-all font-mono text-[14px] font-extrabold leading-5 text-[#000000]">
+                        {invoice.invoiceNo}
+                      </div>
+                      <div className="mt-1 text-[12px] font-semibold leading-5 text-[#8C8889]">
+                        {invoice.createdDateLabel} | {invoice.createdTimeLabel}
+                      </div>
+                    </div>
+                    <div className="shrink-0 text-right">
+                      <div className="whitespace-nowrap font-mono text-[16px] font-extrabold text-[#000000]">
+                        {formatNpr(invoice.netTotal)}
+                      </div>
+                      <div className="mt-1 text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                        Total
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="mt-3 min-w-0 border-t border-[#E5E7EB] pt-3">
+                    <div className="break-words text-[14px] font-extrabold leading-5 text-[#000000]">
+                      {invoice.customerName}
+                    </div>
+                    <div className="mt-1 break-words text-[12px] font-semibold leading-5 text-[#8C8889]">
+                      {invoice.customerSubtitle} | Cashier: {invoice.cashierName}
+                    </div>
+                  </div>
+
+                  <div className="mt-3 break-words rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold leading-5 text-[#565449]">
+                    {invoice.itemSummary}
+                  </div>
+
+                  <div className="mt-3 grid grid-cols-2 gap-2">
+                    <div className="min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
+                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                        Paid
+                      </div>
+                      <div className="mt-1 truncate font-mono text-[13px] font-extrabold text-[#000000]">
+                        {formatNpr(invoice.paidAmount)}
+                      </div>
+                    </div>
+                    <div className="min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
+                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                        Due
+                      </div>
+                      <div
+                        className={cn(
+                          "mt-1 truncate font-mono text-[13px] font-extrabold",
+                          invoice.dueAmount > 0 && invoice.status !== "Cancelled"
+                            ? "text-rose-700"
+                            : "text-[#000000]",
+                        )}
+                      >
+                        {formatNpr(invoice.dueAmount)}
+                      </div>
+                    </div>
+                  </div>
+
+                  {reference ? (
+                    <div className="mt-3 min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
+                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                        Reference
+                      </div>
+                      <div className="mt-1 break-all text-[12px] font-bold leading-5 text-[#565449]">
+                        {reference}
+                      </div>
+                    </div>
+                  ) : null}
+
+                  <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
+                    <div className="flex min-w-0 flex-wrap items-center gap-2">
+                      <InvoiceStatusChip status={invoice.status} />
+                      <PaymentMethodChip
+                        method={invoice.paymentMethod}
+                        showIcon
+                      />
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => openInvoice(invoice.id)}
+                      className="flex min-h-10 shrink-0 items-center justify-center gap-2 rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[12px] font-extrabold text-[#565449] transition active:bg-[#F3F4F6]"
+                      aria-label={`View invoice ${invoice.invoiceNo}`}
+                    >
+                      <Icon name="visibility" className="text-[17px]" />
+                      <span>View</span>
+                    </button>
+                  </div>
+
+                  {invoice.status === "Cancelled" &&
+                  invoice.cancelledByName ? (
+                    <div className="mt-3 break-words border-t border-[#E5E7EB] pt-3 text-[11px] font-semibold leading-5 text-slate-500">
+                      Cancelled by {invoice.cancelledByName}
+                      {invoice.cancelledByRole
+                        ? ` (${invoice.cancelledByRole})`
+                        : ""}
+                    </div>
+                  ) : null}
+                </article>
+              );
+            })}
+          </div>
+
+          {pageItems.length === 0 ? (
+            <div className="flex min-h-[160px] items-center justify-center px-4 py-10 text-center lg:hidden">
+              <div className="flex flex-col items-center justify-center text-slate-400">
+                <Icon name="search_off" className="text-[36px]" />
+                <div className="mt-3 text-[14px] font-semibold">
+                  No invoice history found for the selected filters.
+                </div>
+              </div>
+            </div>
+          ) : null}
 
           <PaginationBar
             page={pageClamped}

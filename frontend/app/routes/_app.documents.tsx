@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
@@ -27,6 +27,7 @@ import {
 import { getAuthUser } from "~/lib/auth";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 
 type ProcessingStatusFilter = "ALL" | "PROCESSED" | "UNPROCESSED";
 type VisibilityFilter = "ALL" | DocumentVisibility;
@@ -112,6 +113,20 @@ function fileKindLabel(mimeType: string) {
   return "File";
 }
 
+function documentDisplayTitle(doc: Pick<DocumentRecord, "title" | "fileName">) {
+  return doc.title?.trim() || doc.fileName;
+}
+
+function uploadFileKey(file: File) {
+  return `${file.name}-${file.size}-${file.lastModified}`;
+}
+
+function suggestedDocumentTitle(fileName: string) {
+  const baseName = fileName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim();
+  if (/^(whatsapp (image|document)|screenshot|img[ _-]?\d|image[ _-]?\d)/i.test(baseName)) return "";
+  return baseName.slice(0, 160);
+}
+
 function fileIconFor(doc: Pick<DocumentRecord, "documentType" | "mimeType">) {
   if (doc.mimeType.startsWith("image/")) return "image";
   if (doc.mimeType === "application/pdf") return "picture_as_pdf";
@@ -145,21 +160,6 @@ function DocumentBadge({
     <span className={cn("inline-flex rounded-full border px-2 py-1 text-[11px] font-extrabold", className)}>
       {children}
     </span>
-  );
-}
-
-function MetadataItem({
-  label,
-  value,
-}: {
-  label: string;
-  value: ReactNode;
-}) {
-  return (
-    <div className="rounded-[12px] border border-[#E5E7EB] bg-white px-3 py-2">
-      <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">{label}</div>
-      <div className="mt-1 min-w-0 break-words text-[12px] font-bold text-[#11120d]">{value || "-"}</div>
-    </div>
   );
 }
 
@@ -204,7 +204,7 @@ function DocumentThumbnail({ doc }: { doc: DocumentRecord }) {
       <img
         src={thumbUrl}
         alt=""
-        className="h-full w-full object-cover"
+        className="h-full w-full bg-white object-contain p-1"
         loading="lazy"
       />
     );
@@ -272,8 +272,11 @@ export default function DocumentsPage() {
   const [documents, setDocuments] = useState<DocumentRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(20);
+  const [pageSize, setPageSize] = useState(10);
+  const documentListRef = useRef<HTMLElement>(null);
   const [selectedDoc, setSelectedDoc] = useState<DocumentRecord | null>(null);
+  const [mobileActionDoc, setMobileActionDoc] = useState<DocumentRecord | null>(null);
+  const [mobileFullPreview, setMobileFullPreview] = useState(false);
   const [storageInfo, setStorageInfo] = useState<StorageInfo | null>(null);
 
   const [typeFilter, setTypeFilter] = useState<DocumentType | "ALL">("ALL");
@@ -282,6 +285,8 @@ export default function DocumentsPage() {
   const [visibilityFilter, setVisibilityFilter] = useState<VisibilityFilter>("ALL");
   const [supplierSearch, setSupplierSearch] = useState("");
   const [billSearch, setBillSearch] = useState("");
+  const [documentQuery, setDocumentQuery] = useState("");
+  const [debouncedDocumentQuery, setDebouncedDocumentQuery] = useState("");
   const [dateFrom, setDateFrom] = useState("");
   const [dateTo, setDateTo] = useState("");
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
@@ -301,16 +306,22 @@ export default function DocumentsPage() {
   const [detailExpanded, setDetailExpanded] = useState(false);
   const [editingDoc, setEditingDoc] = useState<DocumentRecord | null>(null);
   const [editType, setEditType] = useState<DocumentType>("GENERAL");
+  const [editTitle, setEditTitle] = useState("");
+  const [editTitleError, setEditTitleError] = useState("");
+  const editTitleRef = useRef<HTMLInputElement>(null);
   const [editSupplier, setEditSupplier] = useState("");
   const [editBillNumber, setEditBillNumber] = useState("");
   const [editBillDate, setEditBillDate] = useState("");
   const [editBillAmount, setEditBillAmount] = useState("");
+  const [editBillAmountError, setEditBillAmountError] = useState("");
+  const editBillAmountRef = useRef<HTMLInputElement>(null);
   const [editRemarks, setEditRemarks] = useState("");
   const [editBusy, setEditBusy] = useState(false);
   const [visibilityDoc, setVisibilityDoc] = useState<DocumentRecord | null>(null);
   const [visibilityRoles, setVisibilityRoles] = useState({ admin: true, manager: true, cashier: true });
 
   const [uploadFiles, setUploadFiles] = useState<File[]>([]);
+  const [uploadTitles, setUploadTitles] = useState<Record<string, string>>({});
   const [uploadType, setUploadType] = useState<DocumentType>("STOCK_BILL");
   const [uploadSupplier, setUploadSupplier] = useState("");
   const [uploadSupplierMode, setUploadSupplierMode] = useState<"existing" | "new">("existing");
@@ -331,6 +342,7 @@ export default function DocumentsPage() {
     typeFilter !== "ALL" ||
     processingStatusFilter !== "ALL" ||
     visibilityFilter !== "ALL" ||
+    documentQuery ||
     supplierSearch ||
     billSearch ||
     dateFrom ||
@@ -356,6 +368,7 @@ export default function DocumentsPage() {
       const res = await listDocumentsApi({
         page,
         pageSize,
+        q: debouncedDocumentQuery.trim() || undefined,
         documentType: typeFilter === "ALL" ? undefined : typeFilter,
         processingStatus:
           processingStatusFilter === "ALL" ? undefined : processingStatusFilter,
@@ -400,6 +413,14 @@ export default function DocumentsPage() {
   }
 
   useEffect(() => {
+    const timer = window.setTimeout(() => {
+      setDebouncedDocumentQuery(documentQuery.trim());
+      setPage(1);
+    }, 300);
+    return () => window.clearTimeout(timer);
+  }, [documentQuery]);
+
+  useEffect(() => {
     const controller = new AbortController();
     const timer = window.setTimeout(
       () => void loadDocuments({ signal: controller.signal }),
@@ -410,7 +431,7 @@ export default function DocumentsPage() {
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [page, pageSize, typeFilter, processingStatusFilter, visibilityFilter, dateFrom, dateTo, mobileFilterApplyKey, rateLimitRecoveryKey]);
+  }, [page, pageSize, debouncedDocumentQuery, typeFilter, processingStatusFilter, visibilityFilter, dateFrom, dateTo, mobileFilterApplyKey, rateLimitRecoveryKey]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -454,6 +475,7 @@ export default function DocumentsPage() {
 
   function resetUploadForm() {
     setUploadFiles([]);
+    setUploadTitles({});
     setUploadType("STOCK_BILL");
     setUploadSupplier("");
     setUploadSupplierMode("existing");
@@ -476,12 +498,20 @@ export default function DocumentsPage() {
 
   function addUploadFiles(files: FileList | File[]) {
     const incoming = Array.from(files);
+    setUploadTitles((currentTitles) => {
+      const nextTitles = { ...currentTitles };
+      for (const file of incoming) {
+        const key = uploadFileKey(file);
+        if (!(key in nextTitles)) nextTitles[key] = suggestedDocumentTitle(file.name);
+      }
+      return nextTitles;
+    });
     setUploadFiles((current) => {
       const next = [...current, ...incoming];
       const seen = new Set<string>();
       return next
         .filter((file) => {
-          const key = `${file.name}-${file.size}-${file.lastModified}`;
+          const key = uploadFileKey(file);
           if (seen.has(key)) return false;
           seen.add(key);
           return true;
@@ -492,6 +522,14 @@ export default function DocumentsPage() {
   }
 
   function removeUploadFile(index: number) {
+    const removed = uploadFiles[index];
+    if (removed) {
+      setUploadTitles((titles) => {
+        const next = { ...titles };
+        delete next[uploadFileKey(removed)];
+        return next;
+      });
+    }
     setUploadFiles((current) => current.filter((_, idx) => idx !== index));
   }
 
@@ -505,6 +543,14 @@ export default function DocumentsPage() {
       return;
     }
 
+    const titles = uploadFiles.map((file) => uploadTitles[uploadFileKey(file)]?.trim() || "");
+    const missingTitleIndex = titles.findIndex((title) => title.length < 2);
+    if (missingTitleIndex >= 0) {
+      setUploadError(`Add a clear, searchable title for ${uploadFiles[missingTitleIndex].name}.`);
+      document.getElementById(`upload-document-title-${missingTitleIndex}`)?.focus();
+      return;
+    }
+
     const billAmount = uploadBillAmount.trim() ? Number(uploadBillAmount) : undefined;
     if (billAmount !== undefined && (!Number.isFinite(billAmount) || billAmount < 0)) {
       setUploadError("Bill amount must be zero or greater.");
@@ -515,6 +561,7 @@ export default function DocumentsPage() {
       setUploadBusy(true);
       setUploadError("");
       const result = await uploadDocumentsApi(uploadFiles, {
+        titles,
         documentType: uploadType,
         supplierName: uploadSupplier.trim() || undefined,
         billNumber: uploadBillNumber.trim() || undefined,
@@ -527,6 +574,7 @@ export default function DocumentsPage() {
       setUploadResult(uploaded);
       showToast("success", `${uploaded.length} document${uploaded.length === 1 ? "" : "s"} uploaded.`);
       setUploadFiles([]);
+      setUploadTitles({});
       await loadDocuments();
       await loadStorageInfo();
       if (uploaded[0]) {
@@ -608,26 +656,38 @@ export default function DocumentsPage() {
 
   function openEditDetails(doc: DocumentRecord) {
     setEditingDoc(doc);
+    setEditTitle(documentDisplayTitle(doc));
+    setEditTitleError("");
     setEditType(doc.documentType);
     setEditSupplier(doc.supplierName || "");
     setEditBillNumber(doc.billNumber || "");
     setEditBillDate(dateInputValue(doc.billDate));
     setEditBillAmount(doc.billAmount === null || doc.billAmount === undefined ? "" : String(doc.billAmount));
+    setEditBillAmountError("");
     setEditRemarks(doc.remarks || "");
   }
 
   async function submitEditDetails() {
     if (!editingDoc) return;
 
+    const title = editTitle.trim();
+    if (title.length < 2) {
+      setEditTitleError("Enter a clear document title with at least 2 characters.");
+      focusInvalidField(editTitleRef);
+      return;
+    }
+
     const billAmount = editBillAmount.trim() ? Number(editBillAmount) : null;
     if (billAmount !== null && (!Number.isFinite(billAmount) || billAmount < 0)) {
-      showToast("danger", "Bill amount must be zero or greater.");
+      setEditBillAmountError("Enter zero or a positive bill amount.");
+      focusInvalidField(editBillAmountRef);
       return;
     }
 
     try {
       setEditBusy(true);
       const result = await updateDocumentMetadataApi(editingDoc.id, {
+        title,
         documentType: editType,
         supplierName: editSupplier.trim() || null,
         billNumber: editBillNumber.trim() || null,
@@ -661,10 +721,18 @@ export default function DocumentsPage() {
   }
 
   function openFullView(doc: DocumentRecord) {
+    if (window.matchMedia("(max-width: 1023px)").matches) {
+      setSelectedDoc(doc);
+      setMobileActionDoc(null);
+      setMobileFullPreview(true);
+      return;
+    }
     window.open(`/documents/${doc.id}/view`, "_blank", "noopener,noreferrer");
   }
 
   function clearFilters() {
+    setDocumentQuery("");
+    setDebouncedDocumentQuery("");
     setSupplierSearch("");
     setBillSearch("");
     setDateFrom("");
@@ -673,7 +741,7 @@ export default function DocumentsPage() {
     setProcessingStatusFilter("ALL");
     setVisibilityFilter("ALL");
     setPage(1);
-    void loadDocuments();
+    setMobileFilterApplyKey((key) => key + 1);
   }
 
   const mobileFilterCount = [
@@ -742,11 +810,11 @@ export default function DocumentsPage() {
 
     if (doc.mimeType.startsWith("image/")) {
       return (
-        <div className="h-full w-full overflow-auto bg-[#E5E7EB]">
+        <div className="flex h-full w-full items-center justify-center overflow-hidden bg-[#F3F4F6] p-2">
           <img
             src={previewUrl}
             alt={doc.fileName}
-            className="w-full h-auto block"
+            className="block max-h-full max-w-full object-contain"
           />
         </div>
       );
@@ -836,8 +904,8 @@ export default function DocumentsPage() {
                       <DocumentThumbnail doc={doc} />
                     </div>
                     <div className="min-w-0">
-                      <div className="max-w-[260px] truncate font-extrabold text-[#11120d]" title={doc.fileName}>
-                        {doc.fileName}
+                      <div className="max-w-[260px] truncate font-extrabold text-[#11120d]" title={documentDisplayTitle(doc)}>
+                        {documentDisplayTitle(doc)}
                       </div>
                       <div className="mt-1 flex flex-wrap gap-2 text-[11px] font-semibold text-[#8C8889]">
                         <span>{typeLabel(doc.documentType)}</span>
@@ -856,13 +924,19 @@ export default function DocumentsPage() {
                   </div>
                 </td>
                 <td className="px-4 py-3">
-                  <div className="font-extrabold text-[#11120d]">{doc.supplierName || "-"}</div>
-                  <div className="mt-1 text-[11px] font-semibold text-[#8C8889]">
-                    {doc.billNumber ? `Bill ${doc.billNumber}` : "No bill number"} | {formatDate(doc.billDate)}
-                  </div>
+                  {doc.supplierName || doc.billNumber || doc.billDate ? (
+                    <>
+                      {doc.supplierName ? <div className="font-extrabold text-[#11120d]">{doc.supplierName}</div> : null}
+                      <div className={cn("text-[11px] font-semibold text-[#64748B]", doc.supplierName && "mt-1")}>
+                        {[doc.billNumber ? `Bill ${doc.billNumber}` : "", doc.billDate ? formatDate(doc.billDate) : ""].filter(Boolean).join(" · ")}
+                      </div>
+                    </>
+                  ) : (
+                    <span className="text-[11px] font-semibold text-[#8C8889]">No business details</span>
+                  )}
                 </td>
                 <td className="px-4 py-3 font-mono font-extrabold text-[#11120d]">
-                  {formatMoney(doc.billAmount)}
+                  {doc.billAmount != null ? formatMoney(doc.billAmount) : <span className="font-sans text-[11px] font-semibold text-[#8C8889]">Not recorded</span>}
                 </td>
                 <td className="px-4 py-3">
                   <div className="font-semibold text-[#11120d]">{formatDate(doc.createdAt)}</div>
@@ -912,61 +986,89 @@ export default function DocumentsPage() {
   function renderDocumentCards() {
     return (
       <div className="space-y-3 lg:hidden">
-          {documents.map((doc) => (
+        {documents.map((doc) => {
+          const businessReference = [
+            doc.supplierName?.trim(),
+            doc.billNumber?.trim() ? `Bill ${doc.billNumber.trim()}` : "",
+          ].filter(Boolean).join(" · ");
+
+          return (
             <article
               key={doc.id}
-              className="w-full rounded-[16px] border border-[#DADDE3] bg-white p-4 text-left shadow-sm transition-colors hover:bg-[#ECEFF3]"
+              role="button"
+              tabIndex={0}
+              onClick={() => {
+                setMobileFullPreview(false);
+                setSelectedDoc(doc);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Enter" || event.key === " ") {
+                  event.preventDefault();
+                  setMobileFullPreview(false);
+                  setSelectedDoc(doc);
+                }
+              }}
+              className="w-full rounded-[16px] border border-[#DADDE3] bg-white p-3 text-left shadow-sm transition active:bg-[#F3F4F6]"
             >
               <div className="flex items-start gap-3">
-                <div className="h-[54px] w-[54px] shrink-0 overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-[#F3F4F6]">
+                <div className="h-[68px] w-[68px] shrink-0 overflow-hidden rounded-[13px] border border-[#E5E7EB] bg-[#F8FAFC]">
                   <DocumentThumbnail doc={doc} />
                 </div>
-                <div className="min-w-0 flex-1">
-                  <div className="max-h-[40px] overflow-hidden break-words text-[13px] font-extrabold leading-5 text-[#11120d]">
-                    {doc.fileName}
+                <div className="min-w-0 flex-1 pt-0.5">
+                  <div className="break-words text-[14px] font-extrabold leading-5 text-[#11120d]">
+                    {documentDisplayTitle(doc)}
                   </div>
-                  <div className="mt-1 text-[11px] font-semibold text-[#8C8889]">
-                    {typeLabel(doc.documentType)} | {formatBytes(doc.fileSize)}
+                  <div className="mt-1.5 text-[11px] font-bold text-[#64748B]">
+                    {typeLabel(doc.documentType)} · {formatBytes(doc.fileSize)}
                   </div>
                 </div>
+                <button
+                  type="button"
+                  onClick={(event) => {
+                    event.stopPropagation();
+                    setMobileActionDoc(doc);
+                  }}
+                  className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#E5E7EB] bg-white text-[#565449] active:bg-[#ECEFF3]"
+                  aria-label={`Actions for ${documentDisplayTitle(doc)}`}
+                >
+                  <Icon name="more_vert" sizePx={22} />
+                </button>
               </div>
+
               <div className="mt-3 flex flex-wrap gap-2">
                 <DocumentBadge className={processingBadgeClass(doc)}>
-                  {doc.processingStatus === "PROCESSED" ? "Linked" : "Unprocessed"}
+                  {doc.processingStatus === "PROCESSED" ? "Linked" : "Needs review"}
                 </DocumentBadge>
-                {isAdmin ? (
-                  <button 
-                    type="button" 
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      openVisibilityDialog(doc);
-                    }} 
-                    disabled={visibilitySavingId === doc.id}
-                    className="group inline-flex items-center rounded-full outline-none transition disabled:opacity-60"
-                    title="Change visibility"
-                  >
-                    <DocumentBadge className={cn("transition group-hover:shadow-[0_0_0_2px_rgba(17,18,13,0.1)] group-active:scale-95", visibilityBadgeClass(doc.visibility))}>
-                      <span className="flex items-center gap-1">
-                        {visibilityLabel(doc.visibility)}
-                        <Icon name="edit" sizePx={12} className="opacity-0 transition-opacity group-hover:opacity-100" />
-                      </span>
-                    </DocumentBadge>
-                  </button>
+                <DocumentBadge className={visibilityBadgeClass(doc.visibility)}>
+                  {visibilityLabel(doc.visibility)}
+                </DocumentBadge>
+              </div>
+
+              <div className="mt-3 border-t border-[#E5E7EB] pt-3 text-[12px] font-semibold text-[#565449]">
+                {businessReference ? (
+                  <div className="flex items-start gap-2">
+                    <Icon name="receipt_long" sizePx={16} className="mt-0.5 shrink-0 text-[#8C8889]" />
+                    <span className="min-w-0 break-words">{businessReference}</span>
+                  </div>
                 ) : (
-                  <DocumentBadge className={visibilityBadgeClass(doc.visibility)}>
-                    {visibilityLabel(doc.visibility)}
-                  </DocumentBadge>
+                  <div className="flex items-center gap-2">
+                    <Icon name="person" sizePx={16} className="shrink-0 text-[#8C8889]" />
+                    <span>Uploaded by {doc.uploadedBy?.name || "System"}</span>
+                  </div>
                 )}
               </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-[12px]">
-                <MetadataItem label="Supplier" value={doc.supplierName || "-"} />
-                <MetadataItem label="Bill" value={doc.billNumber || "-"} />
-              </div>
-              <div className="mt-3">{renderDocumentActions(doc, true)}</div>
             </article>
-          ))}
+          );
+        })}
       </div>
     );
+  }
+
+  function changeDocumentPage(nextPage: number) {
+    setPage(nextPage);
+    window.requestAnimationFrame(() => {
+      documentListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+    });
   }
 
   function renderEmptyState() {
@@ -991,13 +1093,326 @@ export default function DocumentsPage() {
     );
   }
 
+type DocumentTouchViewerProps = {
+  doc: DocumentRecord;
+  previewUrl: string | null;
+  previewError?: string | null;
+  onTapToEnlarge?: () => void;
+  interactive?: boolean;
+};
+
+function DocumentTouchViewer({
+  doc,
+  previewUrl,
+  previewError,
+  onTapToEnlarge,
+  interactive = false,
+}: DocumentTouchViewerProps) {
+  const [scale, setScale] = useState(1);
+  const [position, setPosition] = useState({ x: 0, y: 0 });
+
+  const containerRef = useRef<HTMLDivElement>(null);
+  const startDistanceRef = useRef<number>(0);
+  const startScaleRef = useRef<number>(1);
+  const startTouchRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const startPosRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
+  const lastTapRef = useRef<number>(0);
+
+  const isPDF = doc.mimeType === "application/pdf";
+  const isImage = doc.mimeType.startsWith("image/");
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    if (e.touches.length === 2) {
+      const dist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      startDistanceRef.current = dist;
+      startScaleRef.current = scale;
+    } else if (e.touches.length === 1) {
+      startTouchRef.current = { x: e.touches[0].clientX, y: e.touches[0].clientY };
+      startPosRef.current = { ...position };
+
+      const now = Date.now();
+      if (now - lastTapRef.current < 300) {
+        if (scale > 1) {
+          setScale(1);
+          setPosition({ x: 0, y: 0 });
+        } else {
+          setScale(2);
+        }
+      }
+      lastTapRef.current = now;
+    }
+  };
+
+  const handleTouchMove = (e: React.TouchEvent) => {
+    if (e.touches.length === 2 && startDistanceRef.current > 0) {
+      const currentDist = Math.hypot(
+        e.touches[0].clientX - e.touches[1].clientX,
+        e.touches[0].clientY - e.touches[1].clientY
+      );
+      const newScale = Math.min(
+        Math.max(1, startScaleRef.current * (currentDist / startDistanceRef.current)),
+        4
+      );
+      setScale(newScale);
+      if (newScale === 1) setPosition({ x: 0, y: 0 });
+    } else if (e.touches.length === 1 && scale > 1) {
+      const dx = e.touches[0].clientX - startTouchRef.current.x;
+      const dy = e.touches[0].clientY - startTouchRef.current.y;
+      setPosition({
+        x: startPosRef.current.x + dx,
+        y: startPosRef.current.y + dy,
+      });
+    }
+  };
+
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (e.touches.length < 2) {
+      startDistanceRef.current = 0;
+    }
+  };
+
+  const zoomIn = () => setScale((prev) => Math.min(4, Math.round((prev + 0.5) * 10) / 10));
+  const zoomOut = () =>
+    setScale((prev) => {
+      const next = Math.max(1, Math.round((prev - 0.5) * 10) / 10);
+      if (next === 1) setPosition({ x: 0, y: 0 });
+      return next;
+    });
+  const resetZoom = () => {
+    setScale(1);
+    setPosition({ x: 0, y: 0 });
+  };
+
+  if (previewError) {
+    return (
+      <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-center text-[#8C8889]">
+        <Icon name="error" sizePx={44} className="mb-3 text-rose-500" />
+        <div className="text-[13px] font-extrabold text-[#565449]">{previewError}</div>
+      </div>
+    );
+  }
+
+  if (!previewUrl) {
+    return (
+      <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-[#8C8889]">
+        <Icon name="hourglass_empty" sizePx={44} className="mb-3 text-[#D1D5DB]" />
+        <div className="text-[13px] font-extrabold text-[#565449]">Loading preview...</div>
+      </div>
+    );
+  }
+
+  const pdfUrl = previewUrl.includes("#") ? previewUrl : `${previewUrl}#view=FitH`;
+
+  return (
+    <div
+      ref={containerRef}
+      onTouchStart={handleTouchStart}
+      onTouchMove={handleTouchMove}
+      onTouchEnd={handleTouchEnd}
+      className="relative flex h-full w-full flex-col overflow-hidden bg-[#F3F4F6] touch-manipulation select-none"
+    >
+      <div className="relative flex-1 min-h-0 w-full overflow-auto overscroll-contain">
+        <div
+          className="flex h-full w-full items-center justify-center transition-transform duration-75 origin-center"
+          style={{
+            transform: `translate3d(${position.x}px, ${position.y}px, 0) scale(${scale})`,
+          }}
+        >
+          {isImage ? (
+            <img
+              src={previewUrl}
+              alt={doc.fileName}
+              className="block max-h-full max-w-full object-contain pointer-events-none"
+            />
+          ) : isPDF ? (
+            <iframe
+              src={pdfUrl}
+              title={doc.fileName}
+              className="h-full w-full border-0 bg-white"
+            />
+          ) : (
+            <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-center text-[#8C8889]">
+              <Icon name="description" sizePx={58} className="mb-3 text-[#D1D5DB]" />
+              <div className="text-[14px] font-extrabold text-[#565449]">Preview not available</div>
+              <div className="mt-1 text-[12px] font-semibold">Download this file to inspect it.</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="absolute bottom-3 left-1/2 z-20 flex -translate-x-1/2 items-center gap-1.5 rounded-full border border-slate-700/30 bg-[#11120D]/85 px-3 py-1.5 text-white shadow-xl backdrop-blur-md">
+        <button
+          type="button"
+          onClick={zoomOut}
+          disabled={scale <= 1}
+          className="flex h-8 w-8 items-center justify-center rounded-full transition hover:bg-white/20 active:scale-95 disabled:opacity-40"
+          title="Zoom out (-)"
+        >
+          <Icon name="zoom_out" sizePx={18} />
+        </button>
+        <button
+          type="button"
+          onClick={resetZoom}
+          className="px-2 text-[11px] font-extrabold tracking-wider text-slate-200 transition hover:text-white"
+          title="Reset zoom to 100%"
+        >
+          {Math.round(scale * 100)}%
+        </button>
+        <button
+          type="button"
+          onClick={zoomIn}
+          disabled={scale >= 4}
+          className="flex h-8 w-8 items-center justify-center rounded-full transition hover:bg-white/20 active:scale-95 disabled:opacity-40"
+          title="Zoom in (+)"
+        >
+          <Icon name="zoom_in" sizePx={18} />
+        </button>
+        {onTapToEnlarge && !interactive ? (
+          <>
+            <span className="h-4 w-px bg-white/20" />
+            <button
+              type="button"
+              onClick={onTapToEnlarge}
+              className="flex h-8 items-center gap-1.5 rounded-full bg-white/15 px-2.5 text-[11px] font-extrabold text-white transition hover:bg-white/25 active:scale-95"
+            >
+              <Icon name="fullscreen" sizePx={16} />
+              Enlarge
+            </button>
+          </>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
   function renderDetailView() {
     if (!selectedDoc) return null;
 
+    if (mobileFullPreview) {
+      return (
+        <div className="flex h-[calc(100dvh-130px)] min-h-[420px] flex-col lg:hidden">
+          <div className="mb-3 flex items-center justify-between gap-3 shrink-0">
+            <button
+              type="button"
+              onClick={() => setMobileFullPreview(false)}
+              className="inline-flex h-11 items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#11120d]"
+            >
+              <Icon name="arrow_back" sizePx={18} />
+              Details
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleDownload(selectedDoc)}
+              className="inline-flex h-11 items-center gap-2 rounded-[12px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white"
+            >
+              <Icon name="download" sizePx={18} />
+              Download
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-hidden rounded-[14px] border border-[#DADDE3] bg-[#F3F4F6]">
+            <DocumentTouchViewer
+              doc={selectedDoc}
+              previewUrl={previewUrl}
+              previewError={previewError}
+              interactive
+            />
+          </div>
+        </div>
+      );
+    }
+
     return (
+      <>
+        <div className="space-y-4 lg:hidden">
+          <div
+            className="group relative block h-[380px] sm:h-[480px] w-full overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#F3F4F6] text-left"
+            aria-label={`Open ${documentDisplayTitle(selectedDoc)} full screen`}
+          >
+            <DocumentTouchViewer
+              doc={selectedDoc}
+              previewUrl={previewUrl}
+              previewError={previewError}
+              onTapToEnlarge={() => openFullView(selectedDoc)}
+            />
+          </div>
+
+          <button
+            type="button"
+            onClick={() => void handleDownload(selectedDoc)}
+            className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[13px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#11120d]"
+          >
+            <Icon name="download" sizePx={18} />
+            Download original file
+          </button>
+
+          <div className="flex flex-wrap gap-2">
+            <DocumentBadge className={processingBadgeClass(selectedDoc)}>
+              {selectedDoc.processingStatus === "PROCESSED" ? "Linked" : "Needs review"}
+            </DocumentBadge>
+            <DocumentBadge className={visibilityBadgeClass(selectedDoc.visibility)}>
+              {visibilityLabel(selectedDoc.visibility)}
+            </DocumentBadge>
+          </div>
+
+          <section className="rounded-[16px] border border-[#DADDE3] bg-white p-4">
+            <h2 className="text-[13px] font-extrabold text-[#11120d]">Document information</h2>
+            <div className="mt-3 divide-y divide-[#E5E7EB]">
+              {[
+                selectedDoc.supplierName ? ["Supplier", selectedDoc.supplierName] : null,
+                selectedDoc.billNumber ? ["Bill number", selectedDoc.billNumber] : null,
+                selectedDoc.billDate ? ["Bill date", formatDate(selectedDoc.billDate)] : null,
+                selectedDoc.billAmount != null ? ["Bill amount", formatMoney(selectedDoc.billAmount)] : null,
+                ["Uploaded by", selectedDoc.uploadedBy?.name || "System"],
+                ["Uploaded", formatDateTime(selectedDoc.createdAt)],
+                ["File", selectedDoc.mimeType === "application/pdf" ? "PDF" : selectedDoc.mimeType.startsWith("image/") ? "Image" : typeLabel(selectedDoc.documentType)],
+                ["Size", formatBytes(selectedDoc.fileSize)],
+                documentDisplayTitle(selectedDoc) !== selectedDoc.fileName ? ["Original file", selectedDoc.fileName] : null,
+              ].filter((item): item is string[] => Boolean(item)).map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4 py-3 first:pt-0 last:pb-0">
+                  <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#64748B]">{label}</span>
+                  <span className="min-w-0 text-right text-[13px] font-bold text-[#11120d]">{value}</span>
+                </div>
+              ))}
+            </div>
+          </section>
+
+          {selectedDoc.remarks ? (
+            <section className="rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC] p-4">
+              <div className="text-[11px] font-extrabold uppercase tracking-wide text-[#64748B]">Remarks</div>
+              <div className="mt-2 whitespace-pre-wrap text-[13px] font-semibold leading-6 text-[#565449]">{selectedDoc.remarks}</div>
+            </section>
+          ) : null}
+
+          <div className="space-y-2 pb-2">
+            {canManageDocuments ? (
+              <button
+                type="button"
+                onClick={() => openEditDetails(selectedDoc)}
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#11120d]"
+              >
+                <Icon name="edit" sizePx={18} />
+                Edit details
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => openVisibilityDialog(selectedDoc)}
+                className="inline-flex h-12 w-full items-center justify-center gap-2 rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#11120d]"
+              >
+                <Icon name="admin_panel_settings" sizePx={18} />
+                Change visibility
+              </button>
+            ) : null}
+          </div>
+        </div>
+
       <div
         className={cn(
-          "grid min-h-0 grid-cols-1 gap-5 lg:h-[75vh]",
+          "hidden min-h-0 grid-cols-1 gap-5 lg:grid lg:h-[75vh]",
           detailExpanded ? "lg:h-[calc(100dvh-170px)] lg:grid-cols-[1fr_320px]" : "lg:grid-cols-[1fr_360px]",
         )}
       >
@@ -1016,7 +1431,12 @@ export default function DocumentsPage() {
         <div className="flex h-[240px] flex-col overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-[#F3F4F6] sm:h-[320px] lg:h-full">
  
           <div className="flex-1 overflow-hidden">
-            {renderPreview(selectedDoc)}
+            <DocumentTouchViewer
+              doc={selectedDoc}
+              previewUrl={previewUrl}
+              previewError={previewError}
+              interactive
+            />
           </div>
         </div>
 
@@ -1036,46 +1456,49 @@ export default function DocumentsPage() {
             ) : null}
           </div>
 
-          <div className="mt-6 space-y-4">
-            <div>
-              <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Supplier</div>
-              <div className="mt-1 text-[14px] font-bold text-[#11120d]">{selectedDoc.supplierName || "-"}</div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4 border-t border-[#E5E7EB] pt-4">
-              <div>
-                <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Bill Number</div>
-                <div className="mt-1 text-[14px] font-bold text-[#11120d]">{selectedDoc.billNumber || "-"}</div>
+          {selectedDoc.supplierName || selectedDoc.billNumber || selectedDoc.billDate || selectedDoc.billAmount != null ? (
+            <section className="mt-6 rounded-[14px] border border-[#E5E7EB] bg-white p-4">
+              <div className="text-[11px] font-extrabold uppercase tracking-wide text-[#565449]">Business details</div>
+              <div className="mt-2 divide-y divide-[#E5E7EB]">
+                {[
+                  selectedDoc.supplierName ? ["Supplier", selectedDoc.supplierName] : null,
+                  selectedDoc.billNumber ? ["Bill number", selectedDoc.billNumber] : null,
+                  selectedDoc.billDate ? ["Bill date", formatDate(selectedDoc.billDate)] : null,
+                  selectedDoc.billAmount != null ? ["Bill amount", formatMoney(selectedDoc.billAmount)] : null,
+                ].filter((item): item is string[] => Boolean(item)).map(([label, value]) => (
+                  <div key={label} className="flex items-start justify-between gap-4 py-3 first:pt-1 last:pb-1">
+                    <span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">{label}</span>
+                    <span className="min-w-0 text-right text-[13px] font-bold text-[#11120d]">{value}</span>
+                  </div>
+                ))}
               </div>
-              <div>
-                <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Bill Date</div>
-                <div className="mt-1 text-[14px] font-bold text-[#11120d]">{formatDate(selectedDoc.billDate)}</div>
-              </div>
-            </div>
+            </section>
+          ) : null}
 
-            <div className="grid grid-cols-2 gap-4 border-t border-[#E5E7EB] pt-4">
-              <div>
-                <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Bill Amount</div>
-                <div className="mt-1 text-[14px] font-bold text-[#11120d]">{formatMoney(selectedDoc.billAmount)}</div>
-              </div>
-              <div>
-                <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Uploaded By</div>
-                <div className="mt-1 text-[14px] font-bold text-[#11120d]">{selectedDoc.uploadedBy?.name || "System"}</div>
-              </div>
+          <section className="mt-6 rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-4">
+            <div className="text-[11px] font-extrabold uppercase tracking-wide text-[#565449]">File information</div>
+            <div className="mt-2 divide-y divide-[#E5E7EB]">
+              {[
+                ["Uploaded by", selectedDoc.uploadedBy?.name || "System"],
+                ["Uploaded", formatDateTime(selectedDoc.createdAt)],
+                ["Format", fileKindLabel(selectedDoc.mimeType)],
+                ["Size", formatBytes(selectedDoc.fileSize)],
+                documentDisplayTitle(selectedDoc) !== selectedDoc.fileName ? ["Original file", selectedDoc.fileName] : null,
+              ].filter((item): item is string[] => Boolean(item)).map(([label, value]) => (
+                <div key={label} className="flex items-start justify-between gap-4 py-3 first:pt-1 last:pb-1">
+                  <span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">{label}</span>
+                  <span className="min-w-0 max-w-[190px] break-words text-right text-[13px] font-bold text-[#11120d]">{value}</span>
+                </div>
+              ))}
             </div>
+          </section>
 
-            <div className="border-t border-[#E5E7EB] pt-4">
-              <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">File Type</div>
-              <div className="mt-1 text-[14px] font-bold text-[#11120d]">{selectedDoc.mimeType}</div>
+          {selectedDoc.remarks ? (
+            <div className="mt-6 rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-4">
+              <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#565449]">Remarks</div>
+              <div className="mt-2 whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-[#565449]">{selectedDoc.remarks}</div>
             </div>
-          </div>
-
-          <div className="mt-6 rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-4">
-            <div className="text-[10px] font-extrabold uppercase tracking-widest text-[#8C8889]">Remarks</div>
-            <div className="mt-2 whitespace-pre-wrap text-[13px] font-medium leading-relaxed text-[#565449]">
-              {selectedDoc.remarks || "-"}
-            </div>
-          </div>
+          ) : null}
 
           {isAdmin ? (
             <div className="mt-6">
@@ -1110,6 +1533,7 @@ export default function DocumentsPage() {
           </div>
         </div>
       </div>
+      </>
     );
   }
 
@@ -1230,6 +1654,26 @@ export default function DocumentsPage() {
                           Remove
                         </button>
                       </div>
+                      <label className="mb-3 block">
+                        <span className="text-[11px] font-extrabold uppercase tracking-wide text-[#565449]">
+                          Document title <span className="text-rose-600">*</span>
+                        </span>
+                        <input
+                          id={`upload-document-title-${index}`}
+                          value={uploadTitles[uploadFileKey(file)] || ""}
+                          maxLength={160}
+                          onChange={(event) => {
+                            const key = uploadFileKey(file);
+                            setUploadTitles((current) => ({ ...current, [key]: event.target.value }));
+                            setUploadError("");
+                          }}
+                          placeholder="e.g. Household supplier price list - July 2026"
+                          className="mt-1 h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-slate-100"
+                        />
+                        <span className="mt-1.5 block text-[11px] font-semibold leading-4 text-[#64748B]">
+                          Used in lists and search. Original file: {file.name}
+                        </span>
+                      </label>
                       <div className="overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white">
                         <LocalFilePreview file={file} />
                       </div>
@@ -1424,8 +1868,8 @@ export default function DocumentsPage() {
   }
 
   return (
-    <div className="flex min-h-full flex-col rounded-[28px] bg-white p-6 text-[#11120d]">
-      <div className="mb-6 flex flex-col gap-4 md:mb-8 md:flex-row md:items-center md:justify-between">
+    <div className="-mx-2 flex min-h-full flex-col bg-white px-1 pb-6 pt-4 text-[#11120d] md:mx-0 md:rounded-[28px] md:p-6">
+      <div className="mb-8 hidden flex-col gap-4 md:flex md:flex-row md:items-center md:justify-between">
         <div>
           <h1 className="text-2xl font-bold tracking-tight text-[#11120d] md:text-3xl">Documents</h1>
           <p className="mt-1 text-sm font-medium text-[#8C8889] md:text-base">
@@ -1448,7 +1892,7 @@ export default function DocumentsPage() {
 
       <div className="flex min-h-0 flex-1 flex-col w-full">
         <main className="flex min-h-0 flex-col w-full">
-          <div className="mb-6 grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3 md:mb-8">
+          <div className="mb-8 hidden grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3 md:grid">
             {[
               { label: "Visible documents", value: total, icon: "folder_open", tone: "text-[#2F67D8]" },
               { label: "Linked on page", value: processedCount, icon: "link", tone: "text-[#179B4D]" },
@@ -1474,22 +1918,55 @@ export default function DocumentsPage() {
             ))}
           </div>
 
-          <div className="mb-6 rounded-[18px] border border-[#CFCFD3] bg-white p-4 shadow-sm">
-            <div className="space-y-3 lg:hidden">
-              <div className="grid grid-cols-[minmax(0,1fr)_46px] gap-2">
-                <div className="flex min-w-0 items-center gap-2 rounded-xl border border-[#CFCFD3] bg-white px-3 focus-within:border-[#11120d]">
-                  <Icon name="search" sizePx={18} className="shrink-0 text-[#8C8889]" />
-                  <input value={supplierSearch} onChange={(event) => setSupplierSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Search supplier..." className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold text-[#11120d] outline-none" />
-                </div>
-                <button type="button" onClick={() => { setPage(1); void loadDocuments(); }} className="inline-flex h-[46px] w-[46px] items-center justify-center rounded-xl bg-[#11120d] text-white" aria-label="Search documents"><Icon name="search" sizePx={20} /></button>
+          <div className="mb-4 grid grid-cols-3 divide-x divide-[#E5E7EB] rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] py-3 md:hidden">
+            <div className="px-2 text-center">
+              <div className="font-mono text-[18px] font-extrabold text-[#11120d]">{total}</div>
+              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">Documents</div>
+            </div>
+            <div className="px-2 text-center">
+              <div className="font-mono text-[18px] font-extrabold text-[#B7791F]">{unprocessedCount}</div>
+              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">To review here</div>
+            </div>
+            <div className="min-w-0 px-2 text-center">
+              <div className="truncate font-mono text-[18px] font-extrabold text-[#11120d]">
+                {storageInfo ? formatBytes(storageInfo.totalSizeBytes) : processedCount}
               </div>
-              <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="w-full justify-between" />
+              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">
+                {storageInfo ? "Storage" : "Linked here"}
+              </div>
+            </div>
+          </div>
+
+          <div className="mb-4 bg-white md:mb-6 md:rounded-[18px] md:border md:border-[#CFCFD3] md:p-4 md:shadow-sm">
+            <div className="space-y-3 lg:hidden">
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <div className="flex h-[48px] min-w-0 items-center gap-2 rounded-[13px] border border-[#CFCFD3] bg-white px-3 focus-within:border-[#11120d]">
+                  <Icon name="search" sizePx={18} className="shrink-0 text-[#8C8889]" />
+                  <input
+                    value={documentQuery}
+                    onChange={(event) => setDocumentQuery(event.target.value)}
+                    placeholder="Title, filename, supplier or bill…"
+                    className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold text-[#11120d] outline-none"
+                  />
+                </div>
+                <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} />
+              </div>
+              {canManageDocuments ? (
+                <button
+                  type="button"
+                  onClick={() => openUploadWorkspace()}
+                  className="inline-flex h-[48px] w-full items-center justify-center gap-2 rounded-[13px] bg-[#11120d] px-4 text-[13px] font-extrabold text-white active:bg-[#2a2c27]"
+                >
+                  <Icon name="upload_file" sizePx={19} />
+                  Upload Document
+                </button>
+              ) : null}
               <ActiveFilterChips items={mobileFilterChips} />
             </div>
 
             <div className="hidden space-y-4 lg:block">
               <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-3">
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search documents</span><div className="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-[#CFCFD3] px-3 focus-within:border-[#11120d]"><Icon name="search" sizePx={18} className="text-[#8C8889]" /><input value={supplierSearch} onChange={(event) => setSupplierSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Supplier" className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" /><input value={billSearch} onChange={(event) => setBillSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Bill number" className="w-[170px] border-l border-[#E5E7EB] bg-transparent pl-3 text-[13px] font-semibold outline-none" /></div></label>
+                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search documents</span><div className="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-[#CFCFD3] px-3 focus-within:border-[#11120d]"><Icon name="search" sizePx={18} className="text-[#8C8889]" /><input value={documentQuery} onChange={(event) => setDocumentQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Title, filename or supplier" className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" /><input value={billSearch} onChange={(event) => setBillSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Bill number" className="w-[170px] border-l border-[#E5E7EB] bg-transparent pl-3 text-[13px] font-semibold outline-none" /></div></label>
                 <button type="button" onClick={() => { setPage(1); void loadDocuments(); }} className="h-11 rounded-xl bg-[#11120d] px-5 text-[12px] font-extrabold text-white">Search</button>
                 <button type="button" onClick={clearFilters} disabled={!activeFilters} className="h-11 rounded-xl border border-[#CFCFD3] bg-white px-5 text-[12px] font-extrabold text-[#565449] disabled:cursor-not-allowed disabled:opacity-40">Clear</button>
               </div>
@@ -1521,7 +1998,7 @@ export default function DocumentsPage() {
             </div>
           </MobileFilterSheet>
 
-          <section className="flex min-h-[420px] flex-col overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-white shadow-sm">
+          <section ref={documentListRef} className="flex min-h-[420px] scroll-mt-4 flex-col overflow-hidden bg-white lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:shadow-sm">
             {isLoading ? (
               <div className="flex min-h-[360px] items-center justify-center text-[13px] font-semibold text-[#8C8889]">
                 Loading documents...
@@ -1531,8 +2008,8 @@ export default function DocumentsPage() {
             ) : (
               <>
                 {renderDocumentTable()}
-                <div className="overflow-y-auto p-3 lg:hidden">{renderDocumentCards()}</div>
-                <div className="border-t border-[#E5E7EB] bg-white p-3">
+                <div className="lg:hidden">{renderDocumentCards()}</div>
+                <div className="mt-4 border-y border-[#E5E7EB] bg-white lg:mt-0 lg:border-x-0 lg:border-b-0 lg:p-3">
                   <PaginationBar
                     page={page}
                     totalPages={totalPages}
@@ -1541,10 +2018,15 @@ export default function DocumentsPage() {
                     end={Math.min(total, page * pageSize)}
                     label="documents"
                     pageSize={pageSize}
-                    onPageChange={setPage}
+                    pageSizeOptions={[10, 20, 50]}
+                    showSinglePageControls
+                    onPageChange={changeDocumentPage}
                     onPageSizeChange={(nextPageSize) => {
                       setPageSize(nextPageSize);
                       setPage(1);
+                      window.requestAnimationFrame(() => {
+                        documentListRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+                      });
                     }}
                   />
                 </div>
@@ -1556,8 +2038,95 @@ export default function DocumentsPage() {
       </div>
 
       <ModalFrame
+        open={!!mobileActionDoc}
+        title="Document actions"
+        description={mobileActionDoc ? documentDisplayTitle(mobileActionDoc) : undefined}
+        onClose={() => setMobileActionDoc(null)}
+        maxWidthClass="max-w-[520px]"
+        mobileBottomSheet
+      >
+        {mobileActionDoc ? (
+          <div className="space-y-2">
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedDoc(mobileActionDoc);
+                setMobileFullPreview(false);
+                setMobileActionDoc(null);
+              }}
+              className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-[#E5E7EB] bg-white px-4 text-left text-[13px] font-extrabold text-[#11120d]"
+            >
+              <Icon name="visibility" sizePx={20} />
+              View details
+            </button>
+            <button
+              type="button"
+              onClick={() => openFullView(mobileActionDoc)}
+              className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-[#E5E7EB] bg-white px-4 text-left text-[13px] font-extrabold text-[#11120d]"
+            >
+              <Icon name="open_in_full" sizePx={20} />
+              Open file
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                const doc = mobileActionDoc;
+                setMobileActionDoc(null);
+                void handleDownload(doc);
+              }}
+              className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-[#E5E7EB] bg-white px-4 text-left text-[13px] font-extrabold text-[#11120d]"
+            >
+              <Icon name="download" sizePx={20} />
+              Download
+            </button>
+            {canManageDocuments ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const doc = mobileActionDoc;
+                  setMobileActionDoc(null);
+                  openEditDetails(doc);
+                }}
+                className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-[#E5E7EB] bg-white px-4 text-left text-[13px] font-extrabold text-[#11120d]"
+              >
+                <Icon name="edit" sizePx={20} />
+                Edit details
+              </button>
+            ) : null}
+            {isAdmin ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const doc = mobileActionDoc;
+                  setMobileActionDoc(null);
+                  openVisibilityDialog(doc);
+                }}
+                className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-[#E5E7EB] bg-white px-4 text-left text-[13px] font-extrabold text-[#11120d]"
+              >
+                <Icon name="admin_panel_settings" sizePx={20} />
+                Change visibility
+              </button>
+            ) : null}
+            {canManageDocuments ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setDeletingId(mobileActionDoc.id);
+                  setMobileActionDoc(null);
+                }}
+                className="flex h-[52px] w-full items-center gap-3 rounded-[13px] border border-rose-200 bg-rose-50 px-4 text-left text-[13px] font-extrabold text-rose-700"
+              >
+                <Icon name="delete" sizePx={20} />
+                Move to Bin
+              </button>
+            ) : null}
+          </div>
+        ) : null}
+      </ModalFrame>
+
+      <ModalFrame
         open={!!selectedDoc}
-        title={selectedDoc?.fileName || "Document detail"}
+        title={selectedDoc ? documentDisplayTitle(selectedDoc) : "Document detail"}
         description={
           selectedDoc
             ? `${typeLabel(selectedDoc.documentType)} | ${formatBytes(selectedDoc.fileSize)}`
@@ -1566,6 +2135,7 @@ export default function DocumentsPage() {
         onClose={() => {
           setSelectedDoc(null);
           setDetailExpanded(false);
+          setMobileFullPreview(false);
         }}
         headerActions={
           selectedDoc ? (
@@ -1613,6 +2183,32 @@ export default function DocumentsPage() {
         maxWidthClass="max-w-[760px]"
       >
         <div className="grid gap-4 md:grid-cols-2">
+          <label className="block md:col-span-2">
+            <span className="text-[11px] font-extrabold uppercase text-[#565449]">
+              Document title <span className="text-rose-600">*</span>
+            </span>
+            <input
+              ref={editTitleRef}
+              value={editTitle}
+              maxLength={160}
+              aria-invalid={Boolean(editTitleError)}
+              aria-describedby={editTitleError ? "edit-document-title-error" : "edit-document-title-help"}
+              onChange={(event) => {
+                setEditTitle(event.target.value);
+                setEditTitleError("");
+              }}
+              placeholder="e.g. Household supplier price list - July 2026"
+              className={cn("mt-1 h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold text-[#11120d] outline-none transition focus:ring-2", editTitleError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
+            />
+            {editTitleError ? (
+              <span id="edit-document-title-error" role="alert" className="mt-1 block text-[12px] font-semibold text-[#BE123C]">{editTitleError}</span>
+            ) : (
+              <span id="edit-document-title-help" className="mt-1 block text-[11px] font-semibold text-[#64748B]">
+                Searchable name shown to users. The original file remains {editingDoc?.fileName}.
+              </span>
+            )}
+          </label>
+
           <label className="block">
             <span className="text-[11px] font-extrabold uppercase text-[#8C8889]">Document type</span>
             <ProjectSelect
@@ -1660,14 +2256,22 @@ export default function DocumentsPage() {
           <label className="block">
             <span className="text-[11px] font-extrabold uppercase text-[#8C8889]">Bill amount</span>
             <input
+              ref={editBillAmountRef}
               type="number"
               min={0}
               step="0.01"
               value={editBillAmount}
-              onChange={(event) => setEditBillAmount(event.target.value)}
+              aria-invalid={Boolean(editBillAmountError)}
+              aria-describedby={editBillAmountError ? "edit-bill-amount-error" : undefined}
+              onFocus={(event) => event.currentTarget.select()}
+              onChange={(event) => {
+                setEditBillAmount(event.target.value);
+                setEditBillAmountError("");
+              }}
               placeholder="0.00"
-              className="mt-1 h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-right text-[13px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d]"
+              className={cn("mt-1 h-[44px] w-full rounded-[12px] bg-white px-3 text-right text-[13px] font-semibold text-[#11120d] outline-none transition focus:ring-2", editBillAmountError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
             />
+            {editBillAmountError ? <span id="edit-bill-amount-error" role="alert" className="mt-1 block text-[12px] font-semibold text-[#BE123C]">{editBillAmountError}</span> : null}
           </label>
 
           <label className="block md:col-span-2">

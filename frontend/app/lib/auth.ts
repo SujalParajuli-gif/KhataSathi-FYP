@@ -5,18 +5,19 @@ export type UserRole = "admin" | "manager" | "cashier" | "staff";
 export type AuthUser = {
   id: string;
   name: string;
-  email: string;
+  email?: string | null;
+  phone?: string | null;
+  mustChangePassword?: boolean;
   role: UserRole;
   profileImage?: string;
 };
 
 // localStorage keys for saving authentication state
 const AUTH_KEY = "khatasathi_auth_user";
-const TOKEN_KEY = "khatasathi_token";
 
 // normalizing the role string — the backend returns "ADMIN"/"CASHIER" in uppercase
 // but we use lowercase in the frontend for consistency
-function normalizeRole(role?: string | null): UserRole {
+function normalizeRole(role?: string | null): UserRole | null {
   const normalized = String(role || "").toLowerCase();
   if (
     normalized === "cashier" ||
@@ -26,25 +27,7 @@ function normalizeRole(role?: string | null): UserRole {
   ) {
     return normalized;
   }
-  return "admin";
-}
-
-// getting the JWT token from localStorage — returns null if not logged in or during SSR
-export function getToken(): string | null {
-  if (typeof window === "undefined") return null;
-  return window.localStorage.getItem(TOKEN_KEY);
-}
-
-// saving the JWT token to localStorage after login
-export function setToken(token: string) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(TOKEN_KEY, token);
-}
-
-// removing the JWT token — called during logout
-export function clearToken() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(TOKEN_KEY);
+  return null;
 }
 
 // reading the saved user object from localStorage and validating it has the required fields
@@ -60,15 +43,20 @@ export function getAuthUser(): AuthUser | null {
     const parsed = JSON.parse(raw) as Partial<AuthUser>;
 
     // making sure all required fields exist — if not, the stored data is invalid
-    if (!parsed.id || !parsed.name || !parsed.email) {
+    if (!parsed.id || !parsed.name) {
       return null;
     }
+
+    const role = normalizeRole(parsed.role);
+    if (!role) return null;
 
     return {
       id: String(parsed.id),
       name: String(parsed.name),
-      email: String(parsed.email),
-      role: normalizeRole(parsed.role),
+      email: parsed.email ? String(parsed.email) : null,
+      phone: parsed.phone ? String(parsed.phone) : null,
+      mustChangePassword: parsed.mustChangePassword === true,
+      role,
       profileImage: parsed.profileImage,
     };
   } catch {
@@ -80,9 +68,14 @@ export function getAuthUser(): AuthUser | null {
 export function setAuthUser(user: AuthUser) {
   if (typeof window === "undefined") return;
 
+  const role = normalizeRole(user.role);
+  if (!role) {
+    clearAuthUser();
+    return;
+  }
   const stored: AuthUser = {
     ...user,
-    role: normalizeRole(user.role),
+    role,
   };
 
   window.localStorage.setItem(AUTH_KEY, JSON.stringify(stored));
@@ -93,15 +86,15 @@ export function setAuthUser(user: AuthUser) {
 export function clearAuthUser() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(AUTH_KEY);
-  clearToken();
+  window.localStorage.removeItem("khatasathi_token");
 }
 
 // getting the current user's role — defaults to "admin" if no user is logged in
 export function getUserRole(): UserRole {
-  return getAuthUser()?.role ?? "admin";
+  return getAuthUser()?.role ?? "staff";
 }
 
-// checking if the user is logged in — both a token and a valid user object must exist
+// Fast client hint only; protected API requests verify the HttpOnly session.
 export function isLoggedIn(): boolean {
-  return !!getToken() && !!getAuthUser();
+  return !!getAuthUser();
 }

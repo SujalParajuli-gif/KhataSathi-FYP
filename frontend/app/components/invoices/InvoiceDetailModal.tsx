@@ -43,7 +43,7 @@ export default function InvoiceDetailModal({
   const totalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);
 
   return createPortal(
-    <div className="fixed inset-0 z-[80]">
+    <div className="app-modal-layer fixed inset-0">
       {/* modal backdrop — click to close */}
       <button
         type="button"

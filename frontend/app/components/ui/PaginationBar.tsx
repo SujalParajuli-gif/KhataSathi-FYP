@@ -1,5 +1,6 @@
 import Icon from "./Icon";
 import ProjectSelect from "./ProjectSelect";
+import MobilePaginationFooter from "./MobilePaginationFooter";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -43,6 +44,7 @@ export default function PaginationBar({
   onPageSizeChange,
   className,
   variant = "modern",
+  showSinglePageControls = false,
 }: {
   page: number;
   totalPages: number;
@@ -56,16 +58,50 @@ export default function PaginationBar({
   onPageSizeChange: (pageSize: number) => void;
   className?: string;
   variant?: "classic" | "modern";
+  showSinglePageControls?: boolean;
 }) {
   const safeTotalPages = Math.max(1, totalPages);
   const safePage = clampPage(page, 1, safeTotalPages);
   const paginationItems = buildPaginationItems(safePage, safeTotalPages);
+  const mobileFooter = (
+    <MobilePaginationFooter
+      page={safePage}
+      totalPages={safeTotalPages}
+      total={total}
+      start={start}
+      end={end}
+      label={label}
+      pageSize={pageSize}
+      pageSizeOptions={pageSizeOptions}
+      onPageChange={onPageChange}
+      onPageSizeChange={onPageSizeChange}
+      className={className}
+    />
+  );
+
+  if (variant === "modern" && safeTotalPages === 1 && !showSinglePageControls) {
+    return (
+      <>
+      {mobileFooter}
+      <div
+        className={cn(
+          "hidden min-h-14 w-full items-center justify-center bg-white px-4 py-3 text-[13px] font-semibold text-slate-500 lg:flex",
+          className,
+        )}
+      >
+        {total.toLocaleString()} {total === 1 ? label.replace(/s$/u, "") : label}
+      </div>
+      </>
+    );
+  }
 
   if (variant === "classic") {
     return (
+      <>
+      {mobileFooter}
       <div
         className={cn(
-          "flex flex-col gap-[12px] border-t border-[#CFCFD3] bg-white px-4 py-3 text-[13px] text-[#565449] lg:flex-row lg:items-center lg:justify-between",
+          "hidden gap-[12px] border-t border-[#CFCFD3] bg-white px-4 py-3 text-[13px] text-[#565449] lg:flex lg:flex-row lg:items-center lg:justify-between",
           className,
         )}
       >
@@ -162,13 +198,16 @@ export default function PaginationBar({
           </label>
         </div>
       </div>
+      </>
     );
   }
 
   return (
+    <>
+    {mobileFooter}
     <div
       className={cn(
-        "flex flex-col gap-6 bg-white px-6 py-5 text-[13px] text-slate-500 lg:flex-row lg:items-center lg:justify-between w-full",
+        "hidden gap-6 bg-white px-6 py-5 text-[13px] text-slate-500 lg:flex lg:flex-row lg:items-center lg:justify-between w-full",
         className,
       )}
     >
@@ -292,5 +331,6 @@ export default function PaginationBar({
         <span className="hidden lg:inline-block text-[13px] text-slate-500 font-medium">per page</span>
       </div>
     </div>
+    </>
   );
 }

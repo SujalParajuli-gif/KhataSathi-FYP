@@ -26,13 +26,23 @@ import {
   listParkedDraftsApi,
   parkInvoiceDraftApi,
   resumeParkedDraftApi,
+  acceptDraftRequestApi,
+  completeDraftRequestApi,
+  getDraftRequestApi,
+  listDraftRequestsApi,
+  markDraftRequestViewedApi,
+  rejectDraftRequestApi,
+  resolveAcceptedDraftRequestApi,
+  type BillingDraftRequest,
   type CashierPrivilege,
+  type DraftRequestReviewItem,
 } from "~/lib/api/endpoints";
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
 import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 
 const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog every 2 minutes to prevent stale stock and prices while keeping request volume low
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
@@ -451,14 +461,25 @@ type ParkedResumeWarning = {
   warnings: string[];
 };
 
+type DraftReviewDecision = {
+  action: "ACCEPT" | "REJECT";
+  acceptedQty: number;
+  reason: string;
+};
+
 type StoredBillingCart = {
   cart: CartLine[];
   activeDraftInvoiceId?: string | null;
+  activeDraftRequestId?: string | null;
   selectedCustomerId?: string | null;
   savedAt: string;
 };
 
 const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
+const PENDING_DRAFT_COMPLETION_STORAGE_KEY =
+  "khatasathi_pending_draft_completion";
+const DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY =
+  "khatasathi_billing_draft_request_notice_ack";
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -527,6 +548,10 @@ function readStoredBillingCart() {
         typeof parsed.activeDraftInvoiceId === "string"
           ? parsed.activeDraftInvoiceId
           : null,
+      activeDraftRequestId:
+        typeof parsed.activeDraftRequestId === "string"
+          ? parsed.activeDraftRequestId
+          : null,
       selectedCustomerId:
         typeof parsed.selectedCustomerId === "string"
           ? parsed.selectedCustomerId
@@ -547,6 +572,7 @@ function writeStoredBillingCart(
   cart: CartLine[],
   activeDraftInvoiceId?: string | null,
   selectedCustomerId?: string | null,
+  activeDraftRequestId?: string | null,
 ) {
   if (typeof window === "undefined") return;
 
@@ -555,6 +581,7 @@ function writeStoredBillingCart(
     JSON.stringify({
       cart,
       activeDraftInvoiceId: activeDraftInvoiceId || null,
+      activeDraftRequestId: activeDraftRequestId || null,
       selectedCustomerId: selectedCustomerId || null,
       savedAt: new Date().toISOString(),
     } satisfies StoredBillingCart),
@@ -565,6 +592,66 @@ function writeStoredBillingCart(
 function clearStoredBillingCart() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
+}
+
+function savePendingDraftCompletion(
+  draftRequestId: string,
+  invoiceId: string,
+) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(
+    PENDING_DRAFT_COMPLETION_STORAGE_KEY,
+    JSON.stringify({ draftRequestId, invoiceId }),
+  );
+}
+
+function clearPendingDraftCompletion() {
+  if (typeof window === "undefined") return;
+  window.localStorage.removeItem(PENDING_DRAFT_COMPLETION_STORAGE_KEY);
+}
+
+function isDraftRequestNoticeAcknowledged(
+  userId: string | undefined,
+  draftRequestId: string,
+) {
+  if (typeof window === "undefined" || !userId || !draftRequestId) return false;
+
+  try {
+    const raw = window.localStorage.getItem(
+      DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY,
+    );
+    if (!raw) return false;
+    const parsed = JSON.parse(raw) as {
+      userId?: string;
+      draftRequestId?: string;
+    };
+    return (
+      parsed.userId === userId && parsed.draftRequestId === draftRequestId
+    );
+  } catch {
+    window.localStorage.removeItem(DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY);
+    return false;
+  }
+}
+
+function acknowledgeDraftRequestNotice(
+  userId: string | undefined,
+  draftRequestId: string | null,
+) {
+  if (typeof window === "undefined" || !userId || !draftRequestId) return;
+
+  try {
+    window.localStorage.setItem(
+      DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY,
+      JSON.stringify({
+        userId,
+        draftRequestId,
+        acknowledgedAt: new Date().toISOString(),
+      }),
+    );
+  } catch {
+    // A blocked or full storage area must never interrupt Billing.
+  }
 }
 
 // we use this to format numbers as Nepalese Rupees (NPR)
@@ -604,6 +691,64 @@ function formatQty(value: number) {
 function formatQtyWithUnit(value: number, unit?: string) {
   const label = String(unit || "PIECE").toLowerCase();
   return `${formatQty(value)} ${label}`;
+}
+
+function formatRequestDateTime(value?: string | null) {
+  if (!value) return "-";
+  return new Date(value).toLocaleString(undefined, {
+    month: "short",
+    day: "numeric",
+    hour: "numeric",
+    minute: "2-digit",
+  });
+}
+
+function getRequestCustomerLabel(request: BillingDraftRequest) {
+  return (
+    request.customer?.name ||
+    request.customerName ||
+    (request.customerPhone ? `Phone ${request.customerPhone}` : "") ||
+    "Walk-in customer"
+  );
+}
+
+function getRequestItemCount(request: BillingDraftRequest) {
+  return request.itemCount ?? request.items?.length ?? 0;
+}
+
+function getRequestTotalQty(request: BillingDraftRequest) {
+  if (typeof request.totalQty === "number") return request.totalQty;
+  return (request.items || []).reduce(
+    (sum, item) => sum + Number(item.acceptedQty ?? item.qty ?? 0),
+    0,
+  );
+}
+
+function getRequestEstimatedTotal(request: BillingDraftRequest) {
+  if (typeof request.estimatedTotal === "number") {
+    return request.estimatedTotal;
+  }
+  return (request.items || []).reduce((sum, item) => {
+    const qty = Number(item.acceptedQty ?? item.qty ?? 0);
+    return sum + qty * Number(item.product?.retailPrice || 0);
+  }, 0);
+}
+
+function getRequestStatusLabel(request: BillingDraftRequest) {
+  if (
+    (request.status === "PENDING" || request.status === "MODIFIED") &&
+    !request.firstViewedAt
+  ) {
+    return "Queued";
+  }
+  if (request.status === "PENDING") return "Viewed";
+  if (request.status === "MODIFIED") return "Changed";
+  if (request.status === "ACCEPTED") return "Accepted";
+  if (request.status === "PARTIALLY_ACCEPTED") return "Partially accepted";
+  return request.status
+    .toLowerCase()
+    .replaceAll("_", " ")
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function getProductQtyStep(product?: Product | null) {
@@ -933,6 +1078,7 @@ export default function BillingPage() {
   );
   const billingView = BILLING_VIEW_DENSITY[billingViewSize];
   const isManager = currentUser?.role === "manager";
+  const isCashier = currentUser?.role === "cashier";
   const operatorLabel = currentUser
     ? `${currentUser.name} (${currentUser.role.toUpperCase()})`
     : "Unknown operator";
@@ -980,6 +1126,28 @@ export default function BillingPage() {
   ); // saved so the cashier can reprint the most recent invoice in this browser session
   const [parkedDrafts, setParkedDrafts] = useState<ParkedDraft[]>([]); // cashier's held bills that can be resumed later
   const [showParkedBills, setShowParkedBills] = useState(false); // controls the parked bill drawer/modal
+  const [incomingRequests, setIncomingRequests] = useState<BillingDraftRequest[]>([]);
+  const [incomingRequestsTotal, setIncomingRequestsTotal] = useState(0);
+  const [incomingRequestsLoading, setIncomingRequestsLoading] = useState(false);
+  const [incomingRequestsError, setIncomingRequestsError] = useState("");
+  const [showIncomingRequests, setShowIncomingRequests] = useState(false);
+  const [selectedIncomingRequest, setSelectedIncomingRequest] =
+    useState<BillingDraftRequest | null>(null);
+  const [draftReviewDecisions, setDraftReviewDecisions] = useState<
+    Record<string, DraftReviewDecision>
+  >({});
+  const [draftReviewErrors, setDraftReviewErrors] = useState<
+    Record<string, string>
+  >({});
+  const [draftRejectNote, setDraftRejectNote] = useState("");
+  const [draftRequestBusy, setDraftRequestBusy] = useState(false);
+  const [acceptedResolution, setAcceptedResolution] = useState<{
+    requestId: string;
+    requestNo: string;
+    clearCartAfter: boolean;
+  } | null>(null);
+  const [acceptedResolutionReason, setAcceptedResolutionReason] = useState("");
+  const [acceptedResolutionError, setAcceptedResolutionError] = useState("");
   const [showShortcutHelp, setShowShortcutHelp] = useState(false);
   const [parkedBusy, setParkedBusy] = useState(false); // prevents duplicate park/resume/discard requests
   const [parkedError, setParkedError] = useState(""); // parked bill API or validation errors
@@ -1108,6 +1276,92 @@ export default function BillingPage() {
     setParkedDrafts(drafts.map(normalizeParkedDraft));
   }, [normalizeParkedDraft]);
 
+  const loadIncomingRequests = useCallback(
+    async (options?: { signal?: AbortSignal }) => {
+      if (!isCashier) return;
+      setIncomingRequestsLoading(true);
+      setIncomingRequestsError("");
+      try {
+        const data = await listDraftRequestsApi(
+          {
+            status: "ACTIONABLE",
+            mode: "list",
+            page: 1,
+            pageSize: 50,
+          },
+          options,
+        );
+        const requests = Array.isArray(data.requests) ? data.requests : [];
+        setIncomingRequests(requests);
+        setIncomingRequestsTotal(Number(data.total ?? requests.length));
+      } catch (error: any) {
+        if (options?.signal?.aborted || error?.code === "ERR_CANCELED") return;
+        if (isRateLimitError(error)) requestRateLimitRecovery();
+        setIncomingRequestsError(
+          error?.response?.data?.error ||
+            "Incoming requests could not be refreshed.",
+        );
+      } finally {
+        if (!options?.signal?.aborted) setIncomingRequestsLoading(false);
+      }
+    },
+    [isCashier],
+  );
+
+  useEffect(() => {
+    if (!isCashier) return undefined;
+    const controller = new AbortController();
+    void loadIncomingRequests({ signal: controller.signal });
+    const interval = window.setInterval(
+      () => void loadIncomingRequests(),
+      45_000,
+    );
+    function refreshOnFocus() {
+      if (document.visibilityState === "visible") {
+        void loadIncomingRequests();
+      }
+    }
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      controller.abort();
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, [isCashier, loadIncomingRequests]);
+
+  useEffect(() => {
+    if (!isCashier || typeof window === "undefined") return;
+    const raw = window.localStorage.getItem(
+      PENDING_DRAFT_COMPLETION_STORAGE_KEY,
+    );
+    if (!raw) return;
+    try {
+      const pending = JSON.parse(raw) as {
+        draftRequestId?: string;
+        invoiceId?: string;
+      };
+      if (!pending.draftRequestId || !pending.invoiceId) {
+        clearPendingDraftCompletion();
+        return;
+      }
+      void completeDraftRequestApi(
+        pending.draftRequestId,
+        pending.invoiceId,
+      )
+        .then(() => {
+          clearPendingDraftCompletion();
+          void loadIncomingRequests();
+        })
+        .catch(() => {
+          // Keep the recovery record. A later Billing visit will retry it.
+        });
+    } catch {
+      clearPendingDraftCompletion();
+    }
+  }, [isCashier, loadIncomingRequests]);
+
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
   useEffect(() => {
@@ -1171,6 +1425,9 @@ export default function BillingPage() {
   const [activeDraftInvoiceId, setActiveDraftInvoiceId] = useState<
     string | null
   >(null); // parked draft currently loaded into the billing cart, if any
+  const [activeDraftRequestId, setActiveDraftRequestId] = useState<
+    string | null
+  >(null); // accepted staff request currently loaded into the billing cart
   const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
   const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
     string | null
@@ -1191,6 +1448,8 @@ export default function BillingPage() {
   const [paymentError, setPaymentError] = useState(""); // payment modal validation message
   const [billingError, setBillingError] = useState(""); // main billing error shown above the cart or form
   const [cartIssueMessage, setCartIssueMessage] = useState(""); // short-lived product lookup/cart guidance
+  const [draftRequestNoticeVisible, setDraftRequestNoticeVisible] =
+    useState(false);
   const [stockRefreshBusy, setStockRefreshBusy] = useState(false); // blocks final confirmation while the latest catalog is being checked
   const [stockConflicts, setStockConflicts] = useState<StockConflict[]>([]); // product rows that need cashier resolution after stale stock is detected
   const [showPaymentModal, setShowPaymentModal] = useState(false); // controls the final payment confirmation modal
@@ -1209,6 +1468,15 @@ export default function BillingPage() {
     if (!activeDraftInvoiceId) return parkedDrafts;
     return parkedDrafts.filter((draft) => draft.id !== activeDraftInvoiceId);
   }, [activeDraftInvoiceId, parkedDrafts]);
+  const unseenIncomingRequestCount = useMemo(
+    () =>
+      incomingRequests.filter(
+        (request) =>
+          (request.status === "PENDING" || request.status === "MODIFIED") &&
+          !request.firstViewedAt,
+      ).length,
+    [incomingRequests],
+  );
 
   const skuRef = useRef<HTMLInputElement | null>(null);
   const searchRef = useRef<HTMLInputElement | null>(null);
@@ -1220,6 +1488,33 @@ export default function BillingPage() {
     const timer = window.setTimeout(() => setCartIssueMessage(""), 5000);
     return () => window.clearTimeout(timer);
   }, [cartIssueMessage]);
+
+  useEffect(() => {
+    if (!billingError || stockConflicts.length > 0) return undefined;
+    const timer = window.setTimeout(() => setBillingError(""), 7000);
+    return () => window.clearTimeout(timer);
+  }, [billingError, stockConflicts.length]);
+
+  useEffect(() => {
+    if (!activeDraftRequestId) {
+      setDraftRequestNoticeVisible(false);
+      return undefined;
+    }
+
+    if (
+      isDraftRequestNoticeAcknowledged(currentUser?.id, activeDraftRequestId)
+    ) {
+      setDraftRequestNoticeVisible(false);
+      return undefined;
+    }
+
+    setDraftRequestNoticeVisible(true);
+    const timer = window.setTimeout(() => {
+      acknowledgeDraftRequestNotice(currentUser?.id, activeDraftRequestId);
+      setDraftRequestNoticeVisible(false);
+    }, 6000);
+    return () => window.clearTimeout(timer);
+  }, [activeDraftRequestId, currentUser?.id]);
 
   useEffect(() => {
     const timer = window.setInterval(() => setBillClock(new Date()), 60_000);
@@ -1408,6 +1703,7 @@ export default function BillingPage() {
     if (storedCart?.cart.length) {
       setCart(storedCart.cart);
       setActiveDraftInvoiceId(storedCart.activeDraftInvoiceId || null);
+      setActiveDraftRequestId(storedCart.activeDraftRequestId || null);
       setSelectedCustomerId(storedCart.selectedCustomerId || null);
     }
     setCartPersistenceReady(true);
@@ -1511,8 +1807,19 @@ export default function BillingPage() {
       return;
     }
 
-    writeStoredBillingCart(cart, activeDraftInvoiceId, selectedCustomerId);
-  }, [activeDraftInvoiceId, cart, cartPersistenceReady, selectedCustomerId]);
+    writeStoredBillingCart(
+      cart,
+      activeDraftInvoiceId,
+      selectedCustomerId,
+      activeDraftRequestId,
+    );
+  }, [
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    cart,
+    cartPersistenceReady,
+    selectedCustomerId,
+  ]);
 
   // joining cart lines with product data here is what gives us unit price, pricing mode, and line totals for each row
   const cartRows = useMemo(() => {
@@ -1636,7 +1943,13 @@ export default function BillingPage() {
   // we calculate the subtotal discount amount before grand total
   const subtotalDiscount = useMemo(() => {
     if (subtotalDiscountMeta.percent > 0) {
-      return Math.round((subTotal * subtotalDiscountMeta.percent) / 100);
+      return (
+        Math.round(
+          ((subTotal * subtotalDiscountMeta.percent) / 100 +
+            Number.EPSILON) *
+            100,
+        ) / 100
+      );
     }
     return 0;
   }, [subTotal, subtotalDiscountMeta.percent]);
@@ -2299,6 +2612,7 @@ export default function BillingPage() {
     clearStoredBillingCart();
     setCart([]);
     setActiveDraftInvoiceId(null);
+    setActiveDraftRequestId(null);
     setSelectedCustomerId(null);
     setPaymentMethod("Cash");
     setPaymentStatus("Paid");
@@ -2330,12 +2644,32 @@ export default function BillingPage() {
   }
 
   function confirmResetBill() {
+    if (activeDraftRequestId) {
+      const linkedRequest = incomingRequests.find(
+        (request) => request.id === activeDraftRequestId,
+      );
+      setPendingBillingConfirm(null);
+      setAcceptedResolution({
+        requestId: activeDraftRequestId,
+        requestNo: linkedRequest?.requestNo || "Loaded staff request",
+        clearCartAfter: true,
+      });
+      setAcceptedResolutionReason("");
+      setAcceptedResolutionError("");
+      return;
+    }
     resetBill();
   }
 
   function requestParkBill() {
     if (cart.length === 0) {
       setBillingError("Add at least one item before parking this bill.");
+      return;
+    }
+    if (activeDraftRequestId) {
+      setBillingError(
+        "This bill is linked to a staff request. Complete checkout or clear it before opening another bill.",
+      );
       return;
     }
     if (parkedBusy) return;
@@ -2351,6 +2685,293 @@ export default function BillingPage() {
     setShowParkedBills(true);
     setParkedError("");
     void loadParkedDrafts();
+  }
+
+  async function openIncomingRequest(request: BillingDraftRequest) {
+    if (draftRequestBusy) return;
+    setDraftRequestBusy(true);
+    setIncomingRequestsError("");
+    try {
+      const data =
+        request.status === "PENDING" || request.status === "MODIFIED"
+          ? await markDraftRequestViewedApi(request.id)
+          : await getDraftRequestApi(request.id);
+      const detailed = data.request;
+      setSelectedIncomingRequest(detailed);
+      setDraftRejectNote("");
+      setDraftReviewErrors({});
+      setDraftReviewDecisions(
+        Object.fromEntries(
+          (detailed.items || []).map((item) => [
+            item.id,
+            {
+              action:
+                item.reviewStatus === "REJECTED" ? "REJECT" : "ACCEPT",
+              acceptedQty: Number(item.acceptedQty ?? item.qty ?? 1),
+              reason: item.rejectionReason || "",
+            } satisfies DraftReviewDecision,
+          ]),
+        ),
+      );
+      setIncomingRequests((current) =>
+        current.map((item) =>
+          item.id === detailed.id ? { ...item, ...detailed } : item,
+        ),
+      );
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.error ||
+        error?.message ||
+        "Could not open this request.";
+      setIncomingRequestsError(message);
+      showToast("danger", message);
+      void loadIncomingRequests();
+    } finally {
+      setDraftRequestBusy(false);
+    }
+  }
+
+  function updateDraftReviewDecision(
+    itemId: string,
+    patch: Partial<DraftReviewDecision>,
+  ) {
+    setDraftReviewDecisions((current) => {
+      const previous: DraftReviewDecision = current[itemId] || {
+        action: "ACCEPT",
+        acceptedQty: 1,
+        reason: "",
+      };
+      return {
+        ...current,
+        [itemId]: { ...previous, ...patch },
+      };
+    });
+    if (patch.action === "ACCEPT" || patch.reason?.trim()) {
+      setDraftReviewErrors((current) => {
+        if (!current[itemId]) return current;
+        const next = { ...current };
+        delete next[itemId];
+        return next;
+      });
+    }
+  }
+
+  async function rejectIncomingRequest() {
+    if (!selectedIncomingRequest || draftRequestBusy) return;
+    if (
+      selectedIncomingRequest.status !== "PENDING" &&
+      selectedIncomingRequest.status !== "MODIFIED"
+    ) {
+      return;
+    }
+    setDraftRequestBusy(true);
+    try {
+      await rejectDraftRequestApi(
+        selectedIncomingRequest.id,
+        draftRejectNote.trim() || null,
+      );
+      showToast(
+        "success",
+        `${selectedIncomingRequest.requestNo} rejected.`,
+      );
+      setSelectedIncomingRequest(null);
+      setDraftRejectNote("");
+      await loadIncomingRequests();
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Could not reject this request.",
+      );
+    } finally {
+      setDraftRequestBusy(false);
+    }
+  }
+
+  function openAcceptedResolution(request: BillingDraftRequest) {
+    setAcceptedResolution({
+      requestId: request.id,
+      requestNo: request.requestNo,
+      clearCartAfter: activeDraftRequestId === request.id,
+    });
+    setAcceptedResolutionReason("");
+    setAcceptedResolutionError("");
+  }
+
+  async function resolveAcceptedRequest(
+    action: "RETURN_TO_QUEUE" | "CANCEL",
+  ) {
+    if (!acceptedResolution || draftRequestBusy) return;
+    const reason = acceptedResolutionReason.trim();
+    if (reason.length < 3) {
+      setAcceptedResolutionError(
+        "Add a short reason so staff can understand what happened.",
+      );
+      window.setTimeout(() => {
+        focusInvalidField(document.getElementById("accepted-request-resolution-reason"));
+      }, 0);
+      return;
+    }
+
+    setDraftRequestBusy(true);
+    try {
+      const result = await resolveAcceptedDraftRequestApi(
+        acceptedResolution.requestId,
+        { action, reason },
+      );
+      if (
+        acceptedResolution.clearCartAfter ||
+        activeDraftRequestId === acceptedResolution.requestId
+      ) {
+        resetBill();
+      }
+      setAcceptedResolution(null);
+      setAcceptedResolutionReason("");
+      setAcceptedResolutionError("");
+      setSelectedIncomingRequest(null);
+      await loadIncomingRequests();
+      showToast(
+        "success",
+        action === "RETURN_TO_QUEUE"
+          ? `${result.request.requestNo} returned to the waiting queue.`
+          : `${result.request.requestNo} cancelled and kept in request history.`,
+      );
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Could not resolve this request.",
+      );
+    } finally {
+      setDraftRequestBusy(false);
+    }
+  }
+
+  async function reviewAndLoadIncomingRequest() {
+    if (!selectedIncomingRequest || draftRequestBusy) return;
+    if (activeDraftRequestId) {
+      showToast(
+        "warning",
+        "Complete or clear the request already loaded in Billing first.",
+      );
+      return;
+    }
+
+    const request = selectedIncomingRequest;
+    const isAlreadyAccepted =
+      request.status === "ACCEPTED" ||
+      request.status === "PARTIALLY_ACCEPTED";
+    const reviewItems: DraftRequestReviewItem[] = (request.items || []).map(
+      (item) => {
+        const decision = draftReviewDecisions[item.id] || {
+          action: "ACCEPT" as const,
+          acceptedQty: Number(item.qty || 1),
+          reason: "",
+        };
+        return {
+          itemId: item.id,
+          action: decision.action,
+          ...(decision.action === "ACCEPT"
+            ? { acceptedQty: Number(decision.acceptedQty) }
+            : { reason: decision.reason.trim() || null }),
+        };
+      },
+    );
+
+    const missingRejectReasonIds = !isAlreadyAccepted
+      ? reviewItems
+          .filter((item) => item.action === "REJECT" && !item.reason?.trim())
+          .map((item) => item.itemId)
+      : [];
+    if (missingRejectReasonIds.length > 0) {
+      setDraftReviewErrors(
+        Object.fromEntries(
+          missingRejectReasonIds.map((itemId) => [
+            itemId,
+            "Add a reason for rejecting this item.",
+          ]),
+        ),
+      );
+      window.setTimeout(() => {
+        focusInvalidField(
+          document.getElementById(
+            `draft-reject-reason-${missingRejectReasonIds[0]}`,
+          ),
+        );
+      }, 0);
+      return;
+    }
+    setDraftReviewErrors({});
+    if (
+      !isAlreadyAccepted &&
+      reviewItems.every((item) => item.action === "REJECT")
+    ) {
+      showToast(
+        "warning",
+        "Use Reject request when no items should be loaded into Billing.",
+      );
+      return;
+    }
+
+    setDraftRequestBusy(true);
+    try {
+      if (cart.length > 0) {
+        const parked = await parkCurrentBill("auto");
+        if (!parked) return;
+      }
+
+      const accepted = isAlreadyAccepted
+        ? request
+        : (await acceptDraftRequestApi(request.id, reviewItems)).request;
+      const acceptedLines = (accepted.items || [])
+        .filter((item) => item.reviewStatus !== "REJECTED")
+        .map((item) => ({
+          productId: item.productId,
+          qty: normalizeQuantityValue(
+            Number(item.acceptedQty ?? item.qty ?? 1),
+          ),
+        }))
+        .filter((line) => line.productId && line.qty > 0);
+
+      if (acceptedLines.length === 0) {
+        throw new Error("This request has no accepted items to load.");
+      }
+
+      setCart(acceptedLines);
+      setActiveDraftInvoiceId(null);
+      setActiveDraftRequestId(accepted.id);
+      setSelectedCustomerId(accepted.customerId || null);
+      const requestContext = [
+        `Staff request ${accepted.requestNo}`,
+        accepted.customerName
+          ? `Customer: ${accepted.customerName}${accepted.customerPhone ? ` (${accepted.customerPhone})` : ""}`
+          : "",
+        accepted.notes || "",
+      ]
+        .filter(Boolean)
+        .join(" · ");
+      setInvoiceNote(requestContext);
+      setSelectedIncomingRequest(null);
+      setShowIncomingRequests(false);
+      setDraftReviewDecisions({});
+      await loadIncomingRequests();
+      showToast(
+        "success",
+        `${accepted.requestNo} loaded into Billing. Review stock and payment before checkout.`,
+      );
+      searchRef.current?.focus();
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Could not load this request into Billing.",
+      );
+    } finally {
+      setDraftRequestBusy(false);
+    }
   }
 
   function buildParkedBillLabel(kind: "manual" | "auto") {
@@ -2387,6 +3008,7 @@ export default function BillingPage() {
 
     setCart(nextCart);
     setActiveDraftInvoiceId(resumed.id);
+    setActiveDraftRequestId(null);
     setSelectedCustomerId(resumed.customerId || null);
     setPaymentMethod("Cash");
     setPaymentStatus("Paid");
@@ -2859,7 +3481,6 @@ export default function BillingPage() {
       const result = await checkoutInvoiceApi({
         draftInvoiceId: activeDraftInvoiceId || undefined,
         customerId: selectedCustomerId || undefined,
-        discountAmount: subtotalDiscount,
         notes: invoiceNote.trim() || undefined,
         items: cartRows.map((line) => ({
           productId: line.productId,
@@ -2882,8 +3503,25 @@ export default function BillingPage() {
 
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
+        if (invoiceId && activeDraftRequestId) {
+          savePendingDraftCompletion(activeDraftRequestId, invoiceId);
+        }
         submitEsewaForm(result.esewaPaymentIntent);
         return;
+      }
+
+      if (invoiceId && activeDraftRequestId) {
+        try {
+          await completeDraftRequestApi(activeDraftRequestId, invoiceId);
+          clearPendingDraftCompletion();
+          await loadIncomingRequests();
+        } catch {
+          savePendingDraftCompletion(activeDraftRequestId, invoiceId);
+          showToast(
+            "warning",
+            "The invoice was finalized, but request status synchronization is pending and will retry automatically.",
+          );
+        }
       }
 
       // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure
@@ -3648,6 +4286,37 @@ export default function BillingPage() {
               <Icon name="receipt_long" className="text-[16px]" />
               Receipt
             </button>
+            {isCashier ? (
+              <button
+                type="button"
+                onClick={() => {
+                  setShowIncomingRequests(true);
+                  setSelectedIncomingRequest(null);
+                  setIncomingRequestsError("");
+                  void loadIncomingRequests();
+                }}
+                title={`${incomingRequestsTotal} incoming request(s), ${unseenIncomingRequestCount} unseen`}
+                className={cn(
+                  billingView.topButton,
+                  unseenIncomingRequestCount > 0
+                    ? "border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800"
+                    : incomingRequestsTotal > 0
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      : "",
+                )}
+              >
+                <Icon name="forward_to_inbox" className="text-[16px]" />
+                Requests
+                {incomingRequestsTotal > 0
+                  ? ` (${incomingRequestsTotal})`
+                  : ""}
+                {unseenIncomingRequestCount > 0 ? (
+                  <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 py-0.5 text-[10px] font-black text-emerald-800">
+                    {unseenIncomingRequestCount}
+                  </span>
+                ) : null}
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={openHeldBills}
@@ -3677,6 +4346,43 @@ export default function BillingPage() {
             <div className="flex items-center gap-2">
               <Icon name="error" className="text-[18px]" />
               <span className="min-w-0 truncate">{cartAlertMessage}</span>
+              <button
+                type="button"
+                onClick={() => {
+                  setBillingError("");
+                  clearCartIssue();
+                }}
+                className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-full transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
+                aria-label="Dismiss billing notice"
+              >
+                <Icon name="close" className="text-[16px]" />
+              </button>
+            </div>
+          </div>
+        ) : null}
+
+        {activeDraftRequestId && draftRequestNoticeVisible ? (
+          <div className="shrink-0 border-y border-emerald-200 bg-emerald-50 px-[22px] py-[8px] text-[12px] font-extrabold text-emerald-800">
+            <div className="flex items-center gap-2">
+              <Icon name="assignment_turned_in" className="text-[17px]" />
+              <span className="min-w-0 truncate">
+                Staff request loaded. Finalizing this bill will complete the
+                request automatically.
+              </span>
+              <button
+                type="button"
+                onClick={() => {
+                  acknowledgeDraftRequestNotice(
+                    currentUser?.id,
+                    activeDraftRequestId,
+                  );
+                  setDraftRequestNoticeVisible(false);
+                }}
+                className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-full transition hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
+                aria-label="Dismiss staff request notice"
+              >
+                <Icon name="close" className="text-[16px]" />
+              </button>
             </div>
           </div>
         ) : null}
@@ -5457,6 +6163,623 @@ export default function BillingPage() {
       </ModalFrame>
 
       <ModalFrame
+        open={showIncomingRequests}
+        onClose={() => {
+          if (draftRequestBusy) return;
+          setShowIncomingRequests(false);
+          setSelectedIncomingRequest(null);
+          setDraftReviewDecisions({});
+          setDraftRejectNote("");
+          setIncomingRequestsError("");
+          setAcceptedResolution(null);
+          setAcceptedResolutionReason("");
+          setAcceptedResolutionError("");
+        }}
+        title={
+          selectedIncomingRequest
+            ? selectedIncomingRequest.requestNo
+            : "Incoming Requests"
+        }
+        description={
+          selectedIncomingRequest
+            ? `${getRequestCustomerLabel(selectedIncomingRequest)} · ${getRequestStatusLabel(selectedIncomingRequest)}`
+            : "Review staff requests and load accepted items into Billing."
+        }
+        maxWidthClass="max-w-[780px]"
+        mobileBottomSheet
+        compact
+        headerActions={
+          !selectedIncomingRequest ? (
+            <button
+              type="button"
+              onClick={() => void loadIncomingRequests()}
+              disabled={incomingRequestsLoading}
+              className="inline-flex h-[34px] items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+            >
+              <Icon
+                name="sync"
+                className={cn(
+                  "text-[15px]",
+                  incomingRequestsLoading && "animate-spin",
+                )}
+              />
+              <span className="hidden sm:inline">Refresh</span>
+            </button>
+          ) : (
+            <button
+              type="button"
+              onClick={() => {
+                setSelectedIncomingRequest(null);
+                setDraftReviewDecisions({});
+                setDraftRejectNote("");
+                setAcceptedResolution(null);
+                setAcceptedResolutionReason("");
+                setAcceptedResolutionError("");
+              }}
+              disabled={draftRequestBusy}
+              className="inline-flex h-[34px] items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+            >
+              <Icon name="arrow_back" className="text-[15px]" />
+              <span className="hidden sm:inline">Requests</span>
+            </button>
+          )
+        }
+        footer={
+          selectedIncomingRequest ? (
+            <div className="flex w-full items-center justify-between gap-2">
+              <button
+                type="button"
+                onClick={() => {
+                  setSelectedIncomingRequest(null);
+                  setDraftReviewDecisions({});
+                  setDraftRejectNote("");
+                  setAcceptedResolution(null);
+                  setAcceptedResolutionReason("");
+                  setAcceptedResolutionError("");
+                }}
+                disabled={draftRequestBusy}
+                className="inline-flex h-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[11px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+              >
+                Back
+              </button>
+              <div className="flex min-w-0 items-center justify-end gap-2">
+                {acceptedResolution?.requestId === selectedIncomingRequest.id ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAcceptedResolution(null);
+                      setAcceptedResolutionReason("");
+                      setAcceptedResolutionError("");
+                    }}
+                    disabled={draftRequestBusy}
+                    className="inline-flex h-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[11px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+                  >
+                    Keep accepted
+                  </button>
+                ) : (
+                  <>
+                    {selectedIncomingRequest.status === "PENDING" ||
+                    selectedIncomingRequest.status === "MODIFIED" ? (
+                      <button
+                        type="button"
+                        onClick={() => void rejectIncomingRequest()}
+                        disabled={draftRequestBusy}
+                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] px-3 text-[11px] font-extrabold text-[#BE123C] transition hover:bg-rose-100 disabled:opacity-50"
+                      >
+                        <Icon name="cancel" className="text-[15px]" />
+                        {draftRequestBusy ? "Working..." : "Reject request"}
+                      </button>
+                    ) : null}
+                    {selectedIncomingRequest.status === "ACCEPTED" ||
+                    selectedIncomingRequest.status === "PARTIALLY_ACCEPTED" ? (
+                      <button
+                        type="button"
+                        onClick={() => openAcceptedResolution(selectedIncomingRequest)}
+                        disabled={draftRequestBusy}
+                        className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-amber-300 bg-amber-50 px-3 text-[11px] font-extrabold text-amber-800 transition hover:bg-amber-100 disabled:opacity-50"
+                      >
+                        <Icon name="move_to_inbox" className="text-[15px]" />
+                        Resolve
+                      </button>
+                    ) : null}
+                  <button
+                    type="button"
+                      onClick={() => void reviewAndLoadIncomingRequest()}
+                      disabled={draftRequestBusy || Boolean(activeDraftRequestId)}
+                      className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[10px] border border-[#11120d] bg-[#11120d] px-3 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
+                    >
+                      <Icon name="add_shopping_cart" className="text-[15px]" />
+                      {draftRequestBusy
+                        ? "Loading..."
+                        : selectedIncomingRequest.status === "ACCEPTED" ||
+                            selectedIncomingRequest.status ===
+                              "PARTIALLY_ACCEPTED"
+                          ? "Load into Billing"
+                          : "Review & Load"}
+                    </button>
+                  </>
+                )}
+              </div>
+            </div>
+          ) : undefined
+        }
+      >
+        {!selectedIncomingRequest ? (
+          <div className="space-y-3">
+            <div className="flex flex-wrap items-center gap-2">
+              <Pill tone={incomingRequestsTotal > 0 ? "green" : "neutral"}>
+                {incomingRequestsTotal} pending
+              </Pill>
+              {unseenIncomingRequestCount > 0 ? (
+                <Pill tone="orange">
+                  {unseenIncomingRequestCount} unseen
+                </Pill>
+              ) : null}
+              {activeDraftRequestId ? (
+                <Pill tone="sky">A request is loaded</Pill>
+              ) : null}
+            </div>
+
+            {incomingRequestsError ? (
+              <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-3 py-2.5 text-[12px] font-semibold text-[#BE123C]">
+                {incomingRequestsError}
+              </div>
+            ) : null}
+
+            <div className="overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-white">
+              {incomingRequestsLoading && incomingRequests.length === 0 ? (
+                <div className="flex min-h-[220px] flex-col items-center justify-center px-5 py-8 text-center">
+                  <Icon
+                    name="sync"
+                    className="mb-3 animate-spin text-[34px] text-slate-300"
+                  />
+                  <div className="text-[13px] font-extrabold text-slate-700">
+                    Checking incoming requests
+                  </div>
+                </div>
+              ) : incomingRequests.length === 0 ? (
+                <div className="flex min-h-[220px] flex-col items-center justify-center px-5 py-8 text-center">
+                  <div className="mb-3 flex h-14 w-14 items-center justify-center rounded-full bg-emerald-50 text-emerald-700">
+                    <Icon name="inbox" className="text-[30px]" />
+                  </div>
+                  <div className="text-[15px] font-extrabold text-slate-800">
+                    No incoming requests
+                  </div>
+                  <div className="mt-1 max-w-[360px] text-[12px] font-semibold leading-5 text-slate-500">
+                    Staff requests assigned to you will appear here
+                    automatically.
+                  </div>
+                </div>
+              ) : (
+                <div className="divide-y divide-[#E5E7EB]">
+                  {incomingRequests.map((request) => {
+                    const unseen =
+                      (request.status === "PENDING" ||
+                        request.status === "MODIFIED") &&
+                      !request.firstViewedAt;
+                    const accepted =
+                      request.status === "ACCEPTED" ||
+                      request.status === "PARTIALLY_ACCEPTED";
+                    return (
+                      <button
+                        key={request.id}
+                        type="button"
+                        onClick={() => void openIncomingRequest(request)}
+                        disabled={draftRequestBusy}
+                        className="grid w-full min-w-0 gap-3 px-3 py-3 text-left transition hover:bg-[#F8FAFC] disabled:opacity-60 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-center sm:px-4"
+                      >
+                        <div className="min-w-0">
+                          <div className="flex min-w-0 flex-wrap items-center gap-2">
+                            <span className="truncate text-[14px] font-extrabold text-[#11120d]">
+                              {request.requestNo}
+                            </span>
+                            <Pill
+                              tone={
+                                unseen
+                                  ? "orange"
+                                  : accepted
+                                    ? "green"
+                                    : "sky"
+                              }
+                            >
+                              {getRequestStatusLabel(request)}
+                            </Pill>
+                          </div>
+                          <div className="mt-1 truncate text-[12px] font-bold text-[#565449]">
+                            {getRequestCustomerLabel(request)}
+                          </div>
+                          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                            <span>
+                              From {request.createdBy?.name || "Staff"}
+                            </span>
+                            <span aria-hidden="true">·</span>
+                            <span>
+                              {formatRequestDateTime(request.createdAt)}
+                            </span>
+                          </div>
+                        </div>
+                        <div className="flex items-center justify-between gap-3 sm:justify-end">
+                          <div className="text-left sm:text-right">
+                            <div className="text-[12px] font-extrabold text-[#11120d]">
+                              {getRequestItemCount(request)} item(s) ·{" "}
+                              {formatQty(getRequestTotalQty(request))} unit(s)
+                            </div>
+                            <div className="mt-1 font-mono text-[13px] font-extrabold text-[#11120d]">
+                              {formatNpr(getRequestEstimatedTotal(request))}
+                            </div>
+                          </div>
+                          <Icon
+                            name="chevron_right"
+                            className="shrink-0 text-[20px] text-slate-400"
+                          />
+                        </div>
+                      </button>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="space-y-2.5">
+            {activeDraftRequestId === selectedIncomingRequest.id ? (
+              <div className="rounded-[11px] border border-emerald-200 bg-emerald-50 px-3 py-2 text-[11px] font-semibold leading-4 text-emerald-800">
+                This request is currently loaded in Billing. Complete checkout
+                or use Resolve below if the sale will not continue.
+              </div>
+            ) : activeDraftRequestId ? (
+              <div className="rounded-[11px] border border-[#F6D28B] bg-[#FFF7E8] px-3 py-2 text-[11px] font-semibold leading-4 text-[#B7791F]">
+                Another staff request is already loaded in Billing. Complete
+                or clear that bill before loading this one.
+              </div>
+            ) : cart.length > 0 ? (
+              <div className="rounded-[11px] border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] font-semibold leading-4 text-sky-800">
+                Your current bill will be held safely before accepted request
+                items are loaded. It will never be overwritten.
+              </div>
+            ) : null}
+
+            {acceptedResolution?.requestId === selectedIncomingRequest.id ? (
+              <section
+                className="rounded-[12px] border-2 border-amber-300 bg-amber-50/70 p-3 shadow-[0_0_0_3px_rgba(251,191,36,0.10)]"
+                aria-labelledby="accepted-resolution-heading"
+              >
+                <div className="flex items-start gap-2.5">
+                  <div className="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] bg-amber-100 text-amber-800">
+                    <Icon name="rule" className="text-[18px]" />
+                  </div>
+                  <div className="min-w-0">
+                    <div
+                      id="accepted-resolution-heading"
+                      className="text-[13px] font-extrabold text-amber-950"
+                    >
+                      This accepted request did not reach checkout
+                    </div>
+                    <p className="mt-0.5 text-[11px] font-semibold leading-4 text-amber-900">
+                      Return it when another cashier should continue. Cancel it
+                      only when the sale is no longer needed. History is kept.
+                    </p>
+                  </div>
+                </div>
+
+                <label
+                  htmlFor="accepted-request-resolution-reason"
+                  className="mt-3 block text-[11px] font-extrabold text-slate-800"
+                >
+                  Reason <span className="text-rose-600">*</span>
+                </label>
+                <textarea
+                  id="accepted-request-resolution-reason"
+                  data-modal-initial-focus
+                  value={acceptedResolutionReason}
+                  onChange={(event) => {
+                    setAcceptedResolutionReason(event.target.value);
+                    if (event.target.value.trim().length >= 3) {
+                      setAcceptedResolutionError("");
+                    }
+                  }}
+                  rows={2}
+                  maxLength={500}
+                  placeholder="Example: Customer left before payment"
+                  aria-invalid={Boolean(acceptedResolutionError)}
+                  aria-describedby={
+                    acceptedResolutionError
+                      ? "accepted-request-resolution-error"
+                      : undefined
+                  }
+                  className={cn(
+                    "mt-1 w-full resize-none rounded-[10px] border bg-white px-3 py-2 text-[12px] font-semibold text-slate-900 outline-none transition focus:ring-2",
+                    acceptedResolutionError
+                      ? "border-rose-500 focus:border-rose-500 focus:ring-rose-100"
+                      : "border-amber-300 focus:border-amber-500 focus:ring-amber-100",
+                  )}
+                />
+                {acceptedResolutionError ? (
+                  <div
+                    id="accepted-request-resolution-error"
+                    role="alert"
+                    className="mt-1.5 flex items-center gap-1.5 text-[11px] font-bold text-rose-700"
+                  >
+                    <Icon name="error" className="text-[15px]" />
+                    {acceptedResolutionError}
+                  </div>
+                ) : null}
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                  <button
+                    type="button"
+                    onClick={() => void resolveAcceptedRequest("RETURN_TO_QUEUE")}
+                    disabled={draftRequestBusy}
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[10px] border border-amber-300 bg-white px-3 text-[11px] font-extrabold text-amber-900 transition hover:bg-amber-100 disabled:opacity-50"
+                  >
+                    <Icon name="move_to_inbox" className="text-[16px]" />
+                    Return to queue
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void resolveAcceptedRequest("CANCEL")}
+                    disabled={draftRequestBusy}
+                    className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[10px] border border-rose-300 bg-rose-50 px-3 text-[11px] font-extrabold text-rose-700 transition hover:bg-rose-100 disabled:opacity-50"
+                  >
+                    <Icon name="cancel" className="text-[16px]" />
+                    Cancel request
+                  </button>
+                </div>
+              </section>
+            ) : null}
+
+            <div className="grid grid-cols-2 gap-1.5 lg:grid-cols-4">
+              {[
+                {
+                  label: "Requested by",
+                  value:
+                    selectedIncomingRequest.createdBy?.name || "Staff",
+                },
+                {
+                  label: "Customer",
+                  value: getRequestCustomerLabel(selectedIncomingRequest),
+                },
+                {
+                  label: "Created",
+                  value: formatRequestDateTime(
+                    selectedIncomingRequest.createdAt,
+                  ),
+                },
+                {
+                  label: "Respond by",
+                  value: formatRequestDateTime(
+                    selectedIncomingRequest.expiresAt,
+                  ),
+                },
+              ].map((metric) => (
+                <div
+                  key={metric.label}
+                  className="min-w-0 rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-2"
+                >
+                  <div className="text-[10px] font-extrabold uppercase tracking-wide text-[#8C8889]">
+                    {metric.label}
+                  </div>
+                  <div className="mt-0.5 truncate text-[11px] font-extrabold text-[#11120d]">
+                    {metric.value}
+                  </div>
+                </div>
+              ))}
+            </div>
+
+            {selectedIncomingRequest.notes ? (
+              <div className="rounded-[11px] border border-[#E5E7EB] bg-white px-3 py-2">
+                <div className="text-[10px] font-extrabold uppercase tracking-wide text-[#8C8889]">
+                  Staff note
+                </div>
+                <div className="mt-1 whitespace-pre-wrap text-[11px] font-semibold leading-4 text-[#565449]">
+                  {selectedIncomingRequest.notes}
+                </div>
+              </div>
+            ) : null}
+
+            <div className="overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white">
+              <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[10px] font-extrabold uppercase tracking-wide text-[#565449]">
+                Review {selectedIncomingRequest.items?.length || 0} item(s)
+              </div>
+              <div className="divide-y divide-[#E5E7EB]">
+                {(selectedIncomingRequest.items || []).map((item) => {
+                  const product = item.product;
+                  const requestedQty = Number(item.qty || 1);
+                  const decision = draftReviewDecisions[item.id] || {
+                    action:
+                      item.reviewStatus === "REJECTED"
+                        ? ("REJECT" as const)
+                        : ("ACCEPT" as const),
+                    acceptedQty: Number(
+                      item.acceptedQty ?? item.qty ?? 1,
+                    ),
+                    reason: item.rejectionReason || "",
+                  };
+                  const editable =
+                    selectedIncomingRequest.status === "PENDING" ||
+                    selectedIncomingRequest.status === "MODIFIED";
+
+                  return (
+                    <div key={item.id} className="px-3 py-2.5">
+                      <div className="flex min-w-0 items-start justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-extrabold text-[#11120d]">
+                            {product?.name || "Unavailable product"}
+                          </div>
+                          <div className="mt-0.5 flex flex-wrap gap-x-2 text-[10px] font-semibold leading-4 text-[#8C8889]">
+                            {product?.sku ? <span>SKU {product.sku}</span> : null}
+                            <span>
+                              Requested{" "}
+                              {formatQtyWithUnit(
+                                requestedQty,
+                                product?.saleUnit || undefined,
+                              )}
+                            </span>
+                            {typeof product?.stock === "number" ? (
+                              <span>
+                                Stock{" "}
+                                {formatQtyWithUnit(
+                                  product.stock,
+                                  product.saleUnit || undefined,
+                                )}
+                              </span>
+                            ) : null}
+                          </div>
+                        </div>
+                        <div className="shrink-0 font-mono text-[11px] font-extrabold text-[#11120d]">
+                          {formatNpr(
+                            requestedQty *
+                              Number(product?.retailPrice || 0),
+                          )}
+                        </div>
+                      </div>
+
+                      {editable ? (
+                        <div
+                          className={cn(
+                            "mt-2 grid items-end gap-2",
+                            decision.action === "ACCEPT"
+                              ? "grid-cols-[minmax(0,1fr)_112px]"
+                              : "grid-cols-[132px_minmax(0,1fr)]",
+                          )}
+                        >
+                          <div className="grid h-[34px] grid-cols-2 overflow-hidden rounded-[9px] border border-[#CFCFD3]">
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateDraftReviewDecision(item.id, {
+                                  action: "ACCEPT",
+                                  reason: "",
+                                })
+                              }
+                              className={cn(
+                                "border-r border-[#CFCFD3] px-2 text-[10px] font-extrabold transition",
+                                decision.action === "ACCEPT"
+                                  ? "bg-emerald-50 text-emerald-800"
+                                  : "bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                              )}
+                            >
+                              Accept
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() =>
+                                updateDraftReviewDecision(item.id, {
+                                  action: "REJECT",
+                                })
+                              }
+                              className={cn(
+                                "px-2 text-[10px] font-extrabold transition",
+                                decision.action === "REJECT"
+                                  ? "bg-rose-50 text-rose-700"
+                                  : "bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                              )}
+                            >
+                              Reject
+                            </button>
+                          </div>
+
+                          {decision.action === "ACCEPT" ? (
+                            <label className="block">
+                              <span className="mb-0.5 block truncate text-[9px] font-extrabold uppercase tracking-wide text-[#565449]">
+                                Qty accepted
+                              </span>
+                              <input
+                                type="number"
+                                min={Number(product?.quantityStep || 1)}
+                                max={requestedQty}
+                                step={Number(product?.quantityStep || 1)}
+                                value={decision.acceptedQty}
+                                onChange={(event) =>
+                                  updateDraftReviewDecision(item.id, {
+                                    acceptedQty: Number(event.target.value),
+                                  })
+                                }
+                                className="h-[34px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 text-[12px] font-extrabold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-black/5"
+                              />
+                            </label>
+                          ) : (
+                            <label className="block">
+                              <span className="mb-0.5 block text-[9px] font-extrabold uppercase tracking-wide text-[#565449]">
+                                Reason
+                              </span>
+                              <input
+                                id={`draft-reject-reason-${item.id}`}
+                                value={decision.reason}
+                                onChange={(event) =>
+                                  updateDraftReviewDecision(item.id, {
+                                    reason: event.target.value,
+                                  })
+                                }
+                                placeholder="Reason required"
+                                aria-invalid={Boolean(draftReviewErrors[item.id])}
+                                aria-describedby={
+                                  draftReviewErrors[item.id]
+                                    ? `draft-reject-reason-error-${item.id}`
+                                    : undefined
+                                }
+                                className={cn(
+                                  "h-[34px] w-full rounded-[9px] border bg-white px-2.5 text-[11px] font-semibold text-[#11120d] outline-none transition placeholder:text-slate-400 focus:ring-2",
+                                  draftReviewErrors[item.id]
+                                    ? "border-rose-500 focus:border-rose-500 focus:ring-rose-100"
+                                    : "border-[#CFCFD3] focus:border-[#11120d] focus:ring-black/5",
+                                )}
+                              />
+                              {draftReviewErrors[item.id] ? (
+                                <span
+                                  id={`draft-reject-reason-error-${item.id}`}
+                                  className="mt-1 block text-[10px] font-bold text-rose-600"
+                                  role="alert"
+                                >
+                                  {draftReviewErrors[item.id]}
+                                </span>
+                              ) : null}
+                            </label>
+                          )}
+                        </div>
+                      ) : (
+                        <div
+                          className={cn(
+                            "mt-2 rounded-[9px] border px-2.5 py-1.5 text-[11px] font-semibold",
+                            item.reviewStatus === "REJECTED"
+                              ? "border-rose-200 bg-rose-50 text-rose-700"
+                              : "border-emerald-200 bg-emerald-50 text-emerald-800",
+                          )}
+                        >
+                          {item.reviewStatus === "REJECTED"
+                            ? `Rejected: ${item.rejectionReason || "No reason recorded"}`
+                            : `Accepted ${formatQtyWithUnit(
+                                Number(item.acceptedQty ?? item.qty ?? 0),
+                                product?.saleUnit || undefined,
+                              )}`}
+                        </div>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+
+            {selectedIncomingRequest.status === "PENDING" ||
+            selectedIncomingRequest.status === "MODIFIED" ? (
+              <label className="block">
+                <span className="mb-1 block text-[9px] font-extrabold uppercase tracking-wide text-[#565449]">
+                  Whole-request rejection note (optional)
+                </span>
+                <textarea
+                  value={draftRejectNote}
+                  onChange={(event) => setDraftRejectNote(event.target.value)}
+                  rows={1}
+                  placeholder="Used only if you reject the entire request"
+                  className="min-h-9 w-full resize-none rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 py-2 text-[11px] font-semibold text-[#11120d] outline-none transition placeholder:text-slate-400 focus:border-[#11120d] focus:ring-2 focus:ring-black/5"
+                />
+              </label>
+            ) : null}
+          </div>
+        )}
+      </ModalFrame>
+
+      <ModalFrame
         open={showParkedBills}
         onClose={() => setShowParkedBills(false)}
         title="Held bills"
@@ -5678,6 +7001,103 @@ export default function BillingPage() {
               ))}
             </div>
           </div>
+        </div>
+      </ModalFrame>
+
+      <ModalFrame
+        open={Boolean(
+          acceptedResolution &&
+            (!showIncomingRequests ||
+              selectedIncomingRequest?.id !== acceptedResolution.requestId),
+        )}
+        onClose={() => {
+          if (draftRequestBusy) return;
+          setAcceptedResolution(null);
+          setAcceptedResolutionReason("");
+          setAcceptedResolutionError("");
+        }}
+        title="Resolve accepted request"
+        description={`${acceptedResolution?.requestNo || "Staff request"} was accepted but has not produced a finalized invoice.`}
+        maxWidthClass="max-w-[560px]"
+        mobileBottomSheet
+        layer="critical"
+        footer={
+          <div className="grid w-full gap-2 sm:grid-cols-[auto_1fr_1fr]">
+            <DialogButton
+              onClick={() => {
+                setAcceptedResolution(null);
+                setAcceptedResolutionReason("");
+                setAcceptedResolutionError("");
+              }}
+              disabled={draftRequestBusy}
+            >
+              Keep accepted
+            </DialogButton>
+            <DialogButton
+              onClick={() => void resolveAcceptedRequest("RETURN_TO_QUEUE")}
+              disabled={draftRequestBusy}
+              icon="move_to_inbox"
+            >
+              Return to queue
+            </DialogButton>
+            <DialogButton
+              onClick={() => void resolveAcceptedRequest("CANCEL")}
+              disabled={draftRequestBusy}
+              variant="danger"
+              icon="cancel"
+            >
+              Cancel request
+            </DialogButton>
+          </div>
+        }
+      >
+        <div className="space-y-4">
+          <div className="rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-[12px] font-semibold leading-5 text-amber-900">
+            Return to queue when another cashier should continue it. Cancel only
+            when the customer or staff no longer needs the sale. Neither action
+            deletes request history.
+          </div>
+          <label
+            htmlFor="accepted-request-resolution-reason"
+            className="block text-[12px] font-extrabold text-slate-700"
+          >
+            Reason <span className="text-rose-600">*</span>
+          </label>
+          <textarea
+            id="accepted-request-resolution-reason"
+            data-modal-initial-focus
+            value={acceptedResolutionReason}
+            onChange={(event) => {
+              setAcceptedResolutionReason(event.target.value);
+              if (event.target.value.trim().length >= 3) {
+                setAcceptedResolutionError("");
+              }
+            }}
+            rows={3}
+            maxLength={500}
+            placeholder="Example: Customer left before payment"
+            aria-invalid={Boolean(acceptedResolutionError)}
+            aria-describedby={
+              acceptedResolutionError
+                ? "accepted-request-resolution-modal-error"
+                : undefined
+            }
+            className={cn(
+              "w-full resize-none rounded-[12px] border bg-white px-3 py-2.5 text-[13px] font-semibold text-slate-900 outline-none transition focus:ring-2",
+              acceptedResolutionError
+                ? "border-rose-500 focus:border-rose-500 focus:ring-rose-100"
+                : "border-slate-300 focus:border-blue-500 focus:ring-blue-100",
+            )}
+          />
+          {acceptedResolutionError ? (
+            <div
+              id="accepted-request-resolution-modal-error"
+              role="alert"
+              className="text-[11px] font-bold text-rose-700"
+            >
+              {acceptedResolutionError}
+            </div>
+          ) : null}
         </div>
       </ModalFrame>
 

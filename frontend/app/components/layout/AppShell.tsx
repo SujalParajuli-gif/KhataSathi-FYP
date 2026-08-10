@@ -11,9 +11,12 @@ import { isRateLimited } from "~/lib/api/client";
 import { touchUserPresenceApi } from "~/lib/api/endpoints";
 import { AlertsProvider } from "~/lib/alerts/alerts-context";
 import { getAuthUser } from "~/lib/auth";
+import { useBusinessCapabilities } from "~/lib/businessCapabilities";
+import { hasCapabilityRouteAccess } from "~/lib/routeAccess";
 
 type Props = {
   children: ReactNode;
+  statusBanner?: ReactNode;
 };
 
 const SIDEBAR_STATE_STORAGE_KEY = "khatasathi_sidebar_state";
@@ -78,13 +81,14 @@ function RateLimitBanner() {
   );
 }
 
-export default function AppShell({ children }: Props) {
+export default function AppShell({ children, statusBanner }: Props) {
   const location = useLocation();
+  const capabilities = useBusinessCapabilities();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [user, setUser] = useState(() => getAuthUser());
 
-  const role = user?.role ?? "admin";
+  const role = user?.role ?? "staff";
   const isStaff = role === "staff";
   const usesCompactDesktopRail = role === "cashier" || role === "staff";
   const sidebarStorageKey = `${SIDEBAR_STATE_STORAGE_KEY}:${user?.id ?? role}`;
@@ -167,8 +171,13 @@ export default function AppShell({ children }: Props) {
     ? "lg:ml-[80px]"
     : "lg:ml-[260px]";
   const visibleItems = useMemo(
-    () => navData.sidebar.items.filter((item) => item.roles.includes(role)),
-    [role],
+    () =>
+      navData.sidebar.items.filter(
+        (item) =>
+          item.roles.includes(role) &&
+          hasCapabilityRouteAccess(item.to, capabilities),
+      ),
+    [role, capabilities],
   );
   const pageTitle = useMemo(() => {
     const matched = visibleItems
@@ -193,15 +202,17 @@ export default function AppShell({ children }: Props) {
   const isBillingRoute = location.pathname === "/billing";
 
   return (
-    <AlertsProvider enabled={!isStaff}>
+    <AlertsProvider enabled={!isStaff && capabilities.inventoryEnabled}>
       <ToastProvider>
         <RateLimitBanner />
         <div className="h-dvh overflow-hidden bg-white text-slate-900">
           <Sidebar
             role={role}
+            capabilities={capabilities}
             isMobileOpen={isMobileOpen}
             isCollapsed={effectiveCollapsed}
             mobileEnabled={!isStaff}
+            onOpenMobile={() => setIsMobileOpen(true)}
             onCloseMobile={() => setIsMobileOpen(false)}
           />
 
@@ -226,6 +237,8 @@ export default function AppShell({ children }: Props) {
               showDesktopCollapseToggle={!usesCompactDesktopRail}
             />
 
+            {statusBanner}
+
             <main
               id="app-main-content"
               data-app-scroll-container
@@ -243,7 +256,7 @@ export default function AppShell({ children }: Props) {
             </main>
           </div>
 
-          {isStaff ? <StaffBottomNav /> : null}
+          {isStaff ? <StaffBottomNav capabilities={capabilities} /> : null}
         </div>
       </ToastProvider>
     </AlertsProvider>

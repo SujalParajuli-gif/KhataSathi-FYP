@@ -11,6 +11,8 @@ import {
   type MobileFilterChip,
 } from "~/components/ui/MobileFilters";
 import PaginationBar from "~/components/ui/PaginationBar";
+import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
+import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
 import { useToast } from "~/components/ui/Toast";
 import {
   ConfirmDialog,
@@ -23,6 +25,7 @@ import {
   closeCashDrawerApi,
   createBrandApi,
   getBusinessSettingsApi,
+  getBusinessModePreflightApi,
   getBackupScheduleApi,
   getCurrentCashDrawerApi,
   getOverridePolicyApi,
@@ -39,16 +42,21 @@ import {
   triggerBackupApi,
   updateBackupScheduleApi,
   updateBusinessSettingsApi,
+  updateBusinessModeApi,
   updateCashierPrivilegeApi,
   updateOverridePinApi,
   updateBrandApi,
   type BusinessSettings,
+  type BusinessMode,
+  type BusinessModePreflight,
   type CashierPrivilegeRow,
   type CashDrawer,
   type OverridePolicy,
 } from "~/lib/api/endpoints";
+import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 
 type TabKey =
   | "overview"
@@ -73,7 +81,8 @@ type ProductLite = {
 type UserLite = {
   id: string;
   name: string;
-  email: string;
+  email?: string | null;
+  phone?: string | null;
   role: "ADMIN" | "MANAGER" | "CASHIER" | "STAFF";
   isActive: boolean;
   lastLogin?: string | null;
@@ -213,10 +222,12 @@ function buildBusinessDefaults(
   returnWindowDays: number,
   parkedBillExpiryHours: number,
   draftRequestExpiryMinutes: number,
+  defaultInitialStock = 30,
 ) {
   return {
-    defaultLowStock: Math.max(0, Math.floor(defaultLowStock)),
-    wholesaleQtyThreshold: Math.max(1, Math.floor(wholesaleQtyThreshold)),
+    defaultInitialStock: Math.max(0, defaultInitialStock),
+    defaultLowStock: Math.max(0, defaultLowStock),
+    wholesaleQtyThreshold: Math.max(1, wholesaleQtyThreshold),
     loyaltyDiscountPercent: clampPercent(loyaltyDiscountPercent),
     returnWindowDays: Math.max(0, Math.floor(returnWindowDays)),
     parkedBillExpiryHours: Math.max(1, Math.floor(parkedBillExpiryHours)),
@@ -225,6 +236,134 @@ function buildBusinessDefaults(
       Math.floor(draftRequestExpiryMinutes),
     ),
   };
+}
+
+type BusinessDefaults = ReturnType<typeof buildBusinessDefaults>;
+type BusinessDefaultsDraft = Record<keyof BusinessDefaults, string>;
+type BusinessDefaultsErrors = Partial<Record<keyof BusinessDefaults, string>>;
+
+function defaultsToDraft(defaults: BusinessDefaults): BusinessDefaultsDraft {
+  return Object.fromEntries(
+    Object.entries(defaults).map(([key, value]) => [key, String(value)]),
+  ) as BusinessDefaultsDraft;
+}
+
+function validateBusinessDefaultsDraft(draft: BusinessDefaultsDraft) {
+  const errors: BusinessDefaultsErrors = {};
+  const rules: Array<{
+    key: keyof BusinessDefaults;
+    label: string;
+    min: number;
+    max?: number;
+    integer?: boolean;
+  }> = [
+    { key: "defaultInitialStock", label: "New product initial stock", min: 0 },
+    { key: "defaultLowStock", label: "Stock alert threshold", min: 0 },
+    { key: "wholesaleQtyThreshold", label: "Wholesale quantity threshold", min: 1 },
+    { key: "loyaltyDiscountPercent", label: "Loyalty discount", min: 0, max: 100 },
+    { key: "returnWindowDays", label: "Return window", min: 0, integer: true },
+    { key: "parkedBillExpiryHours", label: "Parked bill expiry", min: 1, integer: true },
+    { key: "draftRequestExpiryMinutes", label: "Draft request expiry", min: 1, integer: true },
+  ];
+
+  for (const rule of rules) {
+    const raw = draft[rule.key].trim();
+    const value = Number(raw);
+    if (!raw || !Number.isFinite(value)) {
+      errors[rule.key] = `${rule.label} requires a valid number.`;
+    } else if (value < rule.min || (rule.max !== undefined && value > rule.max)) {
+      errors[rule.key] = rule.max === undefined
+        ? `${rule.label} must be at least ${rule.min}.`
+        : `${rule.label} must be between ${rule.min} and ${rule.max}.`;
+    } else if (rule.integer && !Number.isInteger(value)) {
+      errors[rule.key] = `${rule.label} must be a whole number.`;
+    }
+  }
+  return errors;
+}
+
+function parseBusinessDefaultsDraft(draft: BusinessDefaultsDraft): BusinessDefaults {
+  return {
+    defaultInitialStock: Number(draft.defaultInitialStock),
+    defaultLowStock: Number(draft.defaultLowStock),
+    wholesaleQtyThreshold: Number(draft.wholesaleQtyThreshold),
+    loyaltyDiscountPercent: Number(draft.loyaltyDiscountPercent),
+    returnWindowDays: Number(draft.returnWindowDays),
+    parkedBillExpiryHours: Number(draft.parkedBillExpiryHours),
+    draftRequestExpiryMinutes: Number(draft.draftRequestExpiryMinutes),
+  };
+}
+
+function formatBusinessMode(mode: BusinessMode) {
+  if (mode === "CATALOG_ONLY") return "Catalog only";
+  if (mode === "INVENTORY_ONLY") return "Catalog + inventory";
+  return "Full POS";
+}
+
+function BusinessNumberField({
+  fieldKey,
+  label,
+  helper,
+  value,
+  onChange,
+  disabled = false,
+  error,
+  suffix,
+  integer = false,
+}: {
+  fieldKey: keyof BusinessDefaults;
+  label: string;
+  helper: string;
+  value: string;
+  onChange: (value: string) => void;
+  disabled?: boolean;
+  error?: string;
+  suffix?: string;
+  integer?: boolean;
+}) {
+  return (
+    <label className="block">
+      <span className={cn("text-[13px] font-extrabold", disabled ? "text-slate-500" : "text-slate-800")}>
+        {label}
+      </span>
+      <div className="relative mt-2">
+        <input
+          data-business-default={fieldKey}
+          data-business-default-error={error ? "true" : undefined}
+          type="number"
+          step={integer ? 1 : "any"}
+          value={value}
+          disabled={disabled}
+          aria-invalid={Boolean(error)}
+          aria-describedby={`${fieldKey}-help${error ? ` ${fieldKey}-error` : ""}`}
+          onFocus={(event) => event.currentTarget.select()}
+          onChange={(event) => onChange(event.target.value)}
+          className={cn(
+            "h-11 w-full rounded-[8px] border px-3 text-[14px] font-semibold outline-none",
+            suffix ? "pr-16" : "",
+            disabled
+              ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
+              : error
+                ? "border-rose-400 bg-white focus:ring-2 focus:ring-rose-100"
+                : "border-slate-200 bg-white focus:border-[#11120D]",
+          )}
+        />
+        {suffix ? (
+          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[12px] font-extrabold text-slate-500">
+            {suffix}
+          </span>
+        ) : null}
+      </div>
+      <span id={`${fieldKey}-help`} className="mt-2 block text-[12px] font-medium leading-5 text-slate-500">
+        {helper}
+      </span>
+      {error ? (
+        <span id={`${fieldKey}-error`} className="mt-1 block text-[12px] font-bold text-rose-700" role="alert">
+          {error}
+        </span>
+      ) : null}
+    </label>
+  );
 }
 
 // this renders the small state badges used for saved/unsaved status and row conditions
@@ -295,8 +434,10 @@ function clampPage(n: number, min: number, max: number) {
 // the main settings workspace
 // this handles updating business rules (defaults), managing brand lists, reviewing application audit logs, and running database backups
 export default function SettingsPage() {
+  const capabilities = useBusinessCapabilities();
   const { showToast } = useToast();
   const [tab, setTab] = useState<TabKey>("overview"); // active settings section tab
+  const settingsTabRailRef = useRef<SwipeableTabRailController | null>(null);
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const settingsTabLoadedAtRef = useRef(new Map<TabKey, number>());
   const securityQueryLoadedAtRef = useRef(new Map<string, number>());
@@ -304,6 +445,18 @@ export default function SettingsPage() {
     setRateLimitRecoveryKey((current) => current + 1);
   });
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
+  const [modeDraft, setModeDraft] = useState<BusinessMode>(
+    capabilities.businessMode,
+  );
+  const [staffDraftsDraft, setStaffDraftsDraft] = useState(
+    capabilities.staffDraftRequestsEnabled,
+  );
+  const [modeReason, setModeReason] = useState("");
+  const [modePreflight, setModePreflight] =
+    useState<BusinessModePreflight | null>(null);
+  const [modeError, setModeError] = useState("");
+  const [modeBusy, setModeBusy] = useState(false);
+  const [showModeConfirm, setShowModeConfirm] = useState(false);
   const [refreshing, setRefreshing] = useState(false); // lighter refresh state used after saves without showing the full page loader
   const [brands, setBrands] = useState<Brand[]>([]); // brand records shown in brand management
   const [products, setProducts] = useState<ProductLite[]>([]); // lightweight product list used for brand stats and low stock stats
@@ -332,7 +485,8 @@ export default function SettingsPage() {
   const [securityDateFilter, setSecurityDateFilter] =
     useState<SecurityDateRange>(INITIAL_SECURITY_RANGE); // the active date range sent to both audit endpoints
   const [securityAuditActionDraft, setSecurityAuditActionDraft] = useState("");
-  const [securityAuditActionFilter, setSecurityAuditActionFilter] = useState("");
+  const [securityAuditActionFilter, setSecurityAuditActionFilter] =
+    useState("");
   const [securityEntityDraft, setSecurityEntityDraft] = useState("");
   const [securityEntityFilter, setSecurityEntityFilter] = useState("");
   const [securityLoginEmailDraft, setSecurityLoginEmailDraft] = useState("");
@@ -344,7 +498,8 @@ export default function SettingsPage() {
     "ALL" | "SUCCESS" | "FAILED"
   >("ALL");
   const [securityFilterError, setSecurityFilterError] = useState(""); // validation message when the chosen date range is invalid
-  const [mobileSecurityFiltersOpen, setMobileSecurityFiltersOpen] = useState(false);
+  const [mobileSecurityFiltersOpen, setMobileSecurityFiltersOpen] =
+    useState(false);
   const [securityLoading, setSecurityLoading] = useState(false); // lighter loading state for the audit tab lists
   const [auditPage, setAuditPage] = useState(1); // current page inside the audit logs list
   const [loginPage, setLoginPage] = useState(1); // current page inside the login attempts list
@@ -389,25 +544,31 @@ export default function SettingsPage() {
     useState<Brand | null>(null);
   const [pendingBrandSave, setPendingBrandSave] = useState(false); // tells the confirm dialog whether it is finishing a save flow or a direct toggle flow
   const [defaultLowStock, setDefaultLowStock] = useState(
-    INITIAL_DEFAULTS.defaultLowStock,
+    String(INITIAL_DEFAULTS.defaultLowStock),
+  );
+  const [defaultInitialStock, setDefaultInitialStock] = useState(
+    String(INITIAL_DEFAULTS.defaultInitialStock),
   );
   const [wholesaleQtyThreshold, setWholesaleQtyThreshold] = useState(
-    INITIAL_DEFAULTS.wholesaleQtyThreshold,
+    String(INITIAL_DEFAULTS.wholesaleQtyThreshold),
   );
   const [loyaltyDiscountPercent, setLoyaltyDiscountPercent] = useState(
-    INITIAL_DEFAULTS.loyaltyDiscountPercent,
+    String(INITIAL_DEFAULTS.loyaltyDiscountPercent),
   );
   const [returnWindowDays, setReturnWindowDays] = useState(
-    INITIAL_DEFAULTS.returnWindowDays,
+    String(INITIAL_DEFAULTS.returnWindowDays),
   );
   const [parkedBillExpiryHours, setParkedBillExpiryHours] = useState(
-    INITIAL_DEFAULTS.parkedBillExpiryHours,
+    String(INITIAL_DEFAULTS.parkedBillExpiryHours),
   );
   const [draftRequestExpiryMinutes, setDraftRequestExpiryMinutes] = useState(
-    INITIAL_DEFAULTS.draftRequestExpiryMinutes,
+    String(INITIAL_DEFAULTS.draftRequestExpiryMinutes),
   );
   const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
   const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false); // confirmation dialog before saving business defaults
+  const [defaultsShowErrors, setDefaultsShowErrors] = useState(false);
+  const [defaultsBusy, setDefaultsBusy] = useState(false);
+  const [defaultsSaveError, setDefaultsSaveError] = useState("");
   const [currentDrawer, setCurrentDrawer] = useState<CashDrawer | null>(null);
   const [drawerHistory, setDrawerHistory] = useState<CashDrawer[]>([]);
   const [drawerBusy, setDrawerBusy] = useState(false);
@@ -462,9 +623,7 @@ export default function SettingsPage() {
           ...(securityAuditActionFilter
             ? { action: securityAuditActionFilter }
             : {}),
-          ...(securityEntityFilter
-            ? { entityType: securityEntityFilter }
-            : {}),
+          ...(securityEntityFilter ? { entityType: securityEntityFilter } : {}),
           page: auditPage,
           pageSize: auditPageSize,
         }),
@@ -609,6 +768,7 @@ export default function SettingsPage() {
             id: user.id,
             name: user.name || "Unknown",
             email: user.email || "",
+            phone: user.phone || null,
             role: user.role || "CASHIER",
             isActive: user.isActive !== false,
             lastLogin: user.lastLogin || null,
@@ -642,16 +802,26 @@ export default function SettingsPage() {
           Number(settingsData.value?.returnWindowDays ?? 7),
           Number(settingsData.value?.parkedBillExpiryHours ?? 8),
           Number(settingsData.value?.draftRequestExpiryMinutes ?? 30),
+          Number(settingsData.value?.defaultInitialStock ?? 30),
         );
-        setDefaultLowStock(normalizedSettings.defaultLowStock);
-        setWholesaleQtyThreshold(normalizedSettings.wholesaleQtyThreshold);
-        setLoyaltyDiscountPercent(normalizedSettings.loyaltyDiscountPercent);
-        setReturnWindowDays(normalizedSettings.returnWindowDays);
-        setParkedBillExpiryHours(normalizedSettings.parkedBillExpiryHours);
+        const defaultsDraft = defaultsToDraft(normalizedSettings);
+        setDefaultInitialStock(defaultsDraft.defaultInitialStock);
+        setDefaultLowStock(defaultsDraft.defaultLowStock);
+        setWholesaleQtyThreshold(defaultsDraft.wholesaleQtyThreshold);
+        setLoyaltyDiscountPercent(defaultsDraft.loyaltyDiscountPercent);
+        setReturnWindowDays(defaultsDraft.returnWindowDays);
+        setParkedBillExpiryHours(defaultsDraft.parkedBillExpiryHours);
         setDraftRequestExpiryMinutes(
-          normalizedSettings.draftRequestExpiryMinutes,
+          defaultsDraft.draftRequestExpiryMinutes,
         );
         setSavedDefaults(normalizedSettings);
+        if (settingsData.value?.businessMode) {
+          setModeDraft(settingsData.value.businessMode);
+        }
+        setStaffDraftsDraft(
+          settingsData.value?.businessMode === "FULL_POS" &&
+            settingsData.value?.staffDraftRequestsEnabled === true,
+        );
       }
       if (
         needsDrawer &&
@@ -747,7 +917,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (tab !== "audit") return;
-    const loadedAt = securityQueryLoadedAtRef.current.get(securityQueryKey()) ?? 0;
+    const loadedAt =
+      securityQueryLoadedAtRef.current.get(securityQueryKey()) ?? 0;
     if (Date.now() - loadedAt < SETTINGS_TAB_CACHE_MS) return;
     const timer = window.setTimeout(() => {
       void loadSecurityData();
@@ -890,14 +1061,18 @@ export default function SettingsPage() {
   const managerUsers = activeUsers.filter((user) => user.role === "MANAGER");
   const cashierUsers = activeUsers.filter((user) => user.role === "CASHIER");
   const staffUsers = activeUsers.filter((user) => user.role === "STAFF");
-  const normalizedDefaults = buildBusinessDefaults(
+  const defaultsDraft: BusinessDefaultsDraft = {
+    defaultInitialStock,
     defaultLowStock,
     wholesaleQtyThreshold,
     loyaltyDiscountPercent,
     returnWindowDays,
     parkedBillExpiryHours,
     draftRequestExpiryMinutes,
-  ); // clamping the live form state before we compare or save it
+  };
+  const defaultsErrors = validateBusinessDefaultsDraft(defaultsDraft);
+  const defaultsValid = Object.keys(defaultsErrors).length === 0;
+  const normalizedDefaults = parseBusinessDefaultsDraft(defaultsDraft);
 
   useEffect(() => {
     setBrandPage((current) => clampPage(current, 1, brandTotalPages));
@@ -911,6 +1086,8 @@ export default function SettingsPage() {
     setLoginPage((current) => clampPage(current, 1, loginTotalPages));
   }, [loginTotalPages]);
   const defaultsDirty =
+    !defaultsValid || normalizedDefaults.defaultInitialStock !==
+      savedDefaults.defaultInitialStock ||
     normalizedDefaults.defaultLowStock !== savedDefaults.defaultLowStock ||
     normalizedDefaults.wholesaleQtyThreshold !==
       savedDefaults.wholesaleQtyThreshold ||
@@ -921,6 +1098,30 @@ export default function SettingsPage() {
       savedDefaults.parkedBillExpiryHours ||
     normalizedDefaults.draftRequestExpiryMinutes !==
       savedDefaults.draftRequestExpiryMinutes;
+  const effectiveStaffDraftsDraft =
+    modeDraft === "FULL_POS" && staffDraftsDraft;
+  const accessDirty =
+    modeDraft !== capabilities.businessMode ||
+    effectiveStaffDraftsDraft !== capabilities.staffDraftRequestsEnabled;
+  const defaultChanges = defaultsValid
+    ? [
+        { key: "defaultInitialStock" as const, label: "New product initial stock", unit: "units" },
+        { key: "defaultLowStock" as const, label: "Stock alert threshold", unit: "units" },
+        { key: "wholesaleQtyThreshold" as const, label: "Wholesale threshold", unit: "units" },
+        { key: "loyaltyDiscountPercent" as const, label: "Loyalty discount", unit: "%" },
+        { key: "returnWindowDays" as const, label: "Return window", unit: "days" },
+        { key: "parkedBillExpiryHours" as const, label: "Parked bill expiry", unit: "hours" },
+        { key: "draftRequestExpiryMinutes" as const, label: "Draft request expiry", unit: "minutes" },
+      ]
+        .filter(({ key }) => normalizedDefaults[key] !== savedDefaults[key])
+        .map(({ key, label, unit }) => ({
+          key,
+          label,
+          unit,
+          before: savedDefaults[key],
+          after: normalizedDefaults[key],
+        }))
+    : [];
 
   // form state resetting functions
   function resetBrandForm() {
@@ -1168,48 +1369,85 @@ export default function SettingsPage() {
     }
   }
 
+  function discardBusinessDefaults() {
+    const savedDraft = defaultsToDraft(savedDefaults);
+    setDefaultInitialStock(savedDraft.defaultInitialStock);
+    setDefaultLowStock(savedDraft.defaultLowStock);
+    setWholesaleQtyThreshold(savedDraft.wholesaleQtyThreshold);
+    setLoyaltyDiscountPercent(savedDraft.loyaltyDiscountPercent);
+    setReturnWindowDays(savedDraft.returnWindowDays);
+    setParkedBillExpiryHours(savedDraft.parkedBillExpiryHours);
+    setDraftRequestExpiryMinutes(savedDraft.draftRequestExpiryMinutes);
+    setDefaultsShowErrors(false);
+    setDefaultsSaveError("");
+  }
+
+  function reviewBusinessDefaults() {
+    setDefaultsShowErrors(true);
+    setDefaultsSaveError("");
+    if (!defaultsValid) {
+      window.requestAnimationFrame(() => {
+        focusInvalidField(
+          document.querySelector<HTMLElement>(
+            '[data-business-default-error="true"]',
+          ),
+        );
+      });
+      return;
+    }
+    setShowDefaultsConfirm(true);
+  }
+
   // running the update for business defaults
   async function saveBusinessDefaults() {
-    // sending the normalized defaults avoids saving invalid negative thresholds or percentages above 100
-    const updated = await updateBusinessSettingsApi({
-      defaultLowStockThreshold: normalizedDefaults.defaultLowStock,
-      defaultWholesaleQtyThreshold: normalizedDefaults.wholesaleQtyThreshold,
-      loyaltyDiscountPercent: normalizedDefaults.loyaltyDiscountPercent,
-      returnWindowDays: normalizedDefaults.returnWindowDays,
-      parkedBillExpiryHours: normalizedDefaults.parkedBillExpiryHours,
-      draftRequestExpiryMinutes: normalizedDefaults.draftRequestExpiryMinutes,
-    } satisfies Partial<BusinessSettings>);
-    const saved = buildBusinessDefaults(
-      Number(
-        updated.defaultLowStockThreshold ?? normalizedDefaults.defaultLowStock,
-      ),
-      Number(
-        updated.defaultWholesaleQtyThreshold ??
-          normalizedDefaults.wholesaleQtyThreshold,
-      ),
-      Number(
-        updated.loyaltyDiscountPercent ??
-          normalizedDefaults.loyaltyDiscountPercent,
-      ),
-      Number(updated.returnWindowDays ?? normalizedDefaults.returnWindowDays),
-      Number(
-        updated.parkedBillExpiryHours ??
-          normalizedDefaults.parkedBillExpiryHours,
-      ),
-      Number(
-        updated.draftRequestExpiryMinutes ??
-          normalizedDefaults.draftRequestExpiryMinutes,
-      ),
-    );
-    setDefaultLowStock(saved.defaultLowStock);
-    setWholesaleQtyThreshold(saved.wholesaleQtyThreshold);
-    setLoyaltyDiscountPercent(saved.loyaltyDiscountPercent);
-    setReturnWindowDays(saved.returnWindowDays);
-    setParkedBillExpiryHours(saved.parkedBillExpiryHours);
-    setDraftRequestExpiryMinutes(saved.draftRequestExpiryMinutes);
-    setSavedDefaults(saved);
-    setShowDefaultsConfirm(false);
-    await refreshSettingsData();
+    if (!defaultsValid || defaultChanges.length === 0) return;
+    const payload: Partial<BusinessSettings> = {};
+    for (const change of defaultChanges) {
+      if (change.key === "defaultInitialStock") payload.defaultInitialStock = change.after;
+      if (change.key === "defaultLowStock") payload.defaultLowStockThreshold = change.after;
+      if (change.key === "wholesaleQtyThreshold") payload.defaultWholesaleQtyThreshold = change.after;
+      if (change.key === "loyaltyDiscountPercent") payload.loyaltyDiscountPercent = change.after;
+      if (change.key === "returnWindowDays") payload.returnWindowDays = change.after;
+      if (change.key === "parkedBillExpiryHours") payload.parkedBillExpiryHours = change.after;
+      if (change.key === "draftRequestExpiryMinutes") payload.draftRequestExpiryMinutes = change.after;
+    }
+
+    try {
+      setDefaultsBusy(true);
+      setDefaultsSaveError("");
+      const updated = await updateBusinessSettingsApi(payload);
+      const saved = buildBusinessDefaults(
+        Number(updated.defaultLowStockThreshold),
+        Number(updated.defaultWholesaleQtyThreshold),
+        Number(updated.loyaltyDiscountPercent),
+        Number(updated.returnWindowDays),
+        Number(updated.parkedBillExpiryHours),
+        Number(updated.draftRequestExpiryMinutes),
+        Number(updated.defaultInitialStock),
+      );
+      const savedDraft = defaultsToDraft(saved);
+      setDefaultInitialStock(savedDraft.defaultInitialStock);
+      setDefaultLowStock(savedDraft.defaultLowStock);
+      setWholesaleQtyThreshold(savedDraft.wholesaleQtyThreshold);
+      setLoyaltyDiscountPercent(savedDraft.loyaltyDiscountPercent);
+      setReturnWindowDays(savedDraft.returnWindowDays);
+      setParkedBillExpiryHours(savedDraft.parkedBillExpiryHours);
+      setDraftRequestExpiryMinutes(savedDraft.draftRequestExpiryMinutes);
+      setSavedDefaults(saved);
+      setDefaultsShowErrors(false);
+      setShowDefaultsConfirm(false);
+      showToast("success", "Business defaults updated.");
+      await refreshSettingsData();
+    } catch (error: any) {
+      const message =
+        error?.response?.data?.error ||
+        error?.message ||
+        "Business defaults could not be saved.";
+      setDefaultsSaveError(message);
+      showToast("danger", message);
+    } finally {
+      setDefaultsBusy(false);
+    }
   }
 
   async function refreshDrawerData() {
@@ -1349,11 +1587,73 @@ export default function SettingsPage() {
     securityLoginStatusFilter !== "ALL",
   ].filter(Boolean).length;
   const mobileSecurityFilterChips: MobileFilterChip[] = [
-    ...(securityDateFilter.from || securityDateFilter.to ? [{ id: "dates", label: `${securityDateFilter.from || "Any"} – ${securityDateFilter.to || "Any"}`, onRemove: () => { setSecurityDateDraft(INITIAL_SECURITY_RANGE); setSecurityDateFilter(INITIAL_SECURITY_RANGE); setAuditPage(1); setLoginPage(1); } }] : []),
-    ...(securityAuditActionFilter ? [{ id: "action", label: `Action: ${securityAuditActionFilter}`, onRemove: () => { setSecurityAuditActionDraft(""); setSecurityAuditActionFilter(""); setAuditPage(1); } }] : []),
-    ...(securityEntityFilter ? [{ id: "entity", label: `Entity: ${securityEntityFilter}`, onRemove: () => { setSecurityEntityDraft(""); setSecurityEntityFilter(""); setAuditPage(1); } }] : []),
-    ...(securityLoginEmailFilter ? [{ id: "account", label: securityLoginEmailFilter, onRemove: () => { setSecurityLoginEmailDraft(""); setSecurityLoginEmailFilter(""); setLoginPage(1); } }] : []),
-    ...(securityLoginStatusFilter !== "ALL" ? [{ id: "login", label: securityLoginStatusFilter === "SUCCESS" ? "Successful" : "Failed", onRemove: () => { setSecurityLoginStatusDraft("ALL"); setSecurityLoginStatusFilter("ALL"); setLoginPage(1); } }] : []),
+    ...(securityDateFilter.from || securityDateFilter.to
+      ? [
+          {
+            id: "dates",
+            label: `${securityDateFilter.from || "Any"} – ${securityDateFilter.to || "Any"}`,
+            onRemove: () => {
+              setSecurityDateDraft(INITIAL_SECURITY_RANGE);
+              setSecurityDateFilter(INITIAL_SECURITY_RANGE);
+              setAuditPage(1);
+              setLoginPage(1);
+            },
+          },
+        ]
+      : []),
+    ...(securityAuditActionFilter
+      ? [
+          {
+            id: "action",
+            label: `Action: ${securityAuditActionFilter}`,
+            onRemove: () => {
+              setSecurityAuditActionDraft("");
+              setSecurityAuditActionFilter("");
+              setAuditPage(1);
+            },
+          },
+        ]
+      : []),
+    ...(securityEntityFilter
+      ? [
+          {
+            id: "entity",
+            label: `Entity: ${securityEntityFilter}`,
+            onRemove: () => {
+              setSecurityEntityDraft("");
+              setSecurityEntityFilter("");
+              setAuditPage(1);
+            },
+          },
+        ]
+      : []),
+    ...(securityLoginEmailFilter
+      ? [
+          {
+            id: "account",
+            label: securityLoginEmailFilter,
+            onRemove: () => {
+              setSecurityLoginEmailDraft("");
+              setSecurityLoginEmailFilter("");
+              setLoginPage(1);
+            },
+          },
+        ]
+      : []),
+    ...(securityLoginStatusFilter !== "ALL"
+      ? [
+          {
+            id: "login",
+            label:
+              securityLoginStatusFilter === "SUCCESS" ? "Successful" : "Failed",
+            onRemove: () => {
+              setSecurityLoginStatusDraft("ALL");
+              setSecurityLoginStatusFilter("ALL");
+              setLoginPage(1);
+            },
+          },
+        ]
+      : []),
   ];
 
   function openMobileSecurityFilters() {
@@ -1376,14 +1676,141 @@ export default function SettingsPage() {
     setMobileSecurityFiltersOpen(false);
   }
 
+  function selectBusinessMode(nextMode: BusinessMode) {
+    setModeDraft(nextMode);
+    setStaffDraftsDraft(
+      nextMode === "FULL_POS" && capabilities.businessMode === "FULL_POS"
+        ? capabilities.staffDraftRequestsEnabled
+        : false,
+    );
+    setModeError("");
+    setModePreflight(null);
+  }
+
+  async function reviewBusinessModeChange() {
+    if (!accessDirty) {
+      setModeError("Select an access change before reviewing it.");
+      return;
+    }
+    if (defaultsDirty) {
+      setModeError(
+        "Save or discard the unsaved default changes before changing shop access.",
+      );
+      return;
+    }
+    const reason = modeReason.trim();
+    if (reason.length < 5) {
+      setModeError(
+        "Explain the change in at least 5 characters for the audit trail.",
+      );
+      return;
+    }
+    setModeBusy(true);
+    setModeError("");
+    setModePreflight(null);
+    try {
+      const result = await getBusinessModePreflightApi(
+        modeDraft,
+        modeDraft === "FULL_POS" ? staffDraftsDraft : false,
+      );
+      setModePreflight(result);
+      if (!result.allowed) {
+        setModeError(
+          "Finish the active work listed below before changing mode.",
+        );
+        return;
+      }
+      setShowModeConfirm(true);
+    } catch (error: any) {
+      setModeError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "The mode safety check failed.",
+      );
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
+  async function confirmBusinessModeChange() {
+    setModeBusy(true);
+    setModeError("");
+    try {
+      const updated = await updateBusinessModeApi({
+        businessMode: modeDraft,
+        reason: modeReason.trim(),
+        staffDraftRequestsEnabled:
+          modeDraft === "FULL_POS" ? staffDraftsDraft : false,
+      });
+      setModeDraft(updated.settings.businessMode);
+      setStaffDraftsDraft(updated.settings.staffDraftRequestsEnabled);
+      setShowModeConfirm(false);
+      setModeReason("");
+      setModePreflight(null);
+      showToast(
+        "success",
+        "Business mode updated. Access rules were reapplied.",
+      );
+      window.dispatchEvent(new CustomEvent("business_capabilities_changed"));
+    } catch (error: any) {
+      const preflight = error?.response?.data?.preflight as
+        | BusinessModePreflight
+        | undefined;
+      if (preflight) setModePreflight(preflight);
+      setModeError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "Business mode could not be updated.",
+      );
+      setShowModeConfirm(false);
+    } finally {
+      setModeBusy(false);
+    }
+  }
+
   const settingsTabs = [
     { key: "overview", label: "Business Rules" },
-    { key: "drawer", label: "Cash Drawer" },
+    ...(capabilities.posEnabled
+      ? [{ key: "drawer" as TabKey, label: "Cash Drawer" }]
+      : []),
     { key: "cashier-controls", label: "User Management" },
     { key: "brands", label: "Brands" },
     { key: "audit", label: "Audit & Security" },
     { key: "backup", label: "Backup" },
   ] as Array<{ key: TabKey; label: string }>;
+
+  function moveSettingsTab(direction: -1 | 1) {
+    const currentIndex = settingsTabs.findIndex((item) => item.key === tab);
+    const nextTab = settingsTabs[currentIndex + direction];
+    if (nextTab) setTab(nextTab.key);
+  }
+
+  const settingsSwipeGesture = useHorizontalGesture<HTMLElement>({
+    enabled: !defaultsDirty && !accessDirty,
+    threshold: 72,
+    edgeGuard: 24,
+    allowMouse: true,
+    maxViewportWidth: 1023,
+    onMove: (offsetX) => {
+      const direction: -1 | 1 = offsetX < 0 ? 1 : -1;
+      const currentIndex = settingsTabs.findIndex((item) => item.key === tab);
+      if (!settingsTabs[currentIndex + direction]) {
+        settingsTabRailRef.current?.settle();
+        return;
+      }
+      settingsTabRailRef.current?.setGestureProgress(
+        direction,
+        Math.min(1, Math.abs(offsetX) / 140),
+      );
+    },
+    onSwipeLeft: () => moveSettingsTab(1),
+    onSwipeRight: () => moveSettingsTab(-1),
+    onEnd: () => window.requestAnimationFrame(() => settingsTabRailRef.current?.settle()),
+  });
+
+  useEffect(() => {
+    if (tab === "drawer" && !capabilities.posEnabled) setTab("overview");
+  }, [capabilities.posEnabled, tab]);
 
   const tabTitles: Record<TabKey, { title: string; subtitle: string }> = {
     overview: {
@@ -1409,7 +1836,7 @@ export default function SettingsPage() {
     ["canApplyManualDiscount", "MANUAL DISCOUNT"],
     ["canVoidPayment", "VOID PAYMENT"],
     ["canOverrideBillingPrice", "PRICE OVERRIDE"],
-    ["canViewWholesalePrice", "VIEW WHOLESALE"],
+    ["canViewWholesalePrice", "VIEW WHOLESALE / थोक मूल्य"],
   ] as const;
 
   function roleLabel(role?: string | null) {
@@ -1461,35 +1888,26 @@ export default function SettingsPage() {
 
   return (
     <div className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
-      <div className="border-b border-slate-200 bg-white shadow-sm">
-        <div className="overflow-x-auto px-5 sm:px-7">
-          <div className="flex min-w-max gap-6 sm:gap-8">
-            {settingsTabs.map((item) => (
-              <button
-                key={item.key}
-                type="button"
-                onClick={() => setTab(item.key)}
-                className={cn(
-                  "border-b-[3px] px-1 py-4 text-[14px] font-extrabold transition sm:text-[15px]",
-                  tab === item.key
-                    ? "border-slate-950 text-slate-950"
-                    : "border-transparent text-slate-500 hover:text-slate-800",
-                )}
-              >
-                {item.label}
-              </button>
-            ))}
-          </div>
-        </div>
+      <div className="border-b border-[#CFCFD3] bg-white shadow-sm">
+        <SwipeableTabRail
+          items={settingsTabs.map((item) => ({ value: item.key, label: item.label }))}
+          value={tab}
+          controllerRef={settingsTabRailRef}
+          onChange={setTab}
+          ariaLabel="Settings sections"
+          className="px-5 sm:px-7"
+          railClassName="gap-6 sm:gap-8"
+          buttonClassName="px-1 py-4 text-[14px] font-extrabold sm:text-[15px]"
+        />
       </div>
 
-      <main className="w-full px-5 py-6 sm:px-7">
+      <main {...settingsSwipeGesture} className="w-full px-5 py-6 sm:px-7">
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
-            <h1 className="text-[24px] font-extrabold leading-tight text-slate-950">
+            <h1 className="text-[24px] font-extrabold leading-tight text-[#11120D]">
               {pageTitle.title}
             </h1>
-            <p className="mt-1 text-[13px] font-medium text-slate-500">
+            <p className="mt-1 text-[13px] font-medium text-[#565449]">
               {pageTitle.subtitle}
             </p>
           </div>
@@ -1501,28 +1919,19 @@ export default function SettingsPage() {
               </span>
               <button
                 type="button"
-                onClick={() => {
-                  setDefaultLowStock(savedDefaults.defaultLowStock);
-                  setWholesaleQtyThreshold(savedDefaults.wholesaleQtyThreshold);
-                  setLoyaltyDiscountPercent(
-                    savedDefaults.loyaltyDiscountPercent,
-                  );
-                  setReturnWindowDays(savedDefaults.returnWindowDays);
-                  setParkedBillExpiryHours(savedDefaults.parkedBillExpiryHours);
-                  setDraftRequestExpiryMinutes(
-                    savedDefaults.draftRequestExpiryMinutes,
-                  );
-                }}
+                onClick={discardBusinessDefaults}
+                disabled={defaultsBusy}
                 className="rounded-[8px] border border-transparent px-4 py-2 text-[13px] font-extrabold text-slate-600 hover:border-slate-200 hover:bg-white"
               >
                 Discard
               </button>
               <button
                 type="button"
-                onClick={() => setShowDefaultsConfirm(true)}
-                className="rounded-[8px] bg-slate-900 px-4 py-2 text-[13px] font-extrabold text-white"
+                onClick={reviewBusinessDefaults}
+                disabled={defaultsBusy}
+                className="rounded-[8px] bg-[#11120D] px-4 py-2 text-[13px] font-extrabold text-white transition hover:bg-[#2A2C27] disabled:opacity-50"
               >
-                Save Changes
+                {defaultsBusy ? "Saving…" : "Save Changes"}
               </button>
             </div>
           ) : null}
@@ -1544,155 +1953,332 @@ export default function SettingsPage() {
 
         {tab === "overview" ? (
           <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <div className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-5 flex items-center gap-3">
-                <Icon
-                  name="shopping_cart"
-                  sizePx={24}
-                  className="text-blue-600"
-                />
-                <h2 className="text-[17px] font-extrabold text-slate-800">
-                  Inventory & Sales
-                </h2>
+            <div className="rounded-[12px] border border-[#CFCFD3] bg-white p-5 shadow-sm xl:col-span-2">
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                <div>
+                  <div className="text-[12px] font-black uppercase tracking-[0.08em] text-[#2F67D8]">
+                    Active capability mode
+                  </div>
+                  <h2 className="mt-1 text-[19px] font-extrabold text-[#11120D]">
+                    Choose what this shop can operate
+                  </h2>
+                  <p className="mt-1 max-w-3xl text-[13px] font-medium leading-6 text-[#565449]">
+                    Roles decide who may act. This mode decides whether the
+                    whole shop may use inventory or POS features at all.
+                  </p>
+                </div>
+                <span className="inline-flex min-h-9 items-center rounded-full border border-[#CFCFD3] bg-[#F8FAFC] px-3 text-[12px] font-extrabold text-[#11120D]">
+                  Saved: {formatBusinessMode(capabilities.businessMode)}
+                </span>
               </div>
 
-              <div className="space-y-4">
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Stock Alert Threshold
-                  </span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={defaultLowStock}
-                    onChange={(event) =>
-                      setDefaultLowStock(
-                        Math.max(0, Number(event.target.value || 0)),
-                      )
-                    }
-                    className="mt-2 h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[14px] font-medium outline-none focus:border-blue-600"
-                  />
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    Affects product stock alert dashboard counts.
-                  </span>
-                </label>
+              <div className="mt-5 grid gap-3 lg:grid-cols-3">
+                {[
+                  {
+                    value: "CATALOG_ONLY" as const,
+                    title: "Catalog only",
+                    description:
+                      "Products, imports, prices, lookup, users and audit. Stock is not shown or claimed.",
+                  },
+                  {
+                    value: "INVENTORY_ONLY" as const,
+                    title: "Catalog + inventory",
+                    description:
+                      "Adds counted stock, receiving, corrections and stock alerts. Billing stays off.",
+                  },
+                  {
+                    value: "FULL_POS" as const,
+                    title: "Full POS",
+                    description:
+                      "Adds billing, invoices, payments, cash drawer, returns and financial workflows.",
+                  },
+                ].map((option) => {
+                  const selected = modeDraft === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => selectBusinessMode(option.value)}
+                      className={cn(
+                        "min-h-[132px] rounded-[12px] border-2 p-4 text-left transition",
+                        selected
+                          ? "border-[#11120D] bg-[#11120D] text-white"
+                          : "border-[#CFCFD3] bg-white text-[#11120D] hover:border-[#8C8889] hover:bg-[#F8FAFC]",
+                      )}
+                      aria-pressed={selected}
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="text-[15px] font-extrabold">
+                          {option.title}
+                        </span>
+                        <Icon
+                          name={
+                            selected ? "check_circle" : "radio_button_unchecked"
+                          }
+                          sizePx={21}
+                        />
+                      </div>
+                      <p
+                        className={cn(
+                          "mt-2 text-[12px] font-semibold leading-5",
+                          selected ? "text-slate-200" : "text-slate-600",
+                        )}
+                      >
+                        {option.description}
+                      </p>
+                    </button>
+                  );
+                })}
+              </div>
 
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Wholesale Quantity Threshold
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={wholesaleQtyThreshold}
-                    onChange={(event) =>
-                      setWholesaleQtyThreshold(
-                        Math.max(1, Number(event.target.value || 1)),
-                      )
-                    }
-                    className="mt-2 h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[14px] font-medium outline-none focus:border-blue-600"
-                  />
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    Default minimum quantity for wholesale pricing.
-                  </span>
-                </label>
+              {accessDirty ? (
+                <div className="mt-3 text-[12px] font-bold text-[#565449]">
+                  {modeDraft !== capabilities.businessMode
+                    ? `Selected change: ${formatBusinessMode(capabilities.businessMode)} → ${formatBusinessMode(modeDraft)}`
+                    : `Staff billing draft requests: ${effectiveStaffDraftsDraft ? "On" : "Off"}`}
+                </div>
+              ) : null}
 
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Loyalty Discount (%)
-                  </span>
-                  <div className="relative mt-2">
-                    <input
-                      type="number"
-                      min={0}
-                      max={100}
-                      value={loyaltyDiscountPercent}
-                      onChange={(event) =>
-                        setLoyaltyDiscountPercent(
-                          clampPercent(Number(event.target.value || 0)),
-                        )
-                      }
-                      className="h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 pr-10 text-[14px] font-medium outline-none focus:border-blue-600"
-                    />
-                    <span className="absolute right-4 top-1/2 -translate-y-1/2 text-[18px] font-medium text-slate-400">
-                      %
+              <label
+                className={cn(
+                  "mt-4 flex min-h-14 items-center justify-between gap-4 rounded-[10px] border border-slate-200 px-4 py-3",
+                  modeDraft === "FULL_POS" ? "bg-slate-50" : "bg-slate-100",
+                )}
+              >
+                <span className="min-w-0">
+                  <span className="flex flex-wrap items-center gap-2">
+                    <span className="text-[13px] font-extrabold text-[#11120D]">
+                      Staff billing draft requests
                     </span>
-                  </div>
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    System-wide default for loyalty-eligible customers.
+                    {modeDraft !== "FULL_POS" ? <Pill>Requires Full POS</Pill> : null}
                   </span>
+                  <span className="mt-1 block text-[11px] font-semibold leading-5 text-[#565449]">
+                    Allows staff to send selected products to cashiers as a billing request.
+                  </span>
+                </span>
+                <input
+                  type="checkbox"
+                  checked={modeDraft === "FULL_POS" && staffDraftsDraft}
+                  disabled={modeDraft !== "FULL_POS"}
+                  onChange={(event) => {
+                    setStaffDraftsDraft(event.target.checked);
+                    setModeError("");
+                    setModePreflight(null);
+                  }}
+                  className="h-5 w-5 shrink-0 accent-[#11120D] disabled:cursor-not-allowed disabled:opacity-50"
+                />
+              </label>
+
+              <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
+                <label className="block">
+                  <span className="text-[12px] font-extrabold text-slate-800">
+                    Reason for this access change
+                  </span>
+                  <input
+                    value={modeReason}
+                    disabled={!accessDirty || defaultsDirty}
+                    onChange={(event) => {
+                      setModeReason(event.target.value);
+                      setModeError("");
+                    }}
+                    placeholder="Example: Start the first shop catalog pilot"
+                    className={cn(
+                      "mt-2 h-11 w-full rounded-[9px] border bg-white px-3 text-[13px] font-semibold outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500",
+                      modeError
+                        ? "border-rose-400 focus:ring-2 focus:ring-rose-100"
+                        : "border-[#CFCFD3] focus:border-[#2F67D8]",
+                    )}
+                  />
                 </label>
+                <button
+                  type="button"
+                  onClick={() => void reviewBusinessModeChange()}
+                  disabled={modeBusy || !accessDirty || defaultsDirty}
+                  className="h-11 rounded-[9px] bg-[#11120D] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2A2C27] disabled:opacity-50"
+                >
+                  {modeBusy ? "Checking…" : "Review access change"}
+                </button>
+              </div>
+
+              {!accessDirty ? (
+                <div className="mt-2 text-[12px] font-semibold text-slate-500">
+                  No access changes selected.
+                </div>
+              ) : defaultsDirty ? (
+                <div className="mt-2 text-[12px] font-bold text-amber-700">
+                  Save or discard the unsaved defaults before reviewing this access change.
+                </div>
+              ) : null}
+
+              {modeError ? (
+                <div
+                  className="mt-3 text-[12px] font-extrabold text-rose-700"
+                  role="alert"
+                >
+                  {modeError}
+                </div>
+              ) : null}
+              {modePreflight && modePreflight.blockers.length > 0 ? (
+                <div className="mt-3 overflow-hidden rounded-[10px] border border-amber-300 bg-amber-50">
+                  <div className="border-b border-amber-200 px-4 py-3">
+                    <div className="text-[13px] font-extrabold text-amber-950">
+                      {modePreflight.blockers.length} blocking workflow{modePreflight.blockers.length === 1 ? "" : "s"}
+                    </div>
+                    <div className="mt-1 text-[12px] font-semibold text-amber-800">
+                      Resolve these items before changing shop access.
+                    </div>
+                  </div>
+                  <div className="divide-y divide-amber-200">
+                  {modePreflight.blockers.map((blocker) => (
+                    <div
+                      key={blocker.key}
+                      className="flex gap-3 px-4 py-3 text-[12px] text-amber-950"
+                    >
+                      <span className="font-black">{blocker.count}</span>
+                      <span className="font-semibold">{blocker.message}</span>
+                    </div>
+                  ))}
+                  </div>
+                </div>
+              ) : null}
+            </div>
+            <div className="rounded-[8px] border border-[#CFCFD3] bg-white p-5 shadow-sm">
+              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <Icon name="shopping_cart" sizePx={24} className="text-blue-600" />
+                  <h2 className="text-[17px] font-extrabold text-slate-800">
+                    Inventory & Pricing
+                  </h2>
+                </div>
+                {!capabilities.inventoryEnabled ? <Pill>Requires inventory</Pill> : null}
+              </div>
+
+              {!capabilities.inventoryEnabled ? (
+                <div className="mb-5 rounded-[10px] border border-slate-200 bg-slate-50 p-4 text-[12px] font-semibold leading-5 text-slate-700">
+                  Stock defaults are locked in Catalog only. Saved values remain preserved,
+                  and new products will not claim stock until inventory is enabled and an
+                  opening count is completed.
+                </div>
+              ) : null}
+
+              <div className="space-y-5">
+                <BusinessNumberField
+                  fieldKey="defaultInitialStock"
+                  label="New product initial stock"
+                  helper="Fallback used only when inventory is enabled. Keep it aligned with physically counted stock."
+                  value={defaultInitialStock}
+                  onChange={(value) => {
+                    setDefaultInitialStock(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.inventoryEnabled}
+                  error={capabilities.inventoryEnabled && defaultsShowErrors ? defaultsErrors.defaultInitialStock : undefined}
+                  suffix="units"
+                />
+                <BusinessNumberField
+                  fieldKey="defaultLowStock"
+                  label="Stock alert threshold"
+                  helper="Products at or below this quantity appear in low-stock alerts."
+                  value={defaultLowStock}
+                  onChange={(value) => {
+                    setDefaultLowStock(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.inventoryEnabled}
+                  error={capabilities.inventoryEnabled && defaultsShowErrors ? defaultsErrors.defaultLowStock : undefined}
+                  suffix="units"
+                />
+                <BusinessNumberField
+                  fieldKey="wholesaleQtyThreshold"
+                  label="Wholesale quantity threshold / थोक सीमा"
+                  helper="Default minimum quantity required to use the wholesale price."
+                  value={wholesaleQtyThreshold}
+                  onChange={(value) => {
+                    setWholesaleQtyThreshold(value);
+                    setDefaultsSaveError("");
+                  }}
+                  error={defaultsShowErrors ? defaultsErrors.wholesaleQtyThreshold : undefined}
+                  suffix="units"
+                />
+                <BusinessNumberField
+                  fieldKey="loyaltyDiscountPercent"
+                  label="Loyalty discount"
+                  helper={capabilities.posEnabled
+                    ? "System-wide default for loyalty-eligible customers."
+                    : "Available when Full POS is enabled. The saved value is preserved."}
+                  value={loyaltyDiscountPercent}
+                  onChange={(value) => {
+                    setLoyaltyDiscountPercent(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.posEnabled}
+                  error={capabilities.posEnabled && defaultsShowErrors ? defaultsErrors.loyaltyDiscountPercent : undefined}
+                  suffix="%"
+                />
               </div>
             </div>
 
-            <div className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
-              <div className="mb-5 flex items-center gap-3">
-                <Icon name="schedule" sizePx={24} className="text-violet-500" />
-                <h2 className="text-[17px] font-extrabold text-slate-800">
-                  Operational Limits
-                </h2>
+            <div className="rounded-[8px] border border-[#CFCFD3] bg-white p-5 shadow-sm">
+              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+                <div className="flex items-center gap-3">
+                  <Icon name="schedule" sizePx={24} className="text-slate-700" />
+                  <h2 className="text-[17px] font-extrabold text-slate-800">
+                    Operational Limits
+                  </h2>
+                </div>
+                {!capabilities.posEnabled ? <Pill>Requires Full POS</Pill> : null}
               </div>
 
-              <div className="space-y-4">
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Return Window (Days)
-                  </span>
-                  <input
-                    type="number"
-                    min={0}
-                    value={returnWindowDays}
-                    onChange={(event) =>
-                      setReturnWindowDays(
-                        Math.max(0, Number(event.target.value || 0)),
-                      )
-                    }
-                    className="mt-2 h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[14px] font-medium outline-none focus:border-blue-600"
-                  />
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    Days after purchase a return is permitted.
-                  </span>
-                </label>
+              {!capabilities.posEnabled ? (
+                <div className="mb-5 rounded-[10px] border border-slate-200 bg-slate-50 p-4 text-[12px] font-semibold leading-5 text-slate-700">
+                  Billing time limits are locked while POS is off. Their saved values remain
+                  available for the next time Full POS is enabled.
+                </div>
+              ) : null}
 
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Parked Bill Expiry (Hours)
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={parkedBillExpiryHours}
-                    onChange={(event) =>
-                      setParkedBillExpiryHours(
-                        Math.max(1, Number(event.target.value || 1)),
-                      )
-                    }
-                    className="mt-2 h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[14px] font-medium outline-none focus:border-blue-600"
-                  />
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    Hours before a parked bill is automatically cleared.
-                  </span>
-                </label>
-
-                <label className="block">
-                  <span className="text-[13px] font-extrabold text-slate-800">
-                    Draft Request Expiry (Minutes)
-                  </span>
-                  <input
-                    type="number"
-                    min={1}
-                    value={draftRequestExpiryMinutes}
-                    onChange={(event) =>
-                      setDraftRequestExpiryMinutes(
-                        Math.max(1, Number(event.target.value || 1)),
-                      )
-                    }
-                    className="mt-2 h-11 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[14px] font-medium outline-none focus:border-blue-600"
-                  />
-                  <span className="mt-2 block text-[12px] font-medium text-slate-400">
-                    Minutes before staff draft requests expire.
-                  </span>
-                </label>
+              <div className="space-y-5">
+                <BusinessNumberField
+                  fieldKey="returnWindowDays"
+                  label="Return window"
+                  helper="Number of days after purchase during which a return is permitted."
+                  value={returnWindowDays}
+                  onChange={(value) => {
+                    setReturnWindowDays(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.posEnabled}
+                  error={capabilities.posEnabled && defaultsShowErrors ? defaultsErrors.returnWindowDays : undefined}
+                  suffix="days"
+                  integer
+                />
+                <BusinessNumberField
+                  fieldKey="parkedBillExpiryHours"
+                  label="Parked bill expiry"
+                  helper="Hours before an unfinished parked bill is automatically cleared."
+                  value={parkedBillExpiryHours}
+                  onChange={(value) => {
+                    setParkedBillExpiryHours(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.posEnabled}
+                  error={capabilities.posEnabled && defaultsShowErrors ? defaultsErrors.parkedBillExpiryHours : undefined}
+                  suffix="hours"
+                  integer
+                />
+                <BusinessNumberField
+                  fieldKey="draftRequestExpiryMinutes"
+                  label="Staff draft request expiry"
+                  helper="Minutes before an unanswered staff billing request expires."
+                  value={draftRequestExpiryMinutes}
+                  onChange={(value) => {
+                    setDraftRequestExpiryMinutes(value);
+                    setDefaultsSaveError("");
+                  }}
+                  disabled={!capabilities.posEnabled}
+                  error={capabilities.posEnabled && defaultsShowErrors ? defaultsErrors.draftRequestExpiryMinutes : undefined}
+                  suffix="minutes"
+                  integer
+                />
               </div>
             </div>
           </section>
@@ -2045,7 +2631,9 @@ export default function SettingsPage() {
                             {cashier.name}
                           </div>
                           <div className="mt-1 text-[12px] text-slate-500">
-                            {cashier.email}
+                            {cashier.email ||
+                              cashier.phone ||
+                              "No sign-in contact"}
                           </div>
                         </td>
                         <td className="px-4 py-3">
@@ -2123,7 +2711,9 @@ export default function SettingsPage() {
                       <div>
                         <div className="font-extrabold">{cashier.name}</div>
                         <div className="text-[13px] text-slate-500">
-                          {cashier.email}
+                          {cashier.email ||
+                            cashier.phone ||
+                            "No sign-in contact"}
                         </div>
                         <div className="mt-2">
                           <Pill
@@ -2200,7 +2790,18 @@ export default function SettingsPage() {
                   className="h-11 w-full rounded-[8px] border border-slate-200 bg-white pl-11 pr-4 text-[14px] font-medium outline-none focus:border-blue-600"
                 />
               </div>
-              <MobileFilterTabs className="sm:hidden" ariaLabel="Brand status" value={brandFilter} onChange={setBrandFilter} items={(["all", "active", "inactive"] as const).map((value) => ({ value, label: value[0].toUpperCase() + value.slice(1) }))} />
+              <MobileFilterTabs
+                className="sm:hidden"
+                ariaLabel="Brand status"
+                value={brandFilter}
+                onChange={setBrandFilter}
+                items={(["all", "active", "inactive"] as const).map(
+                  (value) => ({
+                    value,
+                    label: value[0].toUpperCase() + value.slice(1),
+                  }),
+                )}
+              />
               <div className="hidden rounded-[8px] border border-slate-200 bg-white p-1 sm:inline-flex">
                 {(["all", "active", "inactive"] as const).map((value) => (
                   <button
@@ -2266,31 +2867,31 @@ export default function SettingsPage() {
                         </td>
                         <td className="px-4 py-3 text-right">
                           <div className="flex items-center justify-end gap-2">
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setEditingBrand(brand);
-                              setBrandName(brand.name);
-                              setBrandActive(brand.active);
-                              setBrandError("");
-                              setShowBrandForm(true);
-                            }}
-                            className="inline-flex h-9 items-center justify-center rounded-[8px] border border-slate-300 bg-white px-3 text-[12px] font-extrabold text-slate-700 transition hover:bg-slate-100"
-                          >
-                            Edit
-                          </button>
-                          <button
-                            type="button"
-                            onClick={() => requestToggleBrandStatus(brand)}
-                            className={cn(
-                              "inline-flex h-9 items-center justify-center rounded-[8px] border px-3 text-[12px] font-extrabold transition",
-                              brand.active
-                                ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
-                                : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
-                            )}
-                          >
-                            {brand.active ? "Deactivate" : "Activate"}
-                          </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setEditingBrand(brand);
+                                setBrandName(brand.name);
+                                setBrandActive(brand.active);
+                                setBrandError("");
+                                setShowBrandForm(true);
+                              }}
+                              className="inline-flex h-9 items-center justify-center rounded-[8px] border border-slate-300 bg-white px-3 text-[12px] font-extrabold text-slate-700 transition hover:bg-slate-100"
+                            >
+                              Edit
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => requestToggleBrandStatus(brand)}
+                              className={cn(
+                                "inline-flex h-9 items-center justify-center rounded-[8px] border px-3 text-[12px] font-extrabold transition",
+                                brand.active
+                                  ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
+                                  : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+                              )}
+                            >
+                              {brand.active ? "Deactivate" : "Activate"}
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -2384,10 +2985,15 @@ export default function SettingsPage() {
                     Filter activity
                   </h2>
                   <p className="mt-0.5 text-[12px] font-medium text-slate-500">
-                    Narrow audit events and sign-in activity without losing either view.
+                    Narrow audit events and sign-in activity without losing
+                    either view.
                   </p>
                 </div>
-                <MobileFilterButton activeCount={mobileSecurityFilterCount} onClick={openMobileSecurityFilters} className="ml-auto lg:hidden" />
+                <MobileFilterButton
+                  activeCount={mobileSecurityFilterCount}
+                  onClick={openMobileSecurityFilters}
+                  className="ml-auto lg:hidden"
+                />
               </div>
               <div className="hidden grid-cols-1 gap-4 p-5 sm:grid-cols-2 lg:grid xl:grid-cols-12">
                 <label className="xl:col-span-3">
@@ -2439,7 +3045,9 @@ export default function SettingsPage() {
                   </span>
                   <input
                     value={securityEntityDraft}
-                    onChange={(event) => setSecurityEntityDraft(event.target.value)}
+                    onChange={(event) =>
+                      setSecurityEntityDraft(event.target.value)
+                    }
                     placeholder="Invoice, Product..."
                     className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
                   />
@@ -2449,12 +3057,12 @@ export default function SettingsPage() {
                     Login account
                   </span>
                   <input
-                    type="email"
+                    type="text"
                     value={securityLoginEmailDraft}
                     onChange={(event) =>
                       setSecurityLoginEmailDraft(event.target.value)
                     }
-                    placeholder="Email address"
+                    placeholder="Phone or email"
                     className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
                   />
                 </label>
@@ -2500,25 +3108,106 @@ export default function SettingsPage() {
                   {securityFilterError}
                 </div>
               ) : null}
-              <ActiveFilterChips items={mobileSecurityFilterChips} className="px-5 py-4 lg:hidden" />
+              <ActiveFilterChips
+                items={mobileSecurityFilterChips}
+                className="px-5 py-4 lg:hidden"
+              />
             </div>
 
             <MobileFilterSheet
               open={mobileSecurityFiltersOpen}
               onClose={closeMobileSecurityFilters}
-              onClear={() => { setSecurityDateDraft(INITIAL_SECURITY_RANGE); setSecurityAuditActionDraft(""); setSecurityEntityDraft(""); setSecurityLoginEmailDraft(""); setSecurityLoginStatusDraft("ALL"); setSecurityFilterError(""); }}
-              onApply={() => { if (applySecurityFilters()) setMobileSecurityFiltersOpen(false); }}
+              onClear={() => {
+                setSecurityDateDraft(INITIAL_SECURITY_RANGE);
+                setSecurityAuditActionDraft("");
+                setSecurityEntityDraft("");
+                setSecurityLoginEmailDraft("");
+                setSecurityLoginStatusDraft("ALL");
+                setSecurityFilterError("");
+              }}
+              onApply={() => {
+                if (applySecurityFilters()) setMobileSecurityFiltersOpen(false);
+              }}
               footerMessage={securityFilterError}
             >
               <div className="space-y-5">
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={securityDateDraft.from} max={securityDateDraft.to || undefined} onChange={(event) => setSecurityDateDraft((current) => ({ ...current, from: event.target.value }))} /></label>
-                  <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={securityDateDraft.to} min={securityDateDraft.from || undefined} onChange={(event) => setSecurityDateDraft((current) => ({ ...current, to: event.target.value }))} /></label>
+                  <label className="space-y-2">
+                    <span className="text-[13px] font-bold">From date</span>
+                    <ProjectDateInput
+                      value={securityDateDraft.from}
+                      max={securityDateDraft.to || undefined}
+                      onChange={(event) =>
+                        setSecurityDateDraft((current) => ({
+                          ...current,
+                          from: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
+                  <label className="space-y-2">
+                    <span className="text-[13px] font-bold">To date</span>
+                    <ProjectDateInput
+                      value={securityDateDraft.to}
+                      min={securityDateDraft.from || undefined}
+                      onChange={(event) =>
+                        setSecurityDateDraft((current) => ({
+                          ...current,
+                          to: event.target.value,
+                        }))
+                      }
+                    />
+                  </label>
                 </div>
-                <label className="block space-y-2"><span className="text-[13px] font-bold">Audit action</span><input value={securityAuditActionDraft} onChange={(event) => setSecurityAuditActionDraft(event.target.value)} placeholder="e.g. INVOICE" className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900" /></label>
-                <label className="block space-y-2"><span className="text-[13px] font-bold">Entity type</span><input value={securityEntityDraft} onChange={(event) => setSecurityEntityDraft(event.target.value)} placeholder="Invoice, Product..." className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900" /></label>
-                <label className="block space-y-2"><span className="text-[13px] font-bold">Login account</span><input type="email" value={securityLoginEmailDraft} onChange={(event) => setSecurityLoginEmailDraft(event.target.value)} placeholder="Email address" className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900" /></label>
-                <label className="block space-y-2"><span className="text-[13px] font-bold">Login status</span><ProjectSelect value={securityLoginStatusDraft} onChange={(event) => setSecurityLoginStatusDraft(event.target.value as "ALL" | "SUCCESS" | "FAILED")}><option value="ALL">All attempts</option><option value="SUCCESS">Successful</option><option value="FAILED">Failed</option></ProjectSelect></label>
+                <label className="block space-y-2">
+                  <span className="text-[13px] font-bold">Audit action</span>
+                  <input
+                    value={securityAuditActionDraft}
+                    onChange={(event) =>
+                      setSecurityAuditActionDraft(event.target.value)
+                    }
+                    placeholder="e.g. INVOICE"
+                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-[13px] font-bold">Entity type</span>
+                  <input
+                    value={securityEntityDraft}
+                    onChange={(event) =>
+                      setSecurityEntityDraft(event.target.value)
+                    }
+                    placeholder="Invoice, Product..."
+                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-[13px] font-bold">Login account</span>
+                  <input
+                    type="text"
+                    value={securityLoginEmailDraft}
+                    onChange={(event) =>
+                      setSecurityLoginEmailDraft(event.target.value)
+                    }
+                    placeholder="Phone or email"
+                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                  />
+                </label>
+                <label className="block space-y-2">
+                  <span className="text-[13px] font-bold">Login status</span>
+                  <ProjectSelect
+                    value={securityLoginStatusDraft}
+                    onChange={(event) =>
+                      setSecurityLoginStatusDraft(
+                        event.target.value as "ALL" | "SUCCESS" | "FAILED",
+                      )
+                    }
+                  >
+                    <option value="ALL">All attempts</option>
+                    <option value="SUCCESS">Successful</option>
+                    <option value="FAILED">Failed</option>
+                  </ProjectSelect>
+                </label>
               </div>
             </MobileFilterSheet>
 
@@ -2544,12 +3233,17 @@ export default function SettingsPage() {
                       {auditLogs.length === 0 ? (
                         <tr>
                           <td colSpan={4} className="px-5 py-14 text-center">
-                            <Icon name="history" sizePx={22} className="mx-auto text-slate-300" />
+                            <Icon
+                              name="history"
+                              sizePx={22}
+                              className="mx-auto text-slate-300"
+                            />
                             <div className="mt-3 text-[13px] font-extrabold text-slate-700">
                               No audit activity matches these filters
                             </div>
                             <div className="mt-1 text-[12px] font-medium text-slate-500">
-                              Change the filters or clear them to review earlier activity.
+                              Change the filters or clear them to review earlier
+                              activity.
                             </div>
                           </td>
                         </tr>
@@ -2589,7 +3283,11 @@ export default function SettingsPage() {
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 md:hidden">
                   {auditLogs.length === 0 ? (
                     <div className="py-12 text-center">
-                      <Icon name="history" sizePx={22} className="mx-auto text-slate-300" />
+                      <Icon
+                        name="history"
+                        sizePx={22}
+                        className="mx-auto text-slate-300"
+                      />
                       <div className="mt-3 text-[13px] font-extrabold text-slate-700">
                         No audit activity matches these filters
                       </div>
@@ -2664,7 +3362,11 @@ export default function SettingsPage() {
                       {loginAttempts.length === 0 ? (
                         <tr>
                           <td colSpan={4} className="px-5 py-14 text-center">
-                            <Icon name="login" sizePx={22} className="mx-auto text-slate-300" />
+                            <Icon
+                              name="login"
+                              sizePx={22}
+                              className="mx-auto text-slate-300"
+                            />
                             <div className="mt-3 text-[13px] font-extrabold text-slate-700">
                               No login activity matches these filters
                             </div>
@@ -2708,7 +3410,11 @@ export default function SettingsPage() {
                 <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 md:hidden">
                   {loginAttempts.length === 0 ? (
                     <div className="py-12 text-center">
-                      <Icon name="login" sizePx={22} className="mx-auto text-slate-300" />
+                      <Icon
+                        name="login"
+                        sizePx={22}
+                        className="mx-auto text-slate-300"
+                      />
                       <div className="mt-3 text-[13px] font-extrabold text-slate-700">
                         No login activity matches these filters
                       </div>
@@ -2914,7 +3620,8 @@ export default function SettingsPage() {
                     No backup activity yet
                   </div>
                   <p className="mt-1 max-w-sm text-[12px] font-medium leading-5 text-slate-500">
-                    Manual backups and restore attempts will appear here with their status, size, and completion details.
+                    Manual backups and restore attempts will appear here with
+                    their status, size, and completion details.
                   </p>
                   <button
                     type="button"
@@ -2927,7 +3634,12 @@ export default function SettingsPage() {
                   </button>
                 </div>
               ) : null}
-              <div className={cn("hidden overflow-x-auto md:block", backupHistory.length === 0 && "md:hidden")}>
+              <div
+                className={cn(
+                  "hidden overflow-x-auto md:block",
+                  backupHistory.length === 0 && "md:hidden",
+                )}
+              >
                 <table className="w-full min-w-[500px] border-collapse text-left">
                   <thead className="bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     <tr>
@@ -2989,7 +3701,12 @@ export default function SettingsPage() {
                   </tbody>
                 </table>
               </div>
-              <div className={cn("space-y-3 p-4 md:hidden", backupHistory.length === 0 && "hidden")}>
+              <div
+                className={cn(
+                  "space-y-3 p-4 md:hidden",
+                  backupHistory.length === 0 && "hidden",
+                )}
+              >
                 {backupHistory.map((backup) => (
                   <div
                     key={backup.id}
@@ -3329,53 +4046,97 @@ export default function SettingsPage() {
         }
       />
 
+      <ModalFrame
+        open={showModeConfirm}
+        onClose={() => {
+          if (!modeBusy) setShowModeConfirm(false);
+        }}
+        title="Confirm shop access change"
+        description="This applies to every user immediately. Historical records remain preserved."
+        maxWidthClass="max-w-[620px]"
+        mobileBottomSheet
+        footer={
+          <div className="flex w-full justify-end gap-3">
+            <DialogButton
+              onClick={() => setShowModeConfirm(false)}
+              disabled={modeBusy}
+            >
+              Cancel
+            </DialogButton>
+            <DialogButton
+              variant="primary"
+              onClick={() => void confirmBusinessModeChange()}
+              disabled={modeBusy}
+            >
+              {modeBusy ? "Applying…" : "Apply access change"}
+            </DialogButton>
+          </div>
+        }
+      >
+        <div className="space-y-3">
+          <div className="rounded-[12px] border border-slate-200 bg-slate-50 p-4">
+            <div className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+              Shop access
+            </div>
+            <div className="mt-2 flex flex-wrap items-center gap-2 text-[15px] font-extrabold text-slate-950">
+              <span>{formatBusinessMode(capabilities.businessMode)}</span>
+              <Icon name="arrow_forward" sizePx={18} className="text-slate-400" />
+              <span>{formatBusinessMode(modeDraft)}</span>
+            </div>
+            <div className="mt-3 text-[12px] font-bold text-slate-600">
+              Staff billing draft requests: {effectiveStaffDraftsDraft ? "On" : "Off"}
+            </div>
+          </div>
+          <div className="rounded-[12px] border border-slate-200 bg-white p-4">
+            <div className="text-[11px] font-black uppercase tracking-wide text-slate-500">
+              Reason
+            </div>
+            <div className="mt-2 text-[13px] font-semibold leading-6 text-slate-700">
+              {modeReason.trim()}
+            </div>
+          </div>
+          <div className="rounded-[12px] border border-blue-200 bg-blue-50 p-4 text-[12px] font-bold leading-5 text-blue-900">
+            {modeDraft === "CATALOG_ONLY"
+              ? "Product, import, price and lookup workflows remain available. Inventory and all POS workflows turn off."
+              : modeDraft === "INVENTORY_ONLY"
+                ? "Catalog and counted-inventory workflows remain available. Billing, payments and staff billing requests turn off."
+                : "Inventory and POS workflows become available according to each user's role permissions."}
+          </div>
+        </div>
+      </ModalFrame>
+
       <ConfirmDialog
         open={showDefaultsConfirm}
         title="Save business defaults?"
-        message="These values will become the saved business defaults for products, loyalty, returns, held bills, and staff requests."
-        confirmLabel="Save Defaults"
+        message={`${defaultChanges.length} business default${defaultChanges.length === 1 ? "" : "s"} will change. Review the old and new values before saving.`}
+        confirmLabel="Save changes"
         onConfirm={saveBusinessDefaults}
-        onClose={() => setShowDefaultsConfirm(false)}
+        onClose={() => {
+          if (!defaultsBusy) {
+            setShowDefaultsConfirm(false);
+            setDefaultsSaveError("");
+          }
+        }}
         tone="primary"
         icon="save"
+        busy={defaultsBusy}
         details={
-          <div className="space-y-2">
-            <div className="flex items-center justify-between gap-3">
-              <span>Stock alert threshold</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.defaultLowStock}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span>Wholesale quantity default</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.wholesaleQtyThreshold}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span>Loyalty discount percentage</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.loyaltyDiscountPercent}%
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span>Return window</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.returnWindowDays} day(s)
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span>Held bill expiry</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.parkedBillExpiryHours} hour(s)
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3">
-              <span>Draft request expiry</span>
-              <span className="font-extrabold text-slate-900">
-                {normalizedDefaults.draftRequestExpiryMinutes} minute(s)
-              </span>
-            </div>
+          <div className="space-y-3">
+            {defaultChanges.map((change) => (
+              <div key={change.key} className="flex items-start justify-between gap-4 border-b border-slate-200 pb-3 last:border-0 last:pb-0">
+                <span className="font-semibold text-slate-700">{change.label}</span>
+                <span className="shrink-0 text-right font-extrabold text-slate-900">
+                  <span className="text-slate-500">{change.before}</span>
+                  <span className="px-2 text-slate-400">→</span>
+                  {change.after} {change.unit}
+                </span>
+              </div>
+            ))}
+            {defaultsSaveError ? (
+              <div className="rounded-[10px] border border-rose-200 bg-rose-50 p-3 font-bold text-rose-700" role="alert">
+                {defaultsSaveError}
+              </div>
+            ) : null}
           </div>
         }
       />

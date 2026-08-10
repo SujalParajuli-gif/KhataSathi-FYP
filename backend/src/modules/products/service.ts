@@ -1,10 +1,21 @@
-import { DraftRequestStatus, type Prisma } from "@prisma/client";
+import {
+    DraftRequestStatus,
+    type Prisma,
+    type ProductImportRow,
+} from "@prisma/client";
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
 import {
     applyBusinessThresholds,
     getBusinessSettings,
 } from "../settings/service";
+import { evaluateProductDeletePolicy } from "./deletePolicy";
+import { priceFromGrossMargin } from "./pricingMath";
+import {
+    getEnabledSearchSynonymRules,
+    rebuildProductSearchDocument,
+} from "./searchAliasService";
+import { searchProductsWithDeterministicRanking } from "./productSearchService";
 
 // defining the shape of filters that can be passed when listing products
 interface ProductFilters {
@@ -47,6 +58,7 @@ export type ProductDeleteSafety = {
     canPermanentDelete: boolean;
     references: ProductDeleteReference[];
     stockBlocker: string | null;
+    canDiscardStockAndDelete: boolean;
     safeReason: string | null;
     recommendedAction: "PERMANENT_DELETE" | "SET_INACTIVE";
 };
@@ -69,30 +81,36 @@ export async function listProducts(filters: ProductFilters) {
 
     const where: any = {};
 
-    // searching by name, SKU, or exact barcode match
-    if (search && search.trim()) {
-        const s = search.trim();
-        where.OR = [
-            { name: { contains: s } },
-            { productName: { contains: s } },
-            { sku: { contains: s } },
-            { barcode: { equals: s } },
-            { productCodeVariant: { contains: s } },
-            { categoryGroup: { contains: s } },
-            { vendorSource: { contains: s } },
-        ];
-    }
+    const normalizedSearch = String(search || "").trim();
 
     if (brand) where.brandId = brand; // filtering by brand ID
     if (category) where.category = category; // filtering by category
     if (isActive !== undefined) where.isActive = isActive; // filtering by active status
-    if (stockStatus === "out") where.stock = { lte: 0 };
+    if (stockStatus === "out" && !normalizedSearch) where.stock = { lte: 0 };
 
     if (lowStockOnly) {
     }
 
     const skip = (page - 1) * pageSize; // calculating how many records to skip for pagination
     const settings = await getBusinessSettings(); // fetching business settings to resolve thresholds
+
+    if (normalizedSearch) {
+        const ranked = await searchProductsWithDeterministicRanking({
+            query: normalizedSearch,
+            where,
+            page,
+            pageSize,
+            lowStockOnly,
+            stockStatus,
+            settings,
+        });
+        return {
+            ...ranked,
+            products: includeDraftReservations
+                ? await withPendingDraftQuantities(ranked.products)
+                : ranked.products,
+        };
+    }
 
     if (lowStockOnly || stockStatus === "low" || stockStatus === "in") {
         // for threshold-aware stock filtering, we fetch all matching products first because we need to
@@ -329,9 +347,11 @@ async function withPendingDraftQuantities<
 interface CreateProductInput {
     name: string;
     productName?: string | null;
-    sku: string;
+    sku?: string;
     barcode?: string;
-    brandId: string;
+    barcodeOrigin?: string;
+    brandId?: string;
+    brandName?: string;
     category?: string;
     categoryGroup?: string | null;
     vendorSource?: string | null;
@@ -357,9 +377,63 @@ interface CreateProductInput {
     imageUrl?: string | null;
 }
 
+type ProductIdentifierTransaction = {
+    productSequence: {
+        upsert: (args: any) => Promise<{ lastNumber: number }>;
+    };
+    product: {
+        findUnique: (args: any) => Promise<{ id: string } | null>;
+    };
+};
+
+export async function allocateProductIdentifiers(
+    tx: ProductIdentifierTransaction,
+    requestedSku?: string | null,
+    requestedBarcode?: string | null,
+) {
+    let sku = String(requestedSku || "").trim().toUpperCase();
+    let generatedNumber: number | null = null;
+    while (!sku) {
+        const counter = await tx.productSequence.upsert({
+            where: { id: "product" },
+            create: { id: "product", lastNumber: 1 },
+            update: { lastNumber: { increment: 1 } },
+            select: { lastNumber: true },
+        });
+        generatedNumber = counter.lastNumber;
+        const candidate = `KS-${String(counter.lastNumber).padStart(6, "0")}`;
+        const exists = await tx.product.findUnique({ where: { sku: candidate }, select: { id: true } });
+        if (!exists) sku = candidate;
+    }
+
+    const normalizedRequestedBarcode = String(requestedBarcode || "").trim();
+    let barcode = normalizedRequestedBarcode;
+    while (!barcode) {
+        if (generatedNumber === null) {
+            const counter = await tx.productSequence.upsert({
+                where: { id: "product" },
+                create: { id: "product", lastNumber: 1 },
+                update: { lastNumber: { increment: 1 } },
+                select: { lastNumber: true },
+            });
+            generatedNumber = counter.lastNumber;
+        }
+        const candidate = `KSB${String(generatedNumber).padStart(10, "0")}`;
+        const exists = await tx.product.findUnique({ where: { barcode: candidate }, select: { id: true } });
+        if (!exists) barcode = candidate;
+        else generatedNumber = null;
+    }
+
+    return {
+        sku,
+        barcode,
+        barcodeOrigin: normalizedRequestedBarcode ? "MANUFACTURER" : "INTERNAL",
+    } as const;
+}
+
 // creating a new product in the database
 // if the admin does not provide custom thresholds, the product automatically uses the business defaults
-export async function createProduct(data: CreateProductInput) {
+export async function createProduct(data: CreateProductInput, actorId: string) {
     const settings = await getBusinessSettings();
 
     // determining whether to use default thresholds
@@ -372,13 +446,30 @@ export async function createProduct(data: CreateProductInput) {
         data.usesDefaultLowStockThreshold ??
         (data.lowStockThreshold === undefined);
 
-    const product = await prisma.product.create({
-        data: {
+    const product = await prisma.$transaction(async (tx) => {
+        let brandId = data.brandId;
+        if (!brandId) {
+            const brandName = String(data.brandName || "").trim().replace(/\s+/g, " ");
+            if (!brandName) throw new Error("brand is required");
+            const brand = await tx.brand.upsert({
+                where: { name: brandName },
+                create: { name: brandName, isActive: true },
+                update: { isActive: true },
+                select: { id: true },
+            });
+            brandId = brand.id;
+        }
+
+        const identifiers = await allocateProductIdentifiers(tx, data.sku, data.barcode);
+
+        const created = await tx.product.create({
+          data: {
             name: data.name,
             productName: data.productName || data.name,
-            sku: data.sku,
-            barcode: data.barcode || null,
-            brandId: data.brandId,
+            sku: identifiers.sku,
+            barcode: identifiers.barcode,
+            barcodeOrigin: identifiers.barcodeOrigin,
+            brandId,
             category: data.category || null,
             categoryGroup: data.categoryGroup || data.category || null,
             vendorSource: data.vendorSource || null,
@@ -399,15 +490,45 @@ export async function createProduct(data: CreateProductInput) {
                 data.wholesaleQtyThreshold ??
                 settings.defaultWholesaleQtyThreshold, // fall back to business default if not provided
             usesDefaultWholesaleQtyThreshold,
-            stock: data.stock ?? 0, // default stock is 0 for new products
+            // Catalog mode does not claim uncounted inventory. A real opening
+            // count is entered only after inventory tracking is enabled.
+            stock:
+                settings.businessMode === "CATALOG_ONLY"
+                    ? 0
+                    : data.stock ?? settings.defaultInitialStock,
             lowStockThreshold:
                 data.lowStockThreshold ??
                 settings.defaultLowStockThreshold,
             usesDefaultLowStockThreshold,
             isActive: data.isActive ?? true, // new products are active by default
             imageUrl: data.imageUrl ?? null,
-        },
-        include: { brand: { select: { id: true, name: true } } },
+          },
+          include: { brand: { select: { id: true, name: true } } },
+        });
+
+        const initialStock = Number(created.stock || 0);
+        if (initialStock > 0) {
+            await tx.stockTransaction.create({
+                data: {
+                    productId: created.id,
+                    type: "RESTOCK",
+                    qtyDelta: initialStock,
+                    reason: "Initial stock from product creation",
+                    createdById: actorId,
+                },
+            });
+        }
+        await tx.auditLog.create({
+            data: {
+                actorId,
+                action: "PRODUCT_CREATED",
+                entityType: "Product",
+                entityId: created.id,
+                meta: { productName: created.name, sku: created.sku, initialStock },
+            },
+        });
+        await rebuildProductSearchDocument(created.id, tx);
+        return created;
     });
 
     return withAvailableStock(applyBusinessThresholds(product, settings));
@@ -478,10 +599,25 @@ export async function updateProduct(
         delete updateData.lowStockThreshold;
     }
 
-    const product = await prisma.product.update({
-        where: { id },
-        data: updateData,
-        include: { brand: { select: { id: true, name: true } } },
+    const product = await prisma.$transaction(async (tx) => {
+        if (!updateData.brandId && updateData.brandName) {
+            const brandName = String(updateData.brandName).trim().replace(/\s+/g, " ");
+            const brand = await tx.brand.upsert({
+                where: { name: brandName },
+                create: { name: brandName, isActive: true },
+                update: { isActive: true },
+                select: { id: true },
+            });
+            updateData.brandId = brand.id;
+        }
+        delete updateData.brandName;
+        const updated = await tx.product.update({
+            where: { id },
+            data: updateData,
+            include: { brand: { select: { id: true, name: true } } },
+        });
+        await rebuildProductSearchDocument(updated.id, tx);
+        return updated;
     });
 
     const priceChanged =
@@ -579,8 +715,8 @@ export async function deactivateProduct(id: string, actorId?: string) {
     };
 }
 
-export async function getProductDeleteSafety(id: string): Promise<ProductDeleteSafety> {
-    const product = await prisma.product.findUnique({
+async function buildProductDeleteSafety(db: any, id: string): Promise<ProductDeleteSafety> {
+    const product = await db.product.findUnique({
         where: { id },
         select: {
             id: true,
@@ -603,12 +739,12 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
         draftRequestItems,
         linkedDocuments,
     ] = await Promise.all([
-        prisma.invoiceItem.count({ where: { productId: id } }),
-        prisma.stockTransaction.count({ where: { productId: id } }),
-        prisma.returnItem.count({ where: { productId: id } }),
-        prisma.priceOverrideAuthorization.count({ where: { productId: id } }),
-        prisma.draftRequestItem.count({ where: { productId: id } }),
-        prisma.document.count({
+        db.invoiceItem.count({ where: { productId: id } }),
+        db.stockTransaction.count({ where: { productId: id } }),
+        db.returnItem.count({ where: { productId: id } }),
+        db.priceOverrideAuthorization.count({ where: { productId: id } }),
+        db.draftRequestItem.count({ where: { productId: id } }),
+        db.document.count({
             where: {
                 linkedEntityType: "Product",
                 linkedEntityId: id,
@@ -632,7 +768,11 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
         stock !== 0 || reservedStock !== 0
             ? `Stock must be zero before permanent delete. Current stock: ${stock}, reserved: ${reservedStock}.`
             : null;
-    const canPermanentDelete = references.length === 0 && !stockBlocker;
+    const { canPermanentDelete, canDiscardStockAndDelete } = evaluateProductDeletePolicy({
+        referenceCount: references.length,
+        stock,
+        reservedStock,
+    });
 
     return {
         productId: product.id,
@@ -640,11 +780,16 @@ export async function getProductDeleteSafety(id: string): Promise<ProductDeleteS
         canPermanentDelete,
         references,
         stockBlocker,
+        canDiscardStockAndDelete,
         safeReason: canPermanentDelete
             ? "No stock, reserved stock, or transactional references were found."
             : null,
         recommendedAction: canPermanentDelete ? "PERMANENT_DELETE" : "SET_INACTIVE",
     };
+}
+
+export async function getProductDeleteSafety(id: string): Promise<ProductDeleteSafety> {
+    return buildProductDeleteSafety(prisma, id);
 }
 
 export async function permanentlyDeleteProduct(id: string, actorId: string) {
@@ -682,6 +827,55 @@ export async function permanentlyDeleteProduct(id: string, actorId: string) {
         product,
         safety,
         message: `${product.name} permanently deleted.`,
+    };
+}
+
+export async function discardStockAndPermanentlyDeleteProduct(id: string, actorId: string) {
+    const result = await prisma.$transaction(async (tx) => {
+        const safety = await buildProductDeleteSafety(tx, id);
+        if (!safety.canDiscardStockAndDelete) {
+            const error: any = new Error(
+                "Stock can only be discarded for an unreferenced product with no reserved quantity.",
+            );
+            error.code = "PRODUCT_STOCK_DISCARD_DELETE_BLOCKED";
+            error.safety = safety;
+            throw error;
+        }
+
+        const productBeforeDelete = await tx.product.findUniqueOrThrow({
+            where: { id },
+            select: { id: true, name: true, sku: true, stock: true, imageUrl: true },
+        });
+
+        await tx.product.update({ where: { id }, data: { stock: 0 } });
+        const product = await tx.product.delete({
+            where: { id },
+            select: { id: true, name: true, sku: true, imageUrl: true },
+        });
+
+        await tx.auditLog.create({
+            data: {
+                actorId,
+                action: "PRODUCT_STOCK_DISCARDED_AND_PERMANENTLY_DELETED",
+                entityType: "Product",
+                entityId: product.id,
+                meta: {
+                    productName: product.name,
+                    sku: product.sku,
+                    discardedStock: productBeforeDelete.stock,
+                    reason: "Unreferenced product removed from catalog",
+                },
+            },
+        });
+
+        return { product, safety, discardedStock: Number(productBeforeDelete.stock || 0) };
+    });
+
+    await deleteUploadFile(result.product.imageUrl);
+    return {
+        deleted: true,
+        ...result,
+        message: `${result.product.name} stock was set to zero and the product was permanently deleted.`,
     };
 }
 
@@ -759,6 +953,100 @@ type ReviewedPdfImportRowInput = {
     wholesalePrice?: number | string;
     stock?: number | string;
 };
+
+export class ReviewedImportRowValidationError extends Error {
+    statusCode = 400;
+}
+
+function reviewedDraftText(value: unknown, label: string, required = false) {
+    const normalized = String(value || "").trim().replace(/\s+/g, " ");
+    if (required && !normalized) {
+        throw new ReviewedImportRowValidationError(`${label} is required.`);
+    }
+    return normalized || undefined;
+}
+
+function reviewedDraftNumber(
+    value: unknown,
+    label: string,
+    options: { min: number; required?: boolean },
+) {
+    if (value === undefined || value === null || value === "") {
+        if (options.required) {
+            throw new ReviewedImportRowValidationError(`${label} is required.`);
+        }
+        return undefined;
+    }
+    const normalized = Number(value);
+    if (!Number.isFinite(normalized) || normalized < options.min) {
+        throw new ReviewedImportRowValidationError(
+            `${label} must be a number of at least ${options.min}.`,
+        );
+    }
+    return normalized;
+}
+
+export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) {
+    const rowId = reviewedDraftText(input.rowId, "Import row", true)!;
+    const name = reviewedDraftText(input.name, "Product name", true)!;
+    const sku = reviewedDraftText(input.sku, "SKU", true)!;
+    const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Rate per piece", {
+        min: 0.01,
+        required: true,
+    })!;
+    const packageQuantity = reviewedDraftNumber(
+        input.packageQuantity ?? 1,
+        "Package quantity",
+        { min: 0.001, required: true },
+    )!;
+    const quantityStep = reviewedDraftNumber(
+        input.quantityStep ?? 1,
+        "Quantity step",
+        { min: 0.001, required: true },
+    )!;
+    const stock = reviewedDraftNumber(input.stock ?? 0, "Stock", {
+        min: 0,
+        required: true,
+    })!;
+    const retailPrice = reviewedDraftNumber(
+        input.retailPrice ?? ratePerPiece,
+        "Retail price",
+        { min: 0.01, required: true },
+    )!;
+    const wholesalePrice = reviewedDraftNumber(
+        input.wholesalePrice ?? ratePerPiece,
+        "Wholesale price",
+        { min: 0.01, required: true },
+    )!;
+    const sizeValue = reviewedDraftNumber(input.sizeValue, "Size value", {
+        min: 0,
+    });
+
+    return {
+        rowId,
+        name,
+        sku,
+        barcode: reviewedDraftText(input.barcode, "Barcode"),
+        brand: reviewedDraftText(input.brand, "Brand") || "Unbranded",
+        category: reviewedDraftText(input.category, "Category") || "Uncategorized",
+        categoryGroup: reviewedDraftText(input.categoryGroup, "Category group"),
+        vendorSource: reviewedDraftText(input.vendorSource, "Supplier / source"),
+        productCodeVariant: reviewedDraftText(input.productCodeVariant, "Variant / code"),
+        sizeValue: sizeValue ?? null,
+        sizeUnit: reviewedDraftText(input.sizeUnit, "Size unit") || "STANDARD",
+        ratePerPiece,
+        packageQuantity,
+        packageUnit: reviewedDraftText(input.packageUnit, "Package unit") || "PIECE",
+        saleUnit: reviewedDraftText(input.saleUnit, "Sale unit") || "PIECE",
+        allowFractionalQty: input.allowFractionalQty === true,
+        quantityStep,
+        wholesaleEligible: input.wholesaleEligible !== false,
+        sourceCitation: reviewedDraftText(input.sourceCitation, "Source citation"),
+        retailPrice,
+        wholesalePrice,
+        stock,
+    };
+}
 
 type ProductImportColumnMap = Record<string, string | string[] | undefined>;
 
@@ -1306,6 +1594,7 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
     const errors: CsvImportError[] = [];
     const brandCache = new Map<string, string>(); // caching brand lookups to reduce database queries
     const settings = await getBusinessSettings(); // fetching business defaults for new product thresholds
+    const searchSynonymRules = await getEnabledSearchSynonymRules();
 
     // pre-loading all existing brands into the cache
     const existingBrands = await prisma.brand.findMany({
@@ -1375,7 +1664,7 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
 
                 // creating the product with all business defaults applied
                 // all imported products use the business default thresholds
-                return tx.product.create({
+                const created = await tx.product.create({
                     data: {
                         name: row.name,
                         productName: row.productName || row.name,
@@ -1400,13 +1689,18 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
                         wholesalePrice: row.wholesalePrice,
                         wholesaleQtyThreshold: settings.defaultWholesaleQtyThreshold,
                         usesDefaultWholesaleQtyThreshold: true, // imported products always use business defaults
-                        stock: row.stock ?? 0,
+                        stock:
+                            settings.businessMode === "CATALOG_ONLY"
+                                ? 0
+                                : row.stock ?? 0,
                         lowStockThreshold: settings.defaultLowStockThreshold,
                         usesDefaultLowStockThreshold: true,
                         isActive: true,
                     },
                     select: { id: true, sku: true, name: true },
                 });
+                await rebuildProductSearchDocument(created.id, tx, searchSynonymRules);
+                return created;
             });
 
             createdProducts.push(created);
@@ -1490,6 +1784,8 @@ async function findImportDuplicate(parsed: ReturnType<typeof csvImportRowToParse
 export async function createCsvImportPreview(input: {
     fileName?: string;
     rows: Array<Record<string, unknown>>;
+    rowNumbers?: number[];
+    sourceType?: "CSV" | "XLSX";
     createdById: string;
     supplier?: string;
     templateId?: string;
@@ -1497,6 +1793,7 @@ export async function createCsvImportPreview(input: {
     defaults?: ProductImportDefaults;
 }) {
     const createdRows: ProductImportPreviewRowDraft[] = [];
+    const sourceType = input.sourceType || "CSV";
     const template = input.templateId
         ? await prisma.productImportTemplate.findUnique({ where: { id: input.templateId } })
         : null;
@@ -1518,7 +1815,7 @@ export async function createCsvImportPreview(input: {
     };
 
     for (let index = 0; index < input.rows.length; index += 1) {
-        const rowNumber = index + 2;
+        const rowNumber = input.rowNumbers?.[index] || index + 2;
         const rawRow = input.rows[index];
         try {
             const normalized = normalizeCsvImportRow(rawRow, rowNumber, options);
@@ -1530,7 +1827,7 @@ export async function createCsvImportPreview(input: {
                 status: duplicateMessage ? "DUPLICATE" : "READY",
                 error: duplicateMessage,
                 parsed: {
-                    sourceType: "CSV_ROW",
+                    sourceType: `${sourceType}_ROW`,
                     ...parsedProduct,
                 },
             });
@@ -1539,9 +1836,9 @@ export async function createCsvImportPreview(input: {
                 rowNumber,
                 rawText: JSON.stringify(rawRow),
                 status: "FAILED",
-                error: err?.message || `Row ${rowNumber}: could not parse CSV row.`,
+                error: err?.message || `Row ${rowNumber}: could not parse ${sourceType} row.`,
                 parsed: {
-                    sourceType: "CSV_ROW",
+                    sourceType: `${sourceType}_ROW`,
                 },
             });
         }
@@ -1550,7 +1847,7 @@ export async function createCsvImportPreview(input: {
     const failedRows = createdRows.filter((row) => row.status === "FAILED").length;
     const batch = await prisma.productImportBatch.create({
         data: {
-            sourceType: "CSV",
+            sourceType,
             fileName: input.fileName || null,
             supplier: options.defaults?.supplier || null,
             status: createdRows.length > 0 ? "DRAFT" : "FAILED",
@@ -1590,9 +1887,9 @@ export async function createCsvImportPreview(input: {
             .filter((row) => row.status === "FAILED" || row.error)
             .map((row) => ({
                 rowNumber: row.rowNumber,
-                message: row.error || "CSV row needs review.",
+                message: row.error || `${sourceType} row needs review.`,
             })),
-        message: `CSV imported into review (${batch.totalRows} row${batch.totalRows === 1 ? "" : "s"} captured).`,
+        message: `${sourceType} imported into review (${batch.totalRows} row${batch.totalRows === 1 ? "" : "s"} captured).`,
     };
 }
 
@@ -1970,6 +2267,115 @@ export async function getProductImportBatch(batchId: string) {
     return batch;
 }
 
+export async function saveReviewedProductImportRows(
+    batchId: string,
+    inputRows: ReviewedPdfImportRowInput[],
+    actorId: string,
+) {
+    if (!Array.isArray(inputRows) || inputRows.length === 0) {
+        throw new ReviewedImportRowValidationError("Choose at least one review row to save.");
+    }
+    if (inputRows.length > 200) {
+        throw new ReviewedImportRowValidationError("A maximum of 200 review rows can be saved at once.");
+    }
+    const preparedRows = inputRows.map(prepareReviewedImportRowDraft);
+    const uniqueRowIds = new Set(preparedRows.map((row) => row.rowId));
+    if (uniqueRowIds.size !== preparedRows.length) {
+        throw new ReviewedImportRowValidationError("The same review row was submitted more than once.");
+    }
+    const batch = await prisma.productImportBatch.findFirst({
+        where: { id: batchId, deletedAt: null },
+        include: { rows: true },
+    });
+    if (!batch) throw new Error("Product import batch was not found.");
+    const batchRows = new Map<string, ProductImportRow>(
+        batch.rows.map((row) => [row.id, row]),
+    );
+    for (const row of preparedRows) {
+        const stored = batchRows.get(row.rowId);
+        if (!stored) {
+            throw new ReviewedImportRowValidationError(
+                "One or more rows do not belong to this import review.",
+            );
+        }
+        if (stored.status === "IMPORTED") {
+            throw new ReviewedImportRowValidationError(
+                `Row ${stored.rowNumber} has already been imported and cannot be edited.`,
+            );
+        }
+    }
+
+    const duplicateSku = preparedRows.find(
+        (row, index) =>
+            preparedRows.findIndex(
+                (candidate) => candidate.sku.toLowerCase() === row.sku.toLowerCase(),
+            ) !== index,
+    );
+    if (duplicateSku) {
+        throw new ReviewedImportRowValidationError(
+            `SKU ${duplicateSku.sku} appears more than once in the rows being saved.`,
+        );
+    }
+    const barcodes = preparedRows
+        .map((row) => row.barcode)
+        .filter((barcode): barcode is string => !!barcode);
+    if (new Set(barcodes.map((barcode) => barcode.toLowerCase())).size !== barcodes.length) {
+        throw new ReviewedImportRowValidationError(
+            "The same barcode appears more than once in the rows being saved.",
+        );
+    }
+    const existingProduct = await prisma.product.findFirst({
+        where: {
+            OR: [
+                { sku: { in: preparedRows.map((row) => row.sku) } },
+                ...(barcodes.length > 0 ? [{ barcode: { in: barcodes } }] : []),
+            ],
+        },
+        select: { name: true, sku: true, barcode: true },
+    });
+    if (existingProduct) {
+        throw new ReviewedImportRowValidationError(
+            `A saved product already uses SKU ${existingProduct.sku}${existingProduct.barcode ? ` or barcode ${existingProduct.barcode}` : ""}.`,
+        );
+    }
+
+    const savedRows = await prisma.$transaction(async (tx) => {
+        const results: ProductImportRow[] = [];
+        for (const row of preparedRows) {
+            const { rowId, ...parsedDraft } = row;
+            results.push(
+                await tx.productImportRow.update({
+                    where: { id: rowId },
+                    data: {
+                        status: "READY",
+                        error: null,
+                        parsed: JSON.parse(
+                            JSON.stringify({
+                                sourceType: "REVIEWED_ROW_DRAFT",
+                                ...parsedDraft,
+                            }),
+                        ) as Prisma.InputJsonValue,
+                    },
+                }),
+            );
+        }
+        await tx.auditLog.create({
+            data: {
+                actorId,
+                action: "PRODUCT_IMPORT_REVIEW_ROWS_SAVED",
+                entityType: "ProductImportBatch",
+                entityId: batchId,
+                meta: {
+                    rowIds: preparedRows.map((row) => row.rowId),
+                    rowCount: preparedRows.length,
+                },
+            },
+        });
+        return results;
+    });
+    return { rows: savedRows, savedCount: savedRows.length };
+}
+
 export async function listProductImportBatches(filters?: {
     sourceType?: string;
     status?: string;
@@ -2168,6 +2574,7 @@ export async function bulkUpdateProductPrices(input: {
     }>;
     scope?: "IDS" | "FILTERED";
     filters?: BulkPriceFilterInput;
+    excludedProductIds?: unknown[];
     wholesaleMarginPercent?: number;
     retailMarginPercent?: number;
     reason: string;
@@ -2180,7 +2587,18 @@ export async function bulkUpdateProductPrices(input: {
     }
 
     let updates = Array.isArray(input.updates) ? input.updates : [];
+    let filteredExcludedCount = 0;
     if (input.scope === "FILTERED") {
+        const excludedProductIds = Array.from(new Set(
+            (input.excludedProductIds || [])
+                .map((id) => String(id || "").trim())
+                .filter(Boolean),
+        ));
+        if (excludedProductIds.length > 10_000) {
+            throw new Error("Too many product exclusions. Narrow the filters and try again.");
+        }
+        filteredExcludedCount = excludedProductIds.length;
+        const excludedProductIdSet = new Set(excludedProductIds);
         const filters = await normalizeBulkPriceFilters(input.filters || {});
         const productsResult = await listProducts({
             ...filters,
@@ -2189,15 +2607,17 @@ export async function bulkUpdateProductPrices(input: {
         });
         const wholesaleMargin = Number(input.wholesaleMarginPercent || 0);
         const retailMargin = Number(input.retailMarginPercent || 0);
-        updates = productsResult.products.map((product: any) => {
+        updates = productsResult.products
+          .filter((product: any) => !excludedProductIdSet.has(product.id))
+          .map((product: any) => {
             const baseRate = Number(product.ratePerPiece || product.wholesalePrice || product.retailPrice || 0);
             return {
                 productId: product.id,
                 ratePerPiece: baseRate,
-                wholesalePrice: roundCurrency(baseRate * (1 + wholesaleMargin / 100)),
-                retailPrice: roundCurrency(baseRate * (1 + retailMargin / 100)),
+                wholesalePrice: priceFromGrossMargin(baseRate, wholesaleMargin),
+                retailPrice: priceFromGrossMargin(baseRate, retailMargin),
             };
-        });
+          });
     }
     if (updates.length === 0) {
         throw new Error("At least one product price update is required.");
@@ -2288,6 +2708,8 @@ export async function bulkUpdateProductPrices(input: {
                 entityId: "bulk-price-update",
                 meta: {
                     reason,
+                    selectionScope: input.scope || "IDS",
+                    excludedCount: filteredExcludedCount,
                     updatedCount: results.length,
                     errorCount: errors.length,
                     products: results.map((product) => ({
@@ -2307,6 +2729,8 @@ export async function bulkUpdateProductPrices(input: {
                 entityId: "bulk-price-update",
                 meta: {
                     reason,
+                    selectionScope: input.scope || "IDS",
+                    excludedCount: filteredExcludedCount,
                     updatedCount: results.length,
                     errorCount: errors.length,
                     products: results.map((product) => ({

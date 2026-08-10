@@ -6,6 +6,7 @@ import {
   completeDraftRequestSchema,
   createDraftRequestSchema,
   rejectDraftRequestSchema,
+  resolveAcceptedDraftRequestSchema,
   updateDraftRequestSchema,
 } from "./validation";
 
@@ -47,6 +48,18 @@ export async function getOne(req: Request, res: Response) {
     res.json({ request });
   } catch (err: any) {
     sendDraftError(res, err, "Could not load draft request");
+  }
+}
+
+export async function markViewed(req: Request, res: Response) {
+  try {
+    const request = await draftRequestService.markDraftRequestViewed(
+      String(req.params.id),
+      req.user!,
+    );
+    res.json({ request });
+  } catch (err: any) {
+    sendDraftError(res, err, "Could not mark draft request as viewed");
   }
 }
 
@@ -165,5 +178,27 @@ export async function complete(req: Request, res: Response) {
     res.json({ request });
   } catch (err: any) {
     sendDraftError(res, err, "Could not complete draft request");
+  }
+}
+
+export async function resolveAccepted(req: Request, res: Response) {
+  const parsed = resolveAcceptedDraftRequestSchema.safeParse(req.body);
+  if (!parsed.success) {
+    res.status(400).json({
+      error: "Invalid accepted request resolution",
+      issues: formatZodIssues(parsed.error),
+    });
+    return;
+  }
+
+  try {
+    const request = await draftRequestService.resolveAcceptedDraftRequest(
+      String(req.params.id),
+      req.user!,
+      parsed.data,
+    );
+    res.json({ request });
+  } catch (err: any) {
+    sendDraftError(res, err, "Could not resolve accepted draft request");
   }
 }

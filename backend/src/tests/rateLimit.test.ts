@@ -1,38 +1,36 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import jwt from "jsonwebtoken";
-
-process.env.JWT_SECRET = process.env.JWT_SECRET || "test-secret";
+import { SESSION_COOKIE_NAME, signSessionToken } from "../modules/auth/session";
 
 async function getRateLimitHelpers() {
   return import("../lib/rateLimit.js");
 }
 
-function requestWithToken(userId: string, ip = "192.168.1.20") {
+function requestWithSession(sessionToken: string, ip = "192.168.1.20") {
   return {
     headers: {
-      authorization: `Bearer ${jwt.sign({ id: userId, role: "CASHIER" }, process.env.JWT_SECRET!)}`,
+      cookie: `${SESSION_COOKIE_NAME}=${encodeURIComponent(signSessionToken(sessionToken))}`,
     },
     ip,
   } as any;
 }
 
-test("general API rate limit keys valid JWTs by user id", async () => {
+test("general API rate limit keys authenticated browser sessions", async () => {
   const { attachRateLimitIdentity, generalApiRateLimitKey } =
     await getRateLimitHelpers();
-  const req = requestWithToken("cashier-1");
+  const req = requestWithSession("cashier-session-1");
 
   attachRateLimitIdentity(req, {} as any, () => undefined);
 
-  assert.equal(req.rateLimitUserId, "cashier-1");
-  assert.equal(generalApiRateLimitKey(req), "user:cashier-1");
+  assert.match(req.rateLimitUserId, /^[a-f0-9]{32}$/);
+  assert.equal(generalApiRateLimitKey(req), `session:${req.rateLimitUserId}`);
 });
 
 test("general API rate limit separates users sharing the same IP", async () => {
   const { attachRateLimitIdentity, generalApiRateLimitKey } =
     await getRateLimitHelpers();
-  const firstReq = requestWithToken("cashier-1");
-  const secondReq = requestWithToken("cashier-2");
+  const firstReq = requestWithSession("cashier-session-1");
+  const secondReq = requestWithSession("cashier-session-2");
 
   attachRateLimitIdentity(firstReq, {} as any, () => undefined);
   attachRateLimitIdentity(secondReq, {} as any, () => undefined);
@@ -43,11 +41,25 @@ test("general API rate limit separates users sharing the same IP", async () => {
   );
 });
 
-test("general API rate limit falls back to IP when token is missing or invalid", async () => {
+test("general API rate limit falls back to IP when the session cookie is missing", async () => {
   const { attachRateLimitIdentity, generalApiRateLimitKey } =
     await getRateLimitHelpers();
   const req = {
-    headers: { authorization: "Bearer not-a-real-token" },
+    headers: {},
+    ip: "192.168.1.20",
+  } as any;
+
+  attachRateLimitIdentity(req, {} as any, () => undefined);
+
+  assert.equal(req.rateLimitUserId, undefined);
+  assert.equal(generalApiRateLimitKey(req), "ip:192.168.1.20");
+});
+
+test("general API rate limit rejects a forged session cookie identity", async () => {
+  const { attachRateLimitIdentity, generalApiRateLimitKey } =
+    await getRateLimitHelpers();
+  const req = {
+    headers: { cookie: `${SESSION_COOKIE_NAME}=forged.signature` },
     ip: "192.168.1.20",
   } as any;
 

@@ -1,8 +1,17 @@
 import React, { useMemo, useState } from "react";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
-import { useSearchParams } from "react-router";
-import type { Product, ProductStatus, ToastKind } from "~/lib/domain/products/products.types";
+import { useLocation, useNavigate, useSearchParams } from "react-router";
+import type {
+  Product,
+  ProductLookupSnapshot,
+  ProductStatus,
+  ToastKind,
+} from "~/lib/domain/products/products.types";
+import {
+  readProductLookupEdit,
+  stageProductLookupRestore,
+} from "~/lib/domain/products/productLookupHandoff";
 import {
   deleteProductImportBatchApi,
   getBusinessSettingsApi,
@@ -12,6 +21,8 @@ import {
   importProductDocumentApi,
   importPdfApi,
   importReviewedPdfRowsApi,
+  saveReviewedProductImportRowsApi,
+  recordProductSearchSelectionApi,
   listDocumentsApi,
   listProductImportBatchesApi,
   listProductImportTemplatesApi,
@@ -26,13 +37,16 @@ import {
   type ProductImportBatch,
   type ProductImportTemplate,
   type ReviewedPdfImportRowPayload,
+  type ProductSearchSelectionAction,
 } from "~/lib/api/endpoints";
 import {
   bulkSetStatus,
   createProduct,
+  fetchProductsByIds,
   fetchProducts,
   fetchProductsMeta,
   getProductDeleteSafety,
+  discardStockAndDeleteProduct,
   permanentlyDeleteProduct,
   setProductStatus,
   updateProduct,
@@ -44,13 +58,20 @@ import type { ProductDeleteSafety } from "~/lib/api/endpoints";
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
 import ProductsModals from "~/components/blocks/products/ProductsModals";
+import ProductSearchInsightsModal from "~/components/blocks/products/ProductSearchInsightsModal";
 import { useToast } from "~/components/ui/Toast";
 import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
+import CreatableCombobox from "~/components/ui/CreatableCombobox";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 type ProductFormErrors = Partial<
   Record<
     | "name"
+    | "brand"
+    | "category"
     | "sku"
+    | "ratePerPiece"
     | "retailPrice"
     | "wholesalePrice"
     | "thresholdQty"
@@ -94,6 +115,30 @@ type BulkActionState =
 
 type BulkSelectionScope = "page" | "filtered";
 
+type PendingProductFilterChange =
+  | { kind: "search"; value: string }
+  | { kind: "brand"; value: string }
+  | { kind: "category"; value: string }
+  | { kind: "stockStatus"; value: "all" | "in" | "low" | "out" }
+  | { kind: "status"; value: "all" | "active" | "inactive" }
+  | { kind: "lowOnly"; value: boolean }
+  | { kind: "clear" };
+
+function describeProductFilterChange(change: PendingProductFilterChange | null) {
+  if (!change) return "the product filters";
+  if (change.kind === "search") return change.value.trim() ? `the search to “${change.value.trim()}”` : "clearing the search";
+  if (change.kind === "clear") return "clearing all product filters";
+  if (change.kind === "lowOnly") return change.value ? "showing only low-stock products" : "removing the low-stock-only filter";
+  return `the ${change.kind === "stockStatus" ? "stock" : change.kind} filter`;
+}
+
+type PriceField = "ratePerPiece" | "wholesalePrice" | "retailPrice";
+type PriceDraft = Record<PriceField, string>;
+type BulkPriceErrors = {
+  reason?: string;
+  rows?: Record<string, Partial<Record<PriceField, string>>>;
+};
+
 type QuickStockProductForm = {
   name: string;
   sku: string;
@@ -104,12 +149,21 @@ type QuickStockProductForm = {
   saleUnit: string;
 };
 
+type QuickStockErrors = Partial<
+  Record<"name" | "brand" | "category" | "ratePerPiece" | "retailPrice", string>
+>;
+
+type StockFieldErrors = Partial<Record<"reason" | "supplier", string>>;
+
 // this normalizes business settings into safe numeric defaults before the product form uses them
 // we added the clamps here so missing or broken settings data does not produce invalid thresholds in the UI
 function normalizeBusinessDefaults(
   settings?: Partial<BusinessSettings> | null,
 ): BusinessSettings {
   return {
+    businessMode: settings?.businessMode ?? "FULL_POS",
+    staffDraftRequestsEnabled: settings?.staffDraftRequestsEnabled ?? true,
+    defaultInitialStock: Math.max(0, Number(settings?.defaultInitialStock ?? 30)),
     defaultLowStockThreshold: Math.max(
       0,
       Number(settings?.defaultLowStockThreshold ?? 5),
@@ -143,6 +197,14 @@ function roundMoney(value: number) {
   return Math.round(Number(value || 0) * 100) / 100;
 }
 
+function priceFromGrossMargin(cost: number, marginPercent: number) {
+  const normalizedCost = Number(cost || 0);
+  const normalizedMargin = Number(marginPercent || 0);
+  if (!Number.isFinite(normalizedCost) || normalizedCost <= 0) return 0;
+  if (!Number.isFinite(normalizedMargin) || normalizedMargin < 0 || normalizedMargin >= 100) return 0;
+  return roundMoney(normalizedCost / (1 - normalizedMargin / 100));
+}
+
 function formatDocumentDate(value?: string | null) {
   if (!value) return "No date";
   return new Date(value).toLocaleDateString();
@@ -160,24 +222,33 @@ function todayInputDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
-function buildQuickProductSku(name: string) {
-  const normalized = name
-    .trim()
-    .toUpperCase()
-    .replace(/[^A-Z0-9]+/g, "-")
-    .replace(/^-+|-+$/g, "")
-    .slice(0, 18);
-  const prefix = normalized || "PRODUCT";
-  return `${prefix}-${Date.now().toString(36).toUpperCase().slice(-5)}`;
-}
-
 // this is the main product management page
 // it handles searching, filtering, adding, editing, importing, and soft-deleting product records
 export default function ProductsPage() {
   const { showToast } = useToast();
+  const capabilities = useBusinessCapabilities();
+  const stockTracked = capabilities.stockTracked;
   const isAdmin = getAuthUser()?.role === "admin";
+  const navigate = useNavigate();
+  const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedImportBatchId = searchParams.get("importBatch");
+  const requestedEditProductId = searchParams.get("editProduct");
+  const requestedEditReturnTo = searchParams.get("returnTo") || "";
+  const productLookupEditKey = (
+    location.state as { productLookupEditKey?: string } | null
+  )?.productLookupEditKey;
+  const productLookupEditHandoff = readProductLookupEdit(
+    productLookupEditKey,
+    requestedEditProductId,
+  );
+  const handledEditRequestRef = React.useRef<string | null>(null);
+  const [returnAfterProductEdit, setReturnAfterProductEdit] = useState("");
+  const [returnAfterProductEditSnapshot, setReturnAfterProductEditSnapshot] =
+    useState<ProductLookupSnapshot | undefined>(
+      productLookupEditHandoff?.snapshot,
+    );
+  const [openingRequestedEditProduct, setOpeningRequestedEditProduct] = useState(false);
   // we use this to create a clean form state for new products based on the current brand/category lists and saved defaults
   function buildDefaultProductForm(
     brandOptions: string[],
@@ -210,15 +281,19 @@ export default function ProductsPage() {
       wholesalePrice: 0,
       thresholdQty: settings.defaultWholesaleQtyThreshold,
       thresholdQtyMode: "default",
-      stock: 0,
+      stock: stockTracked ? settings.defaultInitialStock : 0,
       lowStockThreshold: settings.defaultLowStockThreshold,
       lowStockThresholdMode: "default",
       status: "Active",
     };
   }
 
-  const [brands, setBrands] = useState<string[]>(["All Brands"]);
-  const [categories, setCategories] = useState<string[]>(["All Categories"]);
+  const [brands, setBrands] = useState<string[]>(
+    () => productLookupEditHandoff?.snapshot.brands || ["All Brands"],
+  );
+  const [categories, setCategories] = useState<string[]>(
+    () => productLookupEditHandoff?.snapshot.categories || ["All Categories"],
+  );
   const [businessDefaults, setBusinessDefaults] = useState<BusinessSettings>(
     () => normalizeBusinessDefaults(),
   );
@@ -227,6 +302,7 @@ export default function ProductsPage() {
   const [total, setTotal] = useState(0); // backend-reported total matching the current filters
   const [productsLoading, setProductsLoading] = useState(true);
   const [productsLoadError, setProductsLoadError] = useState("");
+  const [activeSearchLogId, setActiveSearchLogId] = useState<string | null>(null);
   const productLoadRequestRef = React.useRef(0);
   const productMetaRecoveryNeededRef = React.useRef(false);
   const productRowsRecoveryNeededRef = React.useRef(false);
@@ -242,9 +318,22 @@ export default function ProductsPage() {
   const [status, setStatus] = useState<"all" | "active" | "inactive">("all"); // active vs inactive filter
   const [lowOnly, setLowOnly] = useState(false); // quick toggle for low stock products only
 
+  React.useEffect(() => {
+    if (stockTracked) return;
+    setStockStatus("all");
+    setLowOnly(false);
+    setOpenStockManager(false);
+  }, [stockTracked]);
+
   const [selected, setSelected] = useState<Record<string, boolean>>({}); // checkbox state for bulk actions across the current dataset
+  const [selectedProductCache, setSelectedProductCache] = useState<Record<string, Product>>({});
   const [bulkSelectionScope, setBulkSelectionScope] =
     useState<BulkSelectionScope>("page");
+  const [filteredSelectionExclusions, setFilteredSelectionExclusions] = useState<
+    Record<string, Product>
+  >({});
+  const [pendingProductFilterChange, setPendingProductFilterChange] =
+    useState<PendingProductFilterChange | null>(null);
   const productCatalogControlsRef = React.useRef<HTMLDivElement>(null);
   const [isSelectionPinned, setIsSelectionPinned] = useState(false);
   // converting the selection object into an id list makes the bulk action handlers much easier to work with
@@ -253,10 +342,16 @@ export default function ProductsPage() {
     [selected],
   );
   const isFilteredSelection = bulkSelectionScope === "filtered";
-  const selectedCount = isFilteredSelection ? total : selectedIds.length;
+  const filteredExcludedIds = useMemo(
+    () => Object.keys(filteredSelectionExclusions),
+    [filteredSelectionExclusions],
+  );
+  const selectedCount = isFilteredSelection
+    ? Math.max(0, total - filteredExcludedIds.length)
+    : selectedIds.length;
   const selectedProducts = useMemo(
-    () => products.filter((product) => selectedIds.includes(product.id)),
-    [products, selectedIds],
+    () => selectedIds.map((id) => selectedProductCache[id]).filter(Boolean),
+    [selectedIds, selectedProductCache],
   );
 
   React.useEffect(() => {
@@ -295,7 +390,16 @@ export default function ProductsPage() {
   const [page, setPage] = useState(1); // current table page
 
   const [openAddEdit, setOpenAddEdit] = useState(false); // controls the create/edit modal
+  const [productSaveBusy, setProductSaveBusy] = useState(false);
+  const [productEditorBaseline, setProductEditorBaseline] = useState("");
+  const [productEditorImageBaseline, setProductEditorImageBaseline] = useState("");
+  const [confirmDiscardProductEditor, setConfirmDiscardProductEditor] = useState(false);
+  const [productSaveSuccess, setProductSaveSuccess] = useState<{
+    product: Product;
+    imageUploadError: string;
+  } | null>(null);
   const [openImport, setOpenImport] = useState(false); // controls the CSV import modal
+  const [openSearchInsights, setOpenSearchInsights] = useState(false);
   const [openView, setOpenView] = useState(false); // controls the product detail modal
   const [openConfirmDelete, setOpenConfirmDelete] = useState(false); // controls the single-product soft delete confirmation
   const [deleteSafety, setDeleteSafety] = useState<ProductDeleteSafety | null>(null);
@@ -304,6 +408,7 @@ export default function ProductsPage() {
   const [bulkAction, setBulkAction] = useState<BulkActionState>(null); // stores the current bulk action confirmation content
   const [openStockManager, setOpenStockManager] = useState(false);
   const [openBulkPrice, setOpenBulkPrice] = useState(false);
+  const [openSelectedProducts, setOpenSelectedProducts] = useState(false);
   const [openMobileBulkActions, setOpenMobileBulkActions] = useState(false);
   const [stockMode, setStockMode] = useState<"receive" | "correct">("receive");
   const [mobileStockStep, setMobileStockStep] = useState<1 | 2 | 3>(1);
@@ -313,6 +418,7 @@ export default function ProductsPage() {
   const [stockLookupResults, setStockLookupResults] = useState<Product[]>([]);
   const [stockLookupBusy, setStockLookupBusy] = useState(false);
   const [stockLineError, setStockLineError] = useState("");
+  const [stockFieldErrors, setStockFieldErrors] = useState<StockFieldErrors>({});
   const [stockFocusProductId, setStockFocusProductId] = useState<string | null>(null);
   const [stockRows, setStockRows] = useState<Record<string, number>>({});
   const [stockApplyQty, setStockApplyQty] = useState(0);
@@ -342,14 +448,33 @@ export default function ProductsPage() {
     saleUnit: "PIECE",
   });
   const [quickStockError, setQuickStockError] = useState("");
+  const [quickStockErrors, setQuickStockErrors] = useState<QuickStockErrors>({});
   const [quickStockBusy, setQuickStockBusy] = useState(false);
   const [priceRows, setPriceRows] = useState<
-    Record<string, { retailPrice: number; wholesalePrice: number; ratePerPiece: number }>
+    Record<string, PriceDraft>
   >({});
   const [wholesaleMarginPercent, setWholesaleMarginPercent] = useState(18);
   const [retailMarginPercent, setRetailMarginPercent] = useState(30);
   const [priceReason, setPriceReason] = useState("");
+  const [bulkPriceErrors, setBulkPriceErrors] = useState<BulkPriceErrors>({});
+  const priceReasonRef = React.useRef<HTMLInputElement>(null);
+  const [priceSearch, setPriceSearch] = useState("");
+  const [priceMarginTargetIds, setPriceMarginTargetIds] = useState<Record<string, boolean>>({});
+  const [confirmApplyPriceMargins, setConfirmApplyPriceMargins] = useState(false);
+  const [confirmBulkPriceSave, setConfirmBulkPriceSave] = useState(false);
   const [priceBusy, setPriceBusy] = useState(false);
+
+  const visibleBulkPriceProducts = useMemo(() => {
+    const normalized = priceSearch.trim().toLocaleLowerCase();
+    if (!normalized) return selectedProducts;
+    return selectedProducts.filter((product) =>
+      [product.name, product.sku, product.barcode, product.brand]
+        .filter(Boolean)
+        .some((value) => String(value).toLocaleLowerCase().includes(normalized)),
+    );
+  }, [priceSearch, selectedProducts]);
+  const priceMarginTargetCount = selectedProducts.filter((product) => priceMarginTargetIds[product.id]).length;
+  const priceMarginsValid = wholesaleMarginPercent >= 0 && wholesaleMarginPercent < 100 && retailMarginPercent >= 0 && retailMarginPercent < 100;
 
   const [activeProductId, setActiveProductId] = useState<string | null>(null); // product currently being viewed, edited, or deleted
   const [formErrors, setFormErrors] = useState<ProductFormErrors>({}); // field-level validation messages for the product form
@@ -380,10 +505,11 @@ export default function ProductsPage() {
     stock: "",
   });
 
-  const productsById = useMemo(
-    () => new Map(products.map((product) => [product.id, product])),
-    [products],
-  );
+  const productsById = useMemo(() => {
+    const entries = Object.values(selectedProductCache).map((product) => [product.id, product] as const);
+    products.forEach((product) => entries.push([product.id, product]));
+    return new Map(entries);
+  }, [products, selectedProductCache]);
   const stockManagerProducts = useMemo(
     () =>
       stockProductIds
@@ -414,8 +540,8 @@ export default function ProductsPage() {
 
   // finding the currently active product object once here keeps the modal and action handlers from repeating the same lookup
   const activeProduct = useMemo(
-    () => products.find((product) => product.id === activeProductId) || null,
-    [products, activeProductId],
+    () => (activeProductId ? productsById.get(activeProductId) || null : null),
+    [productsById, activeProductId],
   );
 
   // seeding the form with safe defaults lets the add modal open instantly even before real metadata finishes loading
@@ -601,6 +727,7 @@ export default function ProductsPage() {
 
     setProducts(res.items);
     setTotal(res.total);
+    setActiveSearchLogId(res.searchLogId);
   }
 
   React.useEffect(() => {
@@ -648,15 +775,28 @@ export default function ProductsPage() {
 
   React.useEffect(() => {
     const timer = window.setTimeout(() => {
+      if (q.trim() === debouncedQ) return;
+      if (isFilteredSelection) {
+        setPendingProductFilterChange({ kind: "search", value: q });
+        return;
+      }
       setDebouncedQ(q.trim());
       setPage(1);
-      setSelected({});
-      setBulkSelectionScope("page");
     }, 300);
     return () => window.clearTimeout(timer);
-  }, [q]);
+  }, [q, debouncedQ, isFilteredSelection]);
 
   React.useEffect(() => {
+    const visibleSelected = products.filter((product) => selected[product.id]);
+    if (visibleSelected.length === 0) return;
+    setSelectedProductCache((current) => ({
+      ...current,
+      ...Object.fromEntries(visibleSelected.map((product) => [product.id, product])),
+    }));
+  }, [products, selected]);
+
+  React.useEffect(() => {
+    if (productLookupEditHandoff) return undefined;
     const controller = new AbortController();
     const requestId = productLoadRequestRef.current + 1;
     productLoadRequestRef.current = requestId;
@@ -697,6 +837,7 @@ export default function ProductsPage() {
     page,
     tablePageSize,
     productRecoveryKey,
+    productLookupEditHandoff,
   ]);
 
   React.useEffect(() => {
@@ -708,6 +849,67 @@ export default function ProductsPage() {
       return next;
     }, { replace: true });
   }, [requestedImportBatchId]);
+
+  React.useLayoutEffect(() => {
+    if (!requestedEditProductId || !isAdmin) return;
+    const requestKey = `${requestedEditProductId}:${requestedEditReturnTo}`;
+    if (handledEditRequestRef.current === requestKey) return;
+
+    if (productLookupEditHandoff?.product.id === requestedEditProductId) {
+      handledEditRequestRef.current = requestKey;
+      setReturnAfterProductEdit(
+        requestedEditReturnTo.startsWith("/product-lookup")
+          ? requestedEditReturnTo
+          : "",
+      );
+      setReturnAfterProductEditSnapshot(productLookupEditHandoff.snapshot);
+      openEdit(productLookupEditHandoff.product);
+      return;
+    }
+
+    const controller = new AbortController();
+    let active = true;
+    setReturnAfterProductEditSnapshot(undefined);
+    setOpeningRequestedEditProduct(true);
+    void fetchProductsByIds([requestedEditProductId], {
+      signal: controller.signal,
+    })
+      .then(([product]) => {
+        if (!active) return;
+        handledEditRequestRef.current = requestKey;
+        if (!product) {
+          toastMsg("danger", "That product could not be found. It may have been removed.");
+          return;
+        }
+        setSelectedProductCache((current) => ({
+          ...current,
+          [product.id]: product,
+        }));
+        setReturnAfterProductEdit(
+          requestedEditReturnTo.startsWith("/product-lookup")
+            ? requestedEditReturnTo
+            : "",
+        );
+        openEdit(product);
+      })
+      .catch((error: any) => {
+        if (!active || controller.signal.aborted || error?.code === "ERR_CANCELED") return;
+        toastMsg("danger", error?.message || "Failed to open the product editor.");
+      })
+      .finally(() => {
+        if (active) setOpeningRequestedEditProduct(false);
+      });
+
+    return () => {
+      active = false;
+      controller.abort();
+    };
+  }, [
+    isAdmin,
+    productLookupEditHandoff,
+    requestedEditProductId,
+    requestedEditReturnTo,
+  ]);
 
   React.useEffect(() => {
     if (!openImport || pdfReviewBatch) return;
@@ -769,12 +971,17 @@ export default function ProductsPage() {
   const effectiveSelected = useMemo(
     () =>
       isFilteredSelection
-        ? Object.fromEntries(pageItems.map((product) => [product.id, true]))
+        ? Object.fromEntries(
+            pageItems.map((product) => [
+              product.id,
+              !filteredSelectionExclusions[product.id],
+            ]),
+          )
         : selected,
-    [isFilteredSelection, pageItems, selected],
+    [isFilteredSelection, pageItems, selected, filteredSelectionExclusions],
   );
   const allPageRowsSelected =
-    pageItems.length > 0 && pageItems.every((product) => selected[product.id]);
+    pageItems.length > 0 && pageItems.every((product) => effectiveSelected[product.id]);
   const canSelectAllMatching =
     !isFilteredSelection && allPageRowsSelected && total > pageItems.length;
   const currentProductFilters = useMemo(
@@ -789,103 +996,254 @@ export default function ProductsPage() {
     }),
     [debouncedQ, brand, category, status, lowOnly, stockStatus],
   );
+  const isProductEditorDirty =
+    openAddEdit &&
+    (JSON.stringify(form) !== productEditorBaseline ||
+      productImagePreview !== productEditorImageBaseline ||
+      Boolean(productImageFile));
+
+  React.useEffect(() => {
+    if (!isProductEditorDirty) return undefined;
+    function warnBeforeLeaving(event: BeforeUnloadEvent) {
+      event.preventDefault();
+      event.returnValue = "";
+    }
+    window.addEventListener("beforeunload", warnBeforeLeaving);
+    return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
+  }, [isProductEditorDirty]);
 
   React.useEffect(() => {
     if (page !== pageClamped) setPage(pageClamped);
   }, [page, pageClamped]);
 
-  function resetPageSelection() {
+  function applyProductFilterChange(change: PendingProductFilterChange) {
     setPage(1);
-    setSelected({});
-    setBulkSelectionScope("page");
+    if (change.kind === "search") {
+      setQ(change.value);
+      setDebouncedQ(change.value.trim());
+    } else if (change.kind === "brand") {
+      setBrand(change.value);
+    } else if (change.kind === "category") {
+      setCategory(change.value);
+    } else if (change.kind === "stockStatus") {
+      setStockStatus(change.value);
+    } else if (change.kind === "status") {
+      setStatus(change.value);
+    } else if (change.kind === "lowOnly") {
+      setLowOnly(change.value);
+    } else {
+      setQ("");
+      setDebouncedQ("");
+      setBrand("All Brands");
+      setCategory("All Categories");
+      setStockStatus("all");
+      setStatus("all");
+      setLowOnly(false);
+    }
+  }
+
+  function requestProductFilterChange(change: PendingProductFilterChange) {
+    if (isFilteredSelection) {
+      setPendingProductFilterChange(change);
+      return;
+    }
+    applyProductFilterChange(change);
+  }
+
+  function confirmProductFilterChange() {
+    if (!pendingProductFilterChange) return;
+    const change = pendingProductFilterChange;
+    setPendingProductFilterChange(null);
+    clearBulkSelection();
+    applyProductFilterChange(change);
+  }
+
+  function cancelProductFilterChange() {
+    if (pendingProductFilterChange?.kind === "search") setQ(debouncedQ);
+    setPendingProductFilterChange(null);
   }
 
   function updateBrand(value: string) {
-    setBrand(value);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "brand", value });
   }
 
   function updateCategory(value: string) {
-    setCategory(value);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "category", value });
   }
 
   function updateStockStatus(value: "all" | "in" | "low" | "out") {
-    setStockStatus(value);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "stockStatus", value });
   }
 
   function updateStatus(value: "all" | "active" | "inactive") {
-    setStatus(value);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "status", value });
   }
 
   function updateLowOnly(value: boolean) {
-    setLowOnly(value);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "lowOnly", value });
   }
 
   // this resets every filter control back to its default value
   function clearFilters() {
-    setQ("");
-    setBrand("All Brands");
-    setCategory("All Categories");
-    setStockStatus("all");
-    setStatus("all");
-    setLowOnly(false);
-    resetPageSelection();
+    requestProductFilterChange({ kind: "clear" });
   }
 
   function clearBulkSelection() {
     setSelected({});
+    setSelectedProductCache({});
+    setFilteredSelectionExclusions({});
     setBulkSelectionScope("page");
+    setOpenSelectedProducts(false);
   }
 
   function selectAllMatchingProducts() {
     setSelected(Object.fromEntries(products.map((product) => [product.id, true])));
+    setSelectedProductCache(
+      Object.fromEntries(products.map((product) => [product.id, product])),
+    );
+    setFilteredSelectionExclusions({});
     setBulkSelectionScope("filtered");
   }
 
   // toggling every checkbox on the current visible page is used by the bulk action buttons above the table
   function toggleAllOnPage(checked: boolean) {
     if (isFilteredSelection) {
-      setBulkSelectionScope("page");
+      const nextExcludedCount = new Set([
+        ...filteredExcludedIds,
+        ...pageItems.map((product) => product.id),
+      ]).size;
+      if (!checked && nextExcludedCount >= total) {
+        clearBulkSelection();
+        return;
+      }
+      setFilteredSelectionExclusions((current) => {
+        const next = { ...current };
+        pageItems.forEach((product) => {
+          if (checked) delete next[product.id];
+          else next[product.id] = product;
+        });
+        return next;
+      });
+      return;
     }
     const next = { ...selected };
     pageItems.forEach((product) => {
       next[product.id] = checked;
     });
     setSelected(next);
+    setSelectedProductCache((current) => {
+      const nextCache = { ...current };
+      pageItems.forEach((product) => {
+        if (checked) nextCache[product.id] = product;
+        else delete nextCache[product.id];
+      });
+      return nextCache;
+    });
   }
 
   // this updates one checkbox inside the selected map without losing the rest of the selected rows
   function toggleOne(id: string, checked: boolean) {
     if (isFilteredSelection) {
-      setBulkSelectionScope("page");
-      setSelected(
-        Object.fromEntries(pageItems.map((product) => [product.id, product.id === id ? checked : true])),
-      );
+      if (!checked && filteredExcludedIds.length + 1 >= total) {
+        clearBulkSelection();
+        return;
+      }
+      setFilteredSelectionExclusions((current) => {
+        const next = { ...current };
+        if (checked) delete next[id];
+        else {
+          const product = productsById.get(id);
+          if (product) next[id] = product;
+        }
+        return next;
+      });
       return;
     }
     setSelected((prev) => ({ ...prev, [id]: checked }));
+    setSelectedProductCache((current) => {
+      const next = { ...current };
+      const product = productsById.get(id);
+      if (checked && product) next[id] = product;
+      if (!checked) delete next[id];
+      return next;
+    });
   }
 
   // this opens the add product modal with a brand-new form based on the latest business defaults
   function openAdd() {
+    const nextForm = buildDefaultProductForm(brands, categories, businessDefaults);
+    setReturnAfterProductEdit("");
     setActiveProductId(null);
-    setForm(buildDefaultProductForm(brands, categories, businessDefaults));
+    setForm(nextForm);
+    setProductEditorBaseline(JSON.stringify(nextForm));
+    setProductEditorImageBaseline("");
+    setConfirmDiscardProductEditor(false);
     clearFormValidation();
     resetImageState("");
     setOpenAddEdit(true);
   }
 
+  function trackSearchSelection(
+    product: Product,
+    action: ProductSearchSelectionAction,
+  ) {
+    if (!debouncedQ || !activeSearchLogId) return;
+    void recordProductSearchSelectionApi({
+      searchLogId: activeSearchLogId,
+      productId: product.id,
+      action,
+    }).catch(() => undefined);
+  }
+
   // this opens the edit modal using the selected product's current values
   function openEdit(product: Product) {
+    trackSearchSelection(product, "EDIT_PRODUCT");
+    const nextForm = { ...product };
     setActiveProductId(product.id);
-    setForm({ ...product });
+    setForm(nextForm);
+    setProductEditorBaseline(JSON.stringify(nextForm));
+    setProductEditorImageBaseline(product.imageUrl || "");
+    setConfirmDiscardProductEditor(false);
     clearFormValidation();
     resetImageState(product.imageUrl || "");
     setOpenAddEdit(true);
+  }
+
+  function closeProductEditor() {
+    setOpenAddEdit(false);
+    setConfirmDiscardProductEditor(false);
+    setActiveProductId(null);
+    clearFormValidation();
+    resetImageState("");
+  }
+
+  function closeProductEditorAndReturn() {
+    const returnTo = returnAfterProductEdit;
+    const returnSnapshot = returnAfterProductEditSnapshot;
+    if (returnTo.startsWith("/product-lookup")) {
+      setReturnAfterProductEdit("");
+      setReturnAfterProductEditSnapshot(undefined);
+      const productLookupRestoreKey = returnSnapshot
+        ? stageProductLookupRestore(returnSnapshot)
+        : undefined;
+      navigate(returnTo, {
+        replace: true,
+        state: productLookupRestoreKey
+          ? { productLookupRestoreKey }
+          : undefined,
+      });
+      return;
+    }
+    closeProductEditor();
+  }
+
+  function requestCloseProductEditor() {
+    if (productSaveBusy) return;
+    if (isProductEditorDirty) {
+      setConfirmDiscardProductEditor(true);
+      return;
+    }
+    closeProductEditorAndReturn();
   }
 
   // this keeps the view modal and edit modal connected so the user can jump straight from one into the other
@@ -897,6 +1255,8 @@ export default function ProductsPage() {
 
   // storing the product id before opening the view modal lets the shared modal read the right product record
   function openViewProduct(product: Product) {
+    trackSearchSelection(product, "VIEW_DETAILS");
+    setSelectedProductCache((current) => ({ ...current, [product.id]: product }));
     setActiveProductId(product.id);
     setOpenView(true);
   }
@@ -948,20 +1308,35 @@ export default function ProductsPage() {
   }
 
   // validating the product form before save helps us stop obvious bad data before making any API call
-  function validateForm() {
+  function collectProductFormErrors() {
     const errors: ProductFormErrors = {};
 
     if (!form.name.trim()) {
       errors.name = "Product name is required.";
     }
-    if (!form.sku.trim()) {
-      errors.sku = "SKU is required.";
+    if (!form.brand.trim() || form.brand === "All Brands") {
+      errors.brand = "Brand is required.";
+    }
+    if (!form.category.trim() || form.category === "All Categories") {
+      errors.category = "Category is required.";
+    }
+    if (!Number.isFinite(form.ratePerPiece) || form.ratePerPiece <= 0) {
+      errors.ratePerPiece = "Purchase cost must be greater than 0.";
     }
     if (!Number.isFinite(form.retailPrice) || form.retailPrice <= 0) {
       errors.retailPrice = "Retail price must be greater than 0.";
     }
-    if (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0) {
+    if (form.wholesaleEligible && (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0)) {
       errors.wholesalePrice = "Wholesale price must be greater than 0.";
+    }
+    if (form.wholesaleEligible && form.wholesalePrice > form.retailPrice) {
+      errors.wholesalePrice = "Wholesale price cannot be higher than retail price.";
+    }
+    if (form.retailPrice > 0 && form.ratePerPiece > form.retailPrice) {
+      errors.retailPrice = "Retail price is below purchase cost. Increase it before saving.";
+    }
+    if (form.wholesaleEligible && form.wholesalePrice > 0 && form.ratePerPiece > form.wholesalePrice) {
+      errors.wholesalePrice = "Wholesale price is below purchase cost. Increase it before saving.";
     }
     if (
       form.thresholdQtyMode === "custom" &&
@@ -988,17 +1363,47 @@ export default function ProductsPage() {
       errors.quantityStep = "Piece-based products must use a step of 1.";
     }
 
-    setFormErrors(errors); // pushing every collected validation message into state at once
+    return errors;
+  }
+
+  function validateForm() {
+    const errors = collectProductFormErrors();
+    setFormErrors(errors);
     return Object.keys(errors).length === 0;
+  }
+
+  function validateProductStep(step: "basic" | "units" | "pricing" | "stock") {
+    const errors = collectProductFormErrors();
+    const keysByStep: Record<typeof step, Array<keyof ProductFormErrors>> = {
+      basic: ["name", "brand", "category", "image", "sku"],
+      units: ["packageQuantity", "quantityStep"],
+      pricing: ["ratePerPiece", "wholesalePrice", "retailPrice", "thresholdQty"],
+      stock: ["stock", "lowStockThreshold"],
+    };
+    const stepKeys = keysByStep[step];
+    const stepErrors = Object.fromEntries(
+      stepKeys.filter((key) => errors[key]).map((key) => [key, errors[key]]),
+    ) as ProductFormErrors;
+    setFormErrors((current) => ({
+      ...Object.fromEntries(Object.entries(current).filter(([key]) => !stepKeys.includes(key as keyof ProductFormErrors))),
+      ...stepErrors,
+    }));
+    return Object.keys(stepErrors).length === 0;
   }
 
   // this saves either a new product or edits an existing one, then optionally uploads its image
   async function saveProduct() {
+    if (productSaveBusy) return;
     // stopping here keeps invalid form data from reaching the backend
     if (!validateForm()) return;
 
     try {
+      setProductSaveBusy(true);
       const wasEditing = Boolean(activeProductId);
+      const editReturnTo = wasEditing ? returnAfterProductEdit : "";
+      const editReturnSnapshot = wasEditing
+        ? returnAfterProductEditSnapshot
+        : undefined;
       // normalizing user-entered values before save keeps empty strings and default thresholds consistent
       const payload = {
         ...form,
@@ -1026,6 +1431,9 @@ export default function ProductsPage() {
         wholesaleEligible: Boolean(form.wholesaleEligible),
         sourceCitation: form.sourceCitation?.trim() || "",
         category: form.category?.trim() || "",
+        wholesalePrice: form.wholesaleEligible
+          ? Number(form.wholesalePrice)
+          : Number(form.retailPrice),
         thresholdQty:
           form.thresholdQtyMode === "default"
             ? businessDefaults.defaultWholesaleQtyThreshold
@@ -1059,33 +1467,78 @@ export default function ProductsPage() {
       }
 
       // resetting the editor state after a successful save keeps the next open modal clean
-      setOpenAddEdit(false);
-      setActiveProductId(null);
-      clearFormValidation();
-      resetImageState("");
-      await loadProducts();
       clearBulkSelection();
 
-      // we still show a partial-success message if the product save worked but the image upload did not
+      // A lookup-originated edit returns immediately to the preserved lookup
+      // context. That page reloads the saved product, so refreshing this hidden
+      // catalog first would only leave the user staring at an unrelated page.
+      if (wasEditing && editReturnTo.startsWith("/product-lookup")) {
+        setReturnAfterProductEdit("");
+        setReturnAfterProductEditSnapshot(undefined);
+        toastMsg(
+          imageUploadError ? "danger" : "success",
+          imageUploadError
+            ? `Product saved, but image upload failed: ${imageUploadError}`
+            : "Product updated.",
+        );
+        const restoredSnapshot = editReturnSnapshot
+          ? {
+              ...editReturnSnapshot,
+              products: editReturnSnapshot.products.map((product) =>
+                product.id === savedProduct.id ? savedProduct : product,
+              ),
+              mobileProducts: editReturnSnapshot.mobileProducts.map((product) =>
+                product.id === savedProduct.id ? savedProduct : product,
+              ),
+            }
+          : undefined;
+        const productLookupRestoreKey = restoredSnapshot
+          ? stageProductLookupRestore(restoredSnapshot)
+          : undefined;
+        navigate(editReturnTo, {
+          replace: true,
+          state: productLookupRestoreKey
+            ? { productLookupRestoreKey }
+            : undefined,
+        });
+        return;
+      }
+
+      closeProductEditor();
+      const [catalogRefresh] = await Promise.allSettled([loadProducts(), loadMeta()]);
+      if (catalogRefresh.status === "rejected") {
+        toastMsg("info", "Product saved. The catalog list will refresh automatically when the connection recovers.");
+      }
+
+      if (!wasEditing) {
+        setProductSaveSuccess({ product: savedProduct, imageUploadError });
+        return;
+      }
+
+      // edits stay lightweight; creation uses the richer next-action dialog
       if (imageUploadError) {
         toastMsg(
           "danger",
-          wasEditing
-            ? `Product saved, but image upload failed: ${imageUploadError}`
-            : `Product added, but image upload failed: ${imageUploadError}`,
+          `Product saved, but image upload failed: ${imageUploadError}`,
         );
         return;
       }
 
-      toastMsg("success", wasEditing ? "Product updated." : "Product added.");
+      toastMsg("success", "Product updated.");
     } catch (error: any) {
       // this handles any create or update failure from the product API
       toastMsg("danger", error?.message || "Failed to save product.");
+    } finally {
+      setProductSaveBusy(false);
     }
   }
 
   // this bulk action turns every selected product back to Active state
   async function activateSelected() {
+    if (isFilteredSelection) {
+      toastMsg("info", "Activate requires specific product selection. Clear this selection and choose the exact rows you want to change.");
+      return;
+    }
     if (selectedIds.length === 0) return;
     const idsToActivate = selectedProducts
       .filter((product) => product.status !== "Active")
@@ -1109,27 +1562,12 @@ export default function ProductsPage() {
     }
   }
 
-  // this opens the shared bulk confirmation modal for deactivating selected products
-  function requestDeactivateSelected() {
-    if (selectedIds.length === 0) return;
-    setBulkAction({
-      title: "Confirm bulk deactivate",
-      message:
-        selectedIds.length === 1
-          ? "This product will be marked inactive and removed from active selling flows."
-          : `${selectedIds.length} selected products will be marked inactive and removed from active selling flows.`,
-      confirmLabel: "Deactivate selected",
-      successKind: "success",
-      successMessage:
-        selectedIds.length === 1
-          ? "Selected product deactivated."
-          : "Selected products deactivated.",
-      targetStatus: "Inactive",
-    });
-  }
-
-  // this opens the same bulk confirmation modal for setting selected products inactive
+  // this opens the bulk confirmation modal for the single reversible inactive action
   function requestSoftDeleteSelected() {
+    if (isFilteredSelection) {
+      toastMsg("info", "Status changes require specific product selection. Clear this selection and choose the exact rows you want to change.");
+      return;
+    }
     if (selectedIds.length === 0) return;
     setBulkAction({
       title: "Set selected inactive",
@@ -1237,7 +1675,7 @@ export default function ProductsPage() {
   async function handleImportCsv() {
     // requiring a file first avoids sending an empty import request
     if (!importFile) {
-      setImportError("Choose a CSV, PDF, or image rate list before uploading.");
+      setImportError("Choose a CSV, Excel, PDF, or image rate list before uploading.");
       return;
     }
 
@@ -1251,6 +1689,19 @@ export default function ProductsPage() {
       const isImage =
         importFile.type.startsWith("image/") ||
         /\.(png|jpe?g|webp)$/i.test(lowerName);
+      const isSpreadsheet =
+        /\.(csv|xlsx)$/i.test(lowerName) ||
+        importFile.type === "text/csv" ||
+        importFile.type ===
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+      if (!isPdf && !isImage && !isSpreadsheet) {
+        setImportError(
+          lowerName.endsWith(".xls")
+            ? "Legacy .xls files are not supported. Save the workbook as .xlsx or CSV and try again."
+            : "This file type is not supported. Choose CSV, XLSX, PDF, PNG, JPG, or WebP.",
+        );
+        return;
+      }
       const result = (await (isPdf
         ? importPdfApi(importFile)
         : isImage
@@ -1331,6 +1782,10 @@ export default function ProductsPage() {
   }
 
   function openStockManagerForSelection() {
+    if (isFilteredSelection) {
+      toastMsg("info", "Stock movement requires specific product selection. Clear this selection and choose the exact rows you want to receive or correct.");
+      return;
+    }
     const selectedStockIds = selectedProducts.map((product) => product.id);
     setStockProductIds(selectedStockIds);
     setStockRows(
@@ -1340,6 +1795,7 @@ export default function ProductsPage() {
     setStockProductQuery("");
     setStockLookupResults([]);
     setStockLineError("");
+    setStockFieldErrors({});
     setStockReason("");
     setStockMode("receive");
     setMobileStockStep(1);
@@ -1373,6 +1829,7 @@ export default function ProductsPage() {
     setStockProductQuery("");
     setStockLookupResults([]);
     setStockLineError("");
+    setStockFieldErrors({});
     setStockReason("Received after product import");
     setStockMode("receive");
     setMobileStockStep(2);
@@ -1393,28 +1850,79 @@ export default function ProductsPage() {
     if (importedIds[0]) setStockFocusProductId(importedIds[0]);
   }
 
-  function openBulkPriceForSelection() {
+  async function openBulkPriceForSelection() {
     if (selectedCount === 0) return;
     if (isFilteredSelection) {
       setPriceRows({});
       setPriceReason("");
+      setPriceSearch("");
+      setPriceMarginTargetIds({});
+      setBulkPriceErrors({});
+      setConfirmApplyPriceMargins(false);
+      setConfirmBulkPriceSave(false);
       setOpenBulkPrice(true);
       return;
     }
+
+    let resolvedProducts = selectedProducts;
+    try {
+      setPriceBusy(true);
+      resolvedProducts = await fetchProductsByIds(selectedIds);
+      const resolvedIds = new Set(resolvedProducts.map((product) => product.id));
+      const unavailableCount = selectedIds.filter((id) => !resolvedIds.has(id)).length;
+      if (unavailableCount > 0) {
+        setSelected(Object.fromEntries(resolvedProducts.map((product) => [product.id, true])));
+        toastMsg("info", `${unavailableCount} unavailable product${unavailableCount === 1 ? " was" : "s were"} removed from the selection.`);
+      }
+      setSelectedProductCache(
+        Object.fromEntries(resolvedProducts.map((product) => [product.id, product])),
+      );
+    } catch (error: any) {
+      toastMsg("danger", error?.message || "Selected products could not be loaded.");
+      return;
+    } finally {
+      setPriceBusy(false);
+    }
+    if (resolvedProducts.length === 0) return;
     setPriceRows(
       Object.fromEntries(
-        selectedProducts.map((product) => [
+        resolvedProducts.map((product) => [
           product.id,
           {
-            retailPrice: Number(product.retailPrice || 0),
-            wholesalePrice: Number(product.wholesalePrice || 0),
-            ratePerPiece: Number(product.ratePerPiece || product.wholesalePrice || 0),
+            retailPrice: String(product.retailPrice || ""),
+            wholesalePrice: String(product.wholesalePrice || ""),
+            ratePerPiece: String(product.ratePerPiece || product.wholesalePrice || ""),
           },
         ]),
       ),
     );
     setPriceReason("");
+    setPriceSearch("");
+    setPriceMarginTargetIds(Object.fromEntries(resolvedProducts.map((product) => [product.id, true])));
+    setBulkPriceErrors({});
+    setConfirmApplyPriceMargins(false);
+    setConfirmBulkPriceSave(false);
     setOpenBulkPrice(true);
+  }
+
+  async function confirmDiscardStockAndDeleteOne() {
+    if (!activeProductId) return;
+    try {
+      setDeleteBusy(true);
+      const result = await discardStockAndDeleteProduct(activeProductId);
+      toastMsg("success", result.message || "Product stock was cleared and the product was permanently deleted.");
+      setOpenConfirmDelete(false);
+      setActiveProductId(null);
+      setDeleteSafety(null);
+      clearBulkSelection();
+      await loadProducts();
+    } catch (error: any) {
+      const safety = error?.response?.data?.safety as ProductDeleteSafety | undefined;
+      if (safety) setDeleteSafety(safety);
+      toastMsg("danger", error?.response?.data?.error || error?.message || "Stock could not be cleared and the product was not deleted.");
+    } finally {
+      setDeleteBusy(false);
+    }
   }
 
   function applyStockQtyToAllSelected() {
@@ -1460,13 +1968,17 @@ export default function ProductsPage() {
       categories.find((item) => item !== "All Categories") || "";
     setQuickStockProduct({
       name,
-      sku: name ? buildQuickProductSku(name) : "",
+      sku: "",
       brand: firstBrand,
       category: firstCategory,
       ratePerPiece: "",
       retailPrice: "",
       saleUnit: "PIECE",
     });
+    setQuickStockErrors({});
+    setQuickStockError("");
+    setQuickStockErrors({});
+    setQuickStockError("");
     setQuickStockError("");
     setOpenStockQuickAdd(true);
   }
@@ -1493,32 +2005,32 @@ export default function ProductsPage() {
     const ratePerPiece = Number(quickStockProduct.ratePerPiece || 0);
     const retailPrice = Number(quickStockProduct.retailPrice || 0);
     const saleUnit = quickStockProduct.saleUnit || "PIECE";
-    const sku = quickStockProduct.sku.trim() || buildQuickProductSku(name);
-
-    if (!name) {
-      setQuickStockError("Product name is required.");
-      return;
-    }
-    if (!brandName) {
-      setQuickStockError("Choose a brand before saving.");
-      return;
-    }
-    if (!categoryName) {
-      setQuickStockError("Choose a category before saving.");
-      return;
-    }
+    const sku = quickStockProduct.sku.trim();
+    const validationErrors: QuickStockErrors = {};
+    if (!name) validationErrors.name = "Product name is required.";
+    if (!brandName) validationErrors.brand = "Choose a brand before saving.";
+    if (!categoryName) validationErrors.category = "Choose a category before saving.";
     if (!Number.isFinite(ratePerPiece) || ratePerPiece <= 0) {
-      setQuickStockError("Rate/base price must be greater than 0.");
-      return;
+      validationErrors.ratePerPiece = "Purchase cost must be greater than 0.";
     }
     if (!Number.isFinite(retailPrice) || retailPrice <= 0) {
-      setQuickStockError("Retail price must be greater than 0.");
+      validationErrors.retailPrice = "Retail price must be greater than 0.";
+    } else if (Number.isFinite(ratePerPiece) && retailPrice < ratePerPiece) {
+      validationErrors.retailPrice = "Retail price cannot be below purchase cost.";
+    }
+    setQuickStockErrors(validationErrors);
+    const firstInvalidField = Object.keys(validationErrors)[0] as keyof QuickStockErrors | undefined;
+    if (firstInvalidField) {
+      window.setTimeout(() => {
+        focusInvalidField(document.getElementById(`quick-stock-${firstInvalidField}`));
+      }, 0);
       return;
     }
 
     try {
       setQuickStockBusy(true);
       setQuickStockError("");
+      setQuickStockErrors({});
       const created = await createProduct({
         name,
         productName: name,
@@ -1566,29 +2078,57 @@ export default function ProductsPage() {
   }
 
   function applyPriceMarginsToSelected() {
-    setPriceRows((current) =>
-      Object.fromEntries(
-        selectedProducts.map((product) => {
-          const row = current[product.id] || {
-            retailPrice: product.retailPrice,
-            wholesalePrice: product.wholesalePrice,
-            ratePerPiece: product.ratePerPiece,
+    setPriceRows((current) => {
+      const next = { ...current };
+      selectedProducts.forEach((product) => {
+          if (!priceMarginTargetIds[product.id]) return;
+          const row = next[product.id] || {
+            retailPrice: String(product.retailPrice),
+            wholesalePrice: String(product.wholesalePrice),
+            ratePerPiece: String(product.ratePerPiece),
           };
           const rate = Number(row.ratePerPiece || 0);
-          return [
-            product.id,
-            {
+          next[product.id] = {
               ...row,
-              wholesalePrice: roundMoney(rate * (1 + Number(wholesaleMarginPercent || 0) / 100)),
-              retailPrice: roundMoney(rate * (1 + Number(retailMarginPercent || 0) / 100)),
-            },
-          ];
-        }),
-      ),
-    );
+              wholesalePrice: String(priceFromGrossMargin(rate, wholesaleMarginPercent)),
+              retailPrice: String(priceFromGrossMargin(rate, retailMarginPercent)),
+          };
+      });
+      return next;
+    });
+    setConfirmApplyPriceMargins(false);
+  }
+
+  function setVisiblePriceMarginTargets(checked: boolean) {
+    setPriceMarginTargetIds((current) => {
+      const next = { ...current };
+      visibleBulkPriceProducts.forEach((product) => { next[product.id] = checked; });
+      return next;
+    });
+  }
+
+  function validateStockSetupFields() {
+    const errors: StockFieldErrors = {};
+    if (!stockReason.trim()) errors.reason = "Reason is required for stock changes.";
+    if (stockMode === "receive" && !stockSupplierName.trim()) {
+      errors.supplier = "Choose or enter a supplier before continuing.";
+    }
+    setStockFieldErrors(errors);
+    const firstField = Object.keys(errors)[0] as keyof StockFieldErrors | undefined;
+    if (!firstField) return true;
+
+    setMobileStockStep(1);
+    window.setTimeout(() => {
+      const targetId = firstField === "supplier"
+        ? stockSupplierMode === "new" ? "stock-supplier-input" : "stock-supplier-select"
+        : "stock-reason";
+      focusInvalidField(document.getElementById(targetId));
+    }, 0);
+    return false;
   }
 
   async function confirmStockManager() {
+    if (!validateStockSetupFields()) return;
     const rows = stockManagerProducts
       .map((product) => ({ product, qty: Math.abs(Number(stockRows[product.id] || 0)) }))
       .filter((row) => row.qty > 0);
@@ -1596,18 +2136,10 @@ export default function ProductsPage() {
       setStockLineError("Add at least one product and enter a quantity.");
       return;
     }
-    if (!stockReason.trim()) {
-      setStockLineError("Reason is required for stock changes.");
-      return;
-    }
-    if (stockMode === "receive" && !stockSupplierName.trim()) {
-      setStockLineError("Supplier name is required when receiving stock.");
-      return;
-    }
-
     try {
       setStockBusy(true);
       setStockLineError("");
+      setStockFieldErrors({});
       if (stockMode === "receive") {
         const result = await receiveStockBatchApi({
           supplierName: stockSupplierName.trim(),
@@ -1641,6 +2173,7 @@ export default function ProductsPage() {
       setStockProductQuery("");
       setStockLookupResults([]);
       setStockLineError("");
+      setStockFieldErrors({});
       setStockBillFiles([]);
       setStockSelectedBillIds([]);
       setStockShowDocumentPicker(false);
@@ -1663,14 +2196,7 @@ export default function ProductsPage() {
     setStockLineError("");
 
     if (mobileStockStep === 1) {
-      if (!stockReason.trim()) {
-        setStockLineError("Reason is required for stock changes.");
-        return;
-      }
-      if (stockMode === "receive" && !stockSupplierName.trim()) {
-        setStockLineError("Choose or enter a supplier before adding products.");
-        return;
-      }
+      if (!validateStockSetupFields()) return;
       setMobileStockStep(2);
       return;
     }
@@ -1691,8 +2217,10 @@ export default function ProductsPage() {
     if (stockBusy || quickStockBusy) return;
     setOpenStockQuickAdd(false);
     setQuickStockError("");
+    setQuickStockErrors({});
     setStockSelectedBillIds([]);
     setStockShowDocumentPicker(false);
+    setStockFieldErrors({});
     setOpenStockManager(false);
   }
 
@@ -1700,9 +2228,18 @@ export default function ProductsPage() {
     if (quickStockBusy) return;
     setOpenStockQuickAdd(false);
     setQuickStockError("");
+    setQuickStockErrors({});
   }
 
   function renderQuickStockProductForm() {
+    function clearQuickStockFieldError(field: keyof QuickStockErrors) {
+      setQuickStockErrors((current) => ({ ...current, [field]: undefined }));
+      setQuickStockError("");
+    }
+    const quickStockControlTone = (field: keyof QuickStockErrors) =>
+      quickStockErrors[field]
+        ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-2 focus:ring-red-100"
+        : "border border-[#CFCFD3] bg-white focus:border-[#3B82F6] focus:ring-2 focus:ring-blue-100";
     return (
       <div className="space-y-[14px]">
         <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
@@ -1711,17 +2248,21 @@ export default function ProductsPage() {
               Product name
             </div>
             <input
+              id="quick-stock-name"
               value={quickStockProduct.name}
+              aria-invalid={Boolean(quickStockErrors.name)}
+              aria-describedby={quickStockErrors.name ? "quick-stock-name-error" : undefined}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
                   ...current,
                   name: event.target.value,
                 }));
-                setQuickStockError("");
+                clearQuickStockFieldError("name");
               }}
               placeholder="e.g. Sauce Bottle Big 570"
-              className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold text-[#000000] outline-none"
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-[13px] font-semibold text-[#000000] outline-none ${quickStockControlTone("name")}`}
             />
+            {quickStockErrors.name ? <span id="quick-stock-name-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.name}</span> : null}
           </label>
 
           <label>
@@ -1747,6 +2288,7 @@ export default function ProductsPage() {
               Sale unit
             </div>
             <ProjectSelect
+              aria-label="Sale unit"
               value={quickStockProduct.saleUnit}
               onChange={(event) =>
                 setQuickStockProduct((current) => ({
@@ -1768,15 +2310,19 @@ export default function ProductsPage() {
               Brand
             </div>
             <ProjectSelect
+              id="quick-stock-brand"
+              aria-label="Brand"
+              aria-invalid={Boolean(quickStockErrors.brand)}
+              aria-describedby={quickStockErrors.brand ? "quick-stock-brand-error" : undefined}
               value={quickStockProduct.brand}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
                   ...current,
                   brand: event.target.value,
                 }));
-                setQuickStockError("");
+                clearQuickStockFieldError("brand");
               }}
-              className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-bold text-[#000000] outline-none"
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-[13px] font-bold text-[#000000] outline-none ${quickStockControlTone("brand")}`}
             >
               <option value="">Choose brand</option>
               {brands
@@ -1787,6 +2333,7 @@ export default function ProductsPage() {
                   </option>
                 ))}
             </ProjectSelect>
+            {quickStockErrors.brand ? <span id="quick-stock-brand-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.brand}</span> : null}
           </label>
 
           <label>
@@ -1794,15 +2341,19 @@ export default function ProductsPage() {
               Category
             </div>
             <ProjectSelect
+              id="quick-stock-category"
+              aria-label="Category"
+              aria-invalid={Boolean(quickStockErrors.category)}
+              aria-describedby={quickStockErrors.category ? "quick-stock-category-error" : undefined}
               value={quickStockProduct.category}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
                   ...current,
                   category: event.target.value,
                 }));
-                setQuickStockError("");
+                clearQuickStockFieldError("category");
               }}
-              className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-bold text-[#000000] outline-none"
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-[13px] font-bold text-[#000000] outline-none ${quickStockControlTone("category")}`}
             >
               <option value="">Choose category</option>
               {categories
@@ -1813,6 +2364,7 @@ export default function ProductsPage() {
                   </option>
                 ))}
             </ProjectSelect>
+            {quickStockErrors.category ? <span id="quick-stock-category-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.category}</span> : null}
           </label>
 
           <label>
@@ -1820,10 +2372,13 @@ export default function ProductsPage() {
               Rate / base price
             </div>
             <input
+              id="quick-stock-ratePerPiece"
               type="number"
               min={0}
               step="0.01"
               value={quickStockProduct.ratePerPiece}
+              aria-invalid={Boolean(quickStockErrors.ratePerPiece)}
+              aria-describedby={quickStockErrors.ratePerPiece ? "quick-stock-rate-error" : undefined}
               onChange={(event) => {
                 const value = event.target.value;
                 setQuickStockProduct((current) => ({
@@ -1834,10 +2389,11 @@ export default function ProductsPage() {
                       ? current.retailPrice
                       : String(roundMoney(Number(value) * 1.18)),
                 }));
-                setQuickStockError("");
+                clearQuickStockFieldError("ratePerPiece");
               }}
-              className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none"
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none ${quickStockControlTone("ratePerPiece")}`}
             />
+            {quickStockErrors.ratePerPiece ? <span id="quick-stock-rate-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.ratePerPiece}</span> : null}
           </label>
 
           <label>
@@ -1845,19 +2401,23 @@ export default function ProductsPage() {
               Retail price
             </div>
             <input
+              id="quick-stock-retailPrice"
               type="number"
               min={0}
               step="0.01"
               value={quickStockProduct.retailPrice}
+              aria-invalid={Boolean(quickStockErrors.retailPrice)}
+              aria-describedby={quickStockErrors.retailPrice ? "quick-stock-retail-error" : undefined}
               onChange={(event) => {
                 setQuickStockProduct((current) => ({
                   ...current,
                   retailPrice: event.target.value,
                 }));
-                setQuickStockError("");
+                clearQuickStockFieldError("retailPrice");
               }}
-              className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none"
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none ${quickStockControlTone("retailPrice")}`}
             />
+            {quickStockErrors.retailPrice ? <span id="quick-stock-retail-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.retailPrice}</span> : null}
           </label>
         </div>
 
@@ -1888,13 +2448,8 @@ export default function ProductsPage() {
     );
   }
 
-  async function confirmBulkPriceUpdate() {
-    if (!priceReason.trim()) {
-      toastMsg("danger", "Reason is required for bulk price changes.");
-      return;
-    }
-
-    const updates = isFilteredSelection
+  function buildBulkPriceUpdates() {
+    return isFilteredSelection
       ? []
       : selectedProducts.map((product) => ({
           productId: product.id,
@@ -1902,12 +2457,47 @@ export default function ProductsPage() {
           wholesalePrice: Number(priceRows[product.id]?.wholesalePrice || 0),
           ratePerPiece: Number(priceRows[product.id]?.ratePerPiece || priceRows[product.id]?.wholesalePrice || 0),
         }));
+  }
 
-    if (!isFilteredSelection && updates.some((row) => row.retailPrice <= 0 || row.wholesalePrice <= 0)) {
-      toastMsg("danger", "Retail and wholesale prices must be greater than 0.");
+  function requestBulkPriceUpdate() {
+    const updates = buildBulkPriceUpdates();
+
+    const rowErrors: NonNullable<BulkPriceErrors["rows"]> = {};
+    if (!isFilteredSelection) {
+      updates.forEach((row) => {
+        const errors: Partial<Record<PriceField, string>> = {};
+        if (!Number.isFinite(row.ratePerPiece) || row.ratePerPiece <= 0) errors.ratePerPiece = "Enter a rate greater than 0.";
+        if (!Number.isFinite(row.wholesalePrice) || row.wholesalePrice <= 0) errors.wholesalePrice = "Enter a wholesale price greater than 0.";
+        if (!Number.isFinite(row.retailPrice) || row.retailPrice <= 0) errors.retailPrice = "Enter a retail price greater than 0.";
+        if (Object.keys(errors).length > 0) rowErrors[row.productId] = errors;
+      });
+    }
+    const nextErrors: BulkPriceErrors = {
+      reason: priceReason.trim() ? undefined : "Enter a reason so this price change has an audit record.",
+      rows: Object.keys(rowErrors).length > 0 ? rowErrors : undefined,
+    };
+    setBulkPriceErrors(nextErrors);
+    const firstInvalidRow = Object.entries(rowErrors)[0];
+    const firstInvalidField = firstInvalidRow
+      ? (Object.keys(firstInvalidRow[1])[0] as PriceField | undefined)
+      : undefined;
+    const firstInvalidPrice = firstInvalidRow && firstInvalidField
+      ? document.querySelector<HTMLElement>(`[data-price-field="${firstInvalidRow[0]}-${firstInvalidField}"]`)
+      : null;
+    if (firstInvalidPrice) {
+      focusInvalidField(firstInvalidPrice);
+      return;
+    }
+    if (nextErrors.reason) {
+      focusInvalidField(priceReasonRef);
       return;
     }
 
+    setConfirmBulkPriceSave(true);
+  }
+
+  async function confirmBulkPriceUpdate() {
+    const updates = buildBulkPriceUpdates();
     try {
       setPriceBusy(true);
       const result = await bulkUpdateProductPricesApi({
@@ -1916,6 +2506,7 @@ export default function ProductsPage() {
           ? {
               scope: "FILTERED" as const,
               filters: currentProductFilters,
+              excludedProductIds: filteredExcludedIds,
               wholesaleMarginPercent,
               retailMarginPercent,
             }
@@ -1929,6 +2520,7 @@ export default function ProductsPage() {
             ? `${result.updatedCount} matching product prices updated.`
             : "Selected product prices updated.",
       );
+      setConfirmBulkPriceSave(false);
       setOpenBulkPrice(false);
       clearBulkSelection();
       await loadProducts();
@@ -1992,11 +2584,43 @@ export default function ProductsPage() {
     }
   }
 
+  async function handleSaveReviewedPdfRows(rows: ReviewedPdfImportRowPayload[]) {
+    if (!pdfReviewBatch) throw new Error("Open an import review before saving rows.");
+    const result = await saveReviewedProductImportRowsApi(pdfReviewBatch.id, rows);
+    const savedById = new Map(result.rows.map((row) => [row.id, row]));
+    setPdfReviewBatch((current) =>
+      current
+        ? {
+            ...current,
+            rows: current.rows.map((row) => savedById.get(row.id) || row),
+          }
+        : current,
+    );
+  }
+
   return (
     <div className="space-y-[14px]">
+      {openingRequestedEditProduct ? (
+        <div
+          className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/25 px-5 backdrop-blur-[2px]"
+          role="status"
+          aria-live="polite"
+          aria-label="Opening product editor"
+        >
+          <div className="flex min-h-20 items-center gap-3 rounded-[16px] border border-slate-200 bg-white px-5 py-4 shadow-2xl">
+            <Icon name="progress_activity" className="animate-spin text-[24px] text-slate-950" />
+            <div>
+              <div className="text-[14px] font-extrabold text-slate-950">Opening product editor</div>
+              <div className="mt-0.5 text-[12px] font-semibold text-slate-500">Loading the selected product…</div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
       {/* handing all current filter state and bulk action callbacks into the shared filter/header card */}
       <div ref={productCatalogControlsRef}>
         <ProductsFiltersCard
+          stockTracked={stockTracked}
           q={q}
           setQ={setQ}
           brands={brands}
@@ -2009,10 +2633,7 @@ export default function ProductsPage() {
           setStockStatus={updateStockStatus}
           status={status}
           setStatus={updateStatus}
-          lowOnly={lowOnly}
-          setLowOnly={updateLowOnly}
           onClear={clearFilters}
-          selectedCount={selectedCount}
           onAdd={openAdd}
           onImport={() => {
             resetImportState();
@@ -2023,10 +2644,7 @@ export default function ProductsPage() {
             ]);
           }}
           onManageStock={openStockManagerForSelection}
-          onBulkPrice={openBulkPriceForSelection}
-          onActivate={activateSelected}
-          onDeactivate={requestDeactivateSelected}
-          onSoftDelete={requestSoftDeleteSelected}
+          onSearchInsights={isAdmin ? () => setOpenSearchInsights(true) : undefined}
         />
       </div>
 
@@ -2043,47 +2661,42 @@ export default function ProductsPage() {
           <div
             role="toolbar"
             aria-label="Selected product actions"
-            className="animate-selection-bar-enter overflow-hidden rounded-[12px] border border-[#9DD8B2] bg-[#F3FBF6] text-[#11120d] shadow-sm"
+            className="animate-selection-bar-enter overflow-hidden rounded-[14px] border border-[#9DD8B2] bg-[#F3FBF6] text-[#11120d] shadow-sm"
           >
             {/* ── main row: always visible, smoothly adapts padding ── */}
             <div
-              className="flex items-center gap-2 px-3 transition-[padding,min-height] duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
-              style={{ padding: isSelectionPinned ? "6px 12px" : "10px 12px", minHeight: isSelectionPinned ? 54 : 44 }}
+              className="flex items-center gap-2 px-3 py-2 transition-[padding,min-height] duration-[280ms] ease-[cubic-bezier(0.16,1,0.3,1)]"
+              style={{ minHeight: 52 }}
             >
-              <span className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-[#179B4D] text-white">
-                <Icon name="check" className="text-[16px]" />
+              <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-[#179B4D] text-white">
+                <Icon name="check" sizePx={16} />
               </span>
               <button
                 type="button"
-                onClick={() => setOpenMobileBulkActions(true)}
-                className="min-w-0 flex-1 text-left transition-[font-size] duration-200"
-                style={{ fontSize: isSelectionPinned ? 13 : 15 }}
+                onClick={() => setOpenSelectedProducts(true)}
+                className="min-w-0 flex-1 text-left"
               >
-                <span className="truncate font-extrabold" aria-live="polite">
+                <span className="block truncate text-[13px] font-extrabold text-[#11120d]" aria-live="polite">
                   {isFilteredSelection
-                    ? `All ${total.toLocaleString()} matching`
+                    ? `${selectedCount.toLocaleString()} of ${total.toLocaleString()} matching`
                     : `${selectedIds.length.toLocaleString()} selected`}
                 </span>
-                {!isSelectionPinned && (
-                  <span className="ml-1 text-[12px] font-semibold text-[#567060]">Actions</span>
-                )}
+                <span className="block text-[10px] font-semibold text-[#567060]">Tap to review selection</span>
               </button>
-              {isSelectionPinned && (
-                <button
-                  type="button"
-                  onClick={() => setOpenMobileBulkActions(true)}
-                  className="inline-flex h-9 shrink-0 items-center justify-center rounded-[10px] border border-[#9DD8B2] bg-white px-3 text-[12px] font-bold text-[#16753A]"
-                >
-                  Actions
-                </button>
-              )}
+              <button
+                type="button"
+                onClick={() => setOpenMobileBulkActions(true)}
+                className="inline-flex h-9 shrink-0 items-center justify-center rounded-[9px] bg-[#11120d] px-3 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27]"
+              >
+                Actions
+              </button>
               <button
                 type="button"
                 onClick={clearBulkSelection}
-                className="shrink-0 px-1 text-[12px] font-bold text-[#16753A] underline underline-offset-4 transition-[min-height] duration-200"
-                style={{ minHeight: isSelectionPinned ? 36 : 44 }}
+                className="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[9px] border border-[#9DD8B2] bg-white text-[#16753A] transition hover:bg-[#EAF8EF]"
+                aria-label="Clear product selection"
               >
-                Clear
+                <Icon name="close" sizePx={18} />
               </button>
             </div>
 
@@ -2093,10 +2706,9 @@ export default function ProductsPage() {
               data-collapsed={isSelectionPinned ? "true" : "false"}
             >
               <div>
-                <div className="flex gap-4 border-t border-[#D8EADF] px-3 py-2 text-[12px] font-bold text-[#16753A] overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-                  <button type="button" onClick={() => toggleAllOnPage(true)} className="shrink-0 underline underline-offset-4">Select page ({pageItems.length})</button>
-                  {canSelectAllMatching ? <button type="button" onClick={selectAllMatchingProducts} className="shrink-0 underline underline-offset-4">Select all {total.toLocaleString()} matching</button> : null}
-                  <button type="button" onClick={() => setOpenMobileBulkActions(true)} className="ml-auto shrink-0 underline underline-offset-4">Choose action</button>
+                <div className="grid grid-cols-2 gap-2 border-t border-[#D8EADF] p-2 text-[11px] font-extrabold text-[#16753A]">
+                  <button type="button" onClick={() => toggleAllOnPage(true)} className="inline-flex h-9 items-center justify-center rounded-[9px] border border-[#9DD8B2] bg-white px-2 transition hover:bg-[#EAF8EF]">Select page ({pageItems.length})</button>
+                  {canSelectAllMatching ? <button type="button" onClick={selectAllMatchingProducts} className="inline-flex h-9 items-center justify-center rounded-[9px] border border-[#9DD8B2] bg-white px-2 transition hover:bg-[#EAF8EF]">Select all {total.toLocaleString()}</button> : <button type="button" onClick={() => setOpenSelectedProducts(true)} className="inline-flex h-9 items-center justify-center rounded-[9px] border border-[#9DD8B2] bg-white px-2 transition hover:bg-[#EAF8EF]">Review selected</button>}
                 </div>
               </div>
             </div>
@@ -2111,7 +2723,7 @@ export default function ProductsPage() {
               : ""
           }`}
         >
-          <div className="animate-selection-bar-enter rounded-[12px] border border-[#CFCFD3] bg-white px-[16px] py-[12px] shadow-sm">
+          <div className="animate-selection-bar-enter border-y border-[#D9DCE1] bg-white px-[16px] py-[12px] shadow-[0_8px_18px_-18px_rgba(15,23,42,0.65)]">
             <div className="flex flex-col gap-[10px] lg:flex-row lg:items-center lg:justify-between">
               <div className="flex items-start gap-[10px]">
                 <span className="mt-[2px] inline-flex h-[28px] w-[28px] items-center justify-center rounded-[8px] bg-[#F3F4F6] text-[#11120d]">
@@ -2120,12 +2732,14 @@ export default function ProductsPage() {
                 <div>
                   <div className="text-[14px] font-bold text-[#11120d]">
                     {isFilteredSelection
-                      ? `All ${total.toLocaleString()} matching products selected`
+                      ? `${selectedCount.toLocaleString()} of ${total.toLocaleString()} matching products selected`
                       : `${selectedIds.length.toLocaleString()} product${selectedIds.length === 1 ? "" : "s"} selected`}
                   </div>
                   <div className="mt-[2px] text-[12px] font-medium text-[#6B7280]">
                     {isFilteredSelection
-                      ? "Bulk actions will use the current search and filters."
+                      ? filteredExcludedIds.length > 0
+                        ? `${filteredExcludedIds.length.toLocaleString()} product${filteredExcludedIds.length === 1 ? " is" : "s are"} excluded. Bulk price changes will skip them.`
+                        : "Bulk actions will use the current search and filters."
                       : canSelectAllMatching
                         ? `Only this page is selected. There are ${total.toLocaleString()} products matching your filters.`
                         : "Bulk actions will apply only to the selected rows."}
@@ -2142,6 +2756,23 @@ export default function ProductsPage() {
                     Select all {total.toLocaleString()} matching products
                   </button>
                 ) : null}
+                <button
+                  type="button"
+                  onClick={() => setOpenSelectedProducts(true)}
+                  className="rounded-[10px] border border-[#CFCFD3] bg-white px-[12px] py-[8px] text-[12px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6]"
+                >
+                  Review selected
+                </button>
+                {!isFilteredSelection ? (
+                  <>
+                    <button type="button" onClick={openBulkPriceForSelection} className="inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6]"><Icon name="sell" className="text-[17px]" />Price &amp; Margin</button>
+                    {stockTracked ? <button type="button" onClick={openStockManagerForSelection} className="inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6]"><Icon name="inventory_2" className="text-[17px]" />Stock Movement</button> : null}
+                    <button type="button" onClick={() => void activateSelected()} className="inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-[#9DD8B2] bg-[#F3FBF6] px-3 text-[12px] font-bold text-[#16753A] transition hover:bg-[#EAF8EF]"><Icon name="toggle_on" className="text-[18px]" />Activate</button>
+                    <button type="button" onClick={requestSoftDeleteSelected} className="inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] px-3 text-[12px] font-bold text-[#BE123C] transition hover:bg-rose-100"><Icon name="do_not_disturb_on" className="text-[17px]" />Set inactive</button>
+                  </>
+                ) : (
+                  <button type="button" onClick={openBulkPriceForSelection} className="inline-flex min-h-10 items-center gap-2 rounded-[10px] border border-[#11120d] bg-[#11120d] px-3 text-[12px] font-bold text-white transition hover:bg-[#2a2c27]"><Icon name="sell" className="text-[17px]" />Price &amp; Margin</button>
+                )}
                 <button
                   type="button"
                   onClick={clearBulkSelection}
@@ -2162,12 +2793,17 @@ export default function ProductsPage() {
           <section role="dialog" aria-modal="true" aria-label="Selected product actions" className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[22px] font-extrabold text-[#11120d]">{selectedCount.toLocaleString()} products selected</h2><button type="button" onClick={() => setOpenMobileBulkActions(false)} className="h-11 w-11" aria-label="Close actions"><Icon name="close" className="text-[26px]" /></button></div>
+            {isFilteredSelection ? (
+              <p className="mt-3 rounded-[12px] border border-[#BFDBFE] bg-[#EFF6FF] p-3 text-[13px] font-medium leading-5 text-[#1D4ED8]">
+                This selection represents all current matches. Only the price-margin workflow supports this broad scope; stock and status changes require exact rows.
+              </p>
+            ) : null}
             {[
               { icon: "toggle_on", label: "Activate selected", tone: "bg-[#EAF8EF] text-[#179B4D]", action: () => void activateSelected() },
               { icon: "do_not_disturb_on", label: "Set inactive", tone: "bg-[#F3F4F6] text-[#565449]", action: requestSoftDeleteSelected },
               { icon: "sell", label: "Price & Margin", tone: "bg-[#F3F4F6] text-[#565449]", action: openBulkPriceForSelection },
               { icon: "inventory_2", label: "Stock Movement", tone: "bg-[#F3F4F6] text-[#565449]", action: openStockManagerForSelection },
-            ].map((item) => (
+            ].filter((item) => (stockTracked || item.label !== "Stock Movement") && (!isFilteredSelection || item.label === "Price & Margin")).map((item) => (
               <button key={item.label} type="button" onClick={() => { setOpenMobileBulkActions(false); item.action(); }} className="flex min-h-[66px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className={`inline-flex h-11 w-11 items-center justify-center rounded-[12px] ${item.tone}`}><Icon name={item.icon} className="text-[22px]" /></span><span className="flex-1 text-[15px] font-bold text-[#11120d]">{item.label}</span><Icon name="chevron_right" className="text-[#565449]" /></button>
             ))}
             <button type="button" onClick={() => setOpenMobileBulkActions(false)} className="mt-4 h-[50px] w-full rounded-[12px] bg-[#11120d] text-[14px] font-bold text-white">Done</button>
@@ -2178,10 +2814,12 @@ export default function ProductsPage() {
 
       {/* this table only receives the current client-side page slice, not the full product array */}
       <ProductsTableCard
+        stockTracked={stockTracked}
         rows={pageItems}
         loading={productsLoading}
         loadError={productsLoadError}
         selected={effectiveSelected}
+        selectionModeActive={selectedCount > 0}
         toggleAllOnPage={toggleAllOnPage}
         toggleOne={toggleOne}
         onView={openViewProduct}
@@ -2194,25 +2832,137 @@ export default function ProductsPage() {
         totalPages={totalPages}
         pageSize={tablePageSize}
         onPageChange={(nextPage) => {
-          if (!isFilteredSelection) clearBulkSelection();
           setPage(nextPage);
         }}
         onPageSizeChange={(nextPageSize) => {
           setTablePageSize(nextPageSize);
           setPage(1);
-          if (!isFilteredSelection) clearBulkSelection();
         }}
         onClearFilters={clearFilters}
         onRetry={() => void loadProducts()}
       />
 
+      <ModalFrame
+        open={openSelectedProducts}
+        title="Selected products"
+        description={isFilteredSelection
+          ? `${selectedCount.toLocaleString()} of ${total.toLocaleString()} products matching the current filters are selected.`
+          : `${selectedCount.toLocaleString()} product${selectedCount === 1 ? "" : "s"} selected across the catalog.`}
+        onClose={() => setOpenSelectedProducts(false)}
+        maxWidthClass="max-w-[620px]"
+        mobileBottomSheet
+        footer={(
+          <div className="flex w-full items-center justify-between gap-3">
+            <button type="button" onClick={clearBulkSelection} className="min-h-11 px-2 text-[13px] font-bold text-[#BE123C]">
+              Clear selection
+            </button>
+            <DialogButton variant="primary" onClick={() => setOpenSelectedProducts(false)}>Done</DialogButton>
+          </div>
+        )}
+      >
+        {isFilteredSelection ? (
+          <div className="space-y-4">
+            <div className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 text-[13px] leading-6 text-[#1D4ED8]">
+              This is a filter-based selection, so newly matching products are included. Deselect products on any page to exclude them. Only the supported bulk price action can use this broad scope.
+            </div>
+            {filteredExcludedIds.length > 0 ? (
+              <section aria-labelledby="excluded-products-heading">
+                <div className="mb-2 flex items-center justify-between gap-3">
+                  <h3 id="excluded-products-heading" className="text-[12px] font-extrabold uppercase tracking-wide text-[#565449]">
+                    Excluded ({filteredExcludedIds.length})
+                  </h3>
+                  <button
+                    type="button"
+                    onClick={() => setFilteredSelectionExclusions({})}
+                    className="min-h-11 text-[12px] font-bold text-[#1D4ED8] underline underline-offset-4"
+                  >
+                    Include all again
+                  </button>
+                </div>
+                <div className="divide-y divide-[#E5E7EB] overflow-hidden rounded-[14px] border border-[#E5E7EB]">
+                  {Object.values(filteredSelectionExclusions).map((product) => (
+                    <div key={product.id} className="flex min-h-[64px] items-center gap-3 bg-white px-3 py-2.5">
+                      <div className="min-w-0 flex-1">
+                        <div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div>
+                        <div className="mt-1 truncate font-mono text-[11px] text-[#6B7280]">SKU: {product.sku || "-"}</div>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => toggleOne(product.id, true)}
+                        className="min-h-11 rounded-[10px] px-3 text-[12px] font-bold text-[#16753A] transition hover:bg-[#F3FBF6]"
+                        aria-label={`Include ${product.name} again`}
+                      >
+                        Include
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              </section>
+            ) : null}
+          </div>
+        ) : (
+          <div className="divide-y divide-[#E5E7EB] overflow-hidden rounded-[14px] border border-[#E5E7EB]">
+            {selectedProducts.map((product) => (
+              <div key={product.id} className="flex min-h-[68px] items-center gap-3 bg-white px-3 py-2.5">
+                <div className="min-w-0 flex-1">
+                  <div className="truncate text-[14px] font-extrabold text-[#11120d]">{product.name}</div>
+                  <div className="mt-1 truncate font-mono text-[11px] text-[#6B7280]">SKU: {product.sku || "-"}</div>
+                </div>
+                <div className="shrink-0 text-right text-[12px] font-bold text-[#565449]">NPR {product.retailPrice}</div>
+                <button
+                  type="button"
+                  onClick={() => toggleOne(product.id, false)}
+                  className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[11px] text-[#BE123C] transition hover:bg-[#FFF1F2]"
+                  aria-label={`Remove ${product.name} from selection`}
+                >
+                  <Icon name="close" className="text-[20px]" />
+                </button>
+              </div>
+            ))}
+          </div>
+        )}
+      </ModalFrame>
+
+      <ModalFrame
+        open={Boolean(pendingProductFilterChange)}
+        title="Change filters and clear this selection?"
+        description="Filter-wide selection is tied to the current result set."
+        onClose={cancelProductFilterChange}
+        maxWidthClass="max-w-[500px]"
+        mobileBottomSheet
+        footer={(
+          <div className="flex w-full items-center justify-end gap-3">
+            <DialogButton onClick={cancelProductFilterChange}>Keep selection</DialogButton>
+            <DialogButton variant="primary" icon="filter_alt" onClick={confirmProductFilterChange}>
+              Apply and clear
+            </DialogButton>
+          </div>
+        )}
+      >
+        <div className="rounded-[14px] border border-amber-200 bg-amber-50 p-4 text-[13px] font-semibold leading-6 text-amber-950">
+          You currently have {selectedCount.toLocaleString()} matching products selected
+          {filteredExcludedIds.length > 0 ? ` with ${filteredExcludedIds.length.toLocaleString()} exclusion${filteredExcludedIds.length === 1 ? "" : "s"}` : ""}.
+          Applying {describeProductFilterChange(pendingProductFilterChange)} will clear that selection so its meaning cannot change silently.
+        </div>
+      </ModalFrame>
+
+      <ProductSearchInsightsModal
+        open={openSearchInsights}
+        onClose={() => setOpenSearchInsights(false)}
+      />
+
       {/* centralizing modal state here keeps add/edit/view/import/delete flows coordinated from one page component */}
       <ProductsModals
+        stockTracked={stockTracked}
         brands={brands}
         categories={categories}
+        supplierOptions={stockSupplierOptions}
         businessDefaults={businessDefaults}
         openAddEdit={openAddEdit}
-        setOpenAddEdit={setOpenAddEdit}
+        setOpenAddEdit={(open) => {
+          if (open) setOpenAddEdit(true);
+          else requestCloseProductEditor();
+        }}
         openImport={openImport}
         setOpenImport={setOpenImport}
         openView={openView}
@@ -2229,15 +2979,23 @@ export default function ProductsPage() {
         onProductImageChange={handleProductImageChange}
         onClearProductImage={() => handleProductImageChange(null)}
         onSave={saveProduct}
+        productSaveBusy={productSaveBusy}
+        onValidateProductStep={validateProductStep}
+        onClearFormError={(field) => setFormErrors((current) => ({ ...current, [field]: undefined }))}
         onConfirmDelete={confirmDeleteOne}
         isAdmin={isAdmin}
         deleteSafety={deleteSafety}
         deleteSafetyLoading={deleteSafetyLoading}
         deleteBusy={deleteBusy}
         onConfirmPermanentDelete={confirmPermanentDeleteOne}
+        onDiscardStockAndDelete={confirmDiscardStockAndDeleteOne}
         bulkAction={bulkAction}
         bulkProducts={selectedProducts}
         onCloseBulkAction={() => setBulkAction(null)}
+        onRemoveBulkProduct={(productId) => {
+          toggleOne(productId, false);
+          if (selectedIds.length === 1) setBulkAction(null);
+        }}
         onConfirmBulkAction={confirmBulkAction}
         onEditActiveProduct={openEditFromView}
         importFile={importFile}
@@ -2276,7 +3034,6 @@ export default function ProductsPage() {
         setImportFieldMap={setImportFieldMap}
         onSaveImportTemplate={async () => {
           if (!importSupplier.trim()) {
-            toastMsg("danger", "Supplier name is required to save a template.");
             return;
           }
           try {
@@ -2310,6 +3067,7 @@ export default function ProductsPage() {
           }
         }}
         pdfReviewBusy={pdfReviewBusy}
+        onSaveReviewedPdfRows={handleSaveReviewedPdfRows}
         onImportReviewedPdfRows={handleImportReviewedPdfRows}
         onBackToImportList={() => {
           setPdfReviewBatch(null);
@@ -2348,6 +3106,95 @@ export default function ProductsPage() {
         }}
         onUploadCsvClick={handleImportCsv}
       />
+
+      <ModalFrame
+        open={confirmDiscardProductEditor}
+        title="Discard product changes?"
+        description="Your unsaved product information will be lost."
+        onClose={() => setConfirmDiscardProductEditor(false)}
+        layer="critical"
+        maxWidthClass="max-w-[480px]"
+        mobileBottomSheet
+        footer={(
+          <div className="flex w-full items-center justify-end gap-3">
+            <DialogButton onClick={() => setConfirmDiscardProductEditor(false)}>
+              Keep editing
+            </DialogButton>
+            <DialogButton variant="danger" icon="delete" onClick={closeProductEditorAndReturn}>
+              Discard changes
+            </DialogButton>
+          </div>
+        )}
+      >
+        <div className="flex items-start gap-4 rounded-[16px] border border-amber-200 bg-amber-50 p-4 text-amber-900">
+          <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-amber-100">
+            <Icon name="edit_note" className="text-[24px]" />
+          </span>
+          <p className="text-[13px] font-semibold leading-6">
+            Choose Keep editing to return to the form, or discard only if you no longer need these changes.
+          </p>
+        </div>
+      </ModalFrame>
+
+      <ModalFrame
+        open={Boolean(productSaveSuccess)}
+        title="Product created"
+        description={stockTracked ? "The product is ready in your catalog and stock records." : "The product is ready in your catalog. Stock will be counted when inventory mode is enabled."}
+        onClose={() => setProductSaveSuccess(null)}
+        maxWidthClass="max-w-[540px]"
+        mobileBottomSheet
+        footer={productSaveSuccess ? (
+          <div className="grid w-full grid-cols-2 gap-3">
+            <DialogButton
+              icon="add"
+              onClick={() => {
+                setProductSaveSuccess(null);
+                openAdd();
+              }}
+            >
+              Add another
+            </DialogButton>
+            <DialogButton
+              variant="primary"
+              icon="visibility"
+              onClick={() => {
+                const product = productSaveSuccess.product;
+                setProductSaveSuccess(null);
+                openViewProduct(product);
+              }}
+            >
+              View product
+            </DialogButton>
+          </div>
+        ) : null}
+      >
+        {productSaveSuccess ? (
+          <div className="space-y-4">
+            <div className="flex items-start gap-4">
+              <span className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] border border-emerald-200 bg-emerald-50 text-emerald-600">
+                <Icon name="check_circle" className="text-[30px]" />
+              </span>
+              <div className="min-w-0 pt-1">
+                <div className="truncate text-[17px] font-extrabold text-[#11120d]">
+                  {productSaveSuccess.product.name}
+                </div>
+                {stockTracked ? <div className="mt-1 text-[13px] font-semibold text-[#565449]">
+                  Initial stock: {productSaveSuccess.product.stock} {productSaveSuccess.product.saleUnit || "PIECE"}
+                </div> : <div className="mt-1 text-[13px] font-semibold text-[#565449]">Catalog item · stock not tracked</div>}
+              </div>
+            </div>
+            <dl className="grid grid-cols-1 gap-2 rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-[13px] sm:grid-cols-2">
+              <div><dt className="font-bold text-[#8C8889]">SKU</dt><dd className="mt-1 break-all font-mono font-extrabold text-[#11120d]">{productSaveSuccess.product.sku}</dd></div>
+              <div><dt className="font-bold text-[#8C8889]">Barcode</dt><dd className="mt-1 break-all font-mono font-extrabold text-[#11120d]">{productSaveSuccess.product.barcode || "Not assigned"}</dd></div>
+            </dl>
+            {productSaveSuccess.imageUploadError ? (
+              <div className="rounded-[14px] border border-amber-200 bg-amber-50 p-3 text-[12px] font-semibold leading-5 text-amber-900" role="status">
+                The product was created, but its image could not be uploaded. Open the product to retry the image later. {productSaveSuccess.imageUploadError}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </ModalFrame>
 
       <ModalFrame
         open={openStockManager}
@@ -2552,19 +3399,55 @@ export default function ProductsPage() {
 
             <div className="w-full md:w-[320px]">
               <input
+                id="stock-reason"
                 value={stockReason}
+                aria-label="Reason or stock note"
+                aria-invalid={Boolean(stockFieldErrors.reason)}
+                aria-describedby={stockFieldErrors.reason ? "stock-reason-error" : undefined}
                 onChange={(event) => {
                   setStockReason(event.target.value);
                   setStockLineError("");
+                  setStockFieldErrors((current) => ({ ...current, reason: undefined }));
                 }}
                 placeholder="Reason or stock note (required)"
-                className="h-[38px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold text-[#11120d] outline-none placeholder-[#8C8889] focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                className={`h-11 w-full rounded-[9px] px-[12px] text-[13px] font-semibold text-[#11120d] outline-none placeholder-[#8C8889] focus:ring-2 ${stockFieldErrors.reason ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] bg-white focus:border-[#3B82F6] focus:ring-blue-100"}`}
               />
+              {stockFieldErrors.reason ? <div id="stock-reason-error" className="mt-1 text-[11px] font-bold text-[#BE123C]" role="alert">{stockFieldErrors.reason}</div> : null}
             </div>
           </div>
 
           {mobileStockStep === 1 && stockLineError ? (
             <div className="rounded-[10px] border border-[#FCA5A5] bg-[#FEF2F2] p-3 text-[12px] font-bold text-[#DC2626] lg:hidden">{stockLineError}</div>
+          ) : null}
+
+          {mobileStockStep === 1 && stockManagerProducts.length > 0 ? (
+            <section className="overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-white shadow-sm lg:hidden" aria-labelledby="stock-selected-summary-title">
+              <div className="flex items-center justify-between gap-3 border-b border-[#E5E7EB] bg-[#F8FAFC] px-3 py-3">
+                <div>
+                  <h3 id="stock-selected-summary-title" className="text-[14px] font-extrabold text-[#11120d]">
+                    Selected products
+                  </h3>
+                  <p className="mt-0.5 text-[11px] font-semibold text-[#6B7280]">
+                    {stockManagerProducts.length} product{stockManagerProducts.length === 1 ? "" : "s"} carried into this movement
+                  </p>
+                </div>
+                <button type="button" onClick={() => setMobileStockStep(2)} className="inline-flex min-h-11 items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#11120d]">
+                  Edit list <Icon name="arrow_forward" className="text-[16px]" />
+                </button>
+              </div>
+              <div className="max-h-[220px] divide-y divide-[#E5E7EB] overflow-y-auto overscroll-contain">
+                {stockManagerProducts.map((product) => (
+                  <div key={product.id} className="flex min-h-[64px] items-center gap-3 px-3 py-2.5">
+                    <span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#6B7280]"><Icon name="inventory_2" className="text-[19px]" /></span>
+                    <div className="min-w-0 flex-1">
+                      <div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div>
+                      <div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"} · Stock {product.stock.toLocaleString(undefined, { maximumFractionDigits: 3 })}</div>
+                    </div>
+                    <button type="button" onClick={() => removeProductFromStockManager(product.id)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[#BE123C] transition active:bg-[#FFF1F2]" aria-label={`Remove ${product.name} from stock movement`}><Icon name="close" className="text-[20px]" /></button>
+                  </div>
+                ))}
+              </div>
+            </section>
           ) : null}
 
           {/* Bill Attachment Section (Only for Receive Mode) */}
@@ -2604,6 +3487,10 @@ export default function ProductsPage() {
                 <div className="space-y-[6px]">
                   <label className="text-[12px] font-bold text-[#565449]">Supplier</label>
                   <ProjectSelect
+                    id="stock-supplier-select"
+                    aria-label="Supplier"
+                    aria-invalid={Boolean(stockFieldErrors.supplier)}
+                    aria-describedby={stockFieldErrors.supplier && stockSupplierMode !== "new" ? "stock-supplier-error" : undefined}
                     value={stockSupplierMode === "new" ? "__new" : stockSupplierName}
                     onChange={(e) => {
                       if (e.target.value === "__new") {
@@ -2614,6 +3501,7 @@ export default function ProductsPage() {
                         setStockSupplierName(e.target.value);
                       }
                       setStockLineError("");
+                      setStockFieldErrors((current) => ({ ...current, supplier: undefined }));
                     }}
                     className="h-[40px] w-full rounded-[8px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold text-[#11120d] outline-none focus:border-[#3B82F6]"
                   >
@@ -2623,20 +3511,26 @@ export default function ProductsPage() {
                     ))}
                     <option value="__new">+ Add new supplier</option>
                   </ProjectSelect>
+                  {stockFieldErrors.supplier && stockSupplierMode !== "new" ? <div id="stock-supplier-error" className="text-[11px] font-bold text-[#BE123C]" role="alert">{stockFieldErrors.supplier}</div> : null}
                 </div>
 
                 {stockSupplierMode === "new" && (
                   <div className="space-y-[6px]">
                     <label className="text-[12px] font-bold text-[#565449]">New Supplier Name</label>
                     <input
+                      id="stock-supplier-input"
                       value={stockSupplierName}
+                      aria-invalid={Boolean(stockFieldErrors.supplier)}
+                      aria-describedby={stockFieldErrors.supplier ? "stock-supplier-input-error" : undefined}
                       onChange={(e) => {
                         setStockSupplierName(e.target.value);
                         setStockLineError("");
+                        setStockFieldErrors((current) => ({ ...current, supplier: undefined }));
                       }}
                       placeholder="e.g. Acme Corp"
-                      className="h-[40px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold text-[#11120d] outline-none focus:border-[#3B82F6]"
+                      className={`h-11 w-full rounded-[8px] px-[12px] text-[13px] font-semibold text-[#11120d] outline-none focus:ring-2 ${stockFieldErrors.supplier ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] bg-white focus:border-[#3B82F6] focus:ring-blue-100"}`}
                     />
+                    {stockFieldErrors.supplier ? <div id="stock-supplier-input-error" className="text-[11px] font-bold text-[#BE123C]" role="alert">{stockFieldErrors.supplier}</div> : null}
                   </div>
                 )}
 
@@ -2699,7 +3593,7 @@ export default function ProductsPage() {
                             >
                               <Icon name={document.mimeType === "application/pdf" ? "picture_as_pdf" : "image"} sizePx={24} className={selectedBill ? "text-[#3B82F6]" : "text-[#8C8889]"} />
                               <div className="flex-1 min-w-0">
-                                <div className="truncate text-[13px] font-bold text-[#11120d]">{document.fileName}</div>
+                                <div className="truncate text-[13px] font-bold text-[#11120d]">{document.title?.trim() || document.fileName}</div>
                                 <div className="text-[11px] font-medium text-[#565449] mt-[2px]">{document.supplierName || "No supplier"} | {formatDocumentDate(document.billDate)}</div>
                               </div>
                               {selectedBill && <Icon name="check_circle" sizePx={20} className="text-[#3B82F6]" />}
@@ -2962,7 +3856,7 @@ export default function ProductsPage() {
             <p className="text-[13px] text-[#1D4ED8]">
               {isFilteredSelection ? (
                 <>
-                  Updating prices for <span className="font-semibold">all {total.toLocaleString()} matching products</span>. Margin controls will be calculated from each product's base rate.
+                  Updating prices for <span className="font-semibold">{selectedCount.toLocaleString()} of {total.toLocaleString()} matching products</span>. Margin controls will be calculated from each product's base rate{filteredExcludedIds.length > 0 ? `; ${filteredExcludedIds.length} excluded product${filteredExcludedIds.length === 1 ? " will" : "s will"} be skipped` : ""}.
                 </>
               ) : (
                 <>
@@ -2973,15 +3867,21 @@ export default function ProductsPage() {
           </div>
 
           {/* Margin Controls */}
-          <div>
-            <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[12px]">Margin Controls</h3>
+          <section className="rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-3 lg:p-4">
+            <div className="mb-3">
+              <h3 className="text-[12px] font-extrabold uppercase tracking-wider text-[#11120d]">Gross margin / कुल नाफा मार्जिन</h3>
+              <p className="mt-1 text-[11px] font-medium leading-5 text-[#6B7280]">Calculated from purchase rate: selling price = rate ÷ (1 − margin %). Prices are not saved until Update Prices is confirmed.</p>
+            </div>
             <div className="grid grid-cols-2 items-end gap-[12px] lg:flex lg:items-center lg:gap-[16px]">
               <div className="flex-1">
-                <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">Wholesale Margin %</label>
+                <label className="mb-1 block text-[12px] font-bold text-[#565449]">Wholesale margin % / थोक मार्जिन %</label>
                 <div className="relative">
                   <input
                     type="number"
                     value={wholesaleMarginPercent}
+                    min={0}
+                    max={99.99}
+                    step={0.01}
                     onChange={(event) => setWholesaleMarginPercent(Number(event.target.value))}
                     className="w-full h-[38px] px-[12px] pr-[28px] border border-[#CFCFD3] rounded-[8px] text-[13px] font-semibold text-[#11120d] outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
                   />
@@ -2989,11 +3889,14 @@ export default function ProductsPage() {
                 </div>
               </div>
               <div className="flex-1">
-                <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">Retail Margin %</label>
+                <label className="mb-1 block text-[12px] font-bold text-[#565449]">Retail margin % / खुद्रा मार्जिन %</label>
                 <div className="relative">
                   <input
                     type="number"
                     value={retailMarginPercent}
+                    min={0}
+                    max={99.99}
+                    step={0.01}
                     onChange={(event) => setRetailMarginPercent(Number(event.target.value))}
                     className="w-full h-[38px] px-[12px] pr-[28px] border border-[#CFCFD3] rounded-[8px] text-[13px] font-semibold text-[#11120d] outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
                   />
@@ -3003,14 +3906,29 @@ export default function ProductsPage() {
               {!isFilteredSelection ? (
                 <button
                   type="button"
-                  onClick={applyPriceMarginsToSelected}
-                  className="col-span-2 h-[42px] rounded-[8px] bg-[#2563EB] px-[20px] text-[13px] font-bold whitespace-nowrap text-white transition hover:bg-[#1D4ED8] lg:col-auto lg:mt-[20px] lg:h-[38px]"
+                  onClick={() => setConfirmApplyPriceMargins(true)}
+                  disabled={priceMarginTargetCount === 0 || !priceMarginsValid}
+                  className="col-span-2 min-h-11 rounded-[10px] bg-[#2563EB] px-[20px] text-[13px] font-bold whitespace-nowrap text-white transition hover:bg-[#1D4ED8] disabled:pointer-events-none disabled:opacity-45 lg:col-auto lg:mt-[20px]"
                 >
-                  Apply Margins
+                  Review &amp; apply to {priceMarginTargetCount}
                 </button>
               ) : null}
             </div>
-          </div>
+            {!priceMarginsValid ? <p className="mt-2 text-[11px] font-bold text-[#BE123C]" role="alert">Enter each gross margin between 0% and 99.99%.</p> : null}
+          </section>
+
+          {!isFilteredSelection ? (
+            <section className="rounded-[14px] border border-[#E5E7EB] bg-white p-3">
+              <div className="flex flex-col gap-2.5 sm:flex-row sm:items-center">
+                <div className="relative min-w-0 flex-1"><Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-[19px] text-[#8C8889]" /><input value={priceSearch} onChange={(event) => setPriceSearch(event.target.value)} placeholder="Search selected products by name, SKU, barcode, or brand" className="h-11 w-full rounded-[11px] border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#3B82F6] focus:ring-2 focus:ring-blue-100" /></div>
+                <div className="grid grid-cols-2 gap-2 sm:flex">
+                  <button type="button" onClick={() => setVisiblePriceMarginTargets(true)} className="min-h-11 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#11120d]">Select results</button>
+                  <button type="button" onClick={() => setVisiblePriceMarginTargets(false)} className="min-h-11 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#565449]">Clear results</button>
+                </div>
+              </div>
+              <div className="mt-2 text-[11px] font-semibold text-[#6B7280]">{priceMarginTargetCount} of {selectedProducts.length} selected for margin calculation. Search does not lose your selection.</div>
+            </section>
+          ) : null}
 
           {/* Pricing Table */}
           {isFilteredSelection ? (
@@ -3036,18 +3954,21 @@ export default function ProductsPage() {
           ) : (
           <>
           <div className="space-y-3 lg:hidden">
-            {selectedProducts.map((product) => {
+            {visibleBulkPriceProducts.map((product) => {
               const row = priceRows[product.id] || {
-                retailPrice: product.retailPrice,
-                wholesalePrice: product.wholesalePrice,
-                ratePerPiece: product.ratePerPiece,
+                retailPrice: String(product.retailPrice),
+                wholesalePrice: String(product.wholesalePrice),
+                ratePerPiece: String(product.ratePerPiece),
               };
               return (
                 <article key={product.id} className="rounded-[14px] border border-[#E5E7EB] bg-white p-3 shadow-sm">
                   <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0">
+                    <div className="flex min-w-0 flex-1 items-start gap-2">
+                      <button type="button" onClick={() => setPriceMarginTargetIds((current) => ({ ...current, [product.id]: !current[product.id] }))} className={`inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[11px] border ${priceMarginTargetIds[product.id] ? "border-[#179B4D] bg-[#EAF8EF] text-[#179B4D]" : "border-[#CFCFD3] bg-white text-[#8C8889]"}`} aria-label={`${priceMarginTargetIds[product.id] ? "Exclude" : "Include"} ${product.name} from margin calculation`}><Icon name={priceMarginTargetIds[product.id] ? "check_box" : "check_box_outline_blank"} className="text-[22px]" /></button>
+                      <div className="min-w-0">
                       <div className="truncate text-[15px] font-extrabold text-[#11120d]">{product.name}</div>
                       <div className="mt-1 font-mono text-[11px] text-[#8C8889]">SKU: {product.sku || "-"}</div>
+                      </div>
                     </div>
                     <div className="rounded-[9px] bg-[#F3F4F6] px-2.5 py-1.5 text-right text-[11px] font-bold text-[#565449]">Current retail<br /><span className="text-[13px] text-[#11120d]">NPR {product.retailPrice}</span></div>
                   </div>
@@ -3059,15 +3980,32 @@ export default function ProductsPage() {
                     ] as const).map(([key, label]) => (
                       <label key={key} className="grid grid-cols-[1fr_145px] items-center gap-3">
                         <span className="text-[12px] font-bold text-[#565449]">{label}</span>
-                        <div className="flex h-11 items-center overflow-hidden rounded-[10px] border border-[#BFDBFE] bg-[#EFF6FF]/30">
+                        <div className={`flex h-11 items-center overflow-hidden rounded-[10px] ${bulkPriceErrors.rows?.[product.id]?.[key] ? "border-2 border-[#DC2626] bg-[#FFF1F2]" : "border border-[#BFDBFE] bg-[#EFF6FF]/30"}`}>
                           <span className="border-r border-[#BFDBFE] px-2.5 text-[12px] font-bold text-[#565449]">NPR</span>
                           <input
                             type="number"
                             value={row[key]}
-                            onChange={(event) => setPriceRows((current) => ({ ...current, [product.id]: { ...(current[product.id] || row), [key]: Number(event.target.value) } }))}
+                            min="0.01"
+                            step="0.01"
+                            inputMode="decimal"
+                            data-price-field={`${product.id}-${key}`}
+                            aria-invalid={Boolean(bulkPriceErrors.rows?.[product.id]?.[key])}
+                            onFocus={(event) => event.currentTarget.select()}
+                            onChange={(event) => {
+                              setPriceRows((current) => ({ ...current, [product.id]: { ...(current[product.id] || row), [key]: event.target.value } }));
+                              setBulkPriceErrors((current) => ({
+                                ...current,
+                                rows: current.rows ? { ...current.rows, [product.id]: { ...current.rows[product.id], [key]: undefined } } : undefined,
+                              }));
+                            }}
                             className="h-full min-w-0 flex-1 bg-transparent px-2 text-right text-[14px] font-extrabold text-[#11120d] outline-none"
                           />
                         </div>
+                        {bulkPriceErrors.rows?.[product.id]?.[key] ? (
+                          <span className="col-span-2 text-right text-[11px] font-semibold text-[#BE123C]" role="alert">
+                            {bulkPriceErrors.rows[product.id]?.[key]}
+                          </span>
+                        ) : null}
                       </label>
                     ))}
                   </div>
@@ -3079,6 +4017,7 @@ export default function ProductsPage() {
             <table className="w-full text-[13px]">
               <thead className="bg-[#F8FAFC] sticky top-0 z-10 shadow-sm">
                 <tr className="text-[11px] font-medium text-[#8C8889] border-b border-[#E5E7EB]">
+                  <th className="w-[52px] bg-[#F8FAFC] px-2 py-[8px]" aria-label="Margin selection"></th>
                   <th className="text-left py-[8px] px-[12px] font-medium uppercase min-w-[200px] bg-[#F8FAFC]">Product Name</th>
                   <th className="text-center py-[8px] px-[12px] font-medium uppercase bg-[#F8FAFC]">Current Rate (Rs)</th>
                   <th className="text-center py-[8px] px-[12px] font-medium uppercase bg-[#F8FAFC]">Current Wholesale (Rs)</th>
@@ -3089,14 +4028,15 @@ export default function ProductsPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-[#E5E7EB]">
-                {selectedProducts.map((product) => {
+                {visibleBulkPriceProducts.map((product) => {
                   const row = priceRows[product.id] || {
-                    retailPrice: product.retailPrice,
-                    wholesalePrice: product.wholesalePrice,
-                    ratePerPiece: product.ratePerPiece,
+                    retailPrice: String(product.retailPrice),
+                    wholesalePrice: String(product.wholesalePrice),
+                    ratePerPiece: String(product.ratePerPiece),
                   };
                   return (
                     <tr key={product.id} className="transition-colors hover:bg-[#ECEFF3]">
+                      <td className="px-2 py-[12px]"><button type="button" onClick={() => setPriceMarginTargetIds((current) => ({ ...current, [product.id]: !current[product.id] }))} className={`inline-flex h-11 w-11 items-center justify-center rounded-[10px] ${priceMarginTargetIds[product.id] ? "bg-[#EAF8EF] text-[#179B4D]" : "bg-white text-[#8C8889]"}`} aria-label={`${priceMarginTargetIds[product.id] ? "Exclude" : "Include"} ${product.name} from margin calculation`}><Icon name={priceMarginTargetIds[product.id] ? "check_box" : "check_box_outline_blank"} /></button></td>
                       <td className="py-[12px] px-[12px]">
                         <div className="font-bold text-[#11120d]">{product.name}</div>
                         <div className="text-[11px] text-[#565449] mt-[2px]">SKU: {product.sku || "-"}</div>
@@ -3116,16 +4056,29 @@ export default function ProductsPage() {
                             <input
                               type="number"
                               value={row[key]}
+                              min="0.01"
+                              step="0.01"
+                              inputMode="decimal"
+                              data-price-field={`${product.id}-${key}`}
+                              aria-invalid={Boolean(bulkPriceErrors.rows?.[product.id]?.[key])}
+                              title={bulkPriceErrors.rows?.[product.id]?.[key]}
+                              onFocus={(event) => event.currentTarget.select()}
                               onChange={(event) =>
-                                setPriceRows((current) => ({
-                                  ...current,
-                                  [product.id]: {
-                                    ...(current[product.id] || row),
-                                    [key]: Number(event.target.value),
-                                  },
-                                }))
+                                {
+                                  setPriceRows((current) => ({
+                                    ...current,
+                                    [product.id]: {
+                                      ...(current[product.id] || row),
+                                      [key]: event.target.value,
+                                    },
+                                  }));
+                                  setBulkPriceErrors((current) => ({
+                                    ...current,
+                                    rows: current.rows ? { ...current.rows, [product.id]: { ...current.rows[product.id], [key]: undefined } } : undefined,
+                                  }));
+                                }
                               }
-                              className="w-full h-[34px] border border-[#BFDBFE] rounded-[8px] text-[13px] font-bold text-center bg-[#EFF6FF]/30 focus:outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                              className={`w-full h-[34px] rounded-[8px] text-[13px] font-bold text-center focus:outline-none focus:ring-2 ${bulkPriceErrors.rows?.[product.id]?.[key] ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#BFDBFE] bg-[#EFF6FF]/30 focus:border-[#3B82F6] focus:ring-[#3B82F6]"}`}
                             />
                           </div>
                         </td>
@@ -3136,6 +4089,7 @@ export default function ProductsPage() {
               </tbody>
             </table>
           </div>
+          {visibleBulkPriceProducts.length === 0 ? <div className="rounded-[14px] border-2 border-dashed border-[#E5E7EB] px-4 py-10 text-center text-[13px] font-semibold text-[#8C8889]">No selected products match this search.</div> : null}
           </>
           )}
 
@@ -3144,21 +4098,48 @@ export default function ProductsPage() {
             <label className="block text-[12px] font-medium text-[#565449] mb-[4px]">
               Reason <span className="text-red-500">*</span> <span className="text-[#8C8889] font-normal">— Required, logged for audit trail</span>
             </label>
-            <textarea
-              rows={2}
+            <CreatableCombobox
+              inputRef={priceReasonRef}
               value={priceReason}
-              onChange={(event) => setPriceReason(event.target.value)}
-              placeholder="Enter reason for price update..."
-              className="w-full py-[8px] px-[12px] border border-[#CFCFD3] rounded-[8px] text-[13px] resize-none focus:outline-none focus:ring-2 focus:ring-blue-100 focus:border-blue-400"
+              onChange={(value) => {
+                setPriceReason(value);
+                if (bulkPriceErrors.reason) setBulkPriceErrors((current) => ({ ...current, reason: undefined }));
+              }}
+              options={["Supplier cost changed", "Market price changed", "Seasonal price adjustment", "Promotion ended", "Correcting an entry mistake", "Management-approved price review"]}
+              placeholder="Choose or type a reason"
+              ariaLabel="Price update reason"
+              allowCreate
+              required
+              invalid={Boolean(bulkPriceErrors.reason)}
             />
+            {bulkPriceErrors.reason ? (
+              <p id="bulk-price-reason-error" className="mt-1.5 flex items-start gap-1.5 text-[12px] font-semibold text-[#BE123C]" role="alert">
+                <Icon name="error" className="mt-px text-[16px]" />
+                {bulkPriceErrors.reason}
+              </p>
+            ) : null}
           </div>
 
           <div className="sticky bottom-0 -mx-4 grid grid-cols-[auto_1fr] gap-2 border-t border-[#E5E7EB] bg-white px-4 pt-3 lg:static lg:mx-0 lg:flex lg:items-center lg:justify-end lg:gap-[12px] lg:border-0 lg:px-0 lg:pt-[8px]">
             <DialogButton onClick={() => setOpenBulkPrice(false)}>Cancel</DialogButton>
-            <DialogButton variant="primary" icon="sell" onClick={confirmBulkPriceUpdate} disabled={priceBusy}>
+            <DialogButton variant="primary" icon="sell" onClick={requestBulkPriceUpdate} disabled={priceBusy || !priceMarginsValid}>
               {priceBusy ? "Updating..." : "Update Prices"}
             </DialogButton>
           </div>
+        </div>
+      </ModalFrame>
+
+      <ModalFrame open={confirmApplyPriceMargins} title="Apply gross margins?" description="Review the calculation before changing the editable price fields." onClose={() => setConfirmApplyPriceMargins(false)} layer="critical" maxWidthClass="max-w-[500px]" mobileBottomSheet footer={<div className="grid w-full grid-cols-2 gap-3"><DialogButton onClick={() => setConfirmApplyPriceMargins(false)}>Go back</DialogButton><DialogButton variant="primary" icon="calculate" onClick={applyPriceMarginsToSelected}>Apply to {priceMarginTargetCount}</DialogButton></div>}>
+        <div className="space-y-3">
+          <div className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 text-[13px] font-semibold leading-6 text-[#1D4ED8]">Wholesale {wholesaleMarginPercent}% / थोक and retail {retailMarginPercent}% / खुद्रा gross margins will be calculated for {priceMarginTargetCount} product{priceMarginTargetCount === 1 ? "" : "s"}.</div>
+          <p className="text-[12px] font-medium leading-5 text-[#6B7280]">This only updates the draft fields. You can review or edit every result before the final Update Prices confirmation.</p>
+        </div>
+      </ModalFrame>
+
+      <ModalFrame open={confirmBulkPriceSave} title="Confirm price update" description="This action changes catalog prices and is recorded in the audit trail." onClose={() => setConfirmBulkPriceSave(false)} layer="critical" maxWidthClass="max-w-[520px]" mobileBottomSheet footer={<div className="grid w-full grid-cols-2 gap-3"><DialogButton onClick={() => setConfirmBulkPriceSave(false)} disabled={priceBusy}>Review again</DialogButton><DialogButton variant="primary" icon="sell" onClick={confirmBulkPriceUpdate} disabled={priceBusy}>{priceBusy ? "Updating..." : `Confirm ${selectedCount.toLocaleString()}`}</DialogButton></div>}>
+        <div className="space-y-3">
+          <div className="rounded-[14px] border border-amber-200 bg-amber-50 p-4 text-[13px] font-semibold leading-6 text-amber-950">You are about to update {selectedCount.toLocaleString()} product price{selectedCount === 1 ? "" : "s"}. Verify the purchase rate, wholesale price, and retail price before continuing.</div>
+          <dl className="rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] p-4 text-[12px]"><dt className="font-extrabold uppercase tracking-wide text-[#6B7280]">Audit reason</dt><dd className="mt-1 font-semibold text-[#11120d]">{priceReason}</dd></dl>
         </div>
       </ModalFrame>
     </div>

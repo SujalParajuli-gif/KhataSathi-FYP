@@ -1,7 +1,9 @@
 import { Request, Response, NextFunction } from "express";
 import { ipKeyGenerator } from "express-rate-limit";
-import jwt from "jsonwebtoken";
-import { JWT_SECRET } from "../config/env";
+import {
+  getSessionToken,
+  hashSessionSecret,
+} from "../modules/auth/session";
 
 declare global {
   namespace Express {
@@ -11,21 +13,9 @@ declare global {
   }
 }
 
-function getBearerToken(req: Request) {
-  const header = req.headers.authorization;
-  if (!header || !header.startsWith("Bearer ")) return null;
-  return header.split(" ")[1] || null;
-}
-
-export function getRateLimitUserIdFromToken(token: string, secret = JWT_SECRET) {
-  try {
-    const decoded = jwt.verify(token, secret) as { id?: unknown };
-    return typeof decoded.id === "string" && decoded.id.trim()
-      ? decoded.id
-      : null;
-  } catch {
-    return null;
-  }
+export function getRateLimitSessionIdentity(req: Request) {
+  const token = getSessionToken(req);
+  return token ? hashSessionSecret(token).slice(0, 32) : null;
 }
 
 export function attachRateLimitIdentity(
@@ -33,11 +23,10 @@ export function attachRateLimitIdentity(
   _res: Response,
   next: NextFunction,
 ) {
-  const token = getBearerToken(req);
-  const userId = token ? getRateLimitUserIdFromToken(token) : null;
+  const sessionIdentity = getRateLimitSessionIdentity(req);
 
-  if (userId) {
-    req.rateLimitUserId = userId;
+  if (sessionIdentity) {
+    req.rateLimitUserId = sessionIdentity;
   }
 
   next();
@@ -45,7 +34,7 @@ export function attachRateLimitIdentity(
 
 export function generalApiRateLimitKey(req: Request) {
   if (req.rateLimitUserId) {
-    return `user:${req.rateLimitUserId}`;
+    return `session:${req.rateLimitUserId}`;
   }
 
   return `ip:${ipKeyGenerator(req.ip || req.socket.remoteAddress || "unknown")}`;

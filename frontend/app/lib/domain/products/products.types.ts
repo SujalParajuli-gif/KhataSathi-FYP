@@ -47,6 +47,28 @@ export type Product = {
   status: ProductStatus;
 };
 
+/**
+ * Short-lived in-memory state used when Product Lookup hands an Admin to the
+ * shared Products editor. A short-lived in-memory handoff avoids refetching the
+ * selected product and prevents the lookup list from flashing empty on return.
+ */
+export type ProductLookupSnapshot = {
+  products: Product[];
+  mobileProducts: Product[];
+  brands: string[];
+  categories: string[];
+  total: number;
+  mobileLoadedPage: number;
+  activeSearchLogId: string | null;
+  canViewPurchaseCost: boolean;
+  canViewWholesalePrice: boolean;
+};
+
+export type ProductLookupEditHandoff = {
+  product: Product;
+  snapshot: ProductLookupSnapshot;
+};
+
 // toast notification types used by the products page
 export type ToastKind = "info" | "success" | "danger";
 

@@ -100,10 +100,25 @@ export function MobileFilterTabs<T extends string>({
   ariaLabel?: string;
   className?: string;
 }) {
+  const tabListRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const activeTab = tabListRef.current?.querySelector<HTMLElement>(
+      `[data-mobile-tab-value="${CSS.escape(value)}"]`,
+    );
+    activeTab?.scrollIntoView({
+      behavior: window.matchMedia("(prefers-reduced-motion: reduce)").matches ? "auto" : "smooth",
+      block: "nearest",
+      inline: "center",
+    });
+  }, [value]);
+
   return (
     <div
+      ref={tabListRef}
       role="tablist"
       aria-label={ariaLabel}
+      data-horizontal-scroll
       className={cn(
         "flex max-w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
         className,
@@ -117,6 +132,7 @@ export function MobileFilterTabs<T extends string>({
             type="button"
             role="tab"
             aria-selected={selected}
+            data-mobile-tab-value={item.value}
             onClick={() => onChange(item.value)}
             className={cn(
               "inline-flex min-h-11 shrink-0 items-center justify-center gap-1.5 rounded-xl border px-4 text-[13px] font-bold transition-colors",

@@ -5,8 +5,8 @@ import Icon from "~/components/ui/Icon";
 import navData from "~/config/ui.nav.json";
 import type { AuthUser, UserRole } from "~/lib/auth";
 import { getDefaultRoute } from "~/lib/routeAccess";
-import { isLoggedIn, setAuthUser, setToken } from "~/lib/auth";
-import { loginApi } from "~/lib/api/endpoints";
+import { getAuthUser, isLoggedIn, setAuthUser } from "~/lib/auth";
+import { getBusinessCapabilitiesApi, getMeApi, loginApi } from "~/lib/api/endpoints";
 
 // helper function to join CSS class names without adding random 'undefined' or 'false' strings to the DOM
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -133,74 +133,87 @@ export default function LoginPage() {
   const [showPw, setShowPw] = useState(false); // toggling password visibility
   const [loading, setLoading] = useState(false); // stops double submits while the login request is running
   const [errorMsg, setErrorMsg] = useState<string | null>(null); // stores the latest top-level login error to show above the form
-  const [formData, setFormData] = useState({ email: "", password: "" }); // keeps both login fields in one small state object
-  const [touched, setTouched] = useState({ email: false, password: false }); // tracks whether each field should start showing validation feedback
+  const [formData, setFormData] = useState({ identifier: "", password: "" });
+  const [touched, setTouched] = useState({ identifier: false, password: false });
 
-  const emailValue = formData.email.trim(); // trimming spaces so copied emails do not fail because of accidental whitespace
-  const emailValid = /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(emailValue); // running a basic email shape check before we allow submit
-  // showing the email message only after the field has been touched so the page does not feel noisy on first load
-  const emailError =
-    touched.email && !emailValue
-      ? "Email is required."
-      : touched.email && !emailValid
-        ? "Please enter a valid email address."
-        : "";
+  const identifierValue = formData.identifier.trim();
+  const identifierError =
+    touched.identifier && !identifierValue ? "Phone or email is required." : "";
   const passwordError =
     touched.password && !formData.password ? "Password is required." : ""; // password only needs a required check on this screen
 
   // automatically redirect to the correct dashboard if the user is already logged in securely
   React.useEffect(() => {
     // this handles when someone manually opens the login page even though a valid session is already stored
-    if (isLoggedIn()) {
-      const stored = localStorage.getItem("khatasathi_auth_user");
-      if (stored) {
-        const user = JSON.parse(stored);
-        navigate(user.role === "cashier" ? "/billing" : "/");
-      }
+    if (!isLoggedIn()) return;
+    const cachedUser = getAuthUser();
+    if (cachedUser?.mustChangePassword) {
+      navigate("/change-password", { replace: true });
+      return;
     }
+    let cancelled = false;
+    Promise.all([getMeApi(), getBusinessCapabilitiesApi()])
+      .then(([, capabilities]) => {
+        if (cancelled) return;
+        const user = getAuthUser();
+        if (user) {
+          navigate(getDefaultRoute(user.role, capabilities), { replace: true });
+        }
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [navigate]);
 
   // only enabling submit when the form is valid and no request is currently in progress
   // without this, users could click early or submit multiple times while the request is still running
   const canSubmit = useMemo(() => {
     return (
-      emailValid &&
-      emailValue.length > 0 &&
+      identifierValue.length > 0 &&
       formData.password.length > 0 &&
       !loading
     );
-  }, [emailValid, emailValue, formData.password, loading]);
+  }, [identifierValue, formData.password, loading]);
 
   // firing the login request to our API endpoint
   async function onLogin(e?: React.FormEvent) {
     e?.preventDefault();
     setErrorMsg(null);
-    setTouched({ email: true, password: true }); // forcing both fields into touched state so validation messages become visible
+    setTouched({ identifier: true, password: true });
 
     // final double check of validation rules incase they bypassed the UI state
-    if (!emailValue) return setErrorMsg("Please enter your email.");
-    if (!emailValid) return setErrorMsg("Please enter a valid email address.");
+    if (!identifierValue) return setErrorMsg("Please enter your phone number or email.");
     if (!formData.password) return setErrorMsg("Please enter your password.");
 
     setLoading(true);
 
     try {
-      // sending the login credentials to the backend and waiting for a JWT + user profile in return
-      const data = await loginApi(emailValue, formData.password);
-      setToken(data.token);
+      // The backend establishes an HttpOnly session and returns a safe user profile.
+      const data = await loginApi(identifierValue, formData.password);
 
       // storing the normalized auth user shape the rest of the frontend already expects
       const user: AuthUser = {
         id: data.user.id,
         name: data.user.name,
         email: data.user.email,
+        phone: data.user.phone,
+        mustChangePassword: data.user.mustChangePassword === true,
         role: data.user.role.toLowerCase() as UserRole,
         profileImage: data.user.profileImage,
       };
       setAuthUser(user);
 
+      if (user.mustChangePassword) {
+        navigate("/change-password", { replace: true });
+        return;
+      }
+
       // sending each role to its own starting page right after login succeeds
-      navigate(getDefaultRoute(user.role));
+      // Resolve the server-owned shop mode before choosing a landing page so
+      // a catalog cashier never flashes the disabled billing screen.
+      const capabilities = await getBusinessCapabilitiesApi();
+      navigate(getDefaultRoute(user.role, capabilities));
     } catch (err: any) {
       // this handles when the API rejects the login or the network request fails
       // we prefer the backend message first so the user sees the real reason when one is available
@@ -261,23 +274,23 @@ export default function LoginPage() {
                 ) : null}
 
                 <form onSubmit={onLogin} className="space-y-5">
-                  <Field label="Email">
+                  <Field label="Phone or email">
                     <TextInput
-                      value={formData.email}
+                      value={formData.identifier}
                       onChange={(value) =>
-                        setFormData((current) => ({ ...current, email: value }))
+                        setFormData((current) => ({ ...current, identifier: value }))
                       }
-                      placeholder="Username or email"
-                      type="email"
+                      placeholder="98XXXXXXXX or name@example.com"
+                      type="text"
                       left={<Icon name="person" className="text-[#8C8889]" />}
-                      hasError={!!emailError}
+                      hasError={!!identifierError}
                       onEnter={() =>
-                        setTouched({ email: true, password: true })
+                        setTouched({ identifier: true, password: true })
                       }
                     />
-                    {emailError ? (
+                    {identifierError ? (
                       <div className="mt-1 text-[11px] font-semibold text-rose-500">
-                        {emailError}
+                        {identifierError}
                       </div>
                     ) : null}
                   </Field>
@@ -295,7 +308,7 @@ export default function LoginPage() {
                         placeholder="password"
                         type={showPw ? "text" : "password"}
                         onEnter={() => {
-                          setTouched({ email: true, password: true });
+                          setTouched({ identifier: true, password: true });
                           if (canSubmit) onLogin();
                         }}
                         left={<Icon name="lock" className="text-[#8C8889]" />}
@@ -332,7 +345,7 @@ export default function LoginPage() {
                     ) : (
                       <>
                         <Icon name="login" className="text-white" />
-                        Sign up
+                        Sign in
                       </>
                     )}
                   </Button>

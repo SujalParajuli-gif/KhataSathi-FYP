@@ -1,0 +1,3 @@
+ALTER TABLE `BusinessSettings`
+  ADD COLUMN `businessMode` ENUM('CATALOG_ONLY', 'INVENTORY_ONLY', 'FULL_POS') NOT NULL DEFAULT 'FULL_POS',
+  ADD COLUMN `staffDraftRequestsEnabled` BOOLEAN NOT NULL DEFAULT true;

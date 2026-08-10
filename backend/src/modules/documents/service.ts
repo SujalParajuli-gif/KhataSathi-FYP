@@ -63,6 +63,16 @@ function canRoleViewDocument(
   return visibility === "ALL_AUTHENTICATED";
 }
 
+function defaultDocumentTitle(fileName: string) {
+  const extension = path.extname(fileName);
+  const baseName = extension ? fileName.slice(0, -extension.length) : fileName;
+  return baseName.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled document";
+}
+
+function documentLabel(doc: { title?: string | null; fileName: string }) {
+  return doc.title?.trim() || defaultDocumentTitle(doc.fileName);
+}
+
 // resolving the document storage root from env, defaulting to backend/document-storage/
 const configuredRoot = process.env.DOCUMENT_STORAGE_ROOT?.trim();
 const STORAGE_ROOT = configuredRoot
@@ -221,12 +231,13 @@ export async function createDocuments(
   const relativeFolderPath = buildRelativeFolderPath();
   const results: any[] = [];
 
-  for (const file of files) {
+  for (const [fileIndex, file] of files.entries()) {
     // generating a unique ID for this document using Prisma's cuid
     // we create the DB record first to get the ID, then move the file
     const doc = await prisma.document.create({
       data: {
         documentType: metadata.documentType as DocumentType,
+        title: metadata.titles?.[fileIndex]?.trim() || defaultDocumentTitle(file.originalname),
         fileName: file.originalname,
         storedFileName: "", // placeholder, updated after file move
         storedPath: relativeFolderPath,
@@ -285,6 +296,7 @@ export async function createDocuments(
         entityId: results.map((d) => d.id).join(","),
         meta: {
           count: results.length,
+          titles: results.map((document) => document.title),
           documentType: metadata.documentType,
           supplierName: metadata.supplierName,
           linkedEntityType: metadata.linkedEntityType,
@@ -320,6 +332,16 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
   const where: any = { deletedAt: null };
   const and: any[] = [visibilityWhereForRole(viewerRole)];
 
+  if (filters.q) {
+    and.push({
+      OR: [
+        { title: { contains: filters.q } },
+        { fileName: { contains: filters.q } },
+        { supplierName: { contains: filters.q } },
+        { billNumber: { contains: filters.q } },
+      ],
+    });
+  }
   if (filters.documentType) where.documentType = filters.documentType;
   if (filters.visibility) where.visibility = filters.visibility;
   if (filters.supplierName) {
@@ -395,12 +417,13 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
       data: {
         entityType: "Document",
         entityId: id,
-        entityLabel: doc.fileName,
+        entityLabel: documentLabel(doc),
         deletedById: userId,
         deleteReason: "Deleted from document storage",
         purgeAfter,
         entitySnapshot: {
           id: doc.id,
+          title: doc.title,
           documentType: doc.documentType,
           fileName: doc.fileName,
           supplierName: doc.supplierName,
@@ -422,6 +445,7 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
       entityId: id,
       meta: {
         fileName: doc.fileName,
+        title: doc.title,
         documentType: doc.documentType,
         supplierName: doc.supplierName,
         visibility: doc.visibility,
@@ -517,12 +541,18 @@ export async function updateDocumentMetadata(
   if (!existing) throw new Error("Document not found");
 
   const supplierName = cleanNullableText(input.supplierName);
+  const title = input.title?.trim();
   const billNumber = cleanNullableText(input.billNumber);
   const remarks = cleanNullableText(input.remarks);
   const billDate = parseNullableDate(input.billDate);
 
   const data: Prisma.DocumentUpdateInput = {};
   const changedFields: string[] = [];
+
+  if (title !== undefined && title !== existing.title) {
+    data.title = title;
+    changedFields.push("title");
+  }
 
   if (input.documentType && input.documentType !== existing.documentType) {
     data.documentType = input.documentType as DocumentType;
@@ -575,8 +605,10 @@ export async function updateDocumentMetadata(
       entityId: id,
       meta: {
         fileName: existing.fileName,
+        title: existing.title,
         changedFields,
         previous: {
+          title: existing.title,
           documentType: existing.documentType,
           supplierName: existing.supplierName,
           billNumber: existing.billNumber,
@@ -584,6 +616,7 @@ export async function updateDocumentMetadata(
           billAmount: existing.billAmount,
         },
         next: {
+          title: document.title,
           documentType: document.documentType,
           supplierName: document.supplierName,
           billNumber: document.billNumber,

@@ -645,7 +645,7 @@ function InvoiceModifyModal({
   }
 
   return (
-    <div className="fixed inset-0 z-[70]">
+    <div className="app-modal-layer fixed inset-0">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
@@ -1218,7 +1218,7 @@ function InvoiceReturnRequestModal({
   );
 
   return (
-    <div className="fixed inset-0 z-[72]">
+    <div className="app-modal-layer fixed inset-0">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
@@ -1533,7 +1533,7 @@ function ReturnReviewModal({
   ];
 
   return (
-    <div className="fixed inset-0 z-[71]">
+    <div className="app-modal-layer fixed inset-0">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
@@ -1777,7 +1777,7 @@ function InvoiceEditModal({
   const canSettle = !paymentLocked && invoice.dueAmount > 0; // only unpaid or partial invoices with due left can be updated
 
   return (
-    <div className="fixed inset-0 z-[65]">
+    <div className="app-modal-layer fixed inset-0">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
@@ -3983,14 +3983,6 @@ export default function CashierInvoicesPage() {
         extraActions={
           detailInvoice ? (
             <>
-              <button
-                type="button"
-                onClick={() => openEditInvoice(detailInvoice)}
-                className="h-[44px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] font-extrabold text-[#000000] flex items-center justify-center gap-2 transition px-4"
-              >
-                <Icon name="edit" />
-                Edit Invoice
-              </button>
               <button
                 type="button"
                 onClick={() => openReturnRequest(detailInvoice)}

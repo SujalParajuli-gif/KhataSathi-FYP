@@ -1,20 +1,29 @@
 import { Request, Response } from "express";
 import { loginUser, getMe, updateProfile as updateProfileService, uploadProfilePhoto } from "./service";
 import { deleteUploadFile } from "../../lib/uploads";
+import { UserIdentityValidationError } from "../../lib/userIdentity";
+import {
+    clearSessionCookies,
+    createAuthSession,
+    revokeAuthSession,
+    revokeUserSessions,
+    setSessionCookies,
+} from "./session";
 
 // handling the login request — validates input, calls the login service, and returns the token + user data
 export async function login(req: Request, res: Response) {
     try {
-        const { email, password } = req.body; // extracting email and password from the request body
+        const identifier = req.body?.identifier ?? req.body?.email;
+        const { password } = req.body;
 
         // making sure both fields are provided before attempting login
-        if (!email || !password) {
-            res.status(400).json({ error: "Email and password are required" });
+        if (!identifier || !password) {
+            res.status(400).json({ error: "Phone/email and password are required" });
             return;
         }
 
         const ip = req.ip || req.socket.remoteAddress; // capturing the IP address for login attempt logging
-        const result = await loginUser(email, password, ip); // calling the service to verify credentials
+        const result = await loginUser(String(identifier), String(password), ip);
 
         // this handles when login fails — wrong email, wrong password, or inactive account
         if (!result.success) {
@@ -22,7 +31,9 @@ export async function login(req: Request, res: Response) {
             return;
         }
 
-        res.json({ token: result.token, user: result.user }); // sending back the JWT token and user info on success
+        const session = await createAuthSession(result.user!.id);
+        setSessionCookies(res, session);
+        res.json({ user: result.user });
     } catch (err) {
         console.error("Login error:", err);
         res.status(500).json({ error: "Internal server error" });
@@ -68,6 +79,25 @@ export async function updateProfile(req: Request, res: Response) {
             password,
             profileImage,
         } = req.body;
+        if (req.user!.mustChangePassword && !(newPassword || password)) {
+            res.status(428).json({
+                code: "PASSWORD_CHANGE_REQUIRED",
+                error: "Change the temporary password before updating anything else.",
+            });
+            return;
+        }
+        if (
+            req.user!.mustChangePassword &&
+            [name, phone, gender, address, profileImage].some(
+                (value) => value !== undefined,
+            )
+        ) {
+            res.status(400).json({
+                code: "PASSWORD_CHANGE_ONLY",
+                error: "Finish changing the temporary password before editing profile details.",
+            });
+            return;
+        }
         const user = await updateProfileService(req.user!.id, {
             name,
             phone,
@@ -78,19 +108,47 @@ export async function updateProfile(req: Request, res: Response) {
             password,
             profileImage,
         });
+        if (newPassword || password) {
+            await revokeUserSessions(req.user!.id);
+            const replacementSession = await createAuthSession(req.user!.id);
+            setSessionCookies(res, replacementSession);
+        }
         res.json({ user }); // returning the updated user data
     } catch (err: any) {
         console.error("Update profile error:", err);
         // checking if the error is a known validation error (wrong current password or user not found)
         // these are expected errors so we return 400 instead of 500
+        if (err instanceof UserIdentityValidationError) {
+            res.status(400).json({ error: err.message, field: err.field });
+            return;
+        }
+        if (err?.code === "P2002") {
+            res.status(409).json({ error: "Phone number already belongs to another account", field: "phone" });
+            return;
+        }
         if (
             String(err?.message || "").includes("Current password") ||
+            String(err?.message || "").includes("New password") ||
             String(err?.message || "").includes("User not found")
         ) {
             res.status(400).json({ error: err.message });
             return;
         }
         res.status(500).json({ error: err.message || "Internal server error" });
+    }
+}
+
+export async function logout(req: Request, res: Response) {
+    try {
+        if (req.user?.sessionId) {
+            await revokeAuthSession(req.user.sessionId);
+        }
+        clearSessionCookies(res);
+        res.json({ success: true });
+    } catch (error) {
+        console.error("Logout error:", error);
+        clearSessionCookies(res);
+        res.status(500).json({ error: "Unable to complete logout" });
     }
 }
 

@@ -1,10 +1,24 @@
 import { Request, Response } from "express";
 import fs from "fs/promises";
-import { parse } from "csv-parse";
 import { PDFParse } from "pdf-parse";
-import { Readable } from "stream";
 import * as productService from "./service";
 import * as documentService from "../documents/service";
+import { getCashierPrivilege } from "../settings/service";
+import {
+  redactInventoryFromProduct,
+  redactProductForLookup,
+  resolveProductLookupVisibility,
+} from "./lookupVisibility";
+import { getBusinessCapabilities } from "../settings/capabilities";
+import {
+  recordProductSearchQuery,
+  recordProductSearchSelection,
+  type ProductSearchSource,
+} from "./searchLogging";
+import {
+  parseProductSpreadsheet,
+  SpreadsheetImportError,
+} from "./spreadsheetImport";
 
 // validating that a required text field is present and not just whitespace
 function parseRequiredText(value: unknown, label: string) {
@@ -36,6 +50,67 @@ function parseOptionalBoolean(value: unknown) {
     return undefined;
   }
   return parseBooleanValue(value);
+}
+
+function readProductListFilters(req: Request) {
+  const requestedPage = req.query.page ? Number(req.query.page) : 1;
+  const requestedPageSize = req.query.pageSize
+    ? Number(req.query.pageSize)
+    : 50;
+
+  return {
+    search: req.query.search as string | undefined,
+    brand: req.query.brand as string | undefined,
+    category: req.query.category as string | undefined,
+    isActive:
+      req.query.active === "true"
+        ? true
+        : req.query.active === "false"
+          ? false
+          : undefined,
+    lowStockOnly: req.query.lowStock === "true",
+    stockStatus:
+      req.query.stockStatus === "in" ||
+      req.query.stockStatus === "low" ||
+      req.query.stockStatus === "out"
+        ? (req.query.stockStatus as "in" | "low" | "out")
+        : undefined,
+    includeDraftReservations: req.query.draftReservations === "true",
+    page:
+      Number.isInteger(requestedPage) && requestedPage > 0
+        ? requestedPage
+        : 1,
+    pageSize:
+      Number.isInteger(requestedPageSize) && requestedPageSize > 0
+        ? Math.min(requestedPageSize, 200)
+        : 50,
+  };
+}
+
+async function safelyRecordProductListSearch(
+  req: Request,
+  source: ProductSearchSource,
+  filters: ReturnType<typeof readProductListFilters>,
+  resultCount: number,
+  durationMs: number,
+) {
+  try {
+    const log = await recordProductSearchQuery({
+      rawQuery: filters.search,
+      source,
+      filters,
+      resultCount,
+      durationMs,
+      actorId: req.user?.id,
+      sessionId: req.header("x-product-search-session"),
+      page: filters.page,
+    });
+    return log?.id || null;
+  } catch (error) {
+    // Analytics must never make the product catalog unavailable.
+    console.error("Product search logging error:", error);
+    return null;
+  }
 }
 
 // validating an optional numeric field — checks that it is a valid finite number
@@ -76,58 +151,127 @@ function parseRequiredNumber(
 // listing products with optional filters — supports search, brand, category, active status, low stock, and pagination
 export async function list(req: Request, res: Response) {
   try {
-    const requestedPage = req.query.page ? Number(req.query.page) : 1;
-    const requestedPageSize = req.query.pageSize
-      ? Number(req.query.pageSize)
-      : 50;
-
-    // reading all filter options from the query string
-    const filters = {
-      search: req.query.search as string | undefined,
-      brand: req.query.brand as string | undefined,
-      category: req.query.category as string | undefined,
-      isActive:
-        req.query.active === "true"
-          ? true
-          : req.query.active === "false"
-            ? false
-            : undefined,
-      lowStockOnly: req.query.lowStock === "true", // when true, only show products where stock is below the threshold
-      stockStatus:
-        req.query.stockStatus === "in" ||
-        req.query.stockStatus === "low" ||
-        req.query.stockStatus === "out"
-          ? (req.query.stockStatus as "in" | "low" | "out")
-          : undefined,
-      includeDraftReservations: req.query.draftReservations === "true",
-      page:
-        Number.isInteger(requestedPage) && requestedPage > 0
-          ? requestedPage
-          : 1,
-      pageSize:
-        Number.isInteger(requestedPageSize) && requestedPageSize > 0
-          ? Math.min(requestedPageSize, 200)
-          : 50,
-    };
-
+    const capabilities = await getBusinessCapabilities();
+    const filters = readProductListFilters(req);
+    if (!capabilities.stockTracked) {
+      filters.lowStockOnly = false;
+      filters.stockStatus = undefined;
+      filters.includeDraftReservations = false;
+    }
+    const startedAt = Date.now();
     const result = await productService.listProducts(filters);
-    res.json(result);
+    const searchLogId = await safelyRecordProductListSearch(
+      req,
+      "PRODUCTS",
+      filters,
+      result.total,
+      Date.now() - startedAt,
+    );
+    res.json({
+      ...result,
+      products: capabilities.stockTracked
+        ? result.products
+        : result.products.map((product) =>
+            redactInventoryFromProduct(product as Record<string, any>),
+          ),
+      stockTracked: capabilities.stockTracked,
+      searchLogId,
+    });
   } catch (err) {
     console.error("List products error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
 
+// Product Lookup has a narrower, role-aware response than product management.
+// Purchase cost is admin-only and wholesale values follow the saved per-user
+// VIEW WHOLESALE permission, so unauthorized prices never reach the browser.
+export async function listForPriceLookup(req: Request, res: Response) {
+  try {
+    const capabilities = await getBusinessCapabilities();
+    const filters = readProductListFilters(req);
+    if (!capabilities.stockTracked) {
+      filters.lowStockOnly = false;
+      filters.stockStatus = undefined;
+      filters.includeDraftReservations = false;
+    }
+    const startedAt = Date.now();
+    const result = await productService.listProducts(filters);
+    const searchDurationMs = Date.now() - startedAt;
+    const [privilege, searchLogId] = await Promise.all([
+      req.user!.role === "ADMIN"
+        ? Promise.resolve({ canViewWholesalePrice: true })
+        : getCashierPrivilege(req.user!.id),
+      safelyRecordProductListSearch(
+        req,
+        "PRODUCT_LOOKUP",
+        filters,
+        result.total,
+        searchDurationMs,
+      ),
+    ]);
+    const visibility = resolveProductLookupVisibility(
+      req.user!.role,
+      privilege.canViewWholesalePrice === true,
+    );
+
+    res.set("Cache-Control", "private, no-store");
+    res.json({
+      ...result,
+      products: result.products.map((product) => {
+        const visible = redactProductForLookup(
+          product as Record<string, any>,
+          visibility,
+        );
+        return capabilities.stockTracked
+          ? visible
+          : redactInventoryFromProduct(visible);
+      }),
+      visibility,
+      stockTracked: capabilities.stockTracked,
+      searchLogId,
+    });
+  } catch (err) {
+    console.error("Price lookup products error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function recordSearchSelection(req: Request, res: Response) {
+  try {
+    await recordProductSearchSelection({
+      searchLogId: req.body.searchLogId,
+      productId: req.body.productId,
+      action: req.body.action,
+      actorId: req.user!.id,
+    });
+    res.status(204).send();
+  } catch (error: any) {
+    const status = Number(error?.statusCode || 0);
+    if (status >= 400 && status < 500) {
+      res.status(status).json({ error: error.message });
+      return;
+    }
+    console.error("Product search selection logging error:", error);
+    res.status(500).json({ error: "Search selection could not be recorded." });
+  }
+}
+
 // fetching a single product by its ID
 export async function getOne(req: Request, res: Response) {
   try {
+    const capabilities = await getBusinessCapabilities();
     const productId = String(req.params.id);
     const product = await productService.getProduct(productId);
     if (!product) {
       res.status(404).json({ error: "Product not found" });
       return;
     }
-    res.json(product);
+    res.json(
+      capabilities.stockTracked
+        ? product
+        : redactInventoryFromProduct(product as Record<string, any>),
+    );
   } catch (err) {
     console.error("Get product error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -136,6 +280,7 @@ export async function getOne(req: Request, res: Response) {
 
 export async function getMany(req: Request, res: Response) {
   try {
+    const capabilities = await getBusinessCapabilities();
     const ids = String(req.query.ids || "")
       .split(",")
       .map((id) => id.trim())
@@ -148,7 +293,15 @@ export async function getMany(req: Request, res: Response) {
       res.status(400).json({ error: "A maximum of 50 products can be refreshed at once." });
       return;
     }
-    res.json({ products: await productService.getProductsByIds(ids) });
+    const products = await productService.getProductsByIds(ids);
+    res.json({
+      products: capabilities.stockTracked
+        ? products
+        : products.map((product) =>
+            redactInventoryFromProduct(product as Record<string, any>),
+          ),
+      stockTracked: capabilities.stockTracked,
+    });
   } catch (err) {
     console.error("Batch product lookup error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -157,6 +310,7 @@ export async function getMany(req: Request, res: Response) {
 
 export async function getByCode(req: Request, res: Response) {
   try {
+    const capabilities = await getBusinessCapabilities();
     const code = String(req.query.code || "").trim();
     if (!code) {
       res.status(400).json({ error: "SKU or barcode is required" });
@@ -167,7 +321,11 @@ export async function getByCode(req: Request, res: Response) {
       res.status(404).json({ error: "Active product not found" });
       return;
     }
-    res.json(product);
+    res.json(
+      capabilities.stockTracked
+        ? product
+        : redactInventoryFromProduct(product as Record<string, any>),
+    );
   } catch (err) {
     console.error("Product code lookup error:", err);
     res.status(500).json({ error: "Internal server error" });
@@ -177,12 +335,14 @@ export async function getByCode(req: Request, res: Response) {
 // creating a new product — all input values are validated through the parse helper functions
 export async function create(req: Request, res: Response) {
   try {
+    const capabilities = await getBusinessCapabilities();
     const product = await productService.createProduct({
       name: parseRequiredText(req.body.name, "name"),
       productName: parseOptionalText(req.body.productName),
-      sku: parseRequiredText(req.body.sku, "sku"),
+      sku: parseOptionalText(req.body.sku),
       barcode: parseOptionalText(req.body.barcode),
-      brandId: parseRequiredText(req.body.brandId, "brandId"),
+      brandId: parseOptionalText(req.body.brandId),
+      brandName: parseOptionalText(req.body.brandName),
       category: parseOptionalText(req.body.category),
       categoryGroup: parseOptionalText(req.body.categoryGroup),
       vendorSource: parseOptionalText(req.body.vendorSource),
@@ -223,7 +383,9 @@ export async function create(req: Request, res: Response) {
       usesDefaultWholesaleQtyThreshold: parseOptionalBoolean(
         req.body.usesDefaultWholesaleQtyThreshold,
       ),
-      stock: parseOptionalNumber(req.body.stock, "stock", { min: 0 }),
+      stock: capabilities.stockTracked
+        ? parseOptionalNumber(req.body.stock, "stock", { min: 0 })
+        : 0,
       lowStockThreshold: parseOptionalNumber(
         req.body.lowStockThreshold,
         "lowStockThreshold",
@@ -233,9 +395,13 @@ export async function create(req: Request, res: Response) {
         req.body.usesDefaultLowStockThreshold,
       ),
       isActive: parseOptionalBoolean(req.body.isActive),
-    });
+    }, req.user!.id);
 
-    res.status(201).json(product);
+    res.status(201).json(
+      capabilities.stockTracked
+        ? product
+        : redactInventoryFromProduct(product as Record<string, any>),
+    );
   } catch (err: any) {
     // checking for validation errors from our parse functions
     if (
@@ -263,6 +429,7 @@ export async function create(req: Request, res: Response) {
 // updating an existing product — only the fields that are provided in the request body get changed
 export async function update(req: Request, res: Response) {
   try {
+    const capabilities = await getBusinessCapabilities();
     const productId = String(req.params.id);
     const body = req.body || {};
     const data: any = {};
@@ -279,9 +446,13 @@ export async function update(req: Request, res: Response) {
     }
     if (body.barcode !== undefined) {
       data.barcode = parseOptionalText(body.barcode) || null;
+      data.barcodeOrigin = data.barcode ? "MANUFACTURER" : "INTERNAL";
     }
     if (body.brandId !== undefined) {
       data.brandId = parseRequiredText(body.brandId, "brandId");
+    }
+    if (body.brandName !== undefined) {
+      data.brandName = parseOptionalText(body.brandName);
     }
     if (body.category !== undefined) {
       data.category = parseOptionalText(body.category) || null;
@@ -357,9 +528,6 @@ export async function update(req: Request, res: Response) {
         body.usesDefaultWholesaleQtyThreshold,
       );
     }
-    if (body.stock !== undefined) {
-      data.stock = parseOptionalNumber(body.stock, "stock", { min: 0 });
-    }
     if (body.lowStockThreshold !== undefined) {
       data.lowStockThreshold = parseOptionalNumber(
         body.lowStockThreshold,
@@ -383,7 +551,11 @@ export async function update(req: Request, res: Response) {
       id: req.user!.id,
       role: req.user!.role,
     });
-    res.json(product);
+    res.json(
+      capabilities.stockTracked
+        ? product
+        : redactInventoryFromProduct(product as Record<string, any>),
+    );
   } catch (err: any) {
     if (
       err.message.includes("required") ||
@@ -462,6 +634,25 @@ export async function permanentDelete(req: Request, res: Response) {
   }
 }
 
+export async function discardStockAndPermanentDelete(req: Request, res: Response) {
+  try {
+    const productId = String(req.params.id);
+    const result = await productService.discardStockAndPermanentlyDeleteProduct(productId, req.user!.id);
+    res.json(result);
+  } catch (err: any) {
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+    if (err.code === "PRODUCT_STOCK_DISCARD_DELETE_BLOCKED") {
+      res.status(409).json({ error: err.message, safety: err.safety });
+      return;
+    }
+    console.error("Discard stock and delete product error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
 // returning all unique product categories from the database
 // the frontend uses this to populate the category filter dropdown
 export async function categories(req: Request, res: Response) {
@@ -474,34 +665,14 @@ export async function categories(req: Request, res: Response) {
   }
 }
 
-// handling bulk product import from a CSV file
+// handling bulk product import from a CSV or modern Excel workbook
 // the file is uploaded in memory and converted into a review batch before any products are inserted
 export async function importCsv(req: Request, res: Response) {
   try {
     const file = req.file;
     if (!file) {
-      res.status(400).json({ error: "CSV file is required" });
+      res.status(400).json({ error: "CSV or Excel spreadsheet is required" });
       return;
-    }
-
-    const records: any[] = [];
-    const stream = Readable.from(file.buffer); // creating a readable stream from the file buffer
-
-    // parsing the CSV with column headers, skipping empty lines, and trimming whitespace
-    const parser = stream.pipe(
-      parse({
-        columns: true, // first row is treated as column headers
-        skip_empty_lines: true,
-        trim: true,
-        bom: true, // handling byte order mark that some editors add
-        relax_quotes: true, // supplier files can contain inch marks like 10" inside product names
-        relax_column_count: true,
-      }),
-    );
-
-    // collecting all parsed rows into an array
-    for await (const record of parser) {
-      records.push(record);
     }
 
     const parseJsonField = (value: unknown) => {
@@ -512,18 +683,36 @@ export async function importCsv(req: Request, res: Response) {
         return undefined;
       }
     };
+    const fieldMap = parseJsonField(req.body?.fieldMap) as
+      | Record<string, string | string[]>
+      | undefined;
+    const expectedHeaders = Object.values(fieldMap || {}).flatMap((value) =>
+      Array.isArray(value) ? value : [value],
+    );
+    const spreadsheet = await parseProductSpreadsheet({
+      buffer: file.buffer,
+      fileName: file.originalname,
+      mimeType: file.mimetype,
+      expectedHeaders,
+    });
 
     const result = await productService.createCsvImportPreview({
       fileName: file.originalname,
-      rows: records,
+      rows: spreadsheet.rows,
+      rowNumbers: spreadsheet.rowNumbers,
+      sourceType: spreadsheet.sourceType,
       createdById: req.user!.id,
       supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
       templateId: typeof req.body?.templateId === "string" ? req.body.templateId : undefined,
-      fieldMap: parseJsonField(req.body?.fieldMap),
+      fieldMap,
       defaults: parseJsonField(req.body?.defaults),
     });
     res.json(result);
-  } catch (err) {
+  } catch (err: any) {
+    if (err instanceof SpreadsheetImportError) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
     console.error("Import CSV error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
@@ -578,6 +767,9 @@ export async function bulkPriceUpdate(req: Request, res: Response) {
       updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
       scope: req.body?.scope === "FILTERED" ? "FILTERED" : "IDS",
       filters: req.body?.filters || undefined,
+      excludedProductIds: Array.isArray(req.body?.excludedProductIds)
+        ? req.body.excludedProductIds
+        : [],
       wholesaleMarginPercent: req.body?.wholesaleMarginPercent,
       retailMarginPercent: req.body?.retailMarginPercent,
       reason: String(req.body?.reason || ""),
@@ -774,6 +966,23 @@ export async function deleteImportBatch(req: Request, res: Response) {
     res.json(result);
   } catch (err: any) {
     res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+export async function saveReviewedBatchRows(req: Request, res: Response) {
+  try {
+    const batchId = String(req.params.batchId);
+    const result = await productService.saveReviewedProductImportRows(
+      batchId,
+      Array.isArray(req.body?.rows) ? req.body.rows : [],
+      req.user!.id,
+    );
+    res.json(result);
+  } catch (err: any) {
+    const status = Number(err?.statusCode || 0);
+    res.status(status >= 400 && status < 500 ? status : 400).json({
+      error: err?.message || "Failed to save reviewed rows",
+    });
   }
 }
 

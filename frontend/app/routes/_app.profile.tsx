@@ -1,4 +1,5 @@
 import React, { useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   createUserApi,
   getMeApi,
@@ -16,7 +17,6 @@ import { ConfirmDialog, DialogButton, ModalFrame, StatusDialog } from "~/compone
 import Icon from "~/components/ui/Icon";
 import PreviewableImage from "~/components/ui/PreviewableImage";
 import ProjectSelect from "~/components/ui/ProjectSelect";
-import PaginationBar from "~/components/ui/PaginationBar";
 import {
   ActiveFilterChips,
   MobileFilterButton,
@@ -102,6 +102,7 @@ function TextField({
   disabled,
   type = "text",
   error,
+  autoFocus,
 }: {
   label: string;
   value: string;
@@ -110,6 +111,7 @@ function TextField({
   disabled?: boolean;
   type?: string;
   error?: string;
+  autoFocus?: boolean;
 }) {
   return (
     <div className="space-y-1.5">
@@ -122,6 +124,7 @@ function TextField({
         aria-label={label}
         placeholder={placeholder}
         disabled={disabled}
+        autoFocus={autoFocus}
         onChange={(e) => onChange?.(e.target.value)}
         className={[
           "h-11 w-full rounded-[8px] border bg-white px-3",
@@ -244,32 +247,95 @@ function ActionMenu({
   }[];
 }) {
   const [open, setOpen] = useState(false);
+  const triggerRef = React.useRef<HTMLButtonElement>(null);
   const menuRef = React.useRef<HTMLDivElement>(null);
+  const [menuPosition, setMenuPosition] = useState<{
+    left: number;
+    top: number;
+  } | null>(null);
+
+  const positionMenu = React.useCallback(() => {
+    const trigger = triggerRef.current;
+    if (!trigger) return;
+
+    const triggerRect = trigger.getBoundingClientRect();
+    const viewportPadding = 12;
+    const menuGap = 6;
+    const menuWidth = 192;
+    const menuHeight = Math.max(48, options.length * 42 + 12);
+    const roomBelow = window.innerHeight - triggerRect.bottom - viewportPadding;
+    const roomAbove = triggerRect.top - viewportPadding;
+    const openUpward = roomBelow < menuHeight && roomAbove > roomBelow;
+    const preferredTop = openUpward
+      ? triggerRect.top - menuHeight - menuGap
+      : triggerRect.bottom + menuGap;
+
+    setMenuPosition({
+      left: Math.min(
+        Math.max(viewportPadding, triggerRect.right - menuWidth),
+        window.innerWidth - menuWidth - viewportPadding,
+      ),
+      top: Math.min(
+        Math.max(viewportPadding, preferredTop),
+        window.innerHeight - menuHeight - viewportPadding,
+      ),
+    });
+  }, [options.length]);
 
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
-      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+      const target = event.target as Node;
+      if (
+        !triggerRef.current?.contains(target) &&
+        !menuRef.current?.contains(target)
+      ) {
         setOpen(false);
       }
     }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+
+    if (!open) return;
+    positionMenu();
     document.addEventListener("mousedown", handleClickOutside);
-    return () => document.removeEventListener("mousedown", handleClickOutside);
-  }, []);
+    document.addEventListener("keydown", handleKeyDown);
+    window.addEventListener("resize", positionMenu);
+    window.addEventListener("scroll", positionMenu, true);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+      window.removeEventListener("resize", positionMenu);
+      window.removeEventListener("scroll", positionMenu, true);
+    };
+  }, [open, positionMenu]);
 
   return (
-    <div className="relative inline-block text-left" ref={menuRef}>
+    <div className="relative inline-block text-left">
       <button
+        ref={triggerRef}
         type="button"
-        onClick={() => setOpen(!open)}
+        aria-label="Open user actions"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
         className="inline-flex items-center justify-center w-8 h-8 rounded-full border border-slate-300 bg-white text-slate-700 shadow-sm hover:bg-slate-50 transition-colors"
       >
         <GIcon name="more_vert" sizePx={20} />
       </button>
-      {open && (
-        <div className="absolute right-0 mt-1 w-48 origin-top-right rounded-xl bg-white border border-slate-200 shadow-xl focus:outline-none z-[50] py-1.5 overflow-hidden">
+      {open && menuPosition
+        ? createPortal(
+        <div
+          ref={menuRef}
+          role="menu"
+          className="fixed z-[200] w-48 origin-top-right overflow-hidden rounded-xl border border-slate-200 bg-white py-1.5 shadow-xl focus:outline-none"
+          style={{ left: menuPosition.left, top: menuPosition.top }}
+        >
           {options.map((option, idx) => (
             <button
               key={idx}
+              type="button"
+              role="menuitem"
               onClick={() => {
                 setOpen(false);
                 option.onClick();
@@ -286,8 +352,10 @@ function ActionMenu({
               {option.label}
             </button>
           ))}
-        </div>
-      )}
+        </div>,
+        document.body,
+      )
+        : null}
     </div>
   );
 }
@@ -707,12 +775,10 @@ export default function ProfilePage() {
   const [loadingCashiers, setLoadingCashiers] = useState(false); // cashier list loading state
   const [userQuery, setUserQuery] = useState("");
   const [userRoleFilter, setUserRoleFilter] = useState<"ALL" | Cashier["role"]>("ALL");
-  const [userStatusFilter, setUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
-  const [userPage, setUserPage] = useState(1);
-  const [userPageSize, setUserPageSize] = useState(10);
+  const [userStatusFilter, setUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ACTIVE");
   const [mobileUserFiltersOpen, setMobileUserFiltersOpen] = useState(false);
   const [draftUserRoleFilter, setDraftUserRoleFilter] = useState<"ALL" | Cashier["role"]>("ALL");
-  const [draftUserStatusFilter, setDraftUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ALL");
+  const [draftUserStatusFilter, setDraftUserStatusFilter] = useState<"ALL" | "ACTIVE" | "INACTIVE">("ACTIVE");
   const [currentAdminId, setCurrentAdminId] = useState<string | null>(null);
   const [feedbackOpen, setFeedbackOpen] = useState(false); // controls the shared success/error dialog
   const [feedbackTitle, setFeedbackTitle] = useState(""); // dialog title
@@ -736,6 +802,7 @@ export default function ProfilePage() {
   const [addFieldErrors, setAddFieldErrors] = useState({
     name: "",
     email: "",
+    phone: "",
     password: "",
     confirmPassword: "",
   });
@@ -761,6 +828,7 @@ export default function ProfilePage() {
   const [editFieldErrors, setEditFieldErrors] = useState({
     name: "",
     email: "",
+    phone: "",
     newPassword: "",
     confirmPassword: "",
   });
@@ -816,6 +884,7 @@ export default function ProfilePage() {
       id: user.id,
       name: user.name,
       email: user.email,
+      phone: user.phone,
       role: user.role,
       profileImage: user.profileImage,
     });
@@ -890,6 +959,7 @@ export default function ProfilePage() {
     setAddFieldErrors({
       name: "",
       email: "",
+      phone: "",
       password: "",
       confirmPassword: "",
     });
@@ -915,6 +985,7 @@ export default function ProfilePage() {
     setEditFieldErrors({
       name: "",
       email: "",
+      phone: "",
       newPassword: "",
       confirmPassword: "",
     });
@@ -942,6 +1013,7 @@ export default function ProfilePage() {
     setEditFieldErrors({
       name: "",
       email: "",
+      phone: "",
       newPassword: "",
       confirmPassword: "",
     });
@@ -952,17 +1024,18 @@ export default function ProfilePage() {
     const nextErrors = {
       name: "",
       email: "",
+      phone: "",
       password: "",
       confirmPassword: "",
     };
 
     if (!newName.trim()) nextErrors.name = "Full name is required.";
-    if (!newEmail.trim()) nextErrors.email = "Email is required.";
-    else if (!isValidEmail(newEmail.trim()))
+    if (newEmail.trim() && !isValidEmail(newEmail.trim()))
       nextErrors.email = "Enter a valid email address.";
+    if (!newPhone.trim()) nextErrors.phone = "Phone number is required.";
     if (!newPassword) nextErrors.password = "Password is required.";
-    else if (newPassword.length < 6)
-      nextErrors.password = "Password must be at least 6 characters.";
+    else if (newPassword.length < 8)
+      nextErrors.password = "Password must be at least 8 characters.";
     if (!newConfirmPassword)
       nextErrors.confirmPassword = "Confirm the password.";
     else if (newPassword !== newConfirmPassword)
@@ -977,21 +1050,22 @@ export default function ProfilePage() {
     const nextErrors = {
       name: "",
       email: "",
+      phone: "",
       newPassword: "",
       confirmPassword: "",
     };
 
     if (!editName.trim()) nextErrors.name = "Full name is required.";
-    if (!editEmail.trim()) nextErrors.email = "Email is required.";
-    else if (!isValidEmail(editEmail.trim()))
+    if (editEmail.trim() && !isValidEmail(editEmail.trim()))
       nextErrors.email = "Enter a valid email address.";
+    if (!editPhone.trim()) nextErrors.phone = "Phone number is required.";
 
     const wantsPasswordChange = editWantsPasswordChange;
 
     if (wantsPasswordChange) {
       if (!editNewPassword) nextErrors.newPassword = "Enter the new password.";
-      else if (editNewPassword.length < 6)
-        nextErrors.newPassword = "Password must be at least 6 characters.";
+      else if (editNewPassword.length < 8)
+        nextErrors.newPassword = "Password must be at least 8 characters.";
       if (!editConfirmPassword)
         nextErrors.confirmPassword = "Confirm the new password.";
       else if (editNewPassword !== editConfirmPassword) {
@@ -1010,7 +1084,7 @@ export default function ProfilePage() {
       setAddFormError("");
       let user = await createUserApi({
         name: newName.trim(),
-        email: newEmail.trim(),
+        email: newEmail.trim() || null,
         phone: newPhone.trim(),
         gender: newGender || undefined,
         address: newAddress.trim() || undefined,
@@ -1030,8 +1104,8 @@ export default function ProfilePage() {
         "success",
         `${formatRoleLabel(newRole)} added`,
         newPhotoFile
-          ? "The staff account and profile photo have been added successfully."
-          : "The staff account has been added successfully.",
+          ? "The staff account and photo were added. They must replace the temporary password at first sign-in."
+          : "The staff account was added. They must replace the temporary password at first sign-in.",
       );
     } catch (error: any) {
       console.error(error);
@@ -1039,6 +1113,10 @@ export default function ProfilePage() {
         error.response?.data?.error ||
         error?.message ||
         "Error adding cashier.";
+      const field = error.response?.data?.field;
+      if (field === "phone" || field === "email" || field === "name" || field === "password") {
+        setAddFieldErrors((current) => ({ ...current, [field]: message }));
+      }
       setAddFormError(message);
       showFeedback("error", "Could not add cashier", message);
     }
@@ -1053,7 +1131,7 @@ export default function ProfilePage() {
 
       await updateUserApi(editId, {
         name: editName.trim(),
-        email: editEmail.trim(),
+        email: editEmail.trim() || null,
         phone: editPhone.trim(),
         gender: editGender || null,
         address: editAddress.trim(),
@@ -1061,8 +1139,8 @@ export default function ProfilePage() {
         isActive: editActive,
         ...(wantsPasswordChange
           ? {
-              newPassword: editNewPassword,
-            }
+            newPassword: editNewPassword,
+          }
           : {}),
       });
 
@@ -1078,7 +1156,7 @@ export default function ProfilePage() {
         "success",
         wantsPasswordChange ? "Password updated" : "Staff updated",
         wantsPasswordChange
-          ? "The staff password has been updated successfully."
+          ? "A temporary password was set. The staff member must replace it at their next sign-in."
           : editPhotoRemoved
             ? "The staff profile has been updated and the photo has been removed."
             : editPhotoFile
@@ -1091,6 +1169,10 @@ export default function ProfilePage() {
         error.response?.data?.error ||
         error?.message ||
         "Error updating staff.";
+      const field = error.response?.data?.field;
+      if (field === "phone" || field === "email" || field === "name") {
+        setEditFieldErrors((current) => ({ ...current, [field]: message }));
+      }
       setEditFormError(message);
       showFeedback("error", "Could not update staff", message);
     }
@@ -1102,6 +1184,19 @@ export default function ProfilePage() {
 
     if (cashier.active) {
       setPendingDeactivateCashier(cashier);
+      return;
+    }
+
+    if (!cashier.phone) {
+      openEdit(cashier);
+      setEditActive(true);
+      setEditFieldErrors((current) => ({
+        ...current,
+        phone: "Add a valid Nepali mobile number before activating this account.",
+      }));
+      setEditFormError(
+        "This archived account has no verified phone. Add one and save to activate it safely.",
+      );
       return;
     }
 
@@ -1126,8 +1221,8 @@ export default function ProfilePage() {
         "error",
         "Could not activate staff",
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to activate the staff account.",
+        error?.message ||
+        "Failed to activate the staff account.",
       );
     }
   }
@@ -1158,8 +1253,8 @@ export default function ProfilePage() {
         "error",
         "Could not deactivate staff",
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to deactivate the staff account.",
+        error?.message ||
+        "Failed to deactivate the staff account.",
       );
     }
   }
@@ -1178,8 +1273,8 @@ export default function ProfilePage() {
         "error",
         "Could not check delete safety",
         error?.response?.data?.error ||
-          error?.message ||
-          "The staff account could not be checked for permanent delete.",
+        error?.message ||
+        "The staff account could not be checked for permanent delete.",
       );
     } finally {
       setDeleteSafetyLoading(false);
@@ -1204,7 +1299,7 @@ export default function ProfilePage() {
         "success",
         "Staff deleted",
         result?.message ||
-          `${pendingDeleteCashier.name} was permanently deleted because no history was found.`,
+        `${pendingDeleteCashier.name} was permanently deleted because no history was found.`,
       );
       setPendingDeleteCashier(null);
       setDeleteSafety(null);
@@ -1216,8 +1311,8 @@ export default function ProfilePage() {
         "error",
         "Permanent delete blocked",
         error?.response?.data?.error ||
-          error?.message ||
-          "This staff account has history and should be deactivated instead.",
+        error?.message ||
+        "This staff account has history and should be deactivated instead.",
       );
     } finally {
       setDeletingCashier(false);
@@ -1250,24 +1345,11 @@ export default function ProfilePage() {
       return matchesQuery && matchesRole && matchesStatus;
     });
   }, [cashiers, userQuery, userRoleFilter, userStatusFilter]);
-  const userTotalPages = Math.max(1, Math.ceil(filteredCashiers.length / userPageSize));
-  const userPageClamped = Math.min(userTotalPages, Math.max(1, userPage));
-  const userPageStart = filteredCashiers.length === 0 ? 0 : (userPageClamped - 1) * userPageSize;
-  const userPageItems = filteredCashiers.slice(userPageStart, userPageStart + userPageSize);
-  const userPageEnd = userPageStart + userPageItems.length;
-  const userFilterCount = [userRoleFilter !== "ALL", userStatusFilter !== "ALL"].filter(Boolean).length;
+  const userFilterCount = [userRoleFilter !== "ALL", userStatusFilter !== "ACTIVE"].filter(Boolean).length;
   const userFilterChips: MobileFilterChip[] = [
-    ...(userRoleFilter !== "ALL" ? [{ id: "role", label: formatRoleLabel(userRoleFilter), onRemove: () => { setUserRoleFilter("ALL"); setUserPage(1); } }] : []),
-    ...(userStatusFilter !== "ALL" ? [{ id: "status", label: userStatusFilter === "ACTIVE" ? "Active" : "Inactive", onRemove: () => { setUserStatusFilter("ALL"); setUserPage(1); } }] : []),
+    ...(userRoleFilter !== "ALL" ? [{ id: "role", label: formatRoleLabel(userRoleFilter), onRemove: () => setUserRoleFilter("ALL") }] : []),
+    ...(userStatusFilter !== "ACTIVE" ? [{ id: "status", label: userStatusFilter === "ALL" ? "All statuses" : "Inactive", onRemove: () => setUserStatusFilter("ACTIVE") }] : []),
   ];
-
-  useEffect(() => {
-    setUserPage(1);
-  }, [userQuery, userRoleFilter, userStatusFilter]);
-
-  useEffect(() => {
-    if (userPage !== userPageClamped) setUserPage(userPageClamped);
-  }, [userPage, userPageClamped]);
   const adminPasswordMismatch =
     !!adminSecurity.next &&
     !!adminSecurity.confirm &&
@@ -1324,6 +1406,10 @@ export default function ProfilePage() {
   }
 
   async function handleSaveAdminProfile() {
+    if (!adminProfile.phone.trim()) {
+      showFeedback("error", "Phone required", "Enter the Admin's Nepali mobile number before saving.");
+      return;
+    }
     try {
       setSavingAdminProfile(true);
       const response = await updateProfileApi({
@@ -1353,8 +1439,8 @@ export default function ProfilePage() {
         "error",
         "Could not save profile",
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to save profile.",
+        error?.message ||
+        "Failed to save profile.",
       );
     } finally {
       setSavingAdminProfile(false);
@@ -1370,8 +1456,8 @@ export default function ProfilePage() {
       setAdminSecurityError("Enter the new password.");
       return;
     }
-    if (adminSecurity.next.length < 6) {
-      setAdminSecurityError("Password must be at least 6 characters.");
+    if (adminSecurity.next.length < 8) {
+      setAdminSecurityError("Password must be at least 8 characters.");
       return;
     }
     if (adminSecurity.next !== adminSecurity.confirm) {
@@ -1395,8 +1481,8 @@ export default function ProfilePage() {
     } catch (error: any) {
       setAdminSecurityError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update password.",
+        error?.message ||
+        "Failed to update password.",
       );
     } finally {
       setSavingAdminPassword(false);
@@ -1405,17 +1491,17 @@ export default function ProfilePage() {
 
   return (
     <div className="w-full pt-0 pb-4">
-      <div className="mb-5">
-        <h1 className="text-2xl font-bold text-slate-800">
-          Account Settings
-        </h1>
-        <p className="text-slate-500 text-sm">
-          Manage your profile, security, and cashier accounts.
-        </p>
-      </div>
+      <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
+        <div className="lg:sticky lg:top-0 lg:col-span-4 lg:self-start">
+          <div className="mb-5">
+            <h1 className="text-2xl font-bold text-slate-800">
+              Account Settings
+            </h1>
+            <p className="text-slate-500 text-sm">
+              Manage your profile, security, and cashier accounts.
+            </p>
+          </div>
 
-      <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
-        <div className="lg:col-span-4 space-y-6">
           <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
             <div className="space-y-5 px-5 py-6 sm:px-6">
               <div className="flex flex-col items-center text-center">
@@ -1499,7 +1585,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <nav className="bg-white rounded-xl border border-slate-200 p-2 space-y-1">
+          <nav className="mt-6 bg-white rounded-xl border border-slate-200 p-2 space-y-1">
             <button
               onClick={() => {
                 setAdminTab("personal");
@@ -1548,127 +1634,127 @@ export default function ProfilePage() {
           </nav>
         </div>
 
-        <div className="lg:col-span-8">
+        <div className="lg:col-span-8 lg:pt-[72px]">
           {adminTab !== "users" ? (
-          <ProfilePanel
-            title={
-              adminTab === "personal" ? "Personal Details" : "Login & Password"
-            }
-            subtitle={
-              adminTab === "personal"
-                ? "Update your contact and account information."
-                : "Change your password and review sign-in security."
-            }
-          >
-            <div className="flex h-full flex-col justify-between p-6">
-              <div className="space-y-6">
-                {adminTab === "personal" ? (
-                  <>
-                    <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
-                      <ProfileField label="First Name">
-                        <ProfileTextInput
-                          value={adminProfile.firstName}
-                          onChange={(value) =>
-                            setAdminProfile((current) => ({
-                              ...current,
-                              firstName: value,
-                            }))
-                          }
-                          placeholder="First name"
-                        />
-                      </ProfileField>
-
-                      <ProfileField label="Last Name">
-                        <ProfileTextInput
-                          value={adminProfile.lastName}
-                          onChange={(value) =>
-                            setAdminProfile((current) => ({
-                              ...current,
-                              lastName: value,
-                            }))
-                          }
-                          placeholder="Last name"
-                        />
-                      </ProfileField>
-
-                      <div className="md:col-span-2">
-                        <ProfileField label="Email Address" hint="Read-only here">
+            <ProfilePanel
+              title={
+                adminTab === "personal" ? "Personal Details" : "Login & Password"
+              }
+              subtitle={
+                adminTab === "personal"
+                  ? "Update your contact and account information."
+                  : "Change your password and review sign-in security."
+              }
+            >
+              <div className="flex h-full flex-col justify-between p-6">
+                <div className="space-y-6">
+                  {adminTab === "personal" ? (
+                    <>
+                      <div className="grid grid-cols-1 gap-6 md:grid-cols-2">
+                        <ProfileField label="First Name">
                           <ProfileTextInput
-                            value={adminProfile.email}
-                            onChange={() => {}}
-                            disabled
-                            right={
-                              adminProfile.emailVerified ? (
-                                <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-extrabold uppercase text-emerald-700">
-                                  <Icon
-                                    name="verified"
-                                    className="text-[14px]"
-                                  />
-                                  Verified
-                                </span>
-                              ) : (
-                                <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase text-slate-500">
-                                  Sign-in Email
-                                </span>
-                              )
+                            value={adminProfile.firstName}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                firstName: value,
+                              }))
                             }
+                            placeholder="First name"
                           />
                         </ProfileField>
-                      </div>
 
-                      <ProfileField label="Phone Number">
-                        <ProfileTextInput
-                          value={adminProfile.phone}
-                          onChange={(value) =>
-                            setAdminProfile((current) => ({
-                              ...current,
-                              phone: value,
-                            }))
-                          }
-                          placeholder="+977 98XXXXXXXX"
-                        />
-                      </ProfileField>
+                        <ProfileField label="Last Name">
+                          <ProfileTextInput
+                            value={adminProfile.lastName}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                lastName: value,
+                              }))
+                            }
+                            placeholder="Last name"
+                          />
+                        </ProfileField>
 
-                      <ProfileField label="Gender">
-                        <div className="grid grid-cols-2 gap-4">
-                          {(["Male", "Female"] as const).map((gender) => (
-                            <button
-                              key={gender}
-                              type="button"
-                              onClick={() =>
-                                setAdminProfile((current) => ({
-                                  ...current,
-                                  gender,
-                                }))
+                        <div className="md:col-span-2">
+                          <ProfileField label="Email Address" hint="Read-only here">
+                            <ProfileTextInput
+                              value={adminProfile.email}
+                              onChange={() => { }}
+                              disabled
+                              right={
+                                adminProfile.emailVerified ? (
+                                  <span className="inline-flex items-center gap-1 rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-[10px] font-extrabold uppercase text-emerald-700">
+                                    <Icon
+                                      name="verified"
+                                      className="text-[14px]"
+                                    />
+                                    Verified
+                                  </span>
+                                ) : (
+                                  <span className="inline-flex rounded-full border border-slate-200 bg-slate-100 px-2 py-1 text-[10px] font-extrabold uppercase text-slate-500">
+                                    Sign-in Email
+                                  </span>
+                                )
                               }
-                              className={cn(
-                                "px-4 py-2.5 rounded-lg font-semibold text-sm transition-all",
-                                adminProfile.gender === gender
-                                  ? "border-2 border-[#11120d] bg-[#11120d] text-white"
-                                  : "border border-slate-200 text-slate-600 bg-white hover:bg-slate-50",
-                              )}
-                            >
-                              {gender}
-                            </button>
-                          ))}
+                            />
+                          </ProfileField>
                         </div>
-                      </ProfileField>
 
-                      <ProfileField
-                        label="Country / Region"
-                        hint="Stored locally on this device"
-                      >
-                        <ProfileSelectInput
-                          value={adminProfile.location}
-                          onChange={(value) =>
-                            setAdminProfile((current) => ({
-                              ...current,
-                              location: value,
-                            }))
-                          }
-                          options={["Nepal", "India", "Other"]}
-                        />
-                      </ProfileField>
+                        <ProfileField label="Phone Number">
+                          <ProfileTextInput
+                            value={adminProfile.phone}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                phone: value,
+                              }))
+                            }
+                            placeholder="+977 98XXXXXXXX"
+                          />
+                        </ProfileField>
+
+                        <ProfileField label="Gender">
+                          <div className="grid grid-cols-2 gap-4">
+                            {(["Male", "Female"] as const).map((gender) => (
+                              <button
+                                key={gender}
+                                type="button"
+                                onClick={() =>
+                                  setAdminProfile((current) => ({
+                                    ...current,
+                                    gender,
+                                  }))
+                                }
+                                className={cn(
+                                  "px-4 py-2.5 rounded-lg font-semibold text-sm transition-all",
+                                  adminProfile.gender === gender
+                                    ? "border-2 border-[#11120d] bg-[#11120d] text-white"
+                                    : "border border-slate-200 text-slate-600 bg-white hover:bg-slate-50",
+                                )}
+                              >
+                                {gender}
+                              </button>
+                            ))}
+                          </div>
+                        </ProfileField>
+
+                        <ProfileField
+                          label="Country / Region"
+                          hint="Stored locally on this device"
+                        >
+                          <ProfileSelectInput
+                            value={adminProfile.location}
+                            onChange={(value) =>
+                              setAdminProfile((current) => ({
+                                ...current,
+                                location: value,
+                              }))
+                            }
+                            options={["Nepal", "India", "Other"]}
+                          />
+                        </ProfileField>
 
                         <ProfileField label="Home Address">
                           <ProfileTextInput
@@ -1682,392 +1768,385 @@ export default function ProfilePage() {
                             placeholder="e.g. Kathmandu, Nepal"
                           />
                         </ProfileField>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    {adminSecurityError ? (
-                      <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
-                        {adminSecurityError}
                       </div>
-                    ) : null}
+                    </>
+                  ) : (
+                    <>
+                      {adminSecurityError ? (
+                        <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                          {adminSecurityError}
+                        </div>
+                      ) : null}
 
-                    <ProfileField label="Current Password">
-                      <ProfileTextInput
-                        value={adminSecurity.current}
-                        onChange={(value) => {
-                          setAdminSecurity((current) => ({
-                            ...current,
-                            current: value,
-                          }));
-                          setAdminSecurityError("");
-                        }}
-                        placeholder="Enter current password"
-                        type="password"
-                      />
-                    </ProfileField>
-
-                    <div className="max-w-xl space-y-6">
-                      <ProfileField label="New Password">
+                      <ProfileField label="Current Password">
                         <ProfileTextInput
-                          value={adminSecurity.next}
+                          value={adminSecurity.current}
                           onChange={(value) => {
                             setAdminSecurity((current) => ({
                               ...current,
-                              next: value,
+                              current: value,
                             }));
                             setAdminSecurityError("");
                           }}
-                          placeholder="New password"
+                          placeholder="Enter current password"
                           type="password"
                         />
                       </ProfileField>
 
-                      <ProfileField label="Confirm New Password">
-                        <ProfileTextInput
-                          value={adminSecurity.confirm}
-                          onChange={(value) => {
-                            setAdminSecurity((current) => ({
-                              ...current,
-                              confirm: value,
-                            }));
-                            setAdminSecurityError("");
-                          }}
-                          placeholder="Repeat new password"
-                          type="password"
-                        />
-                      </ProfileField>
-                    </div>
+                      <div className="max-w-xl space-y-6">
+                        <ProfileField label="New Password">
+                          <ProfileTextInput
+                            value={adminSecurity.next}
+                            onChange={(value) => {
+                              setAdminSecurity((current) => ({
+                                ...current,
+                                next: value,
+                              }));
+                              setAdminSecurityError("");
+                            }}
+                            placeholder="New password"
+                            type="password"
+                          />
+                        </ProfileField>
 
-                    {adminPasswordMismatch ? (
-                      <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
-                        Passwords do not match.
+                        <ProfileField label="Confirm New Password">
+                          <ProfileTextInput
+                            value={adminSecurity.confirm}
+                            onChange={(value) => {
+                              setAdminSecurity((current) => ({
+                                ...current,
+                                confirm: value,
+                              }));
+                              setAdminSecurityError("");
+                            }}
+                            placeholder="Repeat new password"
+                            type="password"
+                          />
+                        </ProfileField>
                       </div>
-                    ) : null}
 
-                    <div className="max-w-xl rounded-[8px] border border-slate-200 bg-slate-50/70 p-4">
-                      <div className="text-[11px] font-extrabold uppercase text-slate-500">
-                        Password Requirements
-                      </div>
-                      <div className="mt-2 text-[13px] font-medium leading-7 text-slate-600">
-                        Use 6 or more characters, mixing letters, numbers, and
-                        symbols. Avoid using dictionary words or easily
-                        guessable personal information.
-                      </div>
-                    </div>
-                  </>
-                )}
-              </div>
+                      {adminPasswordMismatch ? (
+                        <div className="rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-semibold text-rose-700">
+                          Passwords do not match.
+                        </div>
+                      ) : null}
 
-              <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
-                <ProfileActionButton
-                  icon="restart_alt"
-                  label="Discard Changes"
-                  onClick={discardAdminChanges}
-                  disabled={
-                    adminTab === "personal"
-                      ? !adminHasProfileChanges || savingAdminProfile
-                      : !adminHasSecurityChanges || savingAdminPassword
-                  }
-                />
-                <ProfileActionButton
-                  icon={adminTab === "security" ? "lock" : "save"}
-                  label={
-                    adminTab === "security"
-                      ? savingAdminPassword
-                        ? "Updating..."
-                        : "Update Password"
-                      : savingAdminProfile
-                        ? "Saving..."
-                        : "Save Profile"
-                  }
-                  onClick={
-                    adminTab === "security"
-                      ? handleSaveAdminPassword
-                      : handleSaveAdminProfile
-                  }
-                  disabled={
-                    adminTab === "security"
-                      ? savingAdminPassword ||
+                      <div className="max-w-xl rounded-[8px] border border-slate-200 bg-slate-50/70 p-4">
+                        <div className="text-[11px] font-extrabold uppercase text-slate-500">
+                          Password Requirements
+                        </div>
+                        <div className="mt-2 text-[13px] font-medium leading-7 text-slate-600">
+                          Use 6 or more characters, mixing letters, numbers, and
+                          symbols. Avoid using dictionary words or easily
+                          guessable personal information.
+                        </div>
+                      </div>
+                    </>
+                  )}
+                </div>
+
+                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
+                  <ProfileActionButton
+                    icon="restart_alt"
+                    label="Discard Changes"
+                    onClick={discardAdminChanges}
+                    disabled={
+                      adminTab === "personal"
+                        ? !adminHasProfileChanges || savingAdminProfile
+                        : !adminHasSecurityChanges || savingAdminPassword
+                    }
+                  />
+                  <ProfileActionButton
+                    icon={adminTab === "security" ? "lock" : "save"}
+                    label={
+                      adminTab === "security"
+                        ? savingAdminPassword
+                          ? "Updating..."
+                          : "Update Password"
+                        : savingAdminProfile
+                          ? "Saving..."
+                          : "Save Profile"
+                    }
+                    onClick={
+                      adminTab === "security"
+                        ? handleSaveAdminPassword
+                        : handleSaveAdminProfile
+                    }
+                    disabled={
+                      adminTab === "security"
+                        ? savingAdminPassword ||
                         adminPasswordMismatch ||
                         !adminHasSecurityChanges
-                      : savingAdminProfile || !adminHasProfileChanges
-                  }
-                  primary
-                />
+                        : savingAdminProfile || !adminHasProfileChanges
+                    }
+                    primary
+                  />
+                </div>
               </div>
-            </div>
-          </ProfilePanel>
+            </ProfilePanel>
           ) : (
-      <CardShell>
-        <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] px-[16px] py-[14px]">
-          <SectionTitle
-            title="User Management"
-            sub="Create and manage manager, cashier, and staff accounts."
-          />
+            <CardShell>
+              <div className="flex items-center justify-between gap-3 border-b border-[#CFCFD3] px-[16px] py-[14px]">
+                <SectionTitle
+                  title="User Management"
+                  sub="Create and manage manager, cashier, and staff accounts."
+                />
 
-          <Button
-            variant="primary"
-            icon="person_add"
-            onClick={() => {
-              resetAddForm();
-              setAddOpen(true);
-            }}
-          >
-            Add user
-          </Button>
-        </div>
+                <Button
+                  variant="primary"
+                  icon="person_add"
+                  onClick={() => {
+                    resetAddForm();
+                    setAddOpen(true);
+                  }}
+                >
+                  Add user
+                </Button>
+              </div>
 
-        <div className="border-b border-[#E5E7EB] bg-[#FAFBFC] p-4">
-          <div className="flex gap-2 lg:hidden">
-            <div className="relative min-w-0 flex-1"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => { setUserQuery(event.target.value); setUserPage(1); }} placeholder="Search users..." className="h-[46px] w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div>
-            <MobileFilterButton activeCount={userFilterCount} onClick={() => { setDraftUserRoleFilter(userRoleFilter); setDraftUserStatusFilter(userStatusFilter); setMobileUserFiltersOpen(true); }} />
-          </div>
-          <ActiveFilterChips items={userFilterChips} className="mt-2 lg:hidden" />
+              <div className="border-b border-[#E5E7EB] bg-[#FAFBFC] p-4">
+                <div className="flex gap-2 lg:hidden">
+                  <div className="relative min-w-0 flex-1"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Search users..." className="h-[46px] w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div>
+                  <MobileFilterButton activeCount={userFilterCount} onClick={() => { setDraftUserRoleFilter(userRoleFilter); setDraftUserStatusFilter(userStatusFilter); setMobileUserFiltersOpen(true); }} />
+                </div>
+                <ActiveFilterChips items={userFilterChips} className="mt-2 lg:hidden" />
 
-          <div className="hidden grid-cols-[minmax(240px,1fr)_220px_220px_auto] items-end gap-3 lg:grid">
-            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search users</span><div className="relative"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => { setUserQuery(event.target.value); setUserPage(1); }} placeholder="Name, email, phone, or ID" className="h-11 w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div></label>
-            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Role</span><ProjectSelect value={userRoleFilter} onChange={(event) => { setUserRoleFilter(event.target.value as "ALL" | Cashier["role"]); setUserPage(1); }}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
-            <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Status</span><ProjectSelect value={userStatusFilter} onChange={(event) => { setUserStatusFilter(event.target.value as "ALL" | "ACTIVE" | "INACTIVE"); setUserPage(1); }}><option value="ALL">All statuses</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></ProjectSelect></label>
-            <button type="button" disabled={!userQuery && userFilterCount === 0} onClick={() => { setUserQuery(""); setUserRoleFilter("ALL"); setUserStatusFilter("ALL"); setUserPage(1); }} className="h-11 rounded-xl border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#565449] disabled:cursor-not-allowed disabled:opacity-40">Clear</button>
-          </div>
-        </div>
+                <div className="hidden grid-cols-[minmax(240px,1fr)_220px_220px_auto] items-end gap-3 lg:grid">
+                  <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search users</span><div className="relative"><Icon name="search" sizePx={18} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#8C8889]" /><input value={userQuery} onChange={(event) => setUserQuery(event.target.value)} placeholder="Name, email, phone, or ID" className="h-11 w-full rounded-xl border border-[#CFCFD3] bg-white pl-10 pr-3 text-[13px] font-semibold outline-none focus:border-[#11120d]" /></div></label>
+                  <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Role</span><ProjectSelect value={userRoleFilter} onChange={(event) => setUserRoleFilter(event.target.value as "ALL" | Cashier["role"])}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
+                  <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Status</span><ProjectSelect value={userStatusFilter} onChange={(event) => setUserStatusFilter(event.target.value as "ALL" | "ACTIVE" | "INACTIVE")}><option value="ALL">All statuses</option><option value="ACTIVE">Active</option><option value="INACTIVE">Inactive</option></ProjectSelect></label>
+                  <button type="button" disabled={!userQuery && userFilterCount === 0} onClick={() => { setUserQuery(""); setUserRoleFilter("ALL"); setUserStatusFilter("ACTIVE"); }} className="h-11 rounded-xl border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#565449] disabled:cursor-not-allowed disabled:opacity-40">Clear</button>
+                </div>
+              </div>
 
-        <div className="hidden max-h-[600px] overflow-auto lg:block">
-          <table className="relative w-full min-w-[760px] border-collapse text-left">
-            <thead className="sticky top-0 z-10 bg-[#F8FAFC]">
-              <tr className="border-b border-[#DADDE3] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
-                <th className="px-4 py-3">User</th>
-                <th className="px-4 py-3">Contact</th>
-                <th className="px-4 py-3">Last login</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3 text-right">Actions</th>
-              </tr>
-            </thead>
+              <div className="hidden lg:block">
+                <table className="relative w-full min-w-[760px] border-collapse text-left">
+                  <thead className="sticky top-0 z-10 bg-[#F8FAFC]">
+                    <tr className="border-b border-[#DADDE3] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <th className="px-4 py-3">User</th>
+                      <th className="px-4 py-3">Contact</th>
+                      <th className="px-4 py-3">Last login</th>
+                      <th className="px-4 py-3">Status</th>
+                      <th className="px-4 py-3 text-right">Actions</th>
+                    </tr>
+                  </thead>
 
-            <tbody className="divide-y divide-[#E5E7EB]">
-              {loadingCashiers ? (
-                <tr>
-                  <td
-                    colSpan={5}
-                    className="px-4 py-10 text-center text-[#8C8889]"
-                  >
+                  <tbody className="divide-y divide-[#E5E7EB]">
+                    {loadingCashiers ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-4 py-10 text-center text-[#8C8889]"
+                        >
+                          Loading user accounts...
+                        </td>
+                      </tr>
+                    ) : filteredCashiers.length === 0 ? (
+                      <tr>
+                        <td
+                          colSpan={5}
+                          className="px-4 py-10 text-center text-[#8C8889]"
+                        >
+                          No user accounts match the current filters.
+                        </td>
+                      </tr>
+                    ) : (
+                      filteredCashiers.map((cashier) => (
+                        <tr
+                          key={cashier.id}
+                          className="text-[13px] font-semibold text-[#565449] transition-colors hover:bg-[#ECEFF3]"
+                        >
+                          <td className="px-4 py-3.5 align-middle">
+                            <div className="flex items-center gap-3">
+                              <PreviewableImage
+                                src={cashier.profileImage}
+                                alt={cashier.name}
+                                title={cashier.name}
+                                subtitle={cashier.email || cashier.phone}
+                                className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                                fallback={
+                                  <GIcon
+                                    name="person"
+                                    sizePx={18}
+                                    className="text-[#8C8889]"
+                                  />
+                                }
+                              />
+
+                              <div className="min-w-0">
+                                <div className="truncate font-extrabold text-[#000000]">
+                                  {cashier.name}
+                                </div>
+                                <div className="mt-1 flex items-center gap-2">
+                                  <Badge tone={cashier.role === "MANAGER" ? "blue" : cashier.role === "STAFF" ? "green" : "slate"}>
+                                    {formatRoleLabel(cashier.role)}
+                                  </Badge>
+                                  <span className="max-w-[105px] truncate text-[11px] text-[#8C8889]" title={cashier.id}>
+                                    ID: {cashier.id}
+                                  </span>
+                                </div>
+                              </div>
+                            </div>
+                          </td>
+
+                          <td className="px-4 py-3.5 align-middle">
+                            <div className="truncate font-bold text-[#11120d]" title={cashier.email || "No email added"}>
+                              {cashier.email || "No email added"}
+                            </div>
+                            <div className="mt-1 text-[12px] text-[#8C8889]">
+                              {cashier.phone || "Not added"}
+                            </div>
+                          </td>
+                          <td className="px-4 py-3.5 align-middle text-[12px] text-[#6B7280]">
+                            {cashier.lastLogin}
+                          </td>
+
+                          <td className="px-4 py-3.5 align-middle">
+                            <Badge tone={cashier.active ? "green" : "slate"}>
+                              {cashier.active ? "Active" : "Inactive"}
+                            </Badge>
+                          </td>
+
+                          <td className="px-4 py-3.5 align-middle">
+                            <div className="flex items-center justify-end">
+                              <ActionMenu
+                                options={[
+                                  {
+                                    label: "Edit",
+                                    icon: "edit",
+                                    onClick: () => openEdit(cashier),
+                                  },
+                                  {
+                                    label: cashier.active
+                                      ? "Deactivate"
+                                      : cashier.phone
+                                        ? "Activate"
+                                        : "Add phone & activate",
+                                    icon: cashier.active ? "block" : "check_circle",
+                                    danger: cashier.active,
+                                    onClick: () => toggleCashierActive(cashier.id),
+                                  },
+                                  {
+                                    label: "Permanently delete",
+                                    icon: "delete_forever",
+                                    danger: true,
+                                    disabled: cashier.id === currentAdminId,
+                                    onClick: () => openDeleteCashier(cashier),
+                                  },
+                                ]}
+                              />
+                            </div>
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
+
+              <div className="space-y-3 p-3 lg:hidden">
+                {loadingCashiers ? (
+                  <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
                     Loading user accounts...
-                  </td>
-                </tr>
-              ) : filteredCashiers.length === 0 ? (
-                <tr>
-                  <td
-                    colSpan={5}
-                    className="px-4 py-10 text-center text-[#8C8889]"
-                  >
+                  </div>
+                ) : filteredCashiers.length === 0 ? (
+                  <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
                     No user accounts match the current filters.
-                  </td>
-                </tr>
-              ) : (
-                userPageItems.map((cashier) => (
-                  <tr
-                    key={cashier.id}
-                    className="text-[13px] font-semibold text-[#565449] transition-colors hover:bg-[#ECEFF3]"
-                  >
-                    <td className="px-4 py-3.5 align-middle">
-                      <div className="flex items-center gap-3">
+                  </div>
+                ) : (
+                  filteredCashiers.map((cashier) => (
+                    <article key={cashier.id} className="space-y-4 rounded-[16px] border border-[#DADDE3] bg-white p-4 shadow-sm">
+                      <div className="flex min-w-0 items-start gap-3">
                         <PreviewableImage
                           src={cashier.profileImage}
                           alt={cashier.name}
                           title={cashier.name}
-                          subtitle={cashier.email}
-                          className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                          subtitle={cashier.email || cashier.phone}
+                          className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-slate-200 bg-slate-100"
                           fallback={
-                            <GIcon
-                              name="person"
-                              sizePx={18}
-                              className="text-[#8C8889]"
-                            />
+                            <GIcon name="person" sizePx={20} className="text-slate-500" />
                           }
                         />
-
-                        <div className="min-w-0">
-                          <div className="truncate font-extrabold text-[#000000]">
+                        <div className="min-w-0 flex-1">
+                          <div className="truncate text-[14px] font-extrabold text-black">
                             {cashier.name}
                           </div>
-                          <div className="mt-1 flex items-center gap-2">
-                            <Badge tone={cashier.role === "MANAGER" ? "blue" : cashier.role === "STAFF" ? "green" : "slate"}>
-                              {formatRoleLabel(cashier.role)}
-                            </Badge>
-                            <span className="max-w-[105px] truncate text-[11px] text-[#8C8889]" title={cashier.id}>
-                              ID: {cashier.id}
-                            </span>
+                          <div className="mt-0.5 truncate text-[12px] font-medium text-slate-500">
+                            {cashier.email || "No email added"}
                           </div>
                         </div>
+                        <Badge tone={cashier.active ? "green" : "slate"}>
+                          {cashier.active ? "Active" : "Inactive"}
+                        </Badge>
                       </div>
-                    </td>
 
-                    <td className="px-4 py-3.5 align-middle">
-                      <div className="truncate font-bold text-[#11120d]" title={cashier.email}>
-                        {cashier.email}
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-[12px] flex-1">
+                          <div>
+                            <div className="font-extrabold uppercase text-slate-400">Role</div>
+                            <div className="mt-1 font-bold text-slate-800">
+                              {formatRoleLabel(cashier.role)}
+                            </div>
+                          </div>
+                          <div>
+                            <div className="font-extrabold uppercase text-slate-400">Phone</div>
+                            <div className="mt-1 font-bold text-slate-800">
+                              {cashier.phone || "Not added"}
+                            </div>
+                          </div>
+                          <div className="col-span-2">
+                            <div className="font-extrabold uppercase text-slate-400">Last login</div>
+                            <div className="mt-1 font-bold text-slate-800">
+                              {cashier.lastLogin}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="shrink-0 pr-1">
+                          <ActionMenu
+                            options={[
+                              {
+                                label: "Edit",
+                                icon: "edit",
+                                onClick: () => openEdit(cashier),
+                              },
+                              {
+                                label: cashier.active
+                                  ? "Deactivate"
+                                  : cashier.phone
+                                    ? "Activate"
+                                    : "Add phone & activate",
+                                icon: cashier.active ? "block" : "check_circle",
+                                danger: cashier.active,
+                                onClick: () => toggleCashierActive(cashier.id),
+                              },
+                              {
+                                label: "Permanently delete",
+                                icon: "delete_forever",
+                                danger: true,
+                                disabled: cashier.id === currentAdminId,
+                                onClick: () => openDeleteCashier(cashier),
+                              },
+                            ]}
+                          />
+                        </div>
                       </div>
-                      <div className="mt-1 text-[12px] text-[#8C8889]">
-                        {cashier.phone || "Not added"}
-                      </div>
-                    </td>
-                    <td className="px-4 py-3.5 align-middle text-[12px] text-[#6B7280]">
-                      {cashier.lastLogin}
-                    </td>
-
-                    <td className="px-4 py-3.5 align-middle">
-                      <Badge tone={cashier.active ? "green" : "slate"}>
-                        {cashier.active ? "Active" : "Inactive"}
-                      </Badge>
-                    </td>
-
-                    <td className="px-4 py-3.5 align-middle">
-                      <div className="flex items-center justify-end">
-                        <ActionMenu
-                          options={[
-                            {
-                              label: "Edit",
-                              icon: "edit",
-                              onClick: () => openEdit(cashier),
-                            },
-                            {
-                              label: cashier.active ? "Deactivate" : "Activate",
-                              icon: cashier.active ? "block" : "check_circle",
-                              danger: cashier.active,
-                              onClick: () => toggleCashierActive(cashier.id),
-                            },
-                            {
-                              label: "Permanently delete",
-                              icon: "delete_forever",
-                              danger: true,
-                              disabled: cashier.id === currentAdminId,
-                              onClick: () => openDeleteCashier(cashier),
-                            },
-                          ]}
-                        />
-                      </div>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-
-        <div className="space-y-3 p-3 lg:hidden">
-          {loadingCashiers ? (
-            <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
-              Loading user accounts...
-            </div>
-          ) : filteredCashiers.length === 0 ? (
-            <div className="rounded-[16px] border border-[#DADDE3] bg-white px-4 py-8 text-center text-[13px] font-semibold text-slate-500 shadow-sm">
-              No user accounts match the current filters.
-            </div>
-          ) : (
-            userPageItems.map((cashier) => (
-              <article key={cashier.id} className="space-y-4 rounded-[16px] border border-[#DADDE3] bg-white p-4 shadow-sm">
-                <div className="flex min-w-0 items-start gap-3">
-                  <PreviewableImage
-                    src={cashier.profileImage}
-                    alt={cashier.name}
-                    title={cashier.name}
-                    subtitle={cashier.email}
-                    className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-slate-200 bg-slate-100"
-                    fallback={
-                      <GIcon name="person" sizePx={20} className="text-slate-500" />
-                    }
-                  />
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate text-[14px] font-extrabold text-black">
-                      {cashier.name}
-                    </div>
-                    <div className="mt-0.5 truncate text-[12px] font-medium text-slate-500">
-                      {cashier.email}
-                    </div>
-                  </div>
-                  <Badge tone={cashier.active ? "green" : "slate"}>
-                    {cashier.active ? "Active" : "Inactive"}
-                  </Badge>
+                    </article>
+                  ))
+                )}
+              </div>
+              <MobileFilterSheet
+                open={mobileUserFiltersOpen}
+                onClose={() => setMobileUserFiltersOpen(false)}
+                onClear={() => { setDraftUserRoleFilter("ALL"); setDraftUserStatusFilter("ACTIVE"); }}
+                onApply={() => { setUserRoleFilter(draftUserRoleFilter); setUserStatusFilter(draftUserStatusFilter); setMobileUserFiltersOpen(false); }}
+                title="User filters"
+              >
+                <div className="space-y-5">
+                  <label className="block space-y-2"><span className="text-[13px] font-bold">Role</span><ProjectSelect value={draftUserRoleFilter} onChange={(event) => setDraftUserRoleFilter(event.target.value as "ALL" | Cashier["role"])}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
+                  <fieldset className="space-y-2"><legend className="text-[13px] font-bold">Status</legend><div className="grid grid-cols-3 overflow-hidden rounded-xl border border-[#CFCFD3]">{([['ALL', 'All'], ['ACTIVE', 'Active'], ['INACTIVE', 'Inactive']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setDraftUserStatusFilter(value)} className={cn("min-h-[50px] border-r border-[#CFCFD3] px-2 text-[12px] font-extrabold last:border-r-0", draftUserStatusFilter === value ? "bg-[#11120d] text-white" : "bg-white text-[#565449]")}>{label}</button>)}</div></fieldset>
                 </div>
-
-                <div className="flex items-center justify-between gap-2">
-                  <div className="grid grid-cols-2 gap-x-4 gap-y-3 text-[12px] flex-1">
-                    <div>
-                      <div className="font-extrabold uppercase text-slate-400">Role</div>
-                      <div className="mt-1 font-bold text-slate-800">
-                        {formatRoleLabel(cashier.role)}
-                      </div>
-                    </div>
-                    <div>
-                      <div className="font-extrabold uppercase text-slate-400">Phone</div>
-                      <div className="mt-1 font-bold text-slate-800">
-                        {cashier.phone || "Not added"}
-                      </div>
-                    </div>
-                    <div className="col-span-2">
-                      <div className="font-extrabold uppercase text-slate-400">Last login</div>
-                      <div className="mt-1 font-bold text-slate-800">
-                        {cashier.lastLogin}
-                      </div>
-                    </div>
-                  </div>
-                  <div className="shrink-0 pr-1">
-                    <ActionMenu
-                      options={[
-                        {
-                          label: "Edit",
-                          icon: "edit",
-                          onClick: () => openEdit(cashier),
-                        },
-                        {
-                          label: cashier.active ? "Deactivate" : "Activate",
-                          icon: cashier.active ? "block" : "check_circle",
-                          danger: cashier.active,
-                          onClick: () => toggleCashierActive(cashier.id),
-                        },
-                        {
-                          label: "Permanently delete",
-                          icon: "delete_forever",
-                          danger: true,
-                          disabled: cashier.id === currentAdminId,
-                          onClick: () => openDeleteCashier(cashier),
-                        },
-                      ]}
-                    />
-                  </div>
-                </div>
-              </article>
-            ))
-          )}
-        </div>
-        {!loadingCashiers && filteredCashiers.length > 0 ? (
-          <PaginationBar
-            page={userPageClamped}
-            totalPages={userTotalPages}
-            total={filteredCashiers.length}
-            start={userPageStart}
-            end={userPageEnd}
-            label="users"
-            pageSize={userPageSize}
-            onPageChange={setUserPage}
-            onPageSizeChange={(nextPageSize) => { setUserPageSize(nextPageSize); setUserPage(1); }}
-            className="border-t border-[#E5E7EB]"
-          />
-        ) : null}
-
-        <MobileFilterSheet
-          open={mobileUserFiltersOpen}
-          onClose={() => setMobileUserFiltersOpen(false)}
-          onClear={() => { setDraftUserRoleFilter("ALL"); setDraftUserStatusFilter("ALL"); }}
-          onApply={() => { setUserRoleFilter(draftUserRoleFilter); setUserStatusFilter(draftUserStatusFilter); setUserPage(1); setMobileUserFiltersOpen(false); }}
-          title="User filters"
-        >
-          <div className="space-y-5">
-            <label className="block space-y-2"><span className="text-[13px] font-bold">Role</span><ProjectSelect value={draftUserRoleFilter} onChange={(event) => setDraftUserRoleFilter(event.target.value as "ALL" | Cashier["role"])}><option value="ALL">All roles</option><option value="MANAGER">Manager</option><option value="CASHIER">Cashier</option><option value="STAFF">Staff</option></ProjectSelect></label>
-            <fieldset className="space-y-2"><legend className="text-[13px] font-bold">Status</legend><div className="grid grid-cols-3 overflow-hidden rounded-xl border border-[#CFCFD3]">{([['ALL', 'All'], ['ACTIVE', 'Active'], ['INACTIVE', 'Inactive']] as const).map(([value, label]) => <button key={value} type="button" onClick={() => setDraftUserStatusFilter(value)} className={cn("min-h-[50px] border-r border-[#CFCFD3] px-2 text-[12px] font-extrabold last:border-r-0", draftUserStatusFilter === value ? "bg-[#11120d] text-white" : "bg-white text-[#565449]")}>{label}</button>)}</div></fieldset>
-          </div>
-        </MobileFilterSheet>
-      </CardShell>
+              </MobileFilterSheet>
+            </CardShell>
           )}
         </div>
       </div>
@@ -2102,7 +2181,7 @@ export default function ProfilePage() {
             error={addFieldErrors.name}
           />
           <TextField
-            label="Email"
+            label="Email (optional)"
             value={newEmail}
             onChange={setNewEmail}
             placeholder="e.g., sita@khatasathi.local"
@@ -2113,6 +2192,7 @@ export default function ProfilePage() {
             value={newPhone}
             onChange={setNewPhone}
             placeholder="e.g., +977 98XXXXXXXX"
+            error={addFieldErrors.phone}
           />
           <SelectField
             label="Gender"
@@ -2204,12 +2284,18 @@ export default function ProfilePage() {
             error={editFieldErrors.name}
           />
           <TextField
-            label="Email"
+            label="Email (optional)"
             value={editEmail}
             onChange={setEditEmail}
             error={editFieldErrors.email}
           />
-          <TextField label="Phone" value={editPhone} onChange={setEditPhone} />
+          <TextField
+            label="Phone"
+            value={editPhone}
+            onChange={setEditPhone}
+            error={editFieldErrors.phone}
+            autoFocus={!editPhone && Boolean(editFieldErrors.phone)}
+          />
           <SelectField
             label="Gender"
             value={editGender}
@@ -2326,7 +2412,7 @@ export default function ProfilePage() {
               <div className="font-semibold text-slate-700">
                 {pendingDeactivateCashier.name}
               </div>
-              <div>{pendingDeactivateCashier.email}</div>
+              <div>{pendingDeactivateCashier.email || pendingDeactivateCashier.phone}</div>
             </div>
           ) : null
         }
@@ -2337,7 +2423,7 @@ export default function ProfilePage() {
         title="Delete staff account"
         description={
           pendingDeleteCashier
-            ? `${pendingDeleteCashier.name} (${pendingDeleteCashier.email})`
+            ? `${pendingDeleteCashier.name} (${pendingDeleteCashier.email || pendingDeleteCashier.phone})`
             : undefined
         }
         onClose={closeDeleteCashier}
@@ -2349,8 +2435,8 @@ export default function ProfilePage() {
             </DialogButton>
 
             {deleteSafety &&
-            !deleteSafety.canPermanentDelete &&
-            pendingDeleteCashier?.active ? (
+              !deleteSafety.canPermanentDelete &&
+              pendingDeleteCashier?.active ? (
               <DialogButton
                 variant="secondary"
                 icon="block"

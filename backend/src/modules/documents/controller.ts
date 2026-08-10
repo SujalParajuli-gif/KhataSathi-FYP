@@ -43,6 +43,14 @@ export async function uploadDocuments(req: Request, res: Response) {
       return;
     }
 
+    if (parseResult.data.titles && parseResult.data.titles.length !== files.length) {
+      await Promise.all(files.map((f) => fs.unlink(f.path).catch(() => {})));
+      res.status(400).json({
+        error: "Each uploaded file must have one document title",
+      });
+      return;
+    }
+
     const uploadedFiles = files.map((f) => ({
       originalname: f.originalname,
       mimetype: f.mimetype,

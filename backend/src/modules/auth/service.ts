@@ -1,46 +1,61 @@
 import prisma from "../../db/prisma";
 import bcrypt from "bcryptjs";
-import jwt from "jsonwebtoken";
 import { deleteReplacedUpload } from "../../lib/uploads";
 import { reconcileProfileImage } from "../../lib/profileImages";
-import { JWT_EXPIRES_IN, JWT_SECRET } from "../../config/env";
+import {
+  loginAttemptIdentity,
+  normalizeLoginIdentity,
+  normalizeRequiredUserPhone,
+  validateUserPassword,
+} from "../../lib/userIdentity";
 
-// handling the login process — verifies credentials, logs the attempt, and issues a JWT token on success
+const DUMMY_PASSWORD_HASH = bcrypt.hash(
+  "khatasathi-nonexistent-account-password",
+  10,
+);
+
+// handling the login process — verifies credentials and logs the attempt
 // we also pass the IP address so every login attempt (successful or not) is recorded with the client's IP
-export async function loginUser(email: string, password: string, ip?: string) {
-  const normalizedEmail = email.trim().toLowerCase(); // normalizing email to lowercase so "Admin@email.com" and "admin@email.com" are treated the same
-  const user = await prisma.user.findUnique({ where: { email: normalizedEmail } }); // looking up the user by their normalized email
+export async function loginUser(identifier: string, password: string, ip?: string) {
+  const identity = normalizeLoginIdentity(identifier);
+  const user = identity
+    ? await prisma.user.findUnique({
+        where:
+          identity.kind === "email"
+            ? { email: identity.value }
+            : { phone: identity.value },
+      })
+    : null;
 
-  // this handles when the user does not exist or their account has been deactivated
-  // we log the failed attempt and return a generic error so attackers cannot tell if the email exists
-  if (!user || !user.isActive) {
-    await prisma.loginAttempt.create({ data: { email: normalizedEmail, success: false, ip } });
-    return { success: false, error: "Your account has been deactivated by the administrator." };
-  }
+  // Always perform a password comparison, including for missing accounts. The
+  // response stays identical for an unknown identifier, wrong password, or a
+  // deactivated account so the login form cannot be used for account discovery.
+  const validPassword = await bcrypt.compare(
+    password,
+    user?.passwordHash || (await DUMMY_PASSWORD_HASH),
+  );
+  const success = Boolean(user?.isActive && validPassword);
+  await prisma.loginAttempt.create({
+    data: {
+      email: loginAttemptIdentity(identifier, identity),
+      success,
+      ip,
+    },
+  });
 
-  const valid = await bcrypt.compare(password, user.passwordHash); // comparing the entered password against the stored hash
-  await prisma.loginAttempt.create({ data: { email: normalizedEmail, success: valid, ip } }); // logging the attempt regardless of success or failure
-
-  // this handles when the password does not match
-  if (!valid) {
-    return { success: false, error: "Invalid email or password" };
+  if (!success || !user) {
+    return { success: false, error: "Invalid phone/email or password" };
   }
 
   const now = new Date();
   await prisma.user.update({ where: { id: user.id }, data: { lastLogin: now } }); // updating the user's lastLogin timestamp
 
-  // creating a JWT with the user's id and role, valid for 8 hours
-  // the frontend stores this token and sends it with every API request
-  const token = jwt.sign({ id: user.id, role: user.role }, JWT_SECRET, {
-    expiresIn: JWT_EXPIRES_IN,
-  });
-
-  // returning the token and a safe subset of user fields (no passwordHash)
+  // returning a safe subset of user fields (no passwordHash). The controller
+  // creates the opaque server-side session only after credentials succeed.
   const safeUser = await reconcileProfileImage(user);
 
   return {
     success: true,
-    token,
     user: {
       id: user.id,
       name: user.name,
@@ -49,6 +64,7 @@ export async function loginUser(email: string, password: string, ip?: string) {
       gender: user.gender,
       address: user.address,
       role: user.role,
+      mustChangePassword: user.mustChangePassword,
       profileImage: safeUser.profileImage,
       lastLogin: now,
     },
@@ -70,6 +86,7 @@ export async function getMe(userId: string) {
       role: true,
       profileImage: true,
       isActive: true,
+      mustChangePassword: true,
       lastLogin: true,
     },
   });
@@ -120,17 +137,22 @@ export async function updateProfile(userId: string, data: { name?: string; phone
     if (!passwordMatches) {
       throw new Error("Current password is incorrect");
     }
+    validateUserPassword(nextPassword);
+    if (await bcrypt.compare(nextPassword, existingUser.passwordHash)) {
+      throw new Error("New password must be different from the current password");
+    }
   }
 
   // building the update object with only the fields that were actually provided
   // we trim string values and convert empty strings to null for optional fields
   const updateData: any = {};
   if (data.name !== undefined) updateData.name = data.name.trim();
-  if (data.phone !== undefined) updateData.phone = data.phone.trim() || null;
+  if (data.phone !== undefined) updateData.phone = normalizeRequiredUserPhone(data.phone);
   if (data.gender !== undefined) updateData.gender = data.gender?.trim() || null;
   if (data.address !== undefined) updateData.address = data.address?.trim() || null;
   if (nextPassword) {
     updateData.passwordHash = await bcrypt.hash(nextPassword, 10); // hashing the new password with bcrypt (10 salt rounds)
+    updateData.mustChangePassword = false;
   }
   if (data.profileImage !== undefined) updateData.profileImage = data.profileImage;
 
@@ -148,6 +170,7 @@ export async function updateProfile(userId: string, data: { name?: string; phone
       role: true,
       profileImage: true,
       isActive: true,
+      mustChangePassword: true,
       lastLogin: true,
     },
   });

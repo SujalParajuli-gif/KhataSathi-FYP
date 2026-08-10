@@ -30,9 +30,22 @@ export const MAX_FILE_SIZE = 10 * 1024 * 1024;
 // maximum number of files per single upload
 export const MAX_FILES_PER_UPLOAD = 5;
 
+const documentTitleSchema = z.string().trim().min(2).max(160);
+
 // schema for creating a document (metadata sent alongside the file upload)
 export const createDocumentSchema = z.object({
   documentType: z.enum(DOCUMENT_TYPES),
+  titles: z.preprocess(
+    (value) => {
+      if (typeof value !== "string") return value;
+      try {
+        return JSON.parse(value);
+      } catch {
+        return value;
+      }
+    },
+    z.array(documentTitleSchema).max(MAX_FILES_PER_UPLOAD).optional(),
+  ),
   supplierName: z.string().max(255).optional(),
   billNumber: z.string().max(100).optional(),
   billDate: z.string().optional(), // ISO date string, parsed in service
@@ -47,6 +60,7 @@ export type CreateDocumentInput = z.infer<typeof createDocumentSchema>;
 
 // schema for filtering documents in the list endpoint
 export const listDocumentsSchema = z.object({
+  q: z.string().trim().max(255).optional(),
   documentType: z.enum(DOCUMENT_TYPES).optional(),
   processingStatus: z.enum(["PROCESSED", "UNPROCESSED"]).optional(),
   visibility: z.enum(DOCUMENT_VISIBILITIES).optional(),
@@ -71,6 +85,7 @@ export type UpdateDocumentVisibilityInput = z.infer<
 >;
 
 export const updateDocumentMetadataSchema = z.object({
+  title: documentTitleSchema.optional(),
   documentType: z.enum(DOCUMENT_TYPES).optional(),
   supplierName: z.string().max(255).nullable().optional(),
   billNumber: z.string().max(100).nullable().optional(),

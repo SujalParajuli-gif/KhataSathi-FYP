@@ -1,6 +1,7 @@
 import prisma from "../../db/prisma";
 import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
 import { reconcileProfileImages } from "../../lib/profileImages";
+import { normalizeRequiredUserPhone } from "../../lib/userIdentity";
 
 export type ManagedUserRole = "ADMIN" | "MANAGER" | "CASHIER" | "STAFF";
 export const PRESENCE_ACTIVE_WINDOW_MS = 2 * 60 * 1000;
@@ -18,12 +19,13 @@ export type UserDeleteSafety = {
 // defining the shape of data needed to create a new user
 type CreateUserInput = {
   name: string;
-  email: string;
-  phone?: string;
+  email: string | null;
+  phone: string;
   gender?: string | null;
   address?: string | null;
   role?: ManagedUserRole;
   passwordHash: string;
+  mustChangePassword?: boolean;
   isActive?: boolean;
 };
 
@@ -31,12 +33,13 @@ type CreateUserInput = {
 // all fields are optional because the admin might only change one or two fields at a time
 type UpdateUserInput = {
   name?: string;
-  email?: string;
-  phone?: string | null;
+  email?: string | null;
+  phone?: string;
   gender?: string | null;
   address?: string | null;
   role?: ManagedUserRole;
   passwordHash?: string;
+  mustChangePassword?: boolean;
   isActive?: boolean;
   profileImage?: string | null;
 };
@@ -72,6 +75,7 @@ export async function listUsers(query?: { role?: ManagedUserRole }) {
       lastLogin: true,
       lastPresenceAt: true,
       profileImage: true,
+      mustChangePassword: true,
       createdAt: true,
     },
   });
@@ -86,12 +90,13 @@ export async function createUser(data: CreateUserInput) {
     data: {
       name: data.name,
       email: data.email,
-      phone: data.phone || null,
+      phone: data.phone,
       gender: data.gender || null,
       address: data.address || null,
       role: data.role || "CASHIER", // new users are cashiers by default unless admin specifies otherwise
       passwordHash: data.passwordHash,
       isActive: data.isActive ?? true, // active by default
+      mustChangePassword: data.mustChangePassword ?? true,
     },
     select: {
       id: true,
@@ -105,6 +110,7 @@ export async function createUser(data: CreateUserInput) {
       lastLogin: true,
       lastPresenceAt: true,
       profileImage: true,
+      mustChangePassword: true,
       createdAt: true,
     },
   });
@@ -113,6 +119,26 @@ export async function createUser(data: CreateUserInput) {
 // updating an existing user record — handles all fields including profile image changes
 export async function updateUser(id: string, data: UpdateUserInput) {
   let previousProfileImage: string | null = null;
+
+  // Historical users may remain archived without a usable contact number so
+  // their invoices and audit records keep the correct actor. Reactivation is
+  // different: it restores sign-in access and therefore requires a real,
+  // canonical mobile number before the database write is attempted.
+  if (data.isActive === true && data.phone === undefined) {
+    const existingUser = await prisma.user.findUnique({
+      where: { id },
+      select: { phone: true },
+    });
+    if (!existingUser) {
+      const error: any = new Error("User not found");
+      error.code = "P2025";
+      throw error;
+    }
+    data = {
+      ...data,
+      phone: normalizeRequiredUserPhone(existingUser.phone),
+    };
+  }
 
   // if the profile image is being changed, we need to save the old URL so we can delete the file later
   if (data.profileImage !== undefined) {
@@ -146,6 +172,7 @@ export async function updateUser(id: string, data: UpdateUserInput) {
       lastLogin: true,
       lastPresenceAt: true,
       profileImage: true,
+      mustChangePassword: true,
       createdAt: true,
     },
   });

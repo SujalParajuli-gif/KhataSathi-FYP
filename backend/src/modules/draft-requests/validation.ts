@@ -54,6 +54,19 @@ export const completeDraftRequestSchema = z
   })
   .strict();
 
+export const resolveAcceptedDraftRequestSchema = z
+  .object({
+    action: z.enum(["RETURN_TO_QUEUE", "CANCEL"]),
+    reason: safeText("Resolution reason", 500).min(
+      3,
+      "Add a short reason so staff can understand what happened",
+    ),
+  })
+  .strict();
+
 export type CreateDraftRequestInput = z.infer<typeof createDraftRequestSchema>;
 export type UpdateDraftRequestInput = z.infer<typeof updateDraftRequestSchema>;
 export type AcceptDraftRequestInput = z.infer<typeof acceptDraftRequestSchema>;
+export type ResolveAcceptedDraftRequestInput = z.infer<
+  typeof resolveAcceptedDraftRequestSchema
+>;

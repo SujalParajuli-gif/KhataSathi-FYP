@@ -3,7 +3,12 @@ import GoogleIcon from "~/components/ui/GIcon";
 import Icon from "~/components/ui/Icon";
 import PreviewableImage from "~/components/ui/PreviewableImage";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import CreatableCombobox from "~/components/ui/CreatableCombobox";
+import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
+import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
+import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 import type {
   DocumentRecord,
   ImportedProductSummary,
@@ -24,7 +29,10 @@ import {
 type ProductFormErrors = Partial<
   Record<
     | "name"
+    | "brand"
+    | "category"
     | "sku"
+    | "ratePerPiece"
     | "retailPrice"
     | "wholesalePrice"
     | "thresholdQty"
@@ -36,6 +44,15 @@ type ProductFormErrors = Partial<
     string
   >
 >;
+
+type ProductEditorStep = "basic" | "units" | "pricing" | "stock" | "review";
+const PRODUCT_EDITOR_STEPS: Array<{ value: ProductEditorStep; label: string }> = [
+  { value: "basic", label: "Basic" },
+  { value: "units", label: "Units" },
+  { value: "pricing", label: "Pricing" },
+  { value: "stock", label: "Stock" },
+  { value: "review", label: "Review" },
+];
 
 type CsvImportError = {
   rowNumber: number;
@@ -71,6 +88,39 @@ type PdfReviewDraft = ReviewedPdfImportRowPayload & {
   status: string;
   error?: string | null;
 };
+
+function toReviewedImportRowPayload(
+  row: PdfReviewDraft,
+): ReviewedPdfImportRowPayload {
+  return {
+    rowId: row.rowId,
+    name: row.name,
+    sku: row.sku,
+    barcode: row.barcode,
+    brand: row.brand,
+    category: row.category,
+    categoryGroup: row.categoryGroup,
+    vendorSource: row.vendorSource,
+    productCodeVariant: row.productCodeVariant,
+    sizeValue: row.sizeValue,
+    sizeUnit: row.sizeUnit,
+    ratePerPiece: row.ratePerPiece,
+    packageQuantity: row.packageQuantity,
+    packageUnit: row.packageUnit,
+    saleUnit: row.saleUnit,
+    allowFractionalQty: row.allowFractionalQty,
+    quantityStep: row.quantityStep,
+    wholesaleEligible: row.wholesaleEligible,
+    sourceCitation: row.sourceCitation,
+    retailPrice: row.retailPrice,
+    wholesalePrice: row.wholesalePrice,
+    stock: row.stock,
+  };
+}
+
+function reviewedImportRowFingerprint(row: PdfReviewDraft) {
+  return JSON.stringify(toReviewedImportRowPayload(row));
+}
 
 function formatQty(value: number) {
   const safe = Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
@@ -475,6 +525,8 @@ function guessPdfReviewDraft(
   };
 }
 
+const FieldLabelContext = React.createContext<string | undefined>(undefined);
+
 function Field({
   label,
   error,
@@ -484,12 +536,27 @@ function Field({
   error?: string;
   children: React.ReactNode;
 }) {
+  const errorId = React.useId();
+  const labelledChildren = React.Children.map(children, (child) => {
+    if (!React.isValidElement(child) || child.type !== "input") return child;
+    const input = child as React.ReactElement<any>;
+    const describedBy = [
+      input.props["aria-describedby"],
+      error ? errorId : undefined,
+    ].filter(Boolean).join(" ") || undefined;
+    return React.cloneElement(input, {
+      "aria-label": input.props["aria-label"] || label,
+      "aria-describedby": describedBy,
+    });
+  });
   return (
     <div className="space-y-[4px]">
       <div className="text-[11px] font-extrabold text-[#565449]">{label}</div>
-      {children}
+      <FieldLabelContext.Provider value={label}>
+        {labelledChildren}
+      </FieldLabelContext.Provider>
       {error ? (
-        <div className="text-[12px] font-semibold text-rose-600">{error}</div>
+        <div id={errorId} className="text-[12px] font-semibold text-rose-600" role="alert">{error}</div>
       ) : null}
     </div>
   );
@@ -575,10 +642,13 @@ function Select({
   options: Array<{ value: string; label: string }>;
   error?: string;
 }) {
+  const fieldLabel = React.useContext(FieldLabelContext);
   return (
     <ProjectSelect
       value={value}
       onChange={(event) => onChange(event.target.value)}
+      aria-invalid={Boolean(error)}
+      aria-label={fieldLabel}
       className={cn(
         "h-[38px] w-full rounded-[12px] border bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none",
         error ? "border-rose-300" : "border-[#CFCFD3]",
@@ -684,6 +754,7 @@ function ModalShell({
   headerLeft,
   maxWidthClass,
   contentClassName,
+  footerClassName,
 }: {
   open: boolean;
   title: string;
@@ -694,6 +765,7 @@ function ModalShell({
   headerLeft?: React.ReactNode;
   maxWidthClass?: string;
   contentClassName?: string;
+  footerClassName?: string;
 }) {
   useBodyScrollLock(open);
 
@@ -724,7 +796,7 @@ function ModalShell({
             <button
               type="button"
               onClick={onClose}
-              className="inline-flex h-[36px] w-[36px] items-center justify-center rounded-[12px] border border-[#CFCFD3] hover:bg-[#F3F4F6]"
+              className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] hover:bg-[#F3F4F6]"
               aria-label="Close modal"
             >
               <GoogleIcon name="close" className="text-[#565449]" />
@@ -744,7 +816,7 @@ function ModalShell({
           </div>
 
           {footer ? (
-            <div className="shrink-0 border-t border-[#CFCFD3] bg-white px-[16px] pb-[max(10px,env(safe-area-inset-bottom))] pt-[10px] lg:py-[10px]">
+            <div className={cn("shrink-0 border-t border-[#CFCFD3] bg-white px-[16px] pb-[max(10px,env(safe-area-inset-bottom))] pt-[10px] lg:py-[10px]", footerClassName)}>
               {footer}
             </div>
           ) : null}
@@ -757,8 +829,10 @@ function ModalShell({
 // this component holds all the modals for the products page (Add, Edit, View, Import, Confirm Delete)
 // it keeps the main Products page cleaner by separating all modal jsx and state wiring into this file
 export default function ProductsModals({
+  stockTracked,
   brands,
   categories,
+  supplierOptions,
   businessDefaults,
 
   openAddEdit,
@@ -782,15 +856,20 @@ export default function ProductsModals({
   onClearProductImage,
 
   onSave,
+  productSaveBusy,
+  onValidateProductStep,
+  onClearFormError,
   onConfirmDelete,
   isAdmin,
   deleteSafety,
   deleteSafetyLoading,
   deleteBusy,
   onConfirmPermanentDelete,
+  onDiscardStockAndDelete,
   bulkAction,
   bulkProducts,
   onCloseBulkAction,
+  onRemoveBulkProduct,
   onConfirmBulkAction,
   onEditActiveProduct,
   importFile,
@@ -813,6 +892,7 @@ export default function ProductsModals({
   onSaveImportTemplate,
   onDeleteImportTemplate,
   pdfReviewBusy,
+  onSaveReviewedPdfRows,
   onImportReviewedPdfRows,
   onBackToImportList,
   onOpenImportBatch,
@@ -825,9 +905,12 @@ export default function ProductsModals({
   onCloseImport,
   onUploadCsvClick,
 }: {
+  stockTracked: boolean;
   brands: string[];
   categories: string[];
+  supplierOptions: string[];
   businessDefaults: {
+    defaultInitialStock: number;
     defaultLowStockThreshold: number;
     defaultWholesaleQtyThreshold: number;
   };
@@ -856,12 +939,16 @@ export default function ProductsModals({
   onClearProductImage: () => void;
 
   onSave: () => void;
+  productSaveBusy: boolean;
+  onValidateProductStep: (step: "basic" | "units" | "pricing" | "stock") => boolean;
+  onClearFormError: (field: keyof ProductFormErrors) => void;
   onConfirmDelete: () => void;
   isAdmin: boolean;
   deleteSafety: ProductDeleteSafety | null;
   deleteSafetyLoading: boolean;
   deleteBusy: boolean;
   onConfirmPermanentDelete: () => void;
+  onDiscardStockAndDelete: () => void;
   bulkAction: {
     title: string;
     message: string;
@@ -869,6 +956,7 @@ export default function ProductsModals({
   } | null;
   bulkProducts: Product[];
   onCloseBulkAction: () => void;
+  onRemoveBulkProduct: (productId: string) => void;
   onConfirmBulkAction: () => void;
   onEditActiveProduct: () => void;
   importFile: File | null;
@@ -893,6 +981,9 @@ export default function ProductsModals({
   onSaveImportTemplate: () => void;
   onDeleteImportTemplate: (templateId: string) => void;
   pdfReviewBusy: boolean;
+  onSaveReviewedPdfRows: (
+    rows: ReviewedPdfImportRowPayload[],
+  ) => Promise<void>;
   onImportReviewedPdfRows: (
     rows: ReviewedPdfImportRowPayload[],
     ignoredRowIds: string[],
@@ -918,7 +1009,10 @@ export default function ProductsModals({
   const compactInputClass =
     "h-[38px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
   const [importTab, setImportTab] = React.useState<"csv" | "pdf" | "image">("csv");
-  const [mobileEditorTab, setMobileEditorTab] = React.useState<"basic" | "units" | "pricing" | "stock">("basic");
+  const [mobileEditorTab, setMobileEditorTab] = React.useState<ProductEditorStep>("basic");
+  const productEditorTabRailRef = React.useRef<SwipeableTabRailController | null>(null);
+  const [pricingDraft, setPricingDraft] = React.useState({ cost: "", wholesale: "", retail: "" });
+  const [pricingMarkupDraft, setPricingMarkupDraft] = React.useState({ wholesale: "", retail: "" });
   const [pdfReviewRows, setPdfReviewRows] = React.useState<PdfReviewDraft[]>(
     [],
   );
@@ -930,6 +1024,8 @@ export default function ProductsModals({
     "row",
   );
   const [reviewSearch, setReviewSearch] = React.useState("");
+  const [mobileReviewView, setMobileReviewView] = React.useState<"list" | "editor">("list");
+  const [confirmImportSelected, setConfirmImportSelected] = React.useState(false);
   const [reviewStatusFilter, setReviewStatusFilter] = React.useState<
     "ALL" | "READY" | "ISSUES" | "DUPLICATE" | "IGNORED"
   >("ALL");
@@ -944,30 +1040,144 @@ export default function ProductsModals({
   const [bulkStock, setBulkStock] = React.useState(0);
   const [bulkWholesaleMargin, setBulkWholesaleMargin] = React.useState(18);
   const [bulkRetailMargin, setBulkRetailMargin] = React.useState(30);
+  const [savedReviewFingerprints, setSavedReviewFingerprints] = React.useState<
+    Record<string, string>
+  >({});
+  const [verifiedReviewRowIds, setVerifiedReviewRowIds] = React.useState<
+    Set<string>
+  >(new Set());
+  const [reviewSaveBusy, setReviewSaveBusy] = React.useState(false);
+  const [reviewSaveError, setReviewSaveError] = React.useState("");
   const [deleteImportBatchId, setDeleteImportBatchId] = React.useState<
     string | null
   >(null);
+  const [importSupplierError, setImportSupplierError] = React.useState("");
+  const importSupplierRef = React.useRef<HTMLInputElement>(null);
   const activeReviewRow =
     pdfReviewRows.find((row) => row.rowId === activeReviewRowId) ||
     pdfReviewRows.find((row) => !row.ignored) ||
     null;
+  const reviewBrandOptions = React.useMemo(
+    () => [
+      ...brands.filter((brand) => brand !== "All Brands"),
+      ...pdfReviewRows.map((row) => row.brand),
+    ],
+    [brands, pdfReviewRows],
+  );
+  const reviewCategoryOptions = React.useMemo(
+    () => [
+      ...categories.filter((category) => category !== "All Categories"),
+      ...pdfReviewRows.map((row) => row.category),
+    ],
+    [categories, pdfReviewRows],
+  );
+  const reviewSupplierOptions = React.useMemo(
+    () => [
+      ...supplierOptions,
+      ...pdfReviewRows.map((row) => row.vendorSource || ""),
+    ],
+    [supplierOptions, pdfReviewRows],
+  );
   const deleteImportBatch =
     importBatches.find((batch) => batch.id === deleteImportBatchId) || null;
 
   React.useEffect(() => {
-    if (openAddEdit) setMobileEditorTab("basic");
+    if (openAddEdit) {
+      setMobileEditorTab("basic");
+      const cost = Number(form.ratePerPiece || 0);
+      const wholesale = Number(form.wholesalePrice || 0);
+      const retail = Number(form.retailPrice || 0);
+      setPricingDraft({
+        cost: cost > 0 ? String(cost) : "",
+        wholesale: wholesale > 0 ? String(wholesale) : "",
+        retail: retail > 0 ? String(retail) : "",
+      });
+      setPricingMarkupDraft({
+        wholesale: cost > 0 && wholesale > 0 ? String(Math.round(((wholesale - cost) / cost) * 10000) / 100) : "",
+        retail: cost > 0 && retail > 0 ? String(Math.round(((retail - cost) / cost) * 10000) / 100) : "",
+      });
+    }
   }, [openAddEdit, activeProductId]);
 
   React.useEffect(() => {
+    if (!openImport) setImportSupplierError("");
+  }, [openImport]);
+
+  function saveImportTemplateWithValidation() {
+    if (!importSupplier.trim()) {
+      setImportSupplierError("Enter a supplier or brand name before saving this mapping.");
+      focusInvalidField(importSupplierRef);
+      return;
+    }
+    setImportSupplierError("");
+    onSaveImportTemplate();
+  }
+
+  const productEditorSteps = stockTracked
+    ? PRODUCT_EDITOR_STEPS
+    : PRODUCT_EDITOR_STEPS.filter((step) => step.value !== "stock");
+  const editorStepIndex = productEditorSteps.findIndex((step) => step.value === mobileEditorTab);
+  function goToPreviousProductStep() {
+    if (editorStepIndex <= 0) return;
+    setMobileEditorTab(productEditorSteps[editorStepIndex - 1].value);
+  }
+  function goToNextProductStep() {
+    if (editorStepIndex >= productEditorSteps.length - 1) return;
+    if (mobileEditorTab !== "review" && !onValidateProductStep(mobileEditorTab)) return;
+    setMobileEditorTab(productEditorSteps[editorStepIndex + 1].value);
+  }
+
+  const productEditorSwipeGesture = useHorizontalGesture<HTMLDivElement>({
+    enabled: openAddEdit && !productSaveBusy,
+    threshold: 64,
+    edgeGuard: 24,
+    allowMouse: true,
+    maxViewportWidth: 1023,
+    onMove: (offsetX) => {
+      const direction: -1 | 1 = offsetX < 0 ? 1 : -1;
+      if (!productEditorSteps[editorStepIndex + direction]) {
+        productEditorTabRailRef.current?.settle();
+        return;
+      }
+      productEditorTabRailRef.current?.setGestureProgress(
+        direction,
+        Math.min(1, Math.abs(offsetX) / 140),
+      );
+    },
+    onSwipeLeft: goToNextProductStep,
+    onSwipeRight: goToPreviousProductStep,
+    onEnd: () => window.requestAnimationFrame(() => productEditorTabRailRef.current?.settle()),
+  });
+
+  React.useEffect(() => {
     if (!openAddEdit || Object.keys(formErrors).length === 0) return;
-    if (formErrors.name || formErrors.sku || formErrors.image) setMobileEditorTab("basic");
+    if (formErrors.name || formErrors.brand || formErrors.category || formErrors.sku || formErrors.image) setMobileEditorTab("basic");
     else if (formErrors.packageQuantity || formErrors.quantityStep) setMobileEditorTab("units");
-    else if (formErrors.retailPrice || formErrors.wholesalePrice || formErrors.thresholdQty) setMobileEditorTab("pricing");
-    else if (formErrors.stock || formErrors.lowStockThreshold) setMobileEditorTab("stock");
+    else if (formErrors.ratePerPiece || formErrors.retailPrice || formErrors.wholesalePrice || formErrors.thresholdQty) setMobileEditorTab("pricing");
+    else if (stockTracked && (formErrors.stock || formErrors.lowStockThreshold)) setMobileEditorTab("stock");
+    const timer = window.setTimeout(() => {
+      focusInvalidField(document.querySelector<HTMLElement>("[data-product-editor] [aria-invalid='true']"));
+    }, 0);
+    return () => window.clearTimeout(timer);
   }, [formErrors, openAddEdit]);
   const selectedReviewRows = pdfReviewRows.filter(
     (row) => row.selected && !row.ignored && row.status !== "IMPORTED",
   );
+  const dirtyReviewRows = pdfReviewRows.filter(
+    (row) =>
+      row.status !== "IMPORTED" &&
+      reviewedImportRowFingerprint(row) !== savedReviewFingerprints[row.rowId],
+  );
+  const dirtyReviewRowIds = new Set(dirtyReviewRows.map((row) => row.rowId));
+  const dirtySelectedReviewRows = selectedReviewRows.filter((row) =>
+    dirtyReviewRowIds.has(row.rowId),
+  );
+  const activeReviewRowDirty = activeReviewRow
+    ? dirtyReviewRowIds.has(activeReviewRow.rowId)
+    : false;
+  const selectedReviewIssueCount = selectedReviewRows.filter(
+    (row) => row.error || row.status === "DUPLICATE" || row.status === "FAILED",
+  ).length;
   const ignoredReviewRows = pdfReviewRows.filter((row) => row.ignored);
   const filteredReviewRows = pdfReviewRows.filter((row) => {
     const q = reviewSearch.trim().toLowerCase();
@@ -1018,8 +1228,17 @@ export default function ProductsModals({
       guessPdfReviewDraft(pdfReviewBatch, row, brands, categories),
     );
     setPdfReviewRows(nextRows);
+    setSavedReviewFingerprints(
+      Object.fromEntries(
+        nextRows.map((row) => [row.rowId, reviewedImportRowFingerprint(row)]),
+      ),
+    );
+    setVerifiedReviewRowIds(new Set());
+    setReviewSaveError("");
     setActiveReviewRowId(nextRows.find((row) => !row.ignored)?.rowId || null);
     setReviewPanelTab("row");
+    setMobileReviewView("list");
+    setConfirmImportSelected(false);
     setReviewSearch("");
     setReviewStatusFilter("ALL");
     setBulkBrand("");
@@ -1032,12 +1251,14 @@ export default function ProductsModals({
   }, [pdfReviewBatch?.id, brands, categories]);
 
   function updateReviewRow(rowId: string, patch: Partial<PdfReviewDraft>) {
+    setReviewSaveError("");
     setPdfReviewRows((rows) =>
       rows.map((row) => (row.rowId === rowId ? { ...row, ...patch } : row)),
     );
   }
 
   function updateSelectedReviewRows(patch: Partial<PdfReviewDraft>) {
+    setReviewSaveError("");
     setPdfReviewRows((rows) =>
       rows.map((row) =>
         row.selected && !row.ignored && row.status !== "IMPORTED"
@@ -1097,6 +1318,49 @@ export default function ProductsModals({
     );
   }
 
+  function moveActiveReviewRow(direction: -1 | 1) {
+    if (!activeReviewRow) return;
+    const index = filteredReviewRows.findIndex((row) => row.rowId === activeReviewRow.rowId);
+    const next = filteredReviewRows[index + direction];
+    if (next) setActiveReviewRowId(next.rowId);
+  }
+
+  async function saveReviewDraftRows(rows: PdfReviewDraft[]) {
+    if (rows.length === 0 || reviewSaveBusy) return;
+    setReviewSaveBusy(true);
+    setReviewSaveError("");
+    try {
+      await onSaveReviewedPdfRows(rows.map(toReviewedImportRowPayload));
+      const savedIds = new Set(rows.map((row) => row.rowId));
+      setSavedReviewFingerprints((current) => ({
+        ...current,
+        ...Object.fromEntries(
+          rows.map((row) => [row.rowId, reviewedImportRowFingerprint(row)]),
+        ),
+      }));
+      setVerifiedReviewRowIds((current) => {
+        const next = new Set(current);
+        savedIds.forEach((id) => next.add(id));
+        return next;
+      });
+      setPdfReviewRows((current) =>
+        current.map((row) =>
+          savedIds.has(row.rowId)
+            ? { ...row, status: "READY", error: null }
+            : row,
+        ),
+      );
+    } catch (error: any) {
+      setReviewSaveError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "Review changes could not be saved.",
+      );
+    } finally {
+      setReviewSaveBusy(false);
+    }
+  }
+
   function regenerateReviewSku(row: PdfReviewDraft) {
     const sourcePart =
       slugPart(
@@ -1113,35 +1377,13 @@ export default function ProductsModals({
     });
   }
 
-  function importSelectedPdfRows() {
-    const rows = selectedReviewRows.map((row) => ({
-      rowId: row.rowId,
-      name: row.name,
-      sku: row.sku,
-      barcode: row.barcode,
-      brand: row.brand,
-      category: row.category,
-      categoryGroup: row.categoryGroup,
-      vendorSource: row.vendorSource,
-      productCodeVariant: row.productCodeVariant,
-      sizeValue: row.sizeValue,
-      sizeUnit: row.sizeUnit,
-      ratePerPiece: row.ratePerPiece,
-      packageQuantity: row.packageQuantity,
-      packageUnit: row.packageUnit,
-      saleUnit: row.saleUnit,
-      allowFractionalQty: row.allowFractionalQty,
-      quantityStep: row.quantityStep,
-      wholesaleEligible: row.wholesaleEligible,
-      sourceCitation: row.sourceCitation,
-      retailPrice: row.retailPrice,
-      wholesalePrice: row.wholesalePrice,
-      stock: row.stock,
-    }));
+  function confirmSelectedPdfRowsImport() {
+    const rows = selectedReviewRows.map(toReviewedImportRowPayload);
     onImportReviewedPdfRows(
       rows,
       ignoredReviewRows.map((row) => row.rowId),
     );
+    setConfirmImportSelected(false);
   }
 
   return (
@@ -1149,53 +1391,45 @@ export default function ProductsModals({
       <ModalShell
         open={openAddEdit}
         title={activeProductId ? "Edit Product" : "Add Product"}
-        onClose={() => setOpenAddEdit(false)}
+        onClose={() => { if (!productSaveBusy) setOpenAddEdit(false); }}
         landscape
         footer={
-          <>
-            <div className="w-full md:hidden [&>button]:w-full">
-              <Button variant="primary" icon="save" onClick={onSave}>
-                Save Product
-              </Button>
+          <div className="flex w-full items-center justify-between gap-2">
+            <div>
+              {editorStepIndex > 0 ? <Button onClick={goToPreviousProductStep} disabled={productSaveBusy}>Back</Button> : <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy}>Cancel</Button>}
             </div>
-            <div className="hidden w-full items-center justify-end gap-[10px] md:flex">
-              <Button onClick={() => setOpenAddEdit(false)}>Cancel</Button>
-              <Button variant="primary" icon="save" onClick={onSave}>
-                Save Product
+            {mobileEditorTab === "review" ? (
+              <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy}>
+                {productSaveBusy ? "Saving..." : activeProductId ? "Save Changes" : "Create Product"}
               </Button>
-            </div>
-          </>
+            ) : (
+              <Button variant="primary" icon="arrow_forward" onClick={goToNextProductStep}>Continue</Button>
+            )}
+          </div>
         }
       >
-        <div className="grid shrink-0 grid-cols-4 border-b border-[#E5E7EB] bg-white md:hidden">
-          {([
-            ["basic", "Basic"],
-            ["units", "Units"],
-            ["pricing", "Pricing"],
-            ["stock", "Stock"],
-          ] as const).map(([value, label]) => (
-            <button
-              key={value}
-              type="button"
-              onClick={() => setMobileEditorTab(value)}
-              className={cn(
-                "relative h-[52px] text-[13px] font-bold",
-                mobileEditorTab === value ? "text-[#11120d]" : "text-[#8C8889]",
-              )}
-            >
-              {label}
-              {mobileEditorTab === value ? <span className="absolute inset-x-2 bottom-0 h-[3px] rounded-t-full bg-[#11120d]" /> : null}
-            </button>
-          ))}
+        <div className="border-b border-[#E5E7EB] bg-white px-3 pt-2 md:px-6">
+          <div className="mb-1 text-[11px] font-bold text-[#6B7280]">Step {editorStepIndex + 1} of {productEditorSteps.length}</div>
+          <SwipeableTabRail
+            items={productEditorSteps}
+            value={mobileEditorTab}
+            onChange={setMobileEditorTab}
+            ariaLabel="Product form steps"
+            controllerRef={productEditorTabRailRef}
+            railClassName="w-full min-w-full"
+            buttonClassName="h-[52px] min-w-0 flex-1 px-1 text-[13px] font-bold"
+            activeClassName="text-[#11120D]"
+            inactiveClassName="text-[#8C8889] hover:text-[#565449]"
+          />
         </div>
-        <div className="h-full min-h-0 overflow-y-auto px-[20px] py-[16px]">
+        <div {...productEditorSwipeGesture} data-product-editor className="h-full min-h-0 overflow-y-auto px-[20px] py-[16px]">
           <div className="flex flex-col gap-[24px]">
             
             {/* Top row: Image & Basic Info */}
-            <div className={cn("grid grid-cols-1 gap-[18px] md:grid-cols-[200px_minmax(0,1fr)] md:gap-[24px]", mobileEditorTab !== "basic" && "hidden md:grid")}>
+            <div className={cn("flex flex-col gap-[18px]", mobileEditorTab !== "basic" && "hidden")}>
               
               {/* Product Image - Smaller, more compact */}
-              <div className="space-y-[10px]">
+              <div className="order-2 space-y-[10px]">
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   PRODUCT IMAGE
                 </h3>
@@ -1269,117 +1503,108 @@ export default function ProductsModals({
               </div>
 
               {/* Basic Information */}
-              <div className="space-y-[12px]">
+              <div className="order-1 space-y-[12px]">
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   BASIC INFORMATION
                 </h3>
                 
                 <Field label="Product Name" error={formErrors.name}>
                   <input
+                    data-modal-initial-focus
                     value={form.name}
-                    onChange={(event) =>
-                      setForm((product) => ({ ...product, name: event.target.value }))
-                    }
+                    aria-invalid={Boolean(formErrors.name)}
+                    onChange={(event) => {
+                      setForm((product) => ({ ...product, name: event.target.value }));
+                      onClearFormError("name");
+                    }}
                     className={inputClass(formErrors.name)}
                     placeholder="e.g. Sauce Bottle"
                   />
                 </Field>
 
                 <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="SKU" error={formErrors.sku}>
-                    <input
-                      value={form.sku}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, sku: event.target.value }))
-                      }
-                      className={inputClass(formErrors.sku)}
-                      placeholder="BAGMATI-001"
-                    />
-                  </Field>
-                  <Field label="Barcode">
-                    <input
-                      value={form.barcode || ""}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, barcode: event.target.value }))
-                      }
-                      className={compactInputClass}
-                      placeholder="Optional"
-                    />
-                  </Field>
-                </div>
-
-                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="Brand">
-                    <Select
+                  <Field label="Brand" error={formErrors.brand}>
+                    <CreatableCombobox
                       value={form.brand}
-                      onChange={(value) =>
-                        setForm((product) => ({ ...product, brand: value }))
-                      }
-                      options={brands
-                        .filter((brand) => brand !== "All Brands")
-                        .map((brand) => ({ value: brand, label: brand }))}
+                      onChange={(value) => { setForm((product) => ({ ...product, brand: value })); onClearFormError("brand"); }}
+                      options={brands.filter((brand) => brand !== "All Brands")}
+                      placeholder="Search or create brand"
+                      ariaLabel="Brand"
+                      invalid={Boolean(formErrors.brand)}
+                      required
                     />
                   </Field>
-                  <Field label="Category">
-                    <Select
+                  <Field label="Category" error={formErrors.category}>
+                    <CreatableCombobox
                       value={form.category}
-                      onChange={(value) =>
-                        setForm((product) => ({ ...product, category: value }))
-                      }
-                      options={categories
-                        .filter((category) => category !== "All Categories")
-                        .map((category) => ({ value: category, label: category }))}
+                      onChange={(value) => { setForm((product) => ({ ...product, category: value })); onClearFormError("category"); }}
+                      options={categories.filter((category) => category !== "All Categories")}
+                      placeholder="Search or create category"
+                      ariaLabel="Category"
+                      invalid={Boolean(formErrors.category)}
+                      required
                     />
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="Category Group">
-                    <input
-                      value={form.categoryGroup || ""}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, categoryGroup: event.target.value }))
-                      }
-                      className={compactInputClass}
-                      placeholder="e.g. White, Green, Silver"
-                    />
-                  </Field>
-                  <Field label="Supplier / Source">
-                    <input
-                      value={form.vendorSource || ""}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, vendorSource: event.target.value }))
-                      }
-                      className={compactInputClass}
-                      placeholder="e.g. Bagmati Plastic"
-                    />
-                  </Field>
-                </div>
-
-                <Field label="Variant / Code">
-                  <input
-                    value={form.productCodeVariant || ""}
-                    onChange={(event) =>
-                      setForm((product) => ({ ...product, productCodeVariant: event.target.value }))
-                    }
-                    className={compactInputClass}
-                    placeholder="e.g. Bucket 105"
+                <Field label="Supplier / Source (optional)">
+                  <CreatableCombobox
+                    value={form.vendorSource || ""}
+                    onChange={(value) => setForm((product) => ({ ...product, vendorSource: value }))}
+                    options={supplierOptions}
+                    placeholder="Search or type supplier"
+                    ariaLabel="Supplier or source"
                   />
                 </Field>
+
+                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
+                  <Field label="Barcode (optional)">
+                    <input value={form.barcode || ""} onChange={(event) => setForm((product) => ({ ...product, barcode: event.target.value }))} className={compactInputClass} placeholder="Scan or type manufacturer barcode" />
+                  </Field>
+                  <Field label="SKU (optional)">
+                    <input value={form.sku} onChange={(event) => setForm((product) => ({ ...product, sku: event.target.value }))} className={compactInputClass} placeholder="Generated automatically if blank" />
+                  </Field>
+                </div>
               </div>
             </div>
 
             {/* Bottom Row: Rest of the details */}
-            <div className="grid grid-cols-1 gap-[18px] md:grid-cols-3 md:gap-[24px]">
+            <div className="grid grid-cols-1 gap-[18px]">
 
               {/* SIZE & PACKAGING */}
-              <div className={cn("space-y-[12px]", mobileEditorTab !== "units" && "hidden md:block")}>
+              <div className={cn("space-y-[12px]", mobileEditorTab !== "units" && "hidden")}>
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   SIZE & PACKAGING
                 </h3>
 
+                <Field label="Sale Unit / बिक्री एकाइ">
+                  <Select
+                    value={form.saleUnit || "PIECE"}
+                    onChange={(value) => {
+                      const supportsFractions = ["KG", "GRAM", "METER", "LTR", "ML"].includes(value);
+                      setForm((product) => ({
+                        ...product,
+                        saleUnit: value,
+                        allowFractionalQty: supportsFractions ? product.allowFractionalQty : false,
+                        quantityStep: supportsFractions ? product.quantityStep : 1,
+                      }));
+                    }}
+                    options={[
+                      { value: "PIECE", label: "Piece (वटा)" },
+                      { value: "KG", label: "Kilogram (किलो)" },
+                      { value: "GRAM", label: "Gram (ग्राम)" },
+                      { value: "LTR", label: "Liter (लिटर)" },
+                      { value: "ML", label: "Milliliter (मिलिलिटर)" },
+                      { value: "METER", label: "Meter (मिटर)" },
+                    ]}
+                  />
+                </Field>
+                <p className="rounded-[10px] bg-[#F8FAFC] px-3 py-2 text-[11px] font-medium leading-5 text-[#6B7280]">
+                  One unit is what price and stock mean—for example one bottle, one kilogram, or one meter.
+                </p>
+
                 <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
-                  <Field label="Size Value">
+                  <Field label="Item size / capacity (optional)">
                     <input
                       type="number"
                       min={0}
@@ -1420,19 +1645,21 @@ export default function ProductsModals({
                 </div>
 
                 <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
-                  <Field label="Pack Qty" error={formErrors.packageQuantity}>
+                  <Field label={`Pack contains (${(form.saleUnit || "PIECE").toLowerCase()})`} error={formErrors.packageQuantity}>
                     <input
                       type="number"
                       min={0.001}
                       step="0.001"
                       value={form.packageQuantity}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, packageQuantity: Number(event.target.value) }))
-                      }
+                      aria-invalid={Boolean(formErrors.packageQuantity)}
+                      onChange={(event) => {
+                        setForm((product) => ({ ...product, packageQuantity: Number(event.target.value) }));
+                        onClearFormError("packageQuantity");
+                      }}
                       className={inputClass(formErrors.packageQuantity)}
                     />
                   </Field>
-                  <Field label="Pack Unit">
+                  <Field label="Pack type">
                     <Select
                       value={form.packageUnit || "PIECE"}
                       onChange={(value) =>
@@ -1458,117 +1685,143 @@ export default function ProductsModals({
                   </Field>
                 </div>
 
-                <div className="grid grid-cols-[minmax(0,1fr)_100px] gap-[10px]">
-                  <Field label="Sale Unit">
-                    <Select
-                      value={form.saleUnit || "PIECE"}
-                      onChange={(value) =>
-                        setForm((product) => ({
-                          ...product,
-                          saleUnit: value,
-                          allowFractionalQty:
-                            value === "KG" || value === "GRAM" || value === "METER"
-                              ? product.allowFractionalQty
-                              : false,
-                          quantityStep:
-                            value === "KG" || value === "GRAM" || value === "METER"
-                              ? product.quantityStep
-                              : 1,
-                        }))
-                      }
-                      options={[
-                        { value: "PIECE", label: "Piece" },
-                        { value: "KG", label: "KG" },
-                        { value: "GRAM", label: "Gram" },
-                        { value: "METER", label: "Meter" },
-                        { value: "LTR", label: "Ltr" },
-                      ]}
-                    />
-                  </Field>
-                  <Field label="Qty Step" error={formErrors.quantityStep}>
-                    <input
-                      type="number"
-                      min={0.001}
-                      step="0.001"
-                      value={form.quantityStep}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, quantityStep: Number(event.target.value) }))
-                      }
-                      className={inputClass(formErrors.quantityStep)}
-                    />
-                  </Field>
-                </div>
-
-                <label className="flex h-[38px] items-center gap-[8px] rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[12px] font-bold text-[#11120d]">
-                  <input
-                    type="checkbox"
-                    checked={form.allowFractionalQty}
-                    onChange={(event) =>
-                      setForm((product) => ({
-                        ...product,
-                        allowFractionalQty: event.target.checked,
-                        quantityStep: event.target.checked
-                          ? product.quantityStep || 0.001
-                          : 1,
-                      }))
-                    }
-                    className="h-[16px] w-[16px] rounded border-[#CFCFD3] accent-[#3B82F6]"
-                  />
-                  Decimal quantity (fractions)
-                </label>
+                {["KG", "GRAM", "METER", "LTR", "ML"].includes(form.saleUnit || "PIECE") ? (
+                  <div className="rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+                    <label className="flex min-h-[44px] items-center gap-[10px] text-[12px] font-bold text-[#11120d]">
+                      <input
+                        type="checkbox"
+                        checked={form.allowFractionalQty}
+                        onChange={(event) => setForm((product) => ({ ...product, allowFractionalQty: event.target.checked, quantityStep: event.target.checked ? (product.quantityStep === 1 ? 0.1 : product.quantityStep) : 1 }))}
+                        className="h-5 w-5 rounded border-[#CFCFD3] accent-[#3B82F6]"
+                      />
+                      Allow partial quantity (for example 0.5 kg)
+                    </label>
+                    {form.allowFractionalQty ? (
+                      <Field label="Quantity step" error={formErrors.quantityStep}>
+                        <Select
+                          value={String(form.quantityStep)}
+                          onChange={(value) => {
+                            setForm((product) => ({ ...product, quantityStep: Number(value) }));
+                            onClearFormError("quantityStep");
+                          }}
+                          error={formErrors.quantityStep}
+                          options={[{ value: "0.05", label: "0.05" }, { value: "0.1", label: "0.1" }, { value: "0.25", label: "0.25" }, { value: "0.5", label: "0.5" }, { value: "1", label: "1" }]}
+                        />
+                      </Field>
+                    ) : null}
+                  </div>
+                ) : null}
               </div>
 
               {/* PRICING */}
-              <div className={cn("space-y-[12px]", mobileEditorTab !== "pricing" && "hidden md:block")}>
+              <div className={cn("space-y-[12px]", mobileEditorTab !== "pricing" && "hidden")}>
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   PRICING
                 </h3>
                 
-                <Field label="Rate Per Piece (NPR)">
+                <Field label={`Purchase cost per ${(form.saleUnit || "unit").toLowerCase()} (NPR)`} error={formErrors.ratePerPiece}>
                   <input
                     type="number"
                     min={0}
                     step="0.01"
-                    value={form.ratePerPiece}
+                    inputMode="decimal"
+                    aria-invalid={Boolean(formErrors.ratePerPiece)}
+                    value={pricingDraft.cost}
+                    placeholder="0.00"
+                    onFocus={(event) => event.currentTarget.select()}
                     onChange={(event) => {
-                      const nextRate = Number(event.target.value);
-                      setForm((product) => ({
-                        ...product,
-                        ratePerPiece: nextRate,
-                        retailPrice: !product.retailPrice || product.retailPrice === product.ratePerPiece ? nextRate : product.retailPrice,
-                        wholesalePrice: !product.wholesalePrice || product.wholesalePrice === product.ratePerPiece ? nextRate : product.wholesalePrice,
-                      }));
+                      const value = event.target.value;
+                      const nextCost = Number(value || 0);
+                      setPricingDraft((current) => ({ ...current, cost: value }));
+                      setForm((product) => ({ ...product, ratePerPiece: value === "" ? 0 : nextCost }));
+                      setPricingMarkupDraft({
+                        wholesale: nextCost > 0 && Number(pricingDraft.wholesale) > 0 ? String(Math.round(((Number(pricingDraft.wholesale) - nextCost) / nextCost) * 10000) / 100) : "",
+                        retail: nextCost > 0 && Number(pricingDraft.retail) > 0 ? String(Math.round(((Number(pricingDraft.retail) - nextCost) / nextCost) * 10000) / 100) : "",
+                      });
+                      onClearFormError("ratePerPiece");
                     }}
-                    className={compactInputClass}
+                    className={inputClass(formErrors.ratePerPiece)}
                   />
                 </Field>
 
                 <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="Retail Price" error={formErrors.retailPrice}>
+                  <Field label="Wholesale price" error={formErrors.wholesalePrice}>
                     <input
                       type="number"
-                      value={form.retailPrice}
+                      min={0}
+                      step="0.01"
+                      inputMode="decimal"
+                      aria-invalid={Boolean(formErrors.wholesalePrice)}
+                      value={pricingDraft.wholesale}
+                      placeholder="0.00"
+                      onFocus={(event) => event.currentTarget.select()}
                       onChange={(event) => {
-                        const nextRetailPrice = Number(event.target.value);
-                        setForm((product) => ({
-                          ...product,
-                          retailPrice: nextRetailPrice,
-                          ratePerPiece: !product.ratePerPiece || product.ratePerPiece === product.retailPrice ? nextRetailPrice : product.ratePerPiece,
-                        }));
+                        const value = event.target.value;
+                        const price = value === "" ? 0 : Number(value);
+                        setPricingDraft((current) => ({ ...current, wholesale: value }));
+                        setForm((product) => ({ ...product, wholesalePrice: price }));
+                        onClearFormError("wholesalePrice");
+                        const cost = Number(pricingDraft.cost || 0);
+                        setPricingMarkupDraft((current) => ({ ...current, wholesale: cost > 0 && price > 0 ? String(Math.round(((price - cost) / cost) * 10000) / 100) : "" }));
+                      }}
+                      className={inputClass(formErrors.wholesalePrice)}
+                    />
+                  </Field>
+                  <Field label="Retail price" error={formErrors.retailPrice}>
+                    <input
+                      type="number"
+                      min={0}
+                      step="0.01"
+                      inputMode="decimal"
+                      aria-invalid={Boolean(formErrors.retailPrice)}
+                      value={pricingDraft.retail}
+                      placeholder="0.00"
+                      onFocus={(event) => event.currentTarget.select()}
+                      onChange={(event) => {
+                        const value = event.target.value;
+                        const price = value === "" ? 0 : Number(value);
+                        setPricingDraft((current) => ({ ...current, retail: value }));
+                        setForm((product) => ({ ...product, retailPrice: price }));
+                        onClearFormError("retailPrice");
+                        const cost = Number(pricingDraft.cost || 0);
+                        setPricingMarkupDraft((current) => ({ ...current, retail: cost > 0 && price > 0 ? String(Math.round(((price - cost) / cost) * 10000) / 100) : "" }));
                       }}
                       className={inputClass(formErrors.retailPrice)}
                     />
                   </Field>
-                  <Field label="Wholesale Price" error={formErrors.wholesalePrice}>
-                    <input
-                      type="number"
-                      value={form.wholesalePrice}
-                      onChange={(event) =>
-                        setForm((product) => ({ ...product, wholesalePrice: Number(event.target.value) }))
-                      }
-                      className={inputClass(formErrors.wholesalePrice)}
-                    />
-                  </Field>
+                </div>
+
+                <div className="grid grid-cols-1 gap-3 rounded-[12px] border border-[#BFDBFE] bg-[#EFF6FF] p-3 md:grid-cols-2">
+                  {(["wholesale", "retail"] as const).map((kind) => {
+                    const sellingPrice = Number(pricingDraft[kind] || 0);
+                    const cost = Number(pricingDraft.cost || 0);
+                    const profit = sellingPrice - cost;
+                    const grossMargin = sellingPrice > 0 ? (profit / sellingPrice) * 100 : 0;
+                    return (
+                      <Field key={kind} label={`${kind === "wholesale" ? "Wholesale" : "Retail"} markup on cost %`}>
+                        <input
+                          type="number"
+                          step="0.01"
+                          inputMode="decimal"
+                          value={pricingMarkupDraft[kind]}
+                          placeholder="e.g. 20"
+                          onFocus={(event) => event.currentTarget.select()}
+                          onChange={(event) => {
+                            const value = event.target.value;
+                            const markup = Number(value || 0);
+                            const nextPrice = cost > 0 && Number.isFinite(markup) ? Math.round(cost * (1 + markup / 100) * 100) / 100 : 0;
+                            setPricingMarkupDraft((current) => ({ ...current, [kind]: value }));
+                            setPricingDraft((current) => ({ ...current, [kind]: nextPrice > 0 ? String(nextPrice) : "" }));
+                            setForm((product) => ({ ...product, [kind === "wholesale" ? "wholesalePrice" : "retailPrice"]: nextPrice }));
+                          }}
+                          className={compactInputClass}
+                        />
+                        <div className="mt-1 text-[11px] font-semibold text-[#1D4ED8]">
+                          Profit {formatNpr(profit)} · Gross margin {Number.isFinite(grossMargin) ? grossMargin.toFixed(1) : "0.0"}%
+                        </div>
+                      </Field>
+                    );
+                  })}
                 </div>
 
                 <div className="grid grid-cols-1 gap-[10px]">
@@ -1590,13 +1843,15 @@ export default function ProductsModals({
                         type="number"
                         min={1}
                         value={form.thresholdQtyMode === 'default' ? businessDefaults.defaultWholesaleQtyThreshold : form.thresholdQty}
-                        onChange={(event) =>
+                        aria-invalid={Boolean(formErrors.thresholdQty)}
+                        onChange={(event) => {
                           setForm((product) => ({
                             ...product,
                             thresholdQtyMode: 'custom',
                             thresholdQty: Number(event.target.value),
-                          }))
-                        }
+                          }));
+                          onClearFormError("thresholdQty");
+                        }}
                         className={inputClass(formErrors.thresholdQty)}
                       />
                     </Field>
@@ -1605,7 +1860,7 @@ export default function ProductsModals({
               </div>
 
               {/* STOCK & STATUS */}
-              <div className={cn("space-y-[12px]", mobileEditorTab !== "stock" && "hidden md:block")}>
+              {stockTracked ? <div className={cn("space-y-[12px]", mobileEditorTab !== "stock" && "hidden")}>
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   STOCK & STATUS
                 </h3>
@@ -1614,11 +1869,22 @@ export default function ProductsModals({
                   <input
                     type="number"
                     value={form.stock}
-                    onChange={(event) =>
-                      setForm((product) => ({ ...product, stock: Number(event.target.value) }))
-                    }
-                    className={inputClass(formErrors.stock)}
+                    readOnly={Boolean(activeProductId)}
+                    aria-invalid={Boolean(formErrors.stock)}
+                    onFocus={(event) => event.currentTarget.select()}
+                    onChange={(event) => {
+                      setForm((product) => ({ ...product, stock: Number(event.target.value) }));
+                      onClearFormError("stock");
+                    }}
+                    className={cn(inputClass(formErrors.stock), activeProductId && "cursor-not-allowed bg-[#F3F4F6] text-[#6B7280]")}
                   />
+                  <div className="mt-1 text-[11px] font-medium text-[#6B7280]">
+                    {activeProductId
+                      ? "Current stock is read-only here. Use Stock Movement for audited corrections or receiving."
+                      : form.stock === businessDefaults.defaultInitialStock
+                        ? `Using shop default: ${businessDefaults.defaultInitialStock}`
+                        : "Custom initial stock"}
+                  </div>
                 </Field>
 
                 <Field label="Low Stock Threshold" error={formErrors.lowStockThreshold}>
@@ -1626,13 +1892,15 @@ export default function ProductsModals({
                     type="number"
                     min={0}
                     value={form.lowStockThresholdMode === 'default' ? businessDefaults.defaultLowStockThreshold : form.lowStockThreshold}
-                    onChange={(event) =>
+                    aria-invalid={Boolean(formErrors.lowStockThreshold)}
+                    onChange={(event) => {
                       setForm((product) => ({
                         ...product,
                         lowStockThresholdMode: 'custom',
                         lowStockThreshold: Number(event.target.value),
-                      }))
-                    }
+                      }));
+                      onClearFormError("lowStockThreshold");
+                    }}
                     className={inputClass(formErrors.lowStockThreshold)}
                   />
                 </Field>
@@ -1649,9 +1917,69 @@ export default function ProductsModals({
                     ]}
                   />
                 </Field>
-              </div>
+              </div> : null}
 
             </div>
+
+            {mobileEditorTab === "review" ? (
+              <div className="grid gap-3 md:grid-cols-2">
+                {[
+                  {
+                    title: "Product",
+                    step: "basic" as ProductEditorStep,
+                    lines: [
+                      form.name || "Product name missing",
+                      [form.brand, form.category].filter(Boolean).join(" · ") || "Brand and category missing",
+                      form.vendorSource ? `Supplier: ${form.vendorSource}` : "No supplier entered",
+                    ],
+                  },
+                  {
+                    title: "Units",
+                    step: "units" as ProductEditorStep,
+                    lines: [
+                      `Sold by ${(form.saleUnit || "PIECE").toLowerCase()}`,
+                      form.sizeValue ? `Item size: ${form.sizeValue} ${form.sizeUnit}` : "Standard/unspecified item size",
+                      `Pack contains ${form.packageQuantity || 1} ${(form.saleUnit || "PIECE").toLowerCase()}`,
+                    ],
+                  },
+                  {
+                    title: "Pricing",
+                    step: "pricing" as ProductEditorStep,
+                    lines: [
+                      `Purchase cost: ${formatNpr(Number(form.ratePerPiece || 0))}`,
+                      `Wholesale: ${formatNpr(Number(form.wholesalePrice || 0))}`,
+                      `Retail: ${formatNpr(Number(form.retailPrice || 0))}`,
+                    ],
+                  },
+                  ...(stockTracked ? [{
+                    title: "Stock",
+                    step: "stock" as ProductEditorStep,
+                    lines: [
+                      `Initial stock: ${form.stock} ${(form.saleUnit || "PIECE").toLowerCase()}`,
+                      form.stock === businessDefaults.defaultInitialStock ? `Using shop default (${businessDefaults.defaultInitialStock})` : "Custom initial stock",
+                      `Low-stock alert: ${form.lowStockThresholdMode === "default" ? businessDefaults.defaultLowStockThreshold : form.lowStockThreshold}`,
+                    ],
+                  }] : []),
+                ].map((card) => (
+                  <section key={card.title} className="rounded-[14px] border border-[#E5E7EB] bg-white p-4 shadow-sm">
+                    <div className="flex items-center justify-between gap-3">
+                      <h3 className="text-[14px] font-extrabold text-[#11120d]">{card.title}</h3>
+                      <button type="button" onClick={() => setMobileEditorTab(card.step)} className="min-h-10 px-2 text-[12px] font-bold text-[#2563EB]">Edit</button>
+                    </div>
+                    <div className="mt-2 space-y-1 text-[12px] font-medium leading-5 text-[#565449]">
+                      {card.lines.map((line) => <div key={line}>{line}</div>)}
+                    </div>
+                  </section>
+                ))}
+                <section className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 md:col-span-2">
+                  <h3 className="text-[14px] font-extrabold text-[#1D4ED8]">Identifiers</h3>
+                  <div className="mt-2 text-[12px] font-medium leading-5 text-[#1D4ED8]">
+                    <div>SKU: {form.sku.trim() || "KhataSathi will generate one when saved"}</div>
+                    <div>Barcode: {form.barcode?.trim() || "KhataSathi will generate an internal barcode when saved"}</div>
+                  </div>
+                </section>
+              </div>
+            ) : null}
           </div>
         </div>
       </ModalShell>
@@ -1661,16 +1989,22 @@ export default function ProductsModals({
         title={
           pdfReviewBatch
             ? `Review ${displaySourceType(pdfReviewBatch.sourceType)} Import`
-            : "Import Products from CSV, PDF, or Image"
+            : "Import Products from Spreadsheet, PDF, or Image"
         }
         onClose={onCloseImport}
         landscape={!!pdfReviewBatch}
+        contentClassName={
+          pdfReviewBatch
+            ? "min-h-0 flex-1 overflow-hidden bg-white p-0 lg:bg-[#F8FAFC] lg:p-3"
+            : undefined
+        }
+        footerClassName={pdfReviewBatch && mobileReviewView === "editor" ? "hidden xl:block" : undefined}
         headerLeft={
           pdfReviewBatch ? (
             <button
               type="button"
               onClick={onBackToImportList}
-              className="inline-flex h-[36px] w-[36px] shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
+              className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
               aria-label="Back to import options"
             >
               <GoogleIcon name="arrow_back" className="text-[18px]" />
@@ -1679,21 +2013,35 @@ export default function ProductsModals({
         }
         footer={
           pdfReviewBatch ? (
-            <div className="flex flex-wrap items-center justify-between gap-[10px]">
-              <div className="text-[12px] font-semibold text-[#8C8889]">
-                {selectedReviewRows.length} selected, {ignoredReviewRows.length}{" "}
-                ignored
+            <div className="flex w-full items-center justify-between gap-3">
+              <div className="min-w-0 text-[12px] font-semibold text-[#6B7280]">
+                <span className="font-extrabold text-[#11120d]">
+                  {selectedReviewRows.length} selected
+                </span>
+                <span> · {ignoredReviewRows.length} ignored</span>
+                {dirtySelectedReviewRows.length > 0 ? (
+                  <span className="block text-amber-700">
+                    {dirtySelectedReviewRows.length} selected row{dirtySelectedReviewRows.length === 1 ? " has" : "s have"} unsaved changes
+                  </span>
+                ) : null}
               </div>
-              <div className="flex items-center gap-[10px]">
-                <Button
-                  variant="primary"
-                  icon="check_circle"
-                  onClick={importSelectedPdfRows}
-                  disabled={pdfReviewBusy || selectedReviewRows.length === 0}
-                >
-                  {pdfReviewBusy ? "Importing..." : "Import Selected"}
-                </Button>
-              </div>
+              <Button
+                variant="primary"
+                icon="check_circle"
+                onClick={() => setConfirmImportSelected(true)}
+                disabled={
+                  pdfReviewBusy ||
+                  reviewSaveBusy ||
+                  selectedReviewRows.length === 0 ||
+                  dirtySelectedReviewRows.length > 0
+                }
+              >
+                {pdfReviewBusy
+                  ? "Importing..."
+                  : dirtySelectedReviewRows.length > 0
+                    ? "Save changes first"
+                    : "Import Selected"}
+              </Button>
             </div>
           ) : (
             <div className="flex items-center justify-end gap-[10px]">
@@ -1710,8 +2058,8 @@ export default function ProductsModals({
         }
       >
         {pdfReviewBatch ? (
-          <div className="grid h-[min(76vh,760px)] min-h-0 grid-cols-1 gap-[12px] overflow-hidden xl:grid-cols-[minmax(390px,0.95fr)_minmax(0,1.25fr)]">
-            <section className="flex min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-white">
+          <div className="grid h-full min-h-0 grid-cols-1 overflow-hidden lg:gap-3 xl:h-[min(76vh,760px)] xl:grid-cols-[minmax(390px,0.95fr)_minmax(0,1.25fr)]">
+            <section className={cn("min-h-0 flex-col overflow-hidden bg-white xl:rounded-[16px] xl:border xl:border-[#CFCFD3]", mobileReviewView === "list" ? "flex" : "hidden", "xl:flex")}>
               <div className="shrink-0 border-b border-[#CFCFD3] px-[12px] py-[10px]">
                 <div className="flex flex-wrap items-center justify-between gap-2">
                   <div className="flex min-w-0 items-center gap-[8px]">
@@ -1729,37 +2077,51 @@ export default function ProductsModals({
                     {pdfReviewBatch.status}
                   </span>
                 </div>
-                <div className="mt-[10px] grid grid-cols-[auto_minmax(0,1fr)_130px] gap-[8px]">
-                  <label className="inline-flex h-[36px] items-center gap-[8px] rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[11px] font-extrabold text-[#565449]">
-                    <input
-                      type="checkbox"
-                      checked={allVisibleSelected}
-                      onChange={(event) =>
-                        toggleVisibleReviewSelection(event.target.checked)
-                      }
-                    />
-                    Select all
-                  </label>
+                {!stockTracked ? (
+                  <div className="mt-2 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-bold leading-4 text-blue-900">
+                    Catalog Only: stock columns are not applied. Imported products remain uncounted until inventory is enabled and an opening count is completed.
+                  </div>
+                ) : null}
+                <div className="relative mt-[10px]">
+                  <GoogleIcon name="search" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[19px] text-[#6B7280]" />
                   <input
                     value={reviewSearch}
                     onChange={(event) => setReviewSearch(event.target.value)}
                     placeholder="Search extracted rows..."
-                    className="h-[36px] rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold text-[#000000] outline-none"
+                    className="h-11 w-full rounded-[12px] border border-[#CFCFD3] bg-white pl-10 pr-3 text-[12px] font-semibold text-[#000000] outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#2563EB]/15"
                   />
+                </div>
+                <div className="mt-2 grid grid-cols-[minmax(0,1fr)_auto] gap-2">
                   <ProjectSelect
+                    aria-label="Filter import rows by status"
                     value={reviewStatusFilter}
-                    onChange={(event) =>
-                      setReviewStatusFilter(event.target.value as any)
-                    }
-                    className="h-[36px] rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-bold text-[#565449] outline-none"
+                    onChange={(event) => setReviewStatusFilter(event.target.value as any)}
+                    className="h-11 rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-bold text-[#11120d] outline-none"
                   >
-                    <option value="ALL">All</option>
+                    <option value="ALL">All rows</option>
                     <option value="READY">Ready</option>
-                    <option value="ISSUES">Issues</option>
+                    <option value="ISSUES">Needs attention</option>
                     <option value="DUPLICATE">Duplicates</option>
                     <option value="IGNORED">Ignored</option>
                   </ProjectSelect>
+                  <button
+                    type="button"
+                    onClick={() => toggleVisibleReviewSelection(!allVisibleSelected)}
+                    disabled={filteredReviewRows.length === 0}
+                    className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[12px] border px-3 text-[11px] font-extrabold disabled:pointer-events-none disabled:opacity-45", allVisibleSelected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]")}
+                  >
+                    <GoogleIcon name={allVisibleSelected ? "deselect" : "select_all"} className="text-[18px]" />
+                    {allVisibleSelected ? "Clear visible" : "Select visible"}
+                  </button>
                 </div>
+                <button
+                  type="button"
+                  onClick={() => { setReviewPanelTab("bulk"); setMobileReviewView("editor"); }}
+                  disabled={selectedReviewRows.length === 0}
+                  className="mt-2 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-[#11120d] px-3 text-[12px] font-extrabold text-white disabled:pointer-events-none disabled:opacity-45"
+                >
+                  <GoogleIcon name="tune" className="text-[18px]" />Bulk edit {selectedReviewRows.length} selected
+                </button>
               </div>
 
               <div className="min-h-0 flex-1 overflow-y-auto bg-white">
@@ -1767,12 +2129,26 @@ export default function ProductsModals({
                   const active = activeReviewRow?.rowId === row.rowId;
                   const imported = row.status === "IMPORTED";
                   return (
+                    <React.Fragment key={row.rowId}>
+                    <div className={cn("border-b border-[#E5E7EB] px-3 py-3 xl:hidden", active ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]" : "bg-white", row.ignored && "bg-[#F8FAFC]")}>
+                      <button type="button" onClick={() => { setActiveReviewRowId(row.rowId); setReviewPanelTab("row"); setMobileReviewView("editor"); }} className={cn("w-full min-w-0 text-left", row.ignored && "opacity-60")}>
+                        <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold text-[#6B7280]">Row {row.rowNumber}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-extrabold", imported ? "bg-emerald-50 text-emerald-700" : row.ignored ? "bg-slate-200 text-slate-700" : dirtyReviewRowIds.has(row.rowId) ? "bg-amber-50 text-amber-800" : verifiedReviewRowIds.has(row.rowId) ? "bg-emerald-50 text-emerald-700" : row.status === "DUPLICATE" ? "bg-amber-50 text-amber-700" : row.error ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-sky-700")}>{row.ignored ? "Ignored" : dirtyReviewRowIds.has(row.rowId) ? "Unsaved" : verifiedReviewRowIds.has(row.rowId) ? "Saved" : row.status}</span></div>
+                        <div className="mt-1 line-clamp-2 text-[13px] font-extrabold leading-[18px] text-[#11120d]">{row.name || row.rawText || "No text captured"}</div>
+                        <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Rate रु. ${formatQty(row.ratePerPiece)}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
+                      </button>
+                      <div className="mt-3 grid grid-cols-2 gap-2">
+                        <button type="button" disabled={imported || row.ignored} onClick={() => updateReviewRow(row.rowId, { selected: !row.selected, ignored: false })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold", row.selected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]", (imported || row.ignored) && "pointer-events-none opacity-45")}><GoogleIcon name={row.selected ? "check_box" : "check_box_outline_blank"} className="text-[19px]" />{row.selected ? "Selected" : "Select row"}</button>
+                        <button type="button" disabled={imported} onClick={() => updateReviewRow(row.rowId, { ignored: !row.ignored, selected: row.ignored })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold disabled:opacity-45", row.ignored ? "border-[#2563EB] bg-[#EEF4FF] text-[#1D4ED8]" : "border-[#CFCFD3] bg-white text-[#8A2C2C]")}><GoogleIcon name={row.ignored ? "undo" : "block"} className="text-[18px]" />{row.ignored ? "Restore row" : "Ignore row"}</button>
+                      </div>
+                    </div>
                     <button
-                      key={row.rowId}
                       type="button"
-                      onClick={() => setActiveReviewRowId(row.rowId)}
+                      onClick={() => {
+                        setActiveReviewRowId(row.rowId);
+                        setReviewPanelTab("row");
+                      }}
                       className={cn(
-                        "grid min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0",
+                        "hidden min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0 xl:grid",
                         active
                           ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]"
                           : "bg-white hover:bg-[#ECEFF3]",
@@ -1823,8 +2199,8 @@ export default function ProductsModals({
                           </div>
                         ) : (
                           <div className="truncate text-[10px] font-semibold text-[#8C8889]">
-                            NPR {formatQty(row.ratePerPiece)} | Stock{" "}
-                            {formatQty(row.stock)}
+                            NPR {formatQty(row.ratePerPiece)}
+                            {stockTracked ? ` | Stock ${formatQty(row.stock)}` : ""}
                           </div>
                         )}
                       </div>
@@ -1843,9 +2219,11 @@ export default function ProductsModals({
                           imported && "pointer-events-none opacity-50",
                         )}
                       >
-                        {row.ignored ? "Use" : "Ignore"}
+                        <GoogleIcon name={row.ignored ? "undo" : "block"} className="mr-1 text-[15px]" />
+                        {row.ignored ? "Restore" : "Ignore"}
                       </span>
                     </button>
+                    </React.Fragment>
                   );
                 })}
                 {filteredReviewRows.length === 0 ? (
@@ -1856,27 +2234,43 @@ export default function ProductsModals({
               </div>
             </section>
 
-            <section className="min-h-0 overflow-y-auto rounded-[16px] border border-[#CFCFD3] bg-white p-[12px]">
+            <section className={cn("min-h-0 overflow-y-auto bg-white px-3 py-3 xl:rounded-[16px] xl:border xl:border-[#CFCFD3] xl:p-[12px]", mobileReviewView === "editor" ? "block" : "hidden", "xl:block")}>
               {activeReviewRow ? (
                 <div className="space-y-[12px]">
-                  <div className="grid grid-cols-2 gap-[6px] rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] p-[5px]">
-                    {(["row", "bulk"] as const).map((tab) => (
-                      <button
-                        key={tab}
-                        type="button"
-                        onClick={() => setReviewPanelTab(tab)}
-                        className={cn(
-                          "h-[36px] rounded-[10px] text-[12px] font-extrabold transition",
-                          reviewPanelTab === tab
-                            ? "bg-[#11120d] text-white"
-                            : "bg-white text-[#565449] hover:bg-[#F3F4F6]",
-                        )}
-                      >
-                        {tab === "row"
-                          ? "Row"
-                          : `Change Selected (${selectedReviewRows.length})`}
-                      </button>
-                    ))}
+                  <div className="flex items-center justify-between gap-2 xl:hidden">
+                    <button type="button" onClick={() => setMobileReviewView("list")} className="inline-flex min-h-11 items-center gap-2 rounded-[11px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#11120d]"><GoogleIcon name="arrow_back" className="text-[18px]" />Rows</button>
+                    <div className="min-w-0 text-center text-[11px] font-bold text-[#4B5563]">
+                      {reviewPanelTab === "bulk"
+                        ? `${selectedReviewRows.length} selected`
+                        : `Row ${activeReviewRow.rowNumber} of ${pdfReviewRows.length}`}
+                    </div>
+                    {reviewPanelTab === "row" ? (
+                      <div className="flex gap-1"><button type="button" onClick={() => moveActiveReviewRow(-1)} className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white" aria-label="Previous import row"><GoogleIcon name="chevron_left" /></button><button type="button" onClick={() => moveActiveReviewRow(1)} className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white" aria-label="Next import row"><GoogleIcon name="chevron_right" /></button></div>
+                    ) : (
+                      <GoogleIcon name="tune" className="text-[22px] text-[#565449]" />
+                    )}
+                  </div>
+
+                  <div className="flex items-start justify-between gap-3 rounded-[14px] bg-[#F8FAFC] px-3 py-3">
+                    <div>
+                      <div className="text-[13px] font-extrabold text-[#11120d]">
+                        {reviewPanelTab === "bulk" ? "Bulk changes" : `Review row ${activeReviewRow.rowNumber}`}
+                      </div>
+                      <div className="mt-1 text-[11px] font-semibold leading-4 text-[#6B7280]">
+                        {reviewPanelTab === "bulk"
+                          ? `Only filled settings will be applied to ${selectedReviewRows.length} selected draft rows.`
+                          : activeReviewRowDirty
+                            ? "Unsaved changes — save this row before importing."
+                            : verifiedReviewRowIds.has(activeReviewRow.rowId)
+                              ? "Saved to the import review."
+                              : "Check the extracted values before importing."}
+                      </div>
+                    </div>
+                    {reviewPanelTab === "bulk" ? (
+                      <button type="button" onClick={() => setReviewPanelTab("row")} className="hidden shrink-0 rounded-[10px] border border-[#CFCFD3] bg-white px-3 py-2 text-[11px] font-extrabold text-[#11120d] xl:inline-flex">Review row</button>
+                    ) : (
+                      <span className={cn("shrink-0 rounded-full px-2 py-1 text-[10px] font-extrabold", activeReviewRowDirty ? "bg-amber-100 text-amber-800" : verifiedReviewRowIds.has(activeReviewRow.rowId) ? "bg-emerald-100 text-emerald-700" : "bg-slate-200 text-slate-700")}>{activeReviewRowDirty ? "Unsaved" : verifiedReviewRowIds.has(activeReviewRow.rowId) ? "Saved" : "Review"}</span>
+                    )}
                   </div>
 
                   {reviewPanelTab === "bulk" ? (
@@ -1887,33 +2281,36 @@ export default function ProductsModals({
                         </div>
                         <div className="grid grid-cols-1 gap-[10px] lg:grid-cols-[1fr_1fr_1fr_auto] lg:items-end">
                           <Field label="Brand">
-                            <input
+                            <CreatableCombobox
                               value={bulkBrand}
-                              onChange={(event) =>
-                                setBulkBrand(event.target.value)
-                              }
-                              className={compactInputClass}
-                              placeholder="Apply brand"
+                              onChange={setBulkBrand}
+                              options={reviewBrandOptions}
+                              placeholder="Search or type brand"
+                              ariaLabel="Brand to apply to selected import rows"
+                              selectOnFocus
+                              createHelpText="New value — applied only when you choose Apply to draft."
                             />
                           </Field>
                           <Field label="Category">
-                            <input
+                            <CreatableCombobox
                               value={bulkCategory}
-                              onChange={(event) =>
-                                setBulkCategory(event.target.value)
-                              }
-                              className={compactInputClass}
-                              placeholder="Apply category"
+                              onChange={setBulkCategory}
+                              options={reviewCategoryOptions}
+                              placeholder="Search or type category"
+                              ariaLabel="Category to apply to selected import rows"
+                              selectOnFocus
+                              createHelpText="New value — applied only when you choose Apply to draft."
                             />
                           </Field>
                           <Field label="Supplier / Source">
-                            <input
+                            <CreatableCombobox
                               value={bulkSupplier}
-                              onChange={(event) =>
-                                setBulkSupplier(event.target.value)
-                              }
-                              className={compactInputClass}
-                              placeholder="Apply supplier"
+                              onChange={setBulkSupplier}
+                              options={reviewSupplierOptions}
+                              placeholder="Search or type supplier"
+                              ariaLabel="Supplier or source to apply to selected import rows"
+                              selectOnFocus
+                              createHelpText="New value — applied only when you choose Apply to draft."
                             />
                           </Field>
                           <Button
@@ -1921,7 +2318,7 @@ export default function ProductsModals({
                             onClick={applyBulkClassificationToSelectedRows}
                             disabled={selectedReviewRows.length === 0}
                           >
-                            Apply classification
+                            Apply to draft
                           </Button>
                         </div>
                       </div>
@@ -1931,7 +2328,7 @@ export default function ProductsModals({
                           Pricing
                         </div>
                         <div className="grid grid-cols-1 gap-[8px] lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-                          <Field label="Wholesale margin %">
+                          <Field label="Wholesale margin / थोक मार्जिन %">
                             <input
                               type="number"
                               value={bulkWholesaleMargin}
@@ -1943,7 +2340,7 @@ export default function ProductsModals({
                               className={compactInputClass}
                             />
                           </Field>
-                          <Field label="Retail margin %">
+                          <Field label="Retail margin / खुद्रा मार्जिन %">
                             <input
                               type="number"
                               value={bulkRetailMargin}
@@ -1960,12 +2357,12 @@ export default function ProductsModals({
                             onClick={applyBulkPricingToSelectedRows}
                             disabled={selectedReviewRows.length === 0}
                           >
-                            Apply pricing
+                            Apply margins to draft
                           </Button>
                         </div>
                       </div>
 
-                      <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] p-[12px]">
+                      {stockTracked ? <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] p-[12px]">
                         <div className="mb-[8px] text-[12px] font-extrabold text-[#000000]">
                           Stock
                         </div>
@@ -1986,10 +2383,10 @@ export default function ProductsModals({
                             onClick={applyBulkStockToSelectedRows}
                             disabled={selectedReviewRows.length === 0}
                           >
-                            Apply stock
+                            Apply stock to draft
                           </Button>
                         </div>
-                      </div>
+                      </div> : null}
 
                       <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] p-[12px]">
                         <div className="mb-[8px] text-[12px] font-extrabold text-[#000000]">
@@ -2041,9 +2438,26 @@ export default function ProductsModals({
                             onClick={applyBulkRulesToSelectedRows}
                             disabled={selectedReviewRows.length === 0}
                           >
-                            Apply rules
+                            Apply rules to draft
                           </Button>
                         </div>
+                      </div>
+                      <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3 shadow-[0_-8px_20px_rgba(17,18,13,0.08)]">
+                        <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-bold">
+                          <span className="text-[#4B5563]">Review changes before import</span>
+                          <span className={dirtySelectedReviewRows.length > 0 ? "text-amber-700" : "text-emerald-700"}>
+                            {dirtySelectedReviewRows.length > 0 ? `${dirtySelectedReviewRows.length} unsaved` : "All selected rows saved"}
+                          </span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => saveReviewDraftRows(dirtySelectedReviewRows)}
+                          disabled={dirtySelectedReviewRows.length === 0 || reviewSaveBusy}
+                          className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white disabled:pointer-events-none disabled:opacity-45"
+                        >
+                          <GoogleIcon name="save" className="text-[18px]" />
+                          {reviewSaveBusy ? "Saving changes..." : `Save ${dirtySelectedReviewRows.length} changed ${dirtySelectedReviewRows.length === 1 ? "row" : "rows"}`}
+                        </button>
                       </div>
                     </div>
                   ) : (
@@ -2100,36 +2514,49 @@ export default function ProductsModals({
                           </div>
                         </Field>
                         <Field label="Brand">
-                          <input
+                          <CreatableCombobox
                             value={activeReviewRow.brand}
-                            onChange={(event) =>
+                            onChange={(value) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                brand: event.target.value,
+                                brand: value,
                               })
                             }
-                            className={compactInputClass}
+                            options={reviewBrandOptions}
+                            placeholder="Search or type brand"
+                            ariaLabel={`Brand for import row ${activeReviewRow.rowNumber}`}
+                            selectOnFocus
+                            createHelpText="New value — stored when this review row is saved."
                           />
                         </Field>
                         <Field label="Category">
-                          <input
+                          <CreatableCombobox
                             value={activeReviewRow.category}
-                            onChange={(event) =>
+                            onChange={(value) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                category: event.target.value,
+                                category: value,
+                                categoryGroup: value,
                               })
                             }
-                            className={compactInputClass}
+                            options={reviewCategoryOptions}
+                            placeholder="Search or type category"
+                            ariaLabel={`Category for import row ${activeReviewRow.rowNumber}`}
+                            selectOnFocus
+                            createHelpText="New value — stored when this review row is saved."
                           />
                         </Field>
                         <Field label="Supplier / Source">
-                          <input
+                          <CreatableCombobox
                             value={activeReviewRow.vendorSource || ""}
-                            onChange={(event) =>
+                            onChange={(value) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                vendorSource: event.target.value,
+                                vendorSource: value,
                               })
                             }
-                            className={compactInputClass}
+                            options={reviewSupplierOptions}
+                            placeholder="Search or type supplier"
+                            ariaLabel={`Supplier or source for import row ${activeReviewRow.rowNumber}`}
+                            selectOnFocus
+                            createHelpText="New value — stored when this review row is saved."
                           />
                         </Field>
                         <Field label="Variant / Code">
@@ -2254,7 +2681,7 @@ export default function ProductsModals({
                             className={compactInputClass}
                           />
                         </Field>
-                        <Field label="Stock">
+                        {stockTracked ? <Field label="Stock">
                           <input
                             type="number"
                             value={activeReviewRow.stock}
@@ -2265,7 +2692,7 @@ export default function ProductsModals({
                             }
                             className={compactInputClass}
                           />
-                        </Field>
+                        </Field> : null}
                       </div>
 
                       <div className="grid grid-cols-1 gap-[10px]">
@@ -2284,6 +2711,38 @@ export default function ProductsModals({
                       </div>
                     </>
                   )}
+
+                  {reviewSaveError ? (
+                    <div role="alert" className="rounded-[12px] border border-rose-200 bg-rose-50 px-3 py-2 text-[11px] font-bold leading-4 text-rose-700">
+                      {reviewSaveError}
+                    </div>
+                  ) : null}
+
+                  {reviewPanelTab === "row" ? (
+                    <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3 shadow-[0_-8px_20px_rgba(17,18,13,0.08)]">
+                      <div className="mb-2 flex items-center justify-between gap-3">
+                        <div className="text-[11px] font-bold text-[#4B5563]">
+                          {activeReviewRowDirty
+                            ? "Changes have not been saved yet."
+                            : verifiedReviewRowIds.has(activeReviewRow.rowId)
+                              ? "Changes saved to this review."
+                              : "No changes to save."}
+                        </div>
+                        <span className={cn("shrink-0 rounded-full px-2 py-1 text-[10px] font-extrabold", activeReviewRowDirty ? "bg-amber-100 text-amber-800" : "bg-emerald-100 text-emerald-700")}>
+                          {activeReviewRowDirty ? "Unsaved" : "Saved"}
+                        </span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => saveReviewDraftRows([activeReviewRow])}
+                        disabled={!activeReviewRowDirty || reviewSaveBusy || activeReviewRow.status === "IMPORTED"}
+                        className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white disabled:pointer-events-none disabled:opacity-45"
+                      >
+                        <GoogleIcon name="save" className="text-[18px]" />
+                        {reviewSaveBusy ? "Saving row..." : activeReviewRowDirty ? "Save row changes" : "Row saved"}
+                      </button>
+                    </div>
+                  ) : null}
 
                   {importError ? (
                     <div className="rounded-[14px] border border-rose-200 bg-rose-50 px-[12px] py-[10px] text-[12px] font-semibold text-rose-700">
@@ -2323,7 +2782,7 @@ export default function ProductsModals({
                 onClick={() => setImportTab("csv")}
               >
                 <Icon name="table_chart" className="text-[18px]" />
-                CSV File
+                Spreadsheet
               </button>
               <button
                 className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "pdf" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
@@ -2354,19 +2813,19 @@ export default function ProductsModals({
             <div className="p-[24px] overflow-y-auto space-y-[24px]">
               {importTab === "csv" && (
                 <div className="space-y-[24px]">
-                  {/* CSV Upload */}
+                  {/* Spreadsheet Upload */}
                   <div className="border-2 border-dashed border-[#CFCFD3] rounded-[16px] p-[32px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative bg-white">
                     <div className="w-[48px] h-[48px] rounded-[12px] bg-[#F1F5F9] border border-[#E2E8F0] flex items-center justify-center mx-auto mb-[16px] group-hover:scale-110 transition-transform">
                       <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#3B82F6]" />
                     </div>
-                    <h4 className="text-[14px] font-bold text-[#1E293B] mb-[6px]">Upload CSV rate list</h4>
-                    <p className="text-[12px] text-[#64748B] mb-[16px]">Standard .csv file mapping to KhataSathi format</p>
+                    <h4 className="text-[14px] font-bold text-[#1E293B] mb-[6px]">Upload spreadsheet rate list</h4>
+                    <p className="text-[12px] text-[#64748B] mb-[16px]">Supports .csv and modern Excel .xlsx workbooks</p>
                     <label htmlFor="csv-upload" className="inline-flex cursor-pointer bg-[#F1F5F9] text-[#0F172A] font-bold px-[20px] py-[8px] rounded-[8px] text-[12px] border border-[#E2E8F0] shadow-sm hover:bg-[#E2E8F0] transition">
-                      {importFile ? "Change CSV File" : "Choose CSV File"}
+                      {importFile ? "Change spreadsheet" : "Choose spreadsheet"}
                     </label>
                     <input
                       type="file"
-                      accept=".csv,text/csv"
+                      accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
                       onChange={(event) => setImportFile(event.target.files?.[0] || null)}
                       className="hidden"
                       id="csv-upload"
@@ -2378,15 +2837,15 @@ export default function ProductsModals({
                     )}
                   </div>
 
-                  {/* CSV Field Mapping & Template Settings */}
+                  {/* Spreadsheet Field Mapping & Template Settings */}
                   <div className="bg-white border border-[#E5E7EB] rounded-[16px] p-[20px] shadow-sm">
                     <div className="flex flex-wrap items-center justify-between gap-[12px] mb-[16px]">
                       <div>
-                        <h4 className="text-[14px] font-bold text-[#11120d]">CSV Column Mapping</h4>
+                        <h4 className="text-[14px] font-bold text-[#11120d]">Spreadsheet Column Mapping</h4>
                         <p className="text-[12px] text-[#8C8889] mt-[2px]">Map supplier columns to KhataSathi fields</p>
                       </div>
                       <div className="flex gap-[8px]">
-                        <button onClick={onSaveImportTemplate} className="text-[12px] font-bold bg-[#F3F4F6] text-[#565449] px-[12px] py-[6px] rounded-[8px] hover:bg-[#E5E7EB] transition">Save Template</button>
+                        <button type="button" onClick={saveImportTemplateWithValidation} className="text-[12px] font-bold bg-[#F3F4F6] text-[#565449] px-[12px] py-[6px] rounded-[8px] hover:bg-[#E5E7EB] transition">Save Template</button>
                         {importTemplateId && (
                           <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="text-[12px] font-bold bg-[#FEF2F2] text-[#DC2626] px-[12px] py-[6px] rounded-[8px] hover:bg-[#FEE2E2] transition">Delete</button>
                         )}
@@ -2403,19 +2862,28 @@ export default function ProductsModals({
                           <option value="">No template</option>
                           {importTemplates.map((t) => <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>)}
                         </ProjectSelect>
-                        <input
-                          value={importSupplier}
-                          onChange={(event) => setImportSupplier(event.target.value)}
-                          placeholder="Supplier / Brand Name"
-                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-white px-[12px] text-[13px] font-semibold outline-none focus:border-[#3B82F6]"
-                        />
+                        <label className="block">
+                          <input
+                            ref={importSupplierRef}
+                            value={importSupplier}
+                            aria-invalid={Boolean(importSupplierError)}
+                            aria-describedby={importSupplierError ? "import-supplier-error" : undefined}
+                            onChange={(event) => {
+                              setImportSupplier(event.target.value);
+                              setImportSupplierError("");
+                            }}
+                            placeholder="Supplier / Brand Name"
+                            className={cn("h-[40px] w-full rounded-[10px] bg-white px-[12px] text-[13px] font-semibold outline-none focus:ring-2", importSupplierError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#3B82F6] focus:ring-blue-100")}
+                          />
+                          {importSupplierError ? <span id="import-supplier-error" role="alert" className="mt-1 block text-[11px] font-semibold text-[#BE123C]">{importSupplierError}</span> : null}
+                        </label>
                       </div>
 
                       <div className="grid grid-cols-2 md:grid-cols-4 gap-[12px] p-[16px] bg-[#F8FAFC] rounded-[12px] border border-[#E5E7EB]">
                         {[
                           ["productName", "Name Col"], ["serial", "SKU/Serial"], ["variant", "Variant"],
                           ["packageQuantity", "Pack Qty"], ["retailPrice", "MRP Col"], ["wholesalePrice", "Rate Col"], ["stock", "Stock"]
-                        ].map(([key, label]) => (
+                        ].filter(([key]) => stockTracked || key !== "stock").map(([key, label]) => (
                           <div key={key} className="space-y-[6px]">
                             <label className="text-[11px] font-bold text-[#8C8889] uppercase tracking-wider">{label}</label>
                             <input
@@ -2441,7 +2909,7 @@ export default function ProductsModals({
                           <div key={batch.id} className="flex min-w-0 items-center justify-between gap-3 p-[16px] transition-colors hover:bg-[#ECEFF3]">
                             <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
                               <div className="h-[40px] w-[40px] shrink-0 rounded-[10px] bg-[#F1F5F9] flex items-center justify-center border border-[#E2E8F0]">
-                                <Icon name={batch.sourceType === "csv" ? "table_chart" : batch.sourceType === "pdf" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#64748B]" />
+                                <Icon name={["CSV", "XLSX"].includes(String(batch.sourceType || "").toUpperCase()) ? "table_chart" : String(batch.sourceType || "").toUpperCase() === "PDF" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#64748B]" />
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">{batch.fileName || "Supplier import"}</div>
@@ -2530,6 +2998,31 @@ export default function ProductsModals({
           </div>
         )}
       </ModalShell>
+
+      <ModalFrame
+        open={confirmImportSelected}
+        title="Import reviewed products?"
+        description="This is the final check before new products are inserted into the catalog."
+        onClose={() => setConfirmImportSelected(false)}
+        layer="critical"
+        maxWidthClass="max-w-[540px]"
+        mobileBottomSheet
+        footer={(
+          <div className="grid w-full grid-cols-2 gap-3">
+            <DialogButton onClick={() => setConfirmImportSelected(false)} disabled={pdfReviewBusy}>Review again</DialogButton>
+            <DialogButton variant="primary" icon="check_circle" onClick={confirmSelectedPdfRowsImport} disabled={pdfReviewBusy || selectedReviewRows.length === 0 || selectedReviewIssueCount > 0}>{pdfReviewBusy ? "Importing..." : selectedReviewIssueCount > 0 ? "Resolve selected issues" : `Import ${selectedReviewRows.length}`}</DialogButton>
+          </div>
+        )}
+      >
+        <div className="space-y-3">
+          <div className="grid grid-cols-3 gap-2">
+            <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 p-3 text-center"><div className="text-[20px] font-black text-emerald-800">{selectedReviewRows.length}</div><div className="text-[10px] font-extrabold uppercase text-emerald-700">To import</div></div>
+            <div className="rounded-[12px] border border-slate-200 bg-slate-50 p-3 text-center"><div className="text-[20px] font-black text-slate-800">{ignoredReviewRows.length}</div><div className="text-[10px] font-extrabold uppercase text-slate-600">Ignored</div></div>
+            <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-3 text-center"><div className="text-[20px] font-black text-amber-800">{selectedReviewIssueCount}</div><div className="text-[10px] font-extrabold uppercase text-amber-700">Selected issues</div></div>
+          </div>
+          <p className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 text-[12px] font-semibold leading-5 text-[#1D4ED8]">Only checked, non-ignored rows will be submitted. Selected duplicates or failed rows must be corrected, ignored, or deselected before import.</p>
+        </div>
+      </ModalFrame>
 
       <ModalShell
         open={!!deleteImportBatchId}
@@ -2660,7 +3153,9 @@ export default function ProductsModals({
                   ["Availability", getStockFlag(activeProduct)],
                 ],
               },
-            ] as const).map((section) => (
+            ] as const)
+              .filter((section) => stockTracked || section.title !== "Stock")
+              .map((section) => (
               <section key={section.title} className="rounded-[16px] border border-[#E5E7EB] bg-white p-3.5">
                 <div className="flex items-start gap-3">
                   <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#11120d]"><GoogleIcon name={section.icon} className="text-[22px]" /></span>
@@ -2770,7 +3265,7 @@ export default function ProductsModals({
                   </div>
                 </div>
 
-                <div className="grid grid-cols-1 gap-[14px] pt-[4px] sm:grid-cols-2">
+                <div className={cn("grid grid-cols-1 gap-[14px] pt-[4px]", stockTracked ? "sm:grid-cols-2" : "sm:grid-cols-1")}>
                   {/* Pricing Card */}
                   <div className="rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
                     <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
@@ -2809,7 +3304,7 @@ export default function ProductsModals({
                   </div>
 
                   {/* Stock Card */}
-                  <div className="flex flex-col justify-between rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
+                  {stockTracked ? <div className="flex flex-col justify-between rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
                     <div>
                       <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
                         <GoogleIcon name="inventory_2" className="text-[15px] text-[#565449]" />
@@ -2825,7 +3320,7 @@ export default function ProductsModals({
                     <div className="text-[12px] text-[#8C8889] font-medium border-t border-[#E5E7EB] pt-[12px]">
                       Low Stock Threshold: {activeProduct.lowStockThresholdMode === 'default' ? 'Default ' : ''} ({formatQty(activeProduct.lowStockThreshold)})
                     </div>
-                  </div>
+                  </div> : null}
                 </div>
 
               </div>
@@ -2842,14 +3337,18 @@ export default function ProductsModals({
       {openConfirmDelete && (
         <div className="fixed inset-0 z-[120] flex items-end justify-center p-0 sm:items-center sm:p-[16px]">
           <div className="absolute inset-0 bg-[#0F172A]/45 backdrop-blur-[2px]" onClick={() => setOpenConfirmDelete(false)} />
-          <div className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] bg-white px-[20px] pb-[env(safe-area-inset-bottom)] pt-[20px] text-center shadow-2xl sm:max-w-[440px] sm:rounded-[24px] sm:p-[32px]">
+          <div role="dialog" aria-modal="true" aria-labelledby="single-product-delete-title" className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] bg-white px-[20px] pb-[max(20px,env(safe-area-inset-bottom))] pt-[20px] text-center shadow-2xl sm:max-w-[560px] sm:rounded-[24px] sm:p-[32px]">
             <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
             <div className="w-[56px] h-[56px] rounded-full bg-red-50 flex items-center justify-center mx-auto mb-[20px]">
               <GoogleIcon name="warning" className="text-[28px] text-red-600" />
             </div>
 
-            <h3 className="text-[20px] font-extrabold text-slate-900 mb-[12px]">
-              {isAdmin && deleteSafety?.canPermanentDelete ? "Delete product?" : "Deactivate product?"}
+            <h3 id="single-product-delete-title" className="text-[20px] font-extrabold text-slate-900 mb-[12px]">
+              {isAdmin && deleteSafety?.canPermanentDelete
+                ? "Permanently delete product?"
+                : isAdmin && stockTracked && deleteSafety?.canDiscardStockAndDelete
+                  ? "Remove this product?"
+                  : "Set product inactive?"}
             </h3>
 
             <div className="text-[14px] text-slate-500 mb-[28px] leading-relaxed">
@@ -2866,10 +3365,19 @@ export default function ProductsModals({
                 <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 px-[16px] py-[12px] text-[13px] font-semibold text-emerald-700 mb-[16px] text-left">
                   {deleteSafety.safeReason}
                 </div>
+              ) : isAdmin && stockTracked && deleteSafety?.canDiscardStockAndDelete ? (
+                <div className="mb-[16px] rounded-[12px] border border-amber-200 bg-amber-50 px-[16px] py-[12px] text-left">
+                  <div className="text-[13px] font-extrabold text-amber-900">Stock can be cleared as part of deletion</div>
+                  <p className="mt-1 text-[13px] font-semibold leading-5 text-amber-900">This product has no reservations or business-history references. Its current stock can be set to zero and the product deleted in one audited action.</p>
+                </div>
               ) : isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? (
                 <div className="mb-[16px] space-y-[8px] rounded-[12px] border border-[#FCA5A5] bg-[#FEF2F2] px-[16px] py-[12px] text-left">
                   <div className="text-[13px] font-extrabold text-[#DC2626]">Permanent deletion blocked</div>
-                  {deleteSafety.stockBlocker ? <div className="text-[13px] font-semibold text-[#565449]">{deleteSafety.stockBlocker}</div> : null}
+                  {deleteSafety.stockBlocker ? <div className="text-[13px] font-semibold text-[#565449]">
+                    {stockTracked
+                      ? deleteSafety.stockBlocker
+                      : "Inventory or reservation data prevents permanent deletion. Inventory values remain hidden while Catalog Only is active."}
+                  </div> : null}
                   {deleteSafety.references.length > 0 ? (
                     <ul className="space-y-[4px] text-[13px] font-semibold text-[#565449] ml-[16px] list-disc">
                       {deleteSafety.references.map((r) => <li key={r.label}>{r.count} {r.label}</li>)}
@@ -2881,29 +3389,34 @@ export default function ProductsModals({
               <p>
                 {isAdmin && deleteSafety?.canPermanentDelete
                   ? "This action cannot be undone. The product will be permanently removed from the catalog."
-                  : "This action cannot be undone. The product will be set to inactive and remain in the catalog."}
+                  : isAdmin && stockTracked && deleteSafety?.canDiscardStockAndDelete
+                    ? "Discarding stock and permanently deleting the product cannot be undone. Setting it inactive is the reversible option."
+                    : "Setting the product inactive is reversible and preserves its history. Permanent deletion remains unavailable while the blockers above exist."}
               </p>
             </div>
 
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-[12px]">
-              <button onClick={() => setOpenConfirmDelete(false)} className="w-full sm:w-auto px-[24px] py-[10px] border border-slate-300 text-slate-700 rounded-[12px] text-[14px] font-bold hover:bg-slate-50 transition-colors">
+            <div className={cn("grid grid-cols-1 gap-3", isAdmin && stockTracked && deleteSafety?.canDiscardStockAndDelete ? "sm:grid-cols-3" : "sm:grid-cols-2")}>
+              <button onClick={() => setOpenConfirmDelete(false)} disabled={deleteBusy} className="inline-flex min-h-11 w-full items-center justify-center rounded-[12px] border border-slate-300 bg-white px-4 text-[14px] font-bold text-slate-700 transition-colors hover:bg-slate-50 disabled:opacity-50">
                 Cancel
               </button>
               {isAdmin && deleteSafetyLoading ? (
-                <button disabled className="w-full sm:w-auto px-[24px] py-[10px] bg-red-400 text-white rounded-[12px] text-[14px] font-bold transition-colors cursor-not-allowed">
+                <button disabled className="inline-flex min-h-11 w-full items-center justify-center rounded-[12px] bg-[#D1D5DB] px-4 text-[14px] font-bold text-white">
                   Checking...
                 </button>
               ) : isAdmin && deleteSafety?.canPermanentDelete ? (
-                <button onClick={onConfirmPermanentDelete} disabled={deleteBusy} className="w-full sm:w-auto px-[24px] py-[10px] bg-red-600 text-white rounded-[12px] text-[14px] font-bold hover:bg-red-700 transition-colors">
+                <button onClick={onConfirmPermanentDelete} disabled={deleteBusy} className="inline-flex min-h-11 w-full items-center justify-center rounded-[12px] bg-red-600 px-4 text-[14px] font-bold text-white transition-colors hover:bg-red-700 disabled:opacity-50">
                   {deleteBusy ? "Deleting..." : "Delete Forever"}
                 </button>
               ) : (
-                <button onClick={onConfirmDelete} disabled={deleteBusy} className={cn("w-full rounded-[12px] px-[24px] py-[10px] text-[14px] font-bold text-white transition-colors sm:w-auto", isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? "bg-[#11120d] hover:bg-[#2a2c27]" : "bg-red-600 hover:bg-red-700")}>
-                  {deleteBusy ? "Deactivating..." : isAdmin && deleteSafety && !deleteSafety.canPermanentDelete ? "Deactivate instead" : "Deactivate"}
+                <button onClick={onConfirmDelete} disabled={deleteBusy} className="inline-flex min-h-11 w-full items-center justify-center rounded-[12px] bg-[#11120d] px-4 text-[14px] font-bold text-white transition-colors hover:bg-[#2a2c27] disabled:opacity-50">
+                  {deleteBusy ? "Updating..." : "Set inactive"}
                 </button>
               )}
+              {isAdmin && stockTracked && deleteSafety?.canDiscardStockAndDelete && !deleteSafetyLoading ? (
+                <button type="button" onClick={onDiscardStockAndDelete} disabled={deleteBusy} className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[12px] bg-red-600 px-3 text-[13px] font-bold text-white transition hover:bg-red-700 disabled:opacity-50"><GoogleIcon name="delete_forever" className="text-[19px]" />{deleteBusy ? "Deleting..." : "Zero stock & delete"}</button>
+              ) : null}
             </div>
-            {isAdmin && deleteSafety && !deleteSafety.canPermanentDelete && !deleteSafetyLoading ? (
+            {isAdmin && deleteSafety && !deleteSafety.canPermanentDelete && !deleteSafety.canDiscardStockAndDelete && !deleteSafetyLoading ? (
               <button type="button" disabled className="mt-3 inline-flex h-11 w-full cursor-not-allowed items-center justify-center gap-2 rounded-[12px] bg-[#F3F4F6] text-[13px] font-bold text-[#A3A3A3]"><GoogleIcon name="delete_forever" className="text-[19px]" />Delete Forever</button>
             ) : null}
           </div>
@@ -2911,50 +3424,43 @@ export default function ProductsModals({
       )}
 
       {!!bulkAction && (
-        <div className="fixed inset-0 z-[100] flex items-end justify-center p-0 sm:items-center sm:p-[20px]">
+        <div className="fixed inset-0 z-[120] flex items-end justify-center p-0 sm:items-center sm:p-[20px]">
           <div
             className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
             onClick={onCloseBulkAction}
           ></div>
-          <div className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] border border-slate-100 bg-white px-[20px] pb-[env(safe-area-inset-bottom)] pt-[20px] text-center shadow-2xl transition-all sm:max-w-[440px] sm:rounded-[24px] sm:p-[32px]">
+          <div role="dialog" aria-modal="true" aria-labelledby="bulk-inactive-title" className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[26px] border border-slate-100 bg-white text-left shadow-2xl transition-all sm:max-w-[520px] sm:rounded-[24px]">
             <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
-            <div className="w-[56px] h-[56px] rounded-full bg-amber-50 flex items-center justify-center mx-auto mb-[20px]">
-              <Icon name="warning" className="text-[28px] text-amber-500" />
+            <header className="flex items-start gap-3 border-b border-[#E5E7EB] px-5 pb-4 sm:px-6 sm:pt-6">
+              <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-[#FFF7E8] text-[#B7791F]"><Icon name="do_not_disturb_on" className="text-[23px]" /></span>
+              <div className="min-w-0 flex-1"><h3 id="bulk-inactive-title" className="text-[20px] font-extrabold leading-tight text-[#11120d]">{bulkAction?.title || "Confirm action"}</h3><p className="mt-1.5 text-[13px] font-medium leading-5 text-[#565449]">{bulkAction?.message}</p></div>
+              <button type="button" onClick={onCloseBulkAction} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] text-[#6B7280]" aria-label="Close selected products confirmation"><Icon name="close" /></button>
+            </header>
+
+            <div className="min-h-0 flex-1 overflow-y-auto px-5 py-4 sm:px-6">
+              <div className="mb-2 flex items-center justify-between gap-3"><h4 className="text-[12px] font-extrabold uppercase tracking-wide text-[#565449]">Review selected ({bulkProducts.length})</h4><span className="text-[11px] font-semibold text-[#8C8889]">Remove mistakes before confirming</span></div>
+              {bulkProducts.length > 0 ? (
+                <div className="max-h-[min(48dvh,360px)] divide-y divide-[#E5E7EB] overflow-y-auto overscroll-contain rounded-[14px] border border-[#E5E7EB] bg-white">
+                  {bulkProducts.map((product) => (
+                    <div key={product.id} className="flex min-h-[64px] items-center gap-3 px-3 py-2.5">
+                      <PreviewableImage src={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                      <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
+                      <button type="button" onClick={() => onRemoveBulkProduct(product.id)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[#BE123C] transition hover:bg-[#FFF1F2]" aria-label={`Remove ${product.name} from selection`}><Icon name="close" className="text-[20px]" /></button>
+                    </div>
+                  ))}
+                </div>
+              ) : <div className="rounded-[14px] border-2 border-dashed border-[#E5E7EB] px-4 py-8 text-center text-[13px] font-semibold text-[#8C8889]">No products remain selected.</div>}
+              <p className="mt-3 rounded-[12px] bg-[#F8FAFC] p-3 text-[12px] font-medium leading-5 text-[#6B7280]">Products become unavailable to selling flows, while invoice history and audit records remain intact.</p>
             </div>
 
-            <h3 className="text-[20px] font-extrabold text-[#11120d] mb-[8px] leading-tight">
-              {bulkAction?.title || "Confirm action"}
-            </h3>
-
-            <p className="text-[14px] text-[#565449] mb-[12px] leading-relaxed">
-              {bulkAction?.message}
-            </p>
-
-            {bulkProducts.length > 0 ? (
-              <div className="mb-[14px] overflow-hidden rounded-[14px] border border-[#E5E7EB] bg-white text-left">
-                {bulkProducts.slice(0, 5).map((product) => (
-                  <div key={product.id} className="flex min-h-[58px] items-center gap-3 border-b border-[#E5E7EB] px-3 py-2 last:border-0">
-                    <PreviewableImage src={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
-                    <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
-                  </div>
-                ))}
-                {bulkProducts.length > 5 ? <div className="px-3 py-2 text-center text-[11px] font-bold text-[#565449]">+{bulkProducts.length - 5} more selected products</div> : null}
-              </div>
-            ) : null}
-
-            <p className="text-[13px] text-[#8C8889] mb-[28px] leading-relaxed bg-slate-50 p-[12px] rounded-[12px]">
-              This keeps invoice history and audit logs intact while removing
-              these products from active selling flows.
-            </p>
-
-            <div className="flex flex-col sm:flex-row items-center justify-center gap-[12px]">
-              <button onClick={onCloseBulkAction} className="w-full sm:w-auto px-[24px] py-[10px] bg-slate-100 text-[#565449] rounded-[12px] text-[14px] font-bold hover:bg-slate-200 transition-colors">
+            <footer className="grid shrink-0 grid-cols-2 gap-3 border-t border-[#E5E7EB] bg-white px-5 pb-[max(16px,env(safe-area-inset-bottom))] pt-4 sm:px-6">
+              <button onClick={onCloseBulkAction} className="inline-flex min-h-11 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[14px] font-bold text-[#565449] transition hover:bg-[#F3F4F6]">
                 Cancel
               </button>
-              <button onClick={onConfirmBulkAction} className="w-full sm:w-auto px-[24px] py-[10px] bg-amber-500 text-white rounded-[12px] text-[14px] font-bold hover:bg-amber-600 transition-colors shadow-sm shadow-amber-500/20">
+              <button onClick={onConfirmBulkAction} disabled={bulkProducts.length === 0} className="inline-flex min-h-11 items-center justify-center rounded-[12px] bg-[#11120d] px-4 text-[14px] font-bold text-white transition hover:bg-[#2a2c27] disabled:pointer-events-none disabled:opacity-45">
                 {bulkAction?.confirmLabel || "Confirm"}
               </button>
-            </div>
+            </footer>
           </div>
         </div>
       )}

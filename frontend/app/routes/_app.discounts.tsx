@@ -343,7 +343,7 @@ function ModalShell({
   if (!open) return null;
 
   return (
-    <div className="fixed inset-0 z-50">
+    <div className="app-modal-layer fixed inset-0">
       <button
         type="button"
         onClick={onClose}

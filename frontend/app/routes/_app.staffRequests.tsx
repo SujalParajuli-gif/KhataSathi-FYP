@@ -1,5 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import GIcon from "~/components/ui/GIcon";
+import ProjectSelect from "~/components/ui/ProjectSelect";
+import MobilePaginationFooter from "~/components/ui/MobilePaginationFooter";
 import {
   ActiveFilterChips,
   MobileFilterButton,
@@ -10,14 +12,18 @@ import { useToast } from "~/components/ui/Toast";
 import {
   cancelDraftRequestApi,
   getDraftRequestApi,
+  listCashierPresenceApi,
   listDraftRequestsApi,
+  updateDraftRequestApi,
   type BillingDraftRequest,
+  type CashierPresence,
 } from "~/lib/api/endpoints";
 import { formatNpr } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 
 type RequestFilter =
+  | "OPEN"
   | "ALL"
   | "PENDING"
   | "MODIFIED"
@@ -28,7 +34,8 @@ type RequestFilter =
   | "EXPIRED";
 
 const FILTERS: Array<{ key: RequestFilter; label: string }> = [
-  { key: "ALL", label: "All" },
+  { key: "OPEN", label: "Open" },
+  { key: "ALL", label: "All history" },
   { key: "PENDING", label: "Waiting" },
   { key: "MODIFIED", label: "Changed" },
   { key: "ACCEPTED", label: "Accepted" },
@@ -80,6 +87,7 @@ function statusLabel(status: string) {
   if (status === "COMPLETED") return "Completed";
   if (status === "EXPIRED") return "Expired";
   if (status === "CANCELLED_BY_STAFF") return "Cancelled";
+  if (status === "CANCELLED_BY_CASHIER") return "Cancelled by cashier";
   return status;
 }
 
@@ -90,7 +98,12 @@ function statusClass(status: string) {
   if (status === "ACCEPTED" || status === "PARTIALLY_ACCEPTED" || status === "COMPLETED") {
     return "border-emerald-200 bg-emerald-50 text-emerald-700";
   }
-  if (status === "REJECTED" || status === "EXPIRED" || status === "CANCELLED_BY_STAFF") {
+  if (
+    status === "REJECTED" ||
+    status === "EXPIRED" ||
+    status === "CANCELLED_BY_STAFF" ||
+    status === "CANCELLED_BY_CASHIER"
+  ) {
     return "border-rose-200 bg-rose-50 text-rose-700";
   }
   return "border-[#D7D7DC] bg-[#F8F8FA] text-[#565449]";
@@ -121,10 +134,37 @@ function canCancel(request?: BillingDraftRequest | null) {
   return request?.status === "PENDING" || request?.status === "MODIFIED";
 }
 
+function deliveryLabel(request: BillingDraftRequest) {
+  if (request.deliveryState === "NEEDS_REASSIGNMENT") return "Needs reassignment";
+  if (request.deliveryState === "VIEWED" || request.firstViewedAt) return "Viewed";
+  if (canCancel(request)) return "Queued";
+  return statusLabel(request.status);
+}
+
+function cashierAvailability(cashier?: CashierPresence) {
+  if (!cashier) return "Availability unavailable";
+  if (cashier.isPresent && cashier.hasOpenDrawer) return "Ready now";
+  if (cashier.isPresent) return "Online";
+  return "Offline";
+}
+
+function cashierLastActivity(cashier?: CashierPresence) {
+  if (!cashier?.lastPresenceAt) return "Last activity unavailable";
+  const elapsedMs = Date.now() - new Date(cashier.lastPresenceAt).getTime();
+  if (!Number.isFinite(elapsedMs) || elapsedMs < 0) return "Active recently";
+  const minutes = Math.floor(elapsedMs / 60_000);
+  if (minutes < 1) return "Active just now";
+  if (minutes < 60) return `Active ${minutes} min ago`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `Active ${hours} hr ago`;
+  const days = Math.floor(hours / 24);
+  return `Active ${days} day${days === 1 ? "" : "s"} ago`;
+}
+
 export default function StaffRequestsPage() {
   const { showToast } = useToast();
-  const [filter, setFilter] = useState<RequestFilter>("ALL");
-  const [draftFilter, setDraftFilter] = useState<RequestFilter>("ALL");
+  const [filter, setFilter] = useState<RequestFilter>("OPEN");
+  const [draftFilter, setDraftFilter] = useState<RequestFilter>("OPEN");
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -134,6 +174,8 @@ export default function StaffRequestsPage() {
   const [error, setError] = useState("");
   const [selectedId, setSelectedId] = useState("");
   const [selected, setSelected] = useState<BillingDraftRequest | null>(null);
+  const [cashiers, setCashiers] = useState<CashierPresence[]>([]);
+  const [reassignCashierId, setReassignCashierId] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
@@ -141,12 +183,30 @@ export default function StaffRequestsPage() {
   });
 
   const totalPages = Math.max(1, Math.ceil(total / PAGE_SIZE));
-  const selectedFilterLabel = FILTERS.find((item) => item.key === filter)?.label || "All";
-  const mobileFilterChips: MobileFilterChip[] = filter === "ALL" ? [] : [{
+  const selectedFilterLabel = FILTERS.find((item) => item.key === filter)?.label || "Open";
+  const mobileFilterChips: MobileFilterChip[] = filter === "OPEN" ? [] : [{
     id: "status",
     label: selectedFilterLabel,
-    onRemove: () => { setFilter("ALL"); setPage(1); },
+    onRemove: () => { setFilter("OPEN"); setPage(1); },
   }];
+
+  async function loadCashiers(options?: { signal?: AbortSignal }) {
+    try {
+      const data = await listCashierPresenceApi(options);
+      setCashiers(
+        [...(data.cashiers || [])].sort(
+          (left, right) =>
+            Number(right.isPresent && right.hasOpenDrawer) -
+              Number(left.isPresent && left.hasOpenDrawer) ||
+            Number(right.isPresent) - Number(left.isPresent) ||
+            left.name.localeCompare(right.name),
+        ),
+      );
+    } catch (err: any) {
+      if (options?.signal?.aborted || err?.code === "ERR_CANCELED") return;
+      // Request history remains usable if live availability temporarily fails.
+    }
+  }
 
   async function loadRequests(
     nextPage = page,
@@ -185,6 +245,7 @@ export default function StaffRequestsPage() {
     const controller = new AbortController();
     const timer = window.setTimeout(() => {
       void loadRequests(1, filter, { signal: controller.signal });
+      void loadCashiers({ signal: controller.signal });
     }, 120);
     return () => {
       window.clearTimeout(timer);
@@ -192,12 +253,27 @@ export default function StaffRequestsPage() {
     };
   }, [filter, rateLimitRecoveryKey]);
 
+  useEffect(() => {
+    const interval = window.setInterval(() => void loadCashiers(), 45_000);
+    function refreshOnFocus() {
+      if (document.visibilityState === "visible") void loadCashiers();
+    }
+    window.addEventListener("focus", refreshOnFocus);
+    document.addEventListener("visibilitychange", refreshOnFocus);
+    return () => {
+      window.clearInterval(interval);
+      window.removeEventListener("focus", refreshOnFocus);
+      document.removeEventListener("visibilitychange", refreshOnFocus);
+    };
+  }, []);
+
   async function openDetail(id: string) {
     setSelectedId(id);
     setDetailLoading(true);
     try {
       const data = await getDraftRequestApi(id);
       setSelected(data.request);
+      setReassignCashierId(data.request.assignedCashierId || "");
     } catch (err: any) {
       setSelectedId("");
       setSelected(null);
@@ -210,6 +286,37 @@ export default function StaffRequestsPage() {
   function closeDetail() {
     setSelectedId("");
     setSelected(null);
+    setReassignCashierId("");
+  }
+
+  async function reassignRequest(request: BillingDraftRequest) {
+    if (!canCancel(request) || !reassignCashierId || busyId) return;
+    if (reassignCashierId === request.assignedCashierId) {
+      showToast("warning", "Choose a different cashier before reassigning.");
+      return;
+    }
+    setBusyId(request.id);
+    try {
+      const data = await updateDraftRequestApi(request.id, {
+        assignedCashierId: reassignCashierId,
+      });
+      setSelected(data.request);
+      setRequests((current) =>
+        current.map((item) =>
+          item.id === data.request.id ? { ...item, ...data.request } : item,
+        ),
+      );
+      const cashier = cashiers.find((item) => item.id === reassignCashierId);
+      showToast(
+        "success",
+        `${data.request.requestNo} reassigned to ${cashier?.name || "the selected cashier"}.`,
+      );
+      void loadRequests(page, filter);
+    } catch (err: any) {
+      showToast("danger", errorMessage(err, "Could not reassign this request."));
+    } finally {
+      setBusyId("");
+    }
   }
 
   async function cancelRequest(request: BillingDraftRequest) {
@@ -296,7 +403,7 @@ export default function StaffRequestsPage() {
         <div className="rounded-[16px] border border-[#D7D7DC] bg-white p-2 shadow-sm">
           <div className="flex items-center justify-between gap-3 lg:hidden">
             <div className="min-w-0 px-2"><div className="text-[11px] font-extrabold uppercase tracking-wide text-slate-500">Request status</div><div className="mt-0.5 truncate text-[14px] font-extrabold text-slate-900">{selectedFilterLabel}</div></div>
-            <MobileFilterButton activeCount={filter === "ALL" ? 0 : 1} onClick={() => { setDraftFilter(filter); setMobileFiltersOpen(true); }} />
+            <MobileFilterButton activeCount={filter === "OPEN" ? 0 : 1} onClick={() => { setDraftFilter(filter); setMobileFiltersOpen(true); }} />
           </div>
           <ActiveFilterChips items={mobileFilterChips} className="mt-2 lg:hidden" />
           <div className="hidden min-w-max gap-2 overflow-x-auto lg:flex">
@@ -321,7 +428,7 @@ export default function StaffRequestsPage() {
         <MobileFilterSheet
           open={mobileFiltersOpen}
           onClose={() => setMobileFiltersOpen(false)}
-          onClear={() => setDraftFilter("ALL")}
+          onClear={() => setDraftFilter("OPEN")}
           onApply={() => { setFilter(draftFilter); setPage(1); setMobileFiltersOpen(false); }}
         >
           <fieldset className="space-y-2">
@@ -387,6 +494,19 @@ export default function StaffRequestsPage() {
                       <div className="mt-1 text-[12px] font-bold text-[#8C8889]">
                         {cashierLabel(request)}
                       </div>
+                      <div
+                        className={cn(
+                          "mt-1 text-[11px] font-extrabold",
+                          request.deliveryState === "NEEDS_REASSIGNMENT"
+                            ? "text-rose-600"
+                            : request.deliveryState === "VIEWED" ||
+                                request.firstViewedAt
+                              ? "text-sky-700"
+                              : "text-amber-700",
+                        )}
+                      >
+                        {deliveryLabel(request)}
+                      </div>
                     </div>
                     <div className="text-[13px] font-extrabold text-[#2F2D28]">
                       {itemCount(request)} line(s)
@@ -407,7 +527,21 @@ export default function StaffRequestsPage() {
             </div>
           )}
 
-          <div className="flex items-center justify-between border-t border-[#E7E7EA] px-4 py-3 text-[12px] font-bold text-[#777275]">
+          <MobilePaginationFooter
+            page={page}
+            totalPages={totalPages}
+            total={total}
+            start={(page - 1) * PAGE_SIZE}
+            end={(page - 1) * PAGE_SIZE + requests.length}
+            label="requests"
+            pageSize={PAGE_SIZE}
+            pageSizeOptions={[PAGE_SIZE]}
+            showPageSize={false}
+            onPageChange={(nextPage) => void loadRequests(nextPage, filter)}
+            onPageSizeChange={() => undefined}
+            className="border-t border-[#E7E7EA] px-4 py-3"
+          />
+          <div className="hidden items-center justify-between border-t border-[#E7E7EA] px-4 py-3 text-[12px] font-bold text-[#777275] lg:flex">
             <span>
               Showing {requests.length === 0 ? 0 : (page - 1) * PAGE_SIZE + 1}-
               {(page - 1) * PAGE_SIZE + requests.length} of {total}
@@ -440,7 +574,7 @@ export default function StaffRequestsPage() {
       </div>
 
       {selectedId && (
-        <div className="fixed inset-0 z-50 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4">
+        <div className="app-modal-layer fixed inset-0 flex items-end justify-center bg-black/45 p-0 sm:items-center sm:p-4">
           <div className="max-h-[92vh] w-full overflow-hidden rounded-t-[24px] border border-[#D7D7DC] bg-white shadow-2xl sm:max-w-[720px] sm:rounded-[20px]">
             <div className="flex items-start justify-between gap-4 border-b border-[#E7E7EA] px-5 py-4">
               <div>
@@ -468,11 +602,34 @@ export default function StaffRequestsPage() {
                 </div>
               ) : (
                 <div className="space-y-4">
-                  <div className="grid gap-3 sm:grid-cols-3">
+                  <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <div className="rounded-[14px] border border-[#D7D7DC] bg-[#F8F8FA] p-3">
                       <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">Cashier</div>
                       <div className="mt-1 text-[14px] font-extrabold text-[#000000]">
                         {cashierLabel(selected)}
+                      </div>
+                      {selected.assignedCashierId ? (
+                        <div className="mt-1 text-[11px] font-bold text-[#777275]">
+                          {cashierAvailability(
+                            cashiers.find(
+                              (cashier) =>
+                                cashier.id === selected.assignedCashierId,
+                            ),
+                          )}
+                          {" · "}
+                          {cashierLastActivity(
+                            cashiers.find(
+                              (cashier) =>
+                                cashier.id === selected.assignedCashierId,
+                            ),
+                          )}
+                        </div>
+                      ) : null}
+                    </div>
+                    <div className="rounded-[14px] border border-[#D7D7DC] bg-[#F8F8FA] p-3">
+                      <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">Delivery</div>
+                      <div className="mt-1 text-[14px] font-extrabold text-[#000000]">
+                        {deliveryLabel(selected)}
                       </div>
                     </div>
                     <div className="rounded-[14px] border border-[#D7D7DC] bg-[#F8F8FA] p-3">
@@ -488,6 +645,53 @@ export default function StaffRequestsPage() {
                       </div>
                     </div>
                   </div>
+
+                  {canCancel(selected) ? (
+                    <div className="rounded-[16px] border border-[#D7D7DC] bg-[#F8F8FA] p-4">
+                      <div className="text-[12px] font-extrabold uppercase text-[#6D778A]">
+                        Reassign cashier
+                      </div>
+                      <div className="mt-3 flex flex-col gap-3 sm:flex-row">
+                        <ProjectSelect
+                          value={reassignCashierId}
+                          onChange={(event) =>
+                            setReassignCashierId(event.target.value)
+                          }
+                          className="min-w-0 flex-1"
+                          aria-label="Choose a cashier for reassignment"
+                        >
+                          <option value="">Choose cashier</option>
+                          {cashiers.map((cashier) => (
+                            <option key={cashier.id} value={cashier.id}>
+                              {cashier.name} · {cashierAvailability(cashier)} ·{" "}
+                              {!cashier.isPresent
+                                ? `${cashierLastActivity(cashier)} · `
+                                : ""}
+                              {cashier.pendingDraftRequestCount} pending
+                            </option>
+                          ))}
+                        </ProjectSelect>
+                        <button
+                          type="button"
+                          disabled={
+                            busyId === selected.id ||
+                            !reassignCashierId ||
+                            reassignCashierId === selected.assignedCashierId
+                          }
+                          onClick={() => void reassignRequest(selected)}
+                          className="h-11 rounded-[12px] bg-[#080A05] px-5 text-[13px] font-extrabold text-white disabled:opacity-40"
+                        >
+                          {busyId === selected.id
+                            ? "Reassigning..."
+                            : "Reassign"}
+                        </button>
+                      </div>
+                      <div className="mt-2 text-[12px] font-semibold text-[#777275]">
+                        Reassignment returns this request to Queued so the new
+                        cashier can acknowledge it.
+                      </div>
+                    </div>
+                  ) : null}
 
                   {selected.notes && (
                     <div className="rounded-[14px] border border-[#D7D7DC] bg-white p-3">
@@ -536,6 +740,20 @@ export default function StaffRequestsPage() {
                       Completed as invoice {selected.completedInvoice.invoiceNo}
                     </div>
                   )}
+                  {selected.cancellationReason ? (
+                    <div className="rounded-[14px] border border-rose-200 bg-rose-50 p-3 text-[13px] font-semibold text-rose-800">
+                      <div className="font-extrabold">Request closed</div>
+                      <div className="mt-1">{selected.cancellationReason}</div>
+                      {selected.cancelledBy?.name ? (
+                        <div className="mt-1 text-[11px] text-rose-700">
+                          By {selected.cancelledBy.name}
+                          {selected.cancelledAt
+                            ? ` · ${formatDateTime(selected.cancelledAt)}`
+                            : ""}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : null}
                 </div>
               )}
             </div>

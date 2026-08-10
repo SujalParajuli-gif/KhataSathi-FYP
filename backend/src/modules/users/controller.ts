@@ -1,6 +1,13 @@
 import { Request, Response } from "express";
 import * as userService from "./service";
 import bcrypt from "bcryptjs";
+import {
+  normalizeOptionalUserEmail,
+  normalizeRequiredUserPhone,
+  validateUserPassword,
+  UserIdentityValidationError,
+} from "../../lib/userIdentity";
+import { revokeUserSessions } from "../auth/session";
 
 // normalizing role input to one of the supported staff roles.
 // if the role is not provided or is invalid, it defaults to "CASHIER"
@@ -57,22 +64,25 @@ export async function create(req: Request, res: Response) {
     const { name, email, phone, gender, address, role, password, isActive } = req.body;
 
     // validating that the required fields are present
-    if (!name || !email || !password) {
-      res.status(400).json({ error: "Name, email, and password are required" });
+    if (!name || !phone || !password) {
+      res.status(400).json({
+        error: "Name, phone, and password are required",
+        field: !name ? "name" : !phone ? "phone" : "password",
+      });
       return;
     }
 
     // normalizing all string inputs — trimming whitespace and lowercasing the email
     const normalizedName = String(name).trim();
-    const normalizedEmail = String(email).trim().toLowerCase();
-    const normalizedPhone =
-      typeof phone === "string" ? String(phone).trim() : undefined;
+    const normalizedEmail = normalizeOptionalUserEmail(email);
+    const normalizedPhone = normalizeRequiredUserPhone(phone);
     const normalizedGender =
       typeof gender === "string" ? String(gender).trim() || undefined : undefined;
     const normalizedAddress =
       typeof address === "string" ? String(address).trim() || undefined : undefined;
 
-    const passwordHash = await bcrypt.hash(password, 10); // hashing the password with 10 salt rounds before storing
+    const validatedPassword = validateUserPassword(password);
+    const passwordHash = await bcrypt.hash(validatedPassword, 10); // hashing the password with 10 salt rounds before storing
     const user = await userService.createUser({
       name: normalizedName,
       email: normalizedEmail,
@@ -81,11 +91,16 @@ export async function create(req: Request, res: Response) {
       address: normalizedAddress,
       role: normalizeRole(role),
       passwordHash,
+      mustChangePassword: true,
       isActive: isActive !== false, // defaults to true unless explicitly set to false
     });
 
     res.status(201).json(user);
   } catch (err: any) {
+    if (err instanceof UserIdentityValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     // P2002 means a unique constraint was violated — either the email or phone already exists
     if (err.code === "P2002") {
       res.status(409).json({ error: "Email or phone already exists" });
@@ -101,30 +116,62 @@ export async function create(req: Request, res: Response) {
 export async function update(req: Request, res: Response) {
   try {
     const userId = String(req.params.id);
-    const { password, newPassword, role, ...data } = req.body; // separating password and role for special handling
-    const updateData: any = { ...data };
+    const {
+      password,
+      newPassword,
+      role,
+      name,
+      email,
+      phone,
+      gender,
+      address,
+      isActive,
+      profileImage,
+    } = req.body;
+    // Explicitly allow only editable account fields. This prevents an Admin
+    // request from accidentally mass-assigning IDs, audit timestamps, password
+    // hashes, or other server-owned columns.
+    const updateData: any = {};
+    if (name !== undefined) updateData.name = name;
+    if (email !== undefined) updateData.email = email;
+    if (phone !== undefined) updateData.phone = phone;
+    if (gender !== undefined) updateData.gender = gender;
+    if (address !== undefined) updateData.address = address;
+    if (isActive !== undefined) updateData.isActive = isActive;
+    if (profileImage !== undefined) updateData.profileImage = profileImage;
 
     if (role !== undefined) updateData.role = normalizeRole(role); // normalizing role to ensure it is valid
 
     // admin can set a new password directly — supporting both "newPassword" and "password" field names
     if (newPassword) {
-      updateData.passwordHash = await bcrypt.hash(String(newPassword), 10);
+      updateData.passwordHash = await bcrypt.hash(validateUserPassword(newPassword), 10);
+      updateData.mustChangePassword = true;
     } else if (password) {
-      updateData.passwordHash = await bcrypt.hash(password, 10);
+      updateData.passwordHash = await bcrypt.hash(validateUserPassword(password), 10);
+      updateData.mustChangePassword = true;
     }
 
     // trimming and normalizing all string fields before saving
     if (typeof updateData.name === "string") updateData.name = updateData.name.trim();
-    if (typeof updateData.email === "string") {
-      updateData.email = updateData.email.trim().toLowerCase();
+    if (updateData.email !== undefined) {
+      updateData.email = normalizeOptionalUserEmail(updateData.email);
     }
-    if (typeof updateData.phone === "string") updateData.phone = updateData.phone.trim() || null;
+    if (updateData.phone !== undefined) {
+      updateData.phone = normalizeRequiredUserPhone(updateData.phone);
+    }
     if (typeof updateData.gender === "string") updateData.gender = updateData.gender.trim() || null;
     if (typeof updateData.address === "string") updateData.address = updateData.address.trim() || null;
 
     const user = await userService.updateUser(userId, updateData);
+    if (updateData.isActive === false || updateData.passwordHash) {
+      await revokeUserSessions(userId);
+    }
     res.json(user);
   } catch (err: any) {
+    if (err instanceof UserIdentityValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     if (err.code === "P2002") {
       res.status(409).json({ error: "Email or phone already exists" });
       return;

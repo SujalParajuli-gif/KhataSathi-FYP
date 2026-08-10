@@ -88,6 +88,7 @@ export default function ProjectSelect({
   required,
   "aria-label": ariaLabel,
   "aria-describedby": ariaDescribedBy,
+  "aria-invalid": ariaInvalid,
   title,
   tabIndex,
 }: ProjectSelectProps) {
@@ -107,7 +108,7 @@ export default function ProjectSelect({
   const selectedOption = options.find((option) => option.value === currentValue);
   const compact = Boolean(className && /(?:h-8\b|h-9\b|h-\[(?:3[0-9])px\])/.test(className));
   const hasError = Boolean(
-    className && /border-(?:rose|red)-/.test(className),
+    ariaInvalid || (className && /border-(?:rose|red)-/.test(className)),
   );
 
   function positionMenu() {
@@ -255,13 +256,18 @@ export default function ProjectSelect({
         ref={buttonRef}
         id={controlId}
         type="button"
+        role="combobox"
         disabled={disabled}
         tabIndex={tabIndex}
         title={title}
         aria-label={ariaLabel || "Select an option"}
         aria-describedby={ariaDescribedBy}
+        aria-invalid={ariaInvalid}
+        aria-required={required}
         aria-haspopup="listbox"
         aria-expanded={open}
+        aria-controls={`${controlId}-listbox`}
+        aria-activedescendant={open ? `${controlId}-option-${activeIndex}` : undefined}
         onBlur={(event) => onBlur?.(event as unknown as React.FocusEvent<HTMLSelectElement>)}
         onFocus={(event) => onFocus?.(event as unknown as React.FocusEvent<HTMLSelectElement>)}
         onKeyDown={handleKeyDown}
@@ -288,6 +294,7 @@ export default function ProjectSelect({
       {open && typeof document !== "undefined"
         ? createPortal(
             <div
+              id={`${controlId}-listbox`}
               ref={menuRef}
               role="listbox"
               aria-labelledby={controlId}
@@ -302,8 +309,10 @@ export default function ProjectSelect({
                 return (
                   <button
                     key={`${option.value}-${index}`}
+                    id={`${controlId}-option-${index}`}
                     type="button"
                     role="option"
+                    tabIndex={-1}
                     aria-selected={selected}
                     disabled={option.disabled}
                     onPointerEnter={() => setActiveIndex(index)}

@@ -16,6 +16,12 @@ enum Role {
   STAFF
 }
 
+enum BusinessMode {
+  CATALOG_ONLY
+  INVENTORY_ONLY
+  FULL_POS
+}
+
 enum InvoiceStatus {
   DRAFT
   FINALIZED
@@ -124,6 +130,7 @@ enum DraftRequestStatus {
   COMPLETED
   EXPIRED
   CANCELLED_BY_STAFF
+  CANCELLED_BY_CASHIER
   PARTIALLY_ACCEPTED
 }
 
@@ -134,20 +141,21 @@ enum DraftRequestItemStatus {
 }
 
 model User {
-  id           String    @id @default(cuid())
-  name         String
-  email        String    @unique
-  phone        String?   @unique
-  gender       String?
-  address      String?
-  passwordHash String
-  role         Role      @default(CASHIER)
-  isActive     Boolean   @default(true)
-  lastLogin    DateTime?
+  id             String    @id @default(cuid())
+  name           String
+  email          String?   @unique
+  phone          String?   @unique
+  gender         String?
+  address        String?
+  passwordHash   String
+  mustChangePassword Boolean @default(false)
+  role           Role      @default(CASHIER)
+  isActive       Boolean   @default(true)
+  lastLogin      DateTime?
   lastPresenceAt DateTime?
-  profileImage String?
-  nagariktaNo  String?
-  createdAt    DateTime  @default(now())
+  profileImage   String?
+  nagariktaNo    String?
+  createdAt      DateTime  @default(now())
 
   invoices                    Invoice[]                    @relation("CashierInvoices")
   cancelledInvoices           Invoice[]                    @relation("CancelledInvoices")
@@ -177,8 +185,30 @@ model User {
   createdDraftRequests        BillingDraftRequest[]        @relation("DraftRequestCreator")
   assignedDraftRequests       BillingDraftRequest[]        @relation("DraftRequestAssignedCashier")
   acceptedDraftRequests       BillingDraftRequest[]        @relation("DraftRequestAcceptor")
+  cancelledDraftRequests      BillingDraftRequest[]        @relation("DraftRequestCanceller")
+  approvedSearchSynonyms      ProductSearchSynonym[]       @relation("ProductSearchSynonymApprover")
+  approvedProductAliases      ProductSearchAlias[]         @relation("ProductSearchAliasApprover")
+  productSearchQueries        ProductSearchQueryLog[]
+  productSearchSelections     ProductSearchSelection[]
+  authSessions                AuthSession[]
 
   @@index([role, isActive, lastPresenceAt])
+}
+
+model AuthSession {
+  id            String    @id @default(cuid())
+  userId        String
+  tokenHash     String    @unique @db.Char(64)
+  csrfTokenHash String    @db.Char(64)
+  expiresAt     DateTime
+  revokedAt     DateTime?
+  createdAt     DateTime  @default(now())
+  lastSeenAt    DateTime  @default(now())
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId, revokedAt, expiresAt])
+  @@index([expiresAt])
 }
 
 model LoginAttempt {
@@ -204,6 +234,7 @@ model Product {
   productName                      String?
   sku                              String   @unique
   barcode                          String?  @unique
+  barcodeOrigin                    String   @default("MANUFACTURER")
   brandId                          String
   category                         String?
   categoryGroup                    String?
@@ -238,6 +269,9 @@ model Product {
   returnItems                 ReturnItem[]
   priceOverrideAuthorizations PriceOverrideAuthorization[]
   draftRequestItems           DraftRequestItem[]
+  searchAliases               ProductSearchAlias[]
+  searchDocument              ProductSearchDocument?
+  searchSelections            ProductSearchSelection[]
 
   @@index([barcode])
   @@index([sku])
@@ -245,6 +279,97 @@ model Product {
   @@index([vendorSource])
   @@index([sizeUnit])
   @@index([packageUnit])
+}
+
+model ProductSearchSynonym {
+  id                      String   @id @default(cuid())
+  alias                   String
+  normalizedAlias         String   @unique
+  canonicalTerm           String
+  normalizedCanonicalTerm String
+  source                  String
+  isEnabled               Boolean  @default(true)
+  approvedById            String
+  createdAt               DateTime @default(now())
+  updatedAt               DateTime @updatedAt
+
+  approvedBy User @relation("ProductSearchSynonymApprover", fields: [approvedById], references: [id])
+
+  @@index([isEnabled, normalizedCanonicalTerm])
+  @@index([approvedById])
+}
+
+model ProductSearchAlias {
+  id              String   @id @default(cuid())
+  productId       String
+  alias           String
+  normalizedAlias String
+  source          String
+  isEnabled       Boolean  @default(true)
+  approvedById    String
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  product    Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  approvedBy User    @relation("ProductSearchAliasApprover", fields: [approvedById], references: [id])
+
+  @@unique([productId, normalizedAlias])
+  @@index([productId, isEnabled])
+  @@index([approvedById])
+}
+
+model ProductSearchDocument {
+  productId         String   @id
+  normalizedText    String   @db.LongText
+  normalizerVersion Int
+  updatedAt         DateTime @updatedAt
+
+  product Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+
+  @@index([normalizerVersion])
+}
+
+model ProductSearchQueryLog {
+  id                String   @id @default(cuid())
+  rawQuery          String   @db.VarChar(160)
+  normalizedQuery   String   @db.VarChar(160)
+  source            String   @db.VarChar(32)
+  filters           Json?
+  filterFingerprint String   @db.VarChar(64)
+  resultCount       Int
+  durationMs        Int
+  occurrenceCount   Int      @default(1)
+  sessionHash       String?  @db.VarChar(64)
+  actorId           String?
+  lastSearchedAt    DateTime @default(now())
+  expiresAt         DateTime
+  createdAt         DateTime @default(now())
+
+  actor      User?                    @relation(fields: [actorId], references: [id], onDelete: SetNull)
+  selections ProductSearchSelection[]
+
+  @@index([resultCount, lastSearchedAt], map: "PSQuery_result_last_idx")
+  @@index([normalizedQuery, source, lastSearchedAt], map: "PSQuery_norm_source_last_idx")
+  @@index([sessionHash, filterFingerprint, lastSearchedAt], map: "PSQuery_session_filter_last_idx")
+  @@index([expiresAt], map: "PSQuery_expires_idx")
+  @@index([actorId], map: "PSQuery_actor_idx")
+}
+
+model ProductSearchSelection {
+  id          String   @id @default(cuid())
+  searchLogId String
+  productId   String
+  actorId     String?
+  action      String   @db.VarChar(32)
+  createdAt   DateTime @default(now())
+
+  searchLog ProductSearchQueryLog @relation(fields: [searchLogId], references: [id], onDelete: Cascade)
+  product   Product               @relation(fields: [productId], references: [id], onDelete: Cascade)
+  actor     User?                 @relation(fields: [actorId], references: [id], onDelete: SetNull)
+
+  @@unique([searchLogId, productId, action], map: "PSSelection_search_product_action_key")
+  @@index([productId, createdAt], map: "PSSelection_product_created_idx")
+  @@index([actorId], map: "PSSelection_actor_idx")
 }
 
 model Customer {
@@ -338,14 +463,14 @@ model Invoice {
   cancelledAt            DateTime?
   deletedAt              DateTime?
 
-  cashier                 User               @relation("CashierInvoices", fields: [cashierId], references: [id])
-  cancelledBy             User?              @relation("CancelledInvoices", fields: [cancelledById], references: [id])
-  customer                Customer?          @relation(fields: [customerId], references: [id])
+  cashier                 User                 @relation("CashierInvoices", fields: [cashierId], references: [id])
+  cancelledBy             User?                @relation("CancelledInvoices", fields: [cancelledById], references: [id])
+  customer                Customer?            @relation(fields: [customerId], references: [id])
   items                   InvoiceItem[]
   payments                Payment[]
   stockTransactions       StockTransaction[]
-  creditNotesAsOriginal   CreditNote[]       @relation("CreditNoteOriginalInvoice")
-  creditNoteAsReplacement CreditNote?        @relation("CreditNoteReplacementInvoice")
+  creditNotesAsOriginal   CreditNote[]         @relation("CreditNoteOriginalInvoice")
+  creditNoteAsReplacement CreditNote?          @relation("CreditNoteReplacementInvoice")
   returnRequests          ReturnRequest[]
   completedDraftRequest   BillingDraftRequest?
 
@@ -395,17 +520,27 @@ model CreditNote {
 }
 
 model BusinessSettings {
-  id                           Int       @id
-  defaultLowStockThreshold     Float     @default(5)
-  defaultWholesaleQtyThreshold Float     @default(15)
-  loyaltyDiscountPercent       Float     @default(2)
-  returnWindowDays             Int       @default(7)
-  parkedBillExpiryHours        Int       @default(8)
-  draftRequestExpiryMinutes    Int       @default(30)
+  id                           Int          @id
+  businessMode                 BusinessMode @default(FULL_POS)
+  staffDraftRequestsEnabled    Boolean      @default(true)
+  defaultInitialStock          Float        @default(30)
+  defaultLowStockThreshold     Float        @default(5)
+  defaultWholesaleQtyThreshold Float        @default(15)
+  loyaltyDiscountPercent       Float        @default(2)
+  returnWindowDays             Int          @default(7)
+  parkedBillExpiryHours        Int          @default(8)
+  draftRequestExpiryMinutes    Int          @default(30)
   overridePinHash              String?
   overridePinUpdatedAt         DateTime?
-  createdAt                    DateTime  @default(now())
-  updatedAt                    DateTime  @updatedAt
+  createdAt                    DateTime     @default(now())
+  updatedAt                    DateTime     @updatedAt
+}
+
+model ProductSequence {
+  id         String   @id
+  lastNumber Int      @default(0)
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
 }
 
 model InvoiceItem {
@@ -519,14 +654,20 @@ model BillingDraftRequest {
   acceptedById       String?
   completedInvoiceId String?            @unique
   expiresAt          DateTime?
+  firstViewedAt      DateTime?
+  queuedOfflineAt    DateTime?
   modifiedAt         DateTime?
   createdAt          DateTime           @default(now())
   acceptedAt         DateTime?
+  cancelledAt        DateTime?
+  cancelledById      String?
+  cancellationReason String?            @db.Text
 
   customer         Customer?          @relation(fields: [customerId], references: [id])
   createdBy        User               @relation("DraftRequestCreator", fields: [createdById], references: [id])
   assignedCashier  User?              @relation("DraftRequestAssignedCashier", fields: [assignedCashierId], references: [id])
   acceptedBy       User?              @relation("DraftRequestAcceptor", fields: [acceptedById], references: [id])
+  cancelledBy      User?              @relation("DraftRequestCanceller", fields: [cancelledById], references: [id])
   completedInvoice Invoice?           @relation(fields: [completedInvoiceId], references: [id])
   items            DraftRequestItem[]
 
@@ -534,8 +675,10 @@ model BillingDraftRequest {
   @@index([createdById, createdAt])
   @@index([assignedCashierId, status, createdAt])
   @@index([acceptedById, acceptedAt])
+  @@index([cancelledById, cancelledAt])
   @@index([expiresAt])
   @@index([customerId])
+  @@index([assignedCashierId, firstViewedAt, status])
 }
 
 model DraftRequestItem {
@@ -777,6 +920,7 @@ model AuditLog {
 model Document {
   id             String       @id @default(cuid())
   documentType   DocumentType
+  title          String? // human-readable searchable title; falls back to fileName for legacy rows
   fileName       String // original filename from user's upload
   storedFileName String // actual filename on disk (cuid-based)
   storedPath     String // relative path from storage root
@@ -809,6 +953,7 @@ model Document {
   @@index([documentType, createdAt])
   @@index([linkedEntityType, linkedEntityId])
   @@index([visibility])
+  @@index([title])
   @@index([supplierName])
   @@index([billDate])
   @@index([uploadedById])

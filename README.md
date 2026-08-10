@@ -58,7 +58,8 @@ The implementation is based on the actual business rules used in the system. Dra
 ### Authentication and Access Control
 
 - role-based authentication for `Admin` and `Cashier`
-- JWT-based access control
+- opaque server-side sessions in signed, HttpOnly cookies
+- CSRF protection for authenticated write operations
 - protected route handling
 - login attempt logging
 
@@ -140,7 +141,7 @@ The implementation is based on the actual business rules used in the system. Dra
 | Charts and Export             | Recharts, ExcelJS                        |
 | API and Form Handling         | Axios, React Hook Form                   |
 | Backend                       | Node.js, Express, TypeScript             |
-| Validation and Security       | Zod, JWT, bcryptjs                       |
+| Validation and Security       | Zod, server sessions, CSRF, bcryptjs    |
 | File and CSV Handling         | multer, csv-parse                        |
 | Database                      | MySQL                                    |
 | ORM                           | Prisma                                   |
@@ -168,7 +169,7 @@ Prisma ORM
 MySQL Database
 ```
 
-At runtime, the frontend sends authenticated requests to the backend using JWT-based authorization. The backend applies role checks, invoice logic, stock handling rules, pricing and discount rules, and payment validation before reading from or writing to MySQL through Prisma. Uploaded product and profile images are stored in the local `uploads` directory, while invoice, payment, stock, customer, and audit data are stored in the database.
+At runtime, the browser authenticates through an opaque server-side session. Its signed session cookie is HttpOnly, authenticated writes require a matching CSRF token, and the backend applies role checks, invoice logic, stock handling rules, pricing and discount rules, and payment validation before reading from or writing to MySQL through Prisma. Uploaded product and profile images are stored in the local `uploads` directory, while invoice, payment, stock, customer, and audit data are stored in the database.
 
 ## Key Business Workflows
 
@@ -258,7 +259,8 @@ Create `.env` files in both `backend` and `frontend` before running the project.
 
 ```env
 DATABASE_URL="mysql://root:password@localhost:3306/khatasathi"
-JWT_SECRET="jwt_secret"
+SESSION_SECRET="generate-a-unique-random-secret-with-at-least-32-characters"
+SESSION_TTL_HOURS=168
 PORT=4000
 FRONTEND_BASE_URL="http://localhost:5173"
 BACKEND_BASE_URL="http://localhost:4000"

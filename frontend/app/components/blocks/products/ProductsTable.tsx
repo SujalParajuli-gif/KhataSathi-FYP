@@ -2,6 +2,7 @@ import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import PreviewableImage from "~/components/ui/PreviewableImage";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import MobilePaginationFooter from "~/components/ui/MobilePaginationFooter";
 import type { Product } from "~/lib/domain/products/products.types";
 import {
   cn,
@@ -127,6 +128,7 @@ export default function ProductsTableCard({
   loading,
   loadError,
   selected,
+  selectionModeActive,
   toggleAllOnPage,
   toggleOne,
   onView,
@@ -142,11 +144,13 @@ export default function ProductsTableCard({
   onPageSizeChange,
   onClearFilters,
   onRetry,
+  stockTracked,
 }: {
   rows: Product[];
   loading?: boolean;
   loadError?: string;
   selected: Record<string, boolean>;
+  selectionModeActive?: boolean;
   toggleAllOnPage: (checked: boolean) => void;
   toggleOne: (id: string, checked: boolean) => void;
   onView: (p: Product) => void;
@@ -162,19 +166,34 @@ export default function ProductsTableCard({
   onPageSizeChange: (pageSize: number) => void;
   onClearFilters: () => void;
   onRetry: () => void;
+  stockTracked: boolean;
 }) {
   const paginationItems = buildPaginationItems(page, totalPages);
-  const [mobilePaginationOpen, setMobilePaginationOpen] = React.useState(false);
   const [mobileActionProduct, setMobileActionProduct] = React.useState<Product | null>(null);
-  const [mobileGoPage, setMobileGoPage] = React.useState(String(page));
   const longPressTimer = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const longPressedProductId = React.useRef<string | null>(null);
   const longPressOrigin = React.useRef<{ x: number; y: number } | null>(null);
-  const selectionMode = Object.values(selected).some(Boolean);
+  const lastSelectedIndex = React.useRef<number | null>(null);
+  const selectAllRef = React.useRef<HTMLInputElement>(null);
+  const selectionMode = selectionModeActive ?? Object.values(selected).some(Boolean);
+  const selectedOnPageCount = rows.filter((product) => selected[product.id]).length;
 
   React.useEffect(() => {
-    setMobileGoPage(String(page));
-  }, [page]);
+    if (selectAllRef.current) {
+      selectAllRef.current.indeterminate = selectedOnPageCount > 0 && selectedOnPageCount < rows.length;
+    }
+  }, [rows.length, selectedOnPageCount]);
+
+  function toggleDesktopRow(index: number, checked: boolean, shiftKey: boolean) {
+    if (shiftKey && lastSelectedIndex.current !== null) {
+      const start = Math.min(index, lastSelectedIndex.current);
+      const end = Math.max(index, lastSelectedIndex.current);
+      rows.slice(start, end + 1).forEach((product) => toggleOne(product.id, checked));
+    } else {
+      toggleOne(rows[index].id, checked);
+    }
+    lastSelectedIndex.current = index;
+  }
 
   React.useEffect(() => () => {
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
@@ -233,7 +252,7 @@ export default function ProductsTableCard({
         ) : null}
 
         {rows.map((product) => {
-          const flag = getStockFlag(product);
+          const flag = stockTracked ? getStockFlag(product) : null;
           const isSelected = !!selected[product.id];
           return (
             <article
@@ -270,22 +289,22 @@ export default function ProductsTableCard({
                 }
               }}
               className={cn(
-                "relative grid min-h-[132px] grid-cols-[92px_minmax(0,1fr)] gap-3 rounded-[14px] border bg-white p-3 transition active:scale-[0.995]",
-                isSelected ? "border-[#179B4D] bg-[#F3FBF6]" : "border-[#E5E7EB]",
-                selectionMode && "pl-10",
+                "relative flex items-start gap-3 rounded-[14px] border bg-white p-3 transition active:scale-[0.995]",
+                isSelected ? "border-[#11120D] bg-[#F3F4F6]" : "border-[#E5E7EB]",
               )}
             >
               {selectionMode ? (
                 <button
                   type="button"
+                  style={{ width: 18, height: 18, minWidth: 18, minHeight: 18 }}
                   onClick={(event) => { event.stopPropagation(); toggleOne(product.id, !isSelected); }}
                   className={cn(
-                    "absolute left-2.5 top-1/2 inline-flex h-6 w-6 -translate-y-1/2 items-center justify-center rounded-[7px] border",
-                    isSelected ? "border-[#179B4D] bg-[#179B4D] text-white" : "border-[#9CA3AF] bg-white text-transparent",
+                    "mt-1 inline-flex p-0 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition active:scale-95",
+                    isSelected ? "border-[#11120D] bg-[#11120D] text-white shadow-xs" : "border-[#CFCFD3] bg-white text-transparent hover:border-[#8C8889]",
                   )}
                   aria-label={`${isSelected ? "Deselect" : "Select"} ${product.name}`}
                 >
-                  <GoogleIcon name="check" className="text-[16px]" />
+                  <GoogleIcon name="check" className="text-[11px]" />
                 </button>
               ) : null}
 
@@ -295,20 +314,24 @@ export default function ProductsTableCard({
                 title={product.name}
                 subtitle={`SKU: ${product.sku}`}
                 enablePreview="desktop"
-                imgClassName="h-full w-full object-contain p-1.5"
-                className="flex h-[104px] w-[92px] items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white"
-                fallback={<GoogleIcon name="inventory_2" sizePx={32} className="text-[#8C8889]" />}
+                imgClassName="h-full w-full object-contain p-1"
+                className="flex h-[72px] w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC]"
+                fallback={<GoogleIcon name="inventory_2" sizePx={26} className="text-[#8C8889]" />}
               />
 
-              <div className="min-w-0 pr-8">
-                <div className="line-clamp-2 text-[17px] font-extrabold leading-6 text-[#11120d]">{product.name}</div>
-                <div className="mt-1 truncate font-mono text-[12px] font-medium text-[#6B7280]">SKU: {product.sku}</div>
-                <div className="mt-3 text-[18px] font-extrabold text-[#11120d]">{formatNpr(product.retailPrice)}</div>
+              <div className="min-w-0 flex-1 pr-7">
+                <div className="line-clamp-2 text-[14px] font-extrabold leading-snug text-[#11120d]">{product.name}</div>
+                <div className="mt-1 truncate font-mono text-[11px] font-semibold text-[#64748B]">SKU: {product.sku}</div>
+                <div className="mt-2 text-[14px] font-extrabold text-[#11120d]">{formatNpr(product.retailPrice)}</div>
                 <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                  <div className="flex items-center gap-2 text-[13px] font-semibold text-[#565449]">
-                    <span className={cn("h-2.5 w-2.5 rounded-full", flag === "In Stock" ? "bg-emerald-500" : flag === "Low Stock" ? "bg-amber-500" : "bg-red-500")} />
-                    {formatQty(product.stock)} {product.saleUnit || "PIECE"}
-                  </div>
+                  {stockTracked ? (
+                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#565449]">
+                      <span className={cn("h-2 w-2 rounded-full", flag === "In Stock" ? "bg-emerald-500" : flag === "Low Stock" ? "bg-amber-500" : "bg-red-500")} />
+                      {formatQty(product.stock)} {product.saleUnit || "PIECE"}
+                    </div>
+                  ) : (
+                    <div className="text-[11px] font-semibold text-[#565449]">Sale unit: {product.saleUnit || "PIECE"}</div>
+                  )}
                   <StatusPill status={product.status} />
                 </div>
               </div>
@@ -317,10 +340,10 @@ export default function ProductsTableCard({
                 <button
                   type="button"
                   onClick={(event) => { event.stopPropagation(); setMobileActionProduct(product); }}
-                  className="absolute right-2 top-2 inline-flex h-10 w-10 items-center justify-center rounded-full text-[#565449]"
+                  className="absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-full text-[#565449] transition hover:bg-[#F3F4F6]"
                   aria-label={`Actions for ${product.name}`}
                 >
-                  <GoogleIcon name="more_vert" className="text-[23px]" />
+                  <GoogleIcon name="more_vert" className="text-[20px]" />
                 </button>
               ) : null}
             </article>
@@ -328,15 +351,7 @@ export default function ProductsTableCard({
         })}
 
         {rows.length > 0 ? (
-          <div className="flex items-center justify-between gap-3 px-1 py-2">
-            <button type="button" onClick={() => setMobilePaginationOpen(true)} className="min-h-11 text-left text-[13px] text-[#565449]">
-              Showing <strong className="text-[#11120d]">{total === 0 ? 0 : start + 1}–{end}</strong> of <strong className="text-[#11120d]">{total}</strong> products
-            </button>
-            <div className="flex gap-2">
-              <button type="button" disabled={page <= 1} onClick={() => onPageChange(Math.max(1, page - 1))} className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white disabled:opacity-35" aria-label="Previous page"><GoogleIcon name="chevron_left" /></button>
-              <button type="button" disabled={page >= totalPages} onClick={() => onPageChange(Math.min(totalPages, page + 1))} className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white disabled:opacity-35" aria-label="Next page"><GoogleIcon name="chevron_right" /></button>
-            </div>
-          </div>
+          <MobilePaginationFooter page={page} totalPages={totalPages} total={total} start={start} end={end} label="products" pageSize={pageSize} pageSizeOptions={[20, 50, 100]} onPageChange={onPageChange} onPageSizeChange={onPageSizeChange} />
         ) : null}
       </section>
 
@@ -362,57 +377,41 @@ export default function ProductsTableCard({
         </div>
       ) : null}
 
-      {mobilePaginationOpen ? (
-        <div className="fixed inset-0 z-[130] lg:hidden">
-          <button type="button" className="absolute inset-0 bg-slate-950/50" onClick={() => setMobilePaginationOpen(false)} aria-label="Close pagination" />
-          <section role="dialog" aria-modal="true" aria-label="Pagination" className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
-            <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
-            <div className="mt-3 flex items-center justify-between"><h2 className="text-[22px] font-extrabold">Pagination</h2><button type="button" onClick={() => setMobilePaginationOpen(false)} className="h-11 w-11" aria-label="Close pagination"><GoogleIcon name="close" className="text-[26px]" /></button></div>
-            <div className="mt-5 text-[14px] font-bold">Rows per page</div>
-            <div className="mt-2 grid grid-cols-3 overflow-hidden rounded-[12px] border border-[#CFCFD3]">
-              {[20, 50, 100].map((value) => <button key={value} type="button" onClick={() => onPageSizeChange(value)} className={cn("h-[52px] border-r border-[#CFCFD3] text-[15px] font-bold last:border-0", pageSize === value ? "bg-[#11120d] text-white" : "bg-white")}>{value}</button>)}
-            </div>
-            <div className="mt-6 text-[14px] font-bold">Page</div>
-            <div className="mt-3 flex items-center justify-between"><button type="button" disabled={page <= 1} onClick={() => onPageChange(page - 1)} className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-[#CFCFD3] disabled:opacity-35"><GoogleIcon name="chevron_left" className="text-[30px]" /></button><div className="text-[22px] font-extrabold">Page {page} of {totalPages}</div><button type="button" disabled={page >= totalPages} onClick={() => onPageChange(page + 1)} className="inline-flex h-14 w-14 items-center justify-center rounded-full border border-[#CFCFD3] disabled:opacity-35"><GoogleIcon name="chevron_right" className="text-[30px]" /></button></div>
-            <label className="mt-6 block text-[14px] font-bold">Go to page</label>
-            <div className="mt-2 flex overflow-hidden rounded-[12px] border border-[#CFCFD3]"><input type="number" min={1} max={totalPages} value={mobileGoPage} onChange={(event) => setMobileGoPage(event.target.value)} className="h-[52px] min-w-0 flex-1 px-3 text-[15px] font-semibold outline-none" /><button type="button" onClick={() => { const next = Math.min(totalPages, Math.max(1, Number(mobileGoPage) || 1)); onPageChange(next); setMobilePaginationOpen(false); }} className="w-24 bg-[#11120d] text-[15px] font-bold text-white">Go</button></div>
-            <div className="mt-5 pb-[env(safe-area-inset-bottom)] text-center text-[13px] text-[#6B7280]">Showing {total === 0 ? 0 : start + 1}–{end} of {total} products</div>
-          </section>
-        </div>
-      ) : null}
-
       <div className="hidden lg:block">
       <Card>
       <div>
         <div className="overflow-x-auto">
-          <table className="w-full min-w-[1120px] border-collapse text-left">
+          <table className={cn("w-full border-collapse text-left", stockTracked ? "min-w-[1120px]" : "min-w-[1010px]")}>
             <thead>
               <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
-                <th className="w-[44px] px-3 py-3">
-                  <input
-                    type="checkbox"
-                    checked={rows.length > 0 && rows.every((product) => selected[product.id])}
-                    onChange={(event) => toggleAllOnPage(event.target.checked)}
-                    aria-label="Select all rows on this page"
-                    className="h-[16px] w-[16px]"
-                  />
+                <th className="w-[52px] p-0">
+                  <label className="flex min-h-[48px] cursor-pointer items-center justify-center" title="Select every product on this page">
+                    <input
+                      ref={selectAllRef}
+                      type="checkbox"
+                      checked={rows.length > 0 && rows.every((product) => selected[product.id])}
+                      onChange={(event) => toggleAllOnPage(event.target.checked)}
+                      aria-label="Select all rows on this page"
+                      className="h-5 w-5 cursor-pointer accent-[#11120D]"
+                    />
+                  </label>
                 </th>
                 <th className="px-3 py-3">Product</th>
                 <th className="px-3 py-3">Source</th>
                 <th className="px-3 py-3">Group / Variant</th>
                 <th className="px-3 py-3">Size</th>
                 <th className="px-3 py-3">Package</th>
-                <th className="px-3 py-3">Rate / Piece</th>
-                <th className="px-3 py-3">Qty Wholesale</th>
-                <th className="px-3 py-3">Stock</th>
+                <th className="px-3 py-3">Purchase Cost</th>
+                <th className="px-3 py-3">Wholesale / थोक</th>
+                {stockTracked ? <th className="px-3 py-3">Stock</th> : null}
                 <th className="px-3 py-3">Status</th>
                 <th className="w-[120px] px-3 py-3 text-right">Action</th>
               </tr>
             </thead>
 
             <tbody className="divide-y divide-[#E5E7EB]">
-              {rows.map((product) => {
-                const flag = getStockFlag(product);
+              {rows.map((product, productIndex) => {
+                const flag = stockTracked ? getStockFlag(product) : null;
                 const isSelected = !!selected[product.id];
 
                 return (
@@ -423,14 +422,22 @@ export default function ProductsTableCard({
                       isSelected && "bg-[#F3F4F6]/80 hover:bg-[#E4E8EE]",
                     )}
                   >
-                    <td className="px-3 py-3 align-top">
-                      <input
-                        type="checkbox"
-                        checked={isSelected}
-                        onChange={(event) => toggleOne(product.id, event.target.checked)}
-                        aria-label={`Select ${product.name}`}
-                        className="h-[16px] w-[16px]"
-                      />
+                    <td className="w-[52px] p-0 align-top">
+                      <label className="flex min-h-[72px] cursor-pointer items-start justify-center pt-4" title={`Select ${product.name}`}>
+                        <input
+                          type="checkbox"
+                          checked={isSelected}
+                          onChange={(event) =>
+                            toggleDesktopRow(
+                              productIndex,
+                              event.target.checked,
+                              (event.nativeEvent as MouseEvent).shiftKey,
+                            )
+                          }
+                          aria-label={`Select ${product.name}`}
+                          className="h-5 w-5 cursor-pointer accent-[#11120D]"
+                        />
+                      </label>
                     </td>
 
                     <td className="px-3 py-3 align-top">
@@ -510,7 +517,7 @@ export default function ProductsTableCard({
                       </div>
                     </td>
 
-                    <td className="px-3 py-3 align-top">
+                    {stockTracked ? <td className="px-3 py-3 align-top">
                       <div className="flex max-w-[170px] flex-wrap items-center gap-2">
                         <span
                           className={cn(
@@ -526,9 +533,9 @@ export default function ProductsTableCard({
                         <div className="font-semibold text-[#000000]">
                           {formatQty(product.stock)} {product.saleUnit || "PIECE"}
                         </div>
-                        <StockPill flag={flag} />
+                        <StockPill flag={flag!} />
                       </div>
-                    </td>
+                    </td> : null}
 
                     <td className="px-3 py-3 align-top">
                       <StatusPill status={product.status} />
@@ -559,7 +566,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 && loading ? (
                 <tr>
-                  <td colSpan={11} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
+                  <td colSpan={stockTracked ? 11 : 10} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
                     <div className="flex items-center gap-2">
                       <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#CFCFD3] border-t-[#11120d]" />
                       Loading products...
@@ -570,7 +577,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 && !loading ? (
                 <tr>
-                  <td colSpan={11} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
+                  <td colSpan={stockTracked ? 11 : 10} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
                     {loadError || "No products match your filters."}
                   </td>
                 </tr>

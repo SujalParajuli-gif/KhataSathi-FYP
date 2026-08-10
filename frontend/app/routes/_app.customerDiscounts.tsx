@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import { ConfirmDialog } from "~/components/ui/Modal";
@@ -21,8 +21,10 @@ import { getAuthUser } from "~/lib/auth";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { formatDateLabel, formatNpr } from "~/lib/invoices";
+import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 
 type DiscountType = "Wholesale %" | "Loyalty %";
+type NewCustomerErrors = Partial<Record<"name" | "phone" | "percent" | "reason", string>>;
 
 type CustomerDiscount = {
   id: string;
@@ -45,6 +47,10 @@ function cn(...xs: Array<string | false | null | undefined>) {
 // makes decimal numbers look nice as percentages (e.g. 15.5 -> 16%)
 function formatPct(n: number) {
   return `${Math.round(n)}%`;
+}
+
+function InlineFieldError({ message }: { message?: string }) {
+  return message ? <div role="alert" className="text-[11px] font-semibold text-[#BE123C]">{message}</div> : null;
 }
 
 function discountKindFromRow(row: CustomerDiscount): "LOYALTY" | "WHOLESALE" {
@@ -222,6 +228,11 @@ export default function CustomerDiscountsPage() {
   const [discountType, setDiscountType] = useState<"LOYALTY" | "WHOLESALE">("LOYALTY");
   const [discountPercent, setDiscountPercent] = useState(2);
   const [requestReason, setRequestReason] = useState("");
+  const [newCustomerErrors, setNewCustomerErrors] = useState<NewCustomerErrors>({});
+  const newCustomerNameRef = useRef<HTMLInputElement>(null);
+  const newCustomerPhoneRef = useRef<HTMLInputElement>(null);
+  const discountPercentRef = useRef<HTMLInputElement>(null);
+  const requestReasonRef = useRef<HTMLInputElement>(null);
   const [query, setQuery] = useState(""); // keeps the current customer search text
   const [tab, setTab] = useState<"all" | "wholesale" | "loyalty">("all"); // tracks whether the user is viewing all, wholesale-only, or loyalty-only rows
   const [page, setPage] = useState(1); // current page for the customer discount table
@@ -470,12 +481,23 @@ export default function CustomerDiscountsPage() {
     const email = newCustomerEmail.trim();
     const percent = Number(discountPercent);
 
-    if (!name || !phone) {
-      showToast("danger", "Customer name and phone are required.");
-      return;
-    }
-    if (!Number.isFinite(percent) || percent <= 0 || percent > activeMaxDiscount) {
-      showToast("danger", `Discount must be between 1% and ${activeMaxDiscount}%.`);
+    const errors: NewCustomerErrors = {
+      name: name ? undefined : "Enter the customer's name.",
+      phone: phone ? undefined : "Enter the customer's phone number.",
+      percent: Number.isFinite(percent) && percent > 0 && percent <= activeMaxDiscount
+        ? undefined
+        : `Enter a discount from 1% to ${activeMaxDiscount}%.`,
+    };
+    setNewCustomerErrors(errors);
+    const firstInvalid = !name
+      ? newCustomerNameRef
+      : !phone
+        ? newCustomerPhoneRef
+        : errors.percent
+          ? discountPercentRef
+          : null;
+    if (firstInvalid) {
+      focusInvalidField(firstInvalid);
       return;
     }
 
@@ -492,6 +514,7 @@ export default function CustomerDiscountsPage() {
       setNewCustomerName("");
       setNewCustomerPhone("");
       setNewCustomerEmail("");
+      setNewCustomerErrors({});
       setDiscountPercent(discountType === "WHOLESALE" ? Math.min(5, activeMaxDiscount) : Math.min(2, activeMaxDiscount));
       await loadDiscountData();
     } catch (err: any) {
@@ -515,16 +538,26 @@ export default function CustomerDiscountsPage() {
     const reason = requestReason.trim();
     const percent = Number(discountPercent);
 
-    if (!name || !phone) {
-      showToast("danger", "Customer name and phone are required.");
-      return;
-    }
-    if (!reason) {
-      showToast("danger", "Add a short reason for admin approval.");
-      return;
-    }
-    if (!Number.isFinite(percent) || percent <= 0 || percent > 100) {
-      showToast("danger", "Discount must be between 1% and 100%.");
+    const errors: NewCustomerErrors = {
+      name: name ? undefined : "Enter the customer's name.",
+      phone: phone ? undefined : "Enter the customer's phone number.",
+      percent: Number.isFinite(percent) && percent > 0 && percent <= 100
+        ? undefined
+        : "Enter a discount from 1% to 100%.",
+      reason: reason ? undefined : "Explain briefly why admin approval is needed.",
+    };
+    setNewCustomerErrors(errors);
+    const firstInvalid = !name
+      ? newCustomerNameRef
+      : !phone
+        ? newCustomerPhoneRef
+        : errors.percent
+          ? discountPercentRef
+          : !reason
+            ? requestReasonRef
+            : null;
+    if (firstInvalid) {
+      focusInvalidField(firstInvalid);
       return;
     }
 
@@ -543,6 +576,7 @@ export default function CustomerDiscountsPage() {
       setNewCustomerPhone("");
       setNewCustomerEmail("");
       setRequestReason("");
+      setNewCustomerErrors({});
       setDiscountPercent(discountType === "WHOLESALE" ? 5 : 2);
       const requestData = await listCustomerDiscountRequestsApi();
       setDiscountRequests(Array.isArray(requestData.requests) ? requestData.requests : []);
@@ -665,11 +699,14 @@ export default function CustomerDiscountsPage() {
                   Customer Name
                 </div>
                 <input
+                  ref={newCustomerNameRef}
                   value={newCustomerName}
-                  onChange={(event) => setNewCustomerName(event.target.value)}
+                  aria-invalid={Boolean(newCustomerErrors.name)}
+                  onChange={(event) => { setNewCustomerName(event.target.value); setNewCustomerErrors((current) => ({ ...current, name: undefined })); }}
                   placeholder="e.g. Ramesh Sharma"
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.name ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.name} />
               </label>
 
               <label className="space-y-2">
@@ -677,11 +714,14 @@ export default function CustomerDiscountsPage() {
                   Phone
                 </div>
                 <input
+                  ref={newCustomerPhoneRef}
                   value={newCustomerPhone}
-                  onChange={(event) => setNewCustomerPhone(event.target.value)}
+                  aria-invalid={Boolean(newCustomerErrors.phone)}
+                  onChange={(event) => { setNewCustomerPhone(event.target.value); setNewCustomerErrors((current) => ({ ...current, phone: undefined })); }}
                   placeholder="Required"
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.phone ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.phone} />
               </label>
 
               <label className="space-y-2">
@@ -730,13 +770,17 @@ export default function CustomerDiscountsPage() {
                   </div>
                 </div>
                 <input
+                  ref={discountPercentRef}
                   type="number"
                   min={1}
                   max={activeMaxDiscount}
                   value={discountPercent}
-                  onChange={(event) => setDiscountPercent(Number(event.target.value))}
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  aria-invalid={Boolean(newCustomerErrors.percent)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onChange={(event) => { setDiscountPercent(Number(event.target.value)); setNewCustomerErrors((current) => ({ ...current, percent: undefined })); }}
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.percent ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.percent} />
               </label>
 
               <button
@@ -756,11 +800,14 @@ export default function CustomerDiscountsPage() {
                   Customer Name
                 </div>
                 <input
+                  ref={newCustomerNameRef}
                   value={newCustomerName}
-                  onChange={(event) => setNewCustomerName(event.target.value)}
+                  aria-invalid={Boolean(newCustomerErrors.name)}
+                  onChange={(event) => { setNewCustomerName(event.target.value); setNewCustomerErrors((current) => ({ ...current, name: undefined })); }}
                   placeholder="e.g. Ramesh Sharma"
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.name ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.name} />
               </label>
 
               <label className="space-y-2">
@@ -768,11 +815,14 @@ export default function CustomerDiscountsPage() {
                   Phone
                 </div>
                 <input
+                  ref={newCustomerPhoneRef}
                   value={newCustomerPhone}
-                  onChange={(event) => setNewCustomerPhone(event.target.value)}
+                  aria-invalid={Boolean(newCustomerErrors.phone)}
+                  onChange={(event) => { setNewCustomerPhone(event.target.value); setNewCustomerErrors((current) => ({ ...current, phone: undefined })); }}
                   placeholder="Required"
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.phone ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.phone} />
               </label>
 
               <label className="space-y-2">
@@ -806,13 +856,17 @@ export default function CustomerDiscountsPage() {
                   Discount %
                 </div>
                 <input
+                  ref={discountPercentRef}
                   type="number"
                   min={1}
                   max={100}
                   value={discountPercent}
-                  onChange={(event) => setDiscountPercent(Number(event.target.value))}
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  aria-invalid={Boolean(newCustomerErrors.percent)}
+                  onFocus={(event) => event.currentTarget.select()}
+                  onChange={(event) => { setDiscountPercent(Number(event.target.value)); setNewCustomerErrors((current) => ({ ...current, percent: undefined })); }}
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.percent ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.percent} />
               </label>
 
               <label className="space-y-2 lg:col-span-4">
@@ -820,11 +874,14 @@ export default function CustomerDiscountsPage() {
                   Reason for admin
                 </div>
                 <input
+                  ref={requestReasonRef}
                   value={requestReason}
-                  onChange={(event) => setRequestReason(event.target.value)}
+                  aria-invalid={Boolean(newCustomerErrors.reason)}
+                  onChange={(event) => { setRequestReason(event.target.value); setNewCustomerErrors((current) => ({ ...current, reason: undefined })); }}
                   placeholder="e.g. Regular wholesale buyer, referred by owner..."
-                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-semibold outline-none focus:border-[#11120d]"
+                  className={cn("h-[44px] w-full rounded-[12px] bg-white px-3 text-[13px] font-semibold outline-none focus:ring-2", newCustomerErrors.reason ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                 />
+                <InlineFieldError message={newCustomerErrors.reason} />
               </label>
 
               <button

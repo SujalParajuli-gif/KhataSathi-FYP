@@ -1,5 +1,14 @@
 @import "tailwindcss";
 
+/* Every full-screen application dialog must cover the app shell, including the
+   desktop navigation rail. Toasts/popovers still use their higher semantic
+   layers. Prefer the shared ModalFrame; this class keeps legacy dialog shells
+   on the same contract while they are migrated. */
+.app-modal-layer {
+  z-index: 100;
+  isolation: isolate;
+}
+
 /* we load the variable IBM Plex Sans files so the app can use one main sans family
    across headings, forms, and content without needing separate font files for each weight */
 @font-face {
@@ -252,4 +261,46 @@ input[type="number"]::-webkit-outer-spin-button {
               backdrop-filter 0.28s ease,
               padding 0.28s ease,
               margin 0.28s ease;
+}
+
+/* Mobile input and finger safeguards. iOS zooms a page when a focused form
+   control renders below 16px; the shared rule keeps forms steady while the
+   keyboard opens. Scroll margins keep focused/invalid fields clear of sticky
+   headers and bottom action bars. */
+@media (max-width: 767px) and (pointer: coarse) {
+  input:not([type="checkbox"]):not([type="radio"]):not([type="range"]),
+  textarea,
+  select {
+    font-size: 16px !important;
+    scroll-margin-top: 96px;
+    scroll-margin-bottom: 160px;
+  }
+
+  button {
+    min-width: 44px;
+    min-height: 44px;
+    touch-action: manipulation;
+  }
+
+  button,
+  a,
+  [role="button"],
+  [role="tab"] {
+    -webkit-tap-highlight-color: transparent;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html:focus-within {
+    scroll-behavior: auto;
+  }
+
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    scroll-behavior: auto !important;
+    transition-duration: 0.01ms !important;
+  }
 }

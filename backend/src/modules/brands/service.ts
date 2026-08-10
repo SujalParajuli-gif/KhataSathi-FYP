@@ -1,4 +1,5 @@
 import prisma from "../../db/prisma";
+import { rebuildProductSearchDocumentsForBrand } from "../products/searchAliasService";
 
 // listing all brands, optionally filtered to show only active ones
 // sorted alphabetically by name for consistent display in the frontend dropdown
@@ -73,6 +74,10 @@ export async function updateBrand(
                     },
                 },
             });
+        }
+
+        if (data.name !== undefined && updated.name !== existing.name) {
+            await rebuildProductSearchDocumentsForBrand(id, tx);
         }
 
         return updated;
