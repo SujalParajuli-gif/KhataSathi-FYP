@@ -928,6 +928,8 @@ model Document {
   mimeType       String
   fileSize       Int // bytes
   checksum       String? // SHA-256 for integrity verification
+  thumbnailFileName String? // protected WebP derivative stored beside the original
+  thumbnailSize     Int? // bytes; included in storage usage reporting
 
   // Business metadata
   supplierName String?

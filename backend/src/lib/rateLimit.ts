@@ -67,7 +67,7 @@ export function isBackgroundRateLimitRequest(req: Request) {
 export function isMediaRateLimitRequest(req: Request) {
   if (req.method !== "GET" && req.method !== "HEAD") return false;
   const path = normalizedRequestPath(req);
-  return /^\/api\/documents\/[^/]+\/file$/.test(path);
+  return /^\/api\/documents\/[^/]+\/(file|thumbnail)$/.test(path);
 }
 
 export function isGeneralApiRateLimitExempt(req: Request) {

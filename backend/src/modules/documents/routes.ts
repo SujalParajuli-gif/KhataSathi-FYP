@@ -8,6 +8,7 @@ import {
   listDocuments,
   getDocument,
   getDocumentFile,
+  getDocumentThumbnail,
   deleteDocumentHandler,
   getStorageInfo,
   updateDocumentMetadataHandler,
@@ -74,6 +75,7 @@ router.get("/:id", getDocument);
 
 // downloading/previewing the actual file — any authenticated user
 router.get("/:id/file", getDocumentFile);
+router.get("/:id/thumbnail", getDocumentThumbnail);
 
 // deleting a document — admin and manager can delete
 router.delete("/:id", requireRole("ADMIN", "MANAGER"), deleteDocumentHandler);

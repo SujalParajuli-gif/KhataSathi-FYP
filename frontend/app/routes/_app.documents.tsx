@@ -14,6 +14,7 @@ import { ConfirmDialog, DialogButton, ModalFrame } from "~/components/ui/Modal";
 import {
   deleteDocumentApi,
   fetchDocumentFileBlobApi,
+  fetchDocumentThumbnailBlobApi,
   getStorageInfoApi,
   listDocumentsApi,
   updateDocumentMetadataApi,
@@ -172,7 +173,7 @@ function DocumentThumbnail({ doc }: { doc: DocumentRecord }) {
     let objectUrl = "";
 
     async function loadThumb() {
-      if (!doc.mimeType.startsWith("image/")) {
+      if (!doc.mimeType.startsWith("image/") || !doc.thumbnailFileName) {
         setThumbUrl("");
         setFailed(false);
         return;
@@ -180,7 +181,7 @@ function DocumentThumbnail({ doc }: { doc: DocumentRecord }) {
 
       try {
         setFailed(false);
-        const blob = await fetchDocumentFileBlobApi(doc.id);
+        const blob = await fetchDocumentThumbnailBlobApi(doc.id);
         objectUrl = URL.createObjectURL(blob);
         if (active) setThumbUrl(objectUrl);
       } catch {
@@ -197,7 +198,7 @@ function DocumentThumbnail({ doc }: { doc: DocumentRecord }) {
       active = false;
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [doc.id, doc.mimeType]);
+  }, [doc.id, doc.mimeType, doc.thumbnailFileName]);
 
   if (doc.mimeType.startsWith("image/") && thumbUrl) {
     return (

@@ -1917,6 +1917,8 @@ export type DocumentRecord = {
     mimeType: string;
     fileSize: number;
     checksum: string | null;
+    thumbnailFileName: string | null;
+    thumbnailSize: number | null;
     supplierName: string | null;
     billNumber: string | null;
     billDate: string | null;
@@ -2032,6 +2034,7 @@ export function getDocumentFileUrl(id: string) {
 
 const documentFileReads = new Map<string, Promise<Blob>>();
 const documentFileFailures = new Map<string, { until: number; message: string }>();
+const documentThumbnailReads = new Map<string, Promise<Blob>>();
 
 export async function fetchDocumentFileBlobApi(id: string) {
     const recentFailure = documentFileFailures.get(id);
@@ -2076,6 +2079,21 @@ export async function fetchDocumentFileBlobApi(id: string) {
         });
 
     documentFileReads.set(id, request);
+    return request;
+}
+
+export async function fetchDocumentThumbnailBlobApi(id: string) {
+    const existing = documentThumbnailReads.get(id);
+    if (existing) return existing;
+
+    const request = api
+        .get<Blob>(`/api/documents/${id}/thumbnail`, { responseType: "blob" })
+        .then((res) => res.data)
+        .finally(() => {
+            documentThumbnailReads.delete(id);
+        });
+
+    documentThumbnailReads.set(id, request);
     return request;
 }
 

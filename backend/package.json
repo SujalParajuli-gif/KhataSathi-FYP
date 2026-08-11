@@ -16,6 +16,7 @@
     "search:benchmark-typos": "ts-node-dev --transpile-only --exit-child src/scripts/benchmarkProductSearchTypoTolerance.ts",
     "auth:audit-identities": "ts-node-dev --transpile-only --exit-child src/scripts/auditUserIdentityData.ts",
     "auth:remediate-archived-phones": "ts-node-dev --transpile-only --exit-child src/scripts/remediateArchivedUserPhones.ts",
+    "documents:backfill-thumbnails": "ts-node-dev --transpile-only --exit-child src/scripts/backfillDocumentThumbnails.ts",
     "postinstall": "prisma generate"
   },
   "prisma": {

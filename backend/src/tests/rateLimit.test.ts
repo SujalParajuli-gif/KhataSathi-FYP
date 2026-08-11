@@ -92,7 +92,7 @@ test("background classification includes presence and alert reads only", async (
   );
 });
 
-test("media classification includes document file reads only", async () => {
+test("media classification includes protected document file and thumbnail reads", async () => {
   const { isMediaRateLimitRequest } = await getRateLimitHelpers();
   const request = (method: string, originalUrl: string) =>
     ({ method, originalUrl } as any);
@@ -103,6 +103,10 @@ test("media classification includes document file reads only", async () => {
   );
   assert.equal(
     isMediaRateLimitRequest(request("HEAD", "/api/documents/doc-1/file")),
+    true,
+  );
+  assert.equal(
+    isMediaRateLimitRequest(request("GET", "/api/documents/doc-1/thumbnail")),
     true,
   );
   assert.equal(

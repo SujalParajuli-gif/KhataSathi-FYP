@@ -6,6 +6,11 @@ import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import type { CreateDocumentInput, ListDocumentsInput, UpdateDocumentMetadataInput } from "./validation";
 import type { DocumentType, DocumentVisibility, Prisma } from "@prisma/client";
+import {
+  buildDocumentThumbnailFileName,
+  supportsDocumentThumbnail,
+  writeDocumentImageThumbnail,
+} from "./documentMedia";
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
@@ -256,19 +261,41 @@ export async function createDocuments(
     });
 
     const storedFileName = buildStoredFileName(doc.id, metadata.documentType, file.originalname);
+    let finalPath: string | null = null;
+    let thumbnailFileName: string | null = null;
 
     try {
       // moving file from temp to final storage location
-      await moveToFinalPath(file.path, relativeFolderPath, storedFileName);
+      finalPath = await moveToFinalPath(file.path, relativeFolderPath, storedFileName);
 
       // computing checksum of the final file
-      const finalPath = path.resolve(STORAGE_ROOT, relativeFolderPath, storedFileName);
       const checksum = await computeChecksum(finalPath);
+
+      let thumbnailSize: number | null = null;
+      if (supportsDocumentThumbnail(file.mimetype)) {
+        const candidateFileName = buildDocumentThumbnailFileName(doc.id);
+        const candidatePath = path.resolve(
+          STORAGE_ROOT,
+          relativeFolderPath,
+          candidateFileName,
+        );
+        try {
+          thumbnailSize = await writeDocumentImageThumbnail(finalPath, candidatePath);
+          thumbnailFileName = candidateFileName;
+        } catch (error) {
+          await fs.unlink(candidatePath).catch(() => undefined);
+          logger.warn("Document uploaded without an image thumbnail", {
+            documentId: doc.id,
+            mimeType: file.mimetype,
+            error,
+          });
+        }
+      }
 
       // updating the document record with final filename and checksum
       const updated = await prisma.document.update({
         where: { id: doc.id },
-        data: { storedFileName, checksum },
+        data: { storedFileName, checksum, thumbnailFileName, thumbnailSize },
         include: { uploadedBy: { select: { id: true, name: true } } },
       });
 
@@ -282,6 +309,10 @@ export async function createDocuments(
       await prisma.document.delete({ where: { id: doc.id } }).catch(() => {});
       // also try to clean up the temp file
       await fs.unlink(file.path).catch(() => {});
+      if (finalPath) await fs.unlink(finalPath).catch(() => {});
+      if (thumbnailFileName) {
+        await removeFileFromDisk(relativeFolderPath, thumbnailFileName);
+      }
       throw error;
     }
   }
@@ -392,6 +423,14 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
 // resolving the absolute file path for download/preview
 export function getDocumentFilePath(doc: { storedPath: string; storedFileName: string }) {
   return resolveDocumentFileSafe(doc.storedPath, doc.storedFileName);
+}
+
+export function getDocumentThumbnailFilePath(doc: {
+  storedPath: string;
+  thumbnailFileName: string | null;
+}) {
+  if (!doc.thumbnailFileName) return null;
+  return resolveDocumentFileSafe(doc.storedPath, doc.thumbnailFileName);
 }
 
 // deleting a document — removes both the DB record and the file from disk
@@ -755,15 +794,64 @@ export async function permanentlyDeleteDocument(id: string) {
   if (!doc) return null;
 
   await removeFileFromDisk(doc.storedPath, doc.storedFileName);
+  if (doc.thumbnailFileName) {
+    await removeFileFromDisk(doc.storedPath, doc.thumbnailFileName);
+  }
   await prisma.document.delete({ where: { id } });
   return doc;
+}
+
+export async function backfillDocumentImageThumbnails() {
+  const documents = await prisma.document.findMany({
+    where: {
+      mimeType: { in: ["image/jpeg", "image/png", "image/webp"] },
+    },
+    orderBy: { createdAt: "asc" },
+  });
+  const result = { scanned: documents.length, generated: 0, existing: 0, missingOriginal: 0, failed: 0 };
+
+  for (const document of documents) {
+    if (document.thumbnailFileName && getDocumentThumbnailFilePath(document)) {
+      result.existing += 1;
+      continue;
+    }
+
+    const originalPath = getDocumentFilePath(document);
+    if (!originalPath) {
+      result.missingOriginal += 1;
+      continue;
+    }
+
+    const thumbnailFileName = buildDocumentThumbnailFileName(document.id);
+    const thumbnailPath = path.resolve(STORAGE_ROOT, document.storedPath, thumbnailFileName);
+    try {
+      const thumbnailSize = await writeDocumentImageThumbnail(originalPath, thumbnailPath);
+      await prisma.document.update({
+        where: { id: document.id },
+        data: { thumbnailFileName, thumbnailSize },
+      });
+      result.generated += 1;
+    } catch (error) {
+      await fs.unlink(thumbnailPath).catch(() => undefined);
+      result.failed += 1;
+      logger.warn("Document thumbnail backfill skipped a file", {
+        documentId: document.id,
+        error,
+      });
+    }
+  }
+
+  return result;
 }
 
 // fetching storage health and statistics for the admin panel
 export async function getStorageInfo() {
   const [totalDocuments, totalSize, storageHealth] = await Promise.all([
     prisma.document.count({ where: { deletedAt: null } }),
-    prisma.document.aggregate({ where: { deletedAt: null }, _sum: { fileSize: true } }),
+    prisma.document.aggregate({
+      where: { deletedAt: null },
+      _sum: { fileSize: true, thumbnailSize: true },
+    }),
     getDocumentStorageHealth(),
   ]);
 
@@ -772,7 +860,7 @@ export async function getStorageInfo() {
     by: ["documentType"],
     where: { deletedAt: null },
     _count: { id: true },
-    _sum: { fileSize: true },
+    _sum: { fileSize: true, thumbnailSize: true },
   });
 
   return {
@@ -782,11 +870,13 @@ export async function getStorageInfo() {
     isWritable: storageHealth.isWritable,
     storageError: storageHealth.error,
     totalDocuments,
-    totalSizeBytes: totalSize._sum.fileSize || 0,
+    totalSizeBytes:
+      Number(totalSize._sum.fileSize || 0) + Number(totalSize._sum.thumbnailSize || 0),
     byType: byType.map((t) => ({
       type: t.documentType,
       count: t._count.id,
-      sizeBytes: t._sum.fileSize || 0,
+      sizeBytes:
+        Number(t._sum.fileSize || 0) + Number(t._sum.thumbnailSize || 0),
     })),
   };
 }

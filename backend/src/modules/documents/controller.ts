@@ -149,6 +149,32 @@ export async function getDocumentFile(req: Request, res: Response) {
   }
 }
 
+// Serving a small protected derivative keeps document lists fast without
+// exposing the original file or bypassing document visibility rules.
+export async function getDocumentThumbnail(req: Request, res: Response) {
+  try {
+    const doc = await documentService.getDocumentById(String(req.params.id), req.user!.role);
+    if (!doc) {
+      res.status(404).json({ error: "Document not found" });
+      return;
+    }
+
+    const thumbnailPath = documentService.getDocumentThumbnailFilePath(doc);
+    if (!thumbnailPath) {
+      res.status(404).json({ error: "Document thumbnail not available" });
+      return;
+    }
+
+    res.setHeader("Content-Type", "image/webp");
+    res.setHeader("Content-Disposition", 'inline; filename="document-thumbnail.webp"');
+    res.setHeader("Cache-Control", "private, max-age=300, must-revalidate");
+    res.sendFile(thumbnailPath);
+  } catch (err) {
+    console.error("Get document thumbnail error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
 // deleting a document (file + DB record)
 export async function deleteDocumentHandler(req: Request, res: Response) {
   try {
