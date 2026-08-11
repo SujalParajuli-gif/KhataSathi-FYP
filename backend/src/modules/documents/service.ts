@@ -84,6 +84,12 @@ const STORAGE_ROOT = configuredRoot
   ? path.resolve(configuredRoot)
   : path.resolve(__dirname, "../../../document-storage");
 
+// Internal consumers such as the admin integrity report need the configured
+// root, but API responses must never expose this absolute server path.
+export function getDocumentStorageRootPath() {
+  return STORAGE_ROOT;
+}
+
 // ensuring the storage root exists on startup
 try {
   mkdirSync(STORAGE_ROOT, { recursive: true });

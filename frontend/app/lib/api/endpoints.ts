@@ -1463,6 +1463,58 @@ export async function listLoginAttemptsApi(filters?: any) {
 
 // --- Admin endpoints ---
 
+export type StorageIntegrityIssue = {
+    storage: "UPLOADS" | "DOCUMENTS";
+    relativePath: string;
+    ownerType?:
+        | "PRODUCT_IMAGE"
+        | "PRODUCT_THUMBNAIL"
+        | "PROFILE_IMAGE"
+        | "DOCUMENT_ORIGINAL"
+        | "DOCUMENT_THUMBNAIL";
+    ownerId?: string;
+    ownerLabel?: string;
+    ownerInactive?: boolean;
+    ownerDeleted?: boolean;
+    sizeBytes?: number;
+    modifiedAt?: string;
+};
+
+export type StorageIntegrityReport = {
+    generatedAt: string;
+    readOnly: true;
+    status: "HEALTHY" | "ATTENTION" | "UNAVAILABLE";
+    summary: {
+        databaseReferences: number;
+        filesOnDisk: number;
+        bytesOnDisk: number;
+        missingReferences: number;
+        unreferencedFiles: number;
+        unreferencedBytes: number;
+        staleTempFiles: number;
+        staleTempBytes: number;
+    };
+    roots: Array<{
+        storage: "UPLOADS" | "DOCUMENTS";
+        accessible: boolean;
+        filesOnDisk: number;
+        bytesOnDisk: number;
+        error: string | null;
+    }>;
+    issues: {
+        missingReferences: StorageIntegrityIssue[];
+        unreferencedFiles: StorageIntegrityIssue[];
+        staleTempFiles: StorageIntegrityIssue[];
+    };
+    limits: {
+        maxItemsPerSection: number;
+        staleTempHours: number;
+        missingReferencesTruncated: boolean;
+        unreferencedFilesTruncated: boolean;
+        staleTempFilesTruncated: boolean;
+    };
+};
+
 // triggering a full database backup (admin only)
 export async function triggerBackupApi() {
     const res = await api.post("/api/admin/backup");
@@ -1471,6 +1523,11 @@ export async function triggerBackupApi() {
 
 export async function listBackupHistoryApi() {
     const res = await api.get("/api/admin/backups");
+    return res.data;
+}
+
+export async function getStorageIntegrityReportApi() {
+    const res = await api.get<StorageIntegrityReport>("/api/admin/storage-integrity");
     return res.data;
 }
 

@@ -13,6 +13,7 @@ import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
+import { buildStorageIntegrityReport } from "./storageIntegrity";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard);
@@ -520,6 +521,15 @@ router.get("/backup-schedule", async (_req: Request, res: Response) => {
     } catch (err) {
         logger.error("Get backup schedule error", err);
         res.status(500).json({ error: "Internal server error" });
+    }
+});
+
+router.get("/storage-integrity", async (_req: Request, res: Response) => {
+    try {
+        res.json(await buildStorageIntegrityReport());
+    } catch (err) {
+        logger.error("Storage integrity report error", err);
+        res.status(500).json({ error: "Storage check could not be completed." });
     }
 });
 

@@ -27,6 +27,7 @@ import {
   getBusinessSettingsApi,
   getBusinessModePreflightApi,
   getBackupScheduleApi,
+  getStorageIntegrityReportApi,
   getCurrentCashDrawerApi,
   getOverridePolicyApi,
   listCashDrawersApi,
@@ -52,6 +53,8 @@ import {
   type CashierPrivilegeRow,
   type CashDrawer,
   type OverridePolicy,
+  type StorageIntegrityIssue,
+  type StorageIntegrityReport,
 } from "~/lib/api/endpoints";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
@@ -188,6 +191,277 @@ function formatFileSize(value?: number | null) {
   if (bytes < 1024) return `${bytes} B`;
   if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+const STORAGE_OWNER_LABELS: Record<
+  NonNullable<StorageIntegrityIssue["ownerType"]>,
+  string
+> = {
+  PRODUCT_IMAGE: "Product image",
+  PRODUCT_THUMBNAIL: "Product thumbnail",
+  PROFILE_IMAGE: "Profile image",
+  DOCUMENT_ORIGINAL: "Document original",
+  DOCUMENT_THUMBNAIL: "Document thumbnail",
+};
+
+function StorageIssueGroup({
+  title,
+  count,
+  issues,
+  truncated,
+  tone,
+  description,
+}: {
+  title: string;
+  count: number;
+  issues: StorageIntegrityIssue[];
+  truncated: boolean;
+  tone: "amber" | "rose";
+  description: string;
+}) {
+  if (count === 0) return null;
+  const toneClass =
+    tone === "rose"
+      ? "border-rose-200 bg-rose-50 text-rose-800"
+      : "border-amber-200 bg-amber-50 text-amber-900";
+
+  return (
+    <details className={`group overflow-hidden rounded-[8px] border ${toneClass}`}>
+      <summary className="flex min-h-12 cursor-pointer list-none items-center justify-between gap-3 px-4 py-3">
+        <span>
+          <span className="block text-[13px] font-extrabold">{title}</span>
+          <span className="mt-0.5 block text-[11px] font-semibold opacity-75">
+            {description}
+          </span>
+        </span>
+        <span className="flex shrink-0 items-center gap-2">
+          <span className="rounded-full bg-white/80 px-2.5 py-1 text-[11px] font-extrabold">
+            {count}
+          </span>
+          <Icon
+            name="expand_more"
+            sizePx={19}
+            className="transition-transform group-open:rotate-180"
+          />
+        </span>
+      </summary>
+      <div className="border-t border-current/15 bg-white px-3 py-2 sm:px-4">
+        {issues.map((issue, index) => (
+          <div
+            key={`${issue.storage}-${issue.relativePath}-${issue.ownerId || index}`}
+            className="border-b border-slate-100 py-3 last:border-0"
+          >
+            <div className="flex flex-wrap items-start justify-between gap-2">
+              <div className="min-w-0">
+                <div className="text-[12px] font-extrabold text-slate-900">
+                  {issue.ownerType
+                    ? STORAGE_OWNER_LABELS[issue.ownerType]
+                    : issue.storage === "UPLOADS"
+                      ? "Upload file"
+                      : "Document file"}
+                </div>
+                {issue.ownerLabel ? (
+                  <div className="mt-0.5 break-words text-[12px] font-semibold text-slate-600">
+                    {issue.ownerLabel}
+                  </div>
+                ) : null}
+              </div>
+              <div className="flex shrink-0 flex-wrap gap-1.5">
+                <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-600">
+                  {issue.storage === "UPLOADS" ? "Uploads" : "Documents"}
+                </span>
+                {issue.ownerInactive ? (
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-600">
+                    Inactive owner
+                  </span>
+                ) : null}
+                {issue.ownerDeleted ? (
+                  <span className="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold text-slate-600">
+                    In Bin
+                  </span>
+                ) : null}
+              </div>
+            </div>
+            <code className="mt-2 block break-all rounded-[6px] bg-slate-100 px-2.5 py-2 text-[11px] font-semibold text-slate-700">
+              {issue.relativePath}
+            </code>
+            {issue.sizeBytes !== undefined ? (
+              <div className="mt-1.5 text-[11px] font-semibold text-slate-500">
+                {formatFileSize(issue.sizeBytes)}
+                {issue.modifiedAt
+                  ? ` · Modified ${formatDateTime(issue.modifiedAt)}`
+                  : ""}
+              </div>
+            ) : null}
+          </div>
+        ))}
+        {truncated ? (
+          <div className="py-3 text-[11px] font-bold text-slate-500">
+            Showing the first {issues.length} items. The totals above include all findings.
+          </div>
+        ) : null}
+      </div>
+    </details>
+  );
+}
+
+function StorageIntegrityPanel({
+  report,
+  busy,
+  error,
+  onRun,
+}: {
+  report: StorageIntegrityReport | null;
+  busy: boolean;
+  error: string;
+  onRun: () => void;
+}) {
+  const findings = report
+    ? report.summary.missingReferences +
+      report.summary.unreferencedFiles +
+      report.summary.staleTempFiles
+    : 0;
+
+  return (
+    <div className="rounded-[8px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5 xl:col-span-2">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] bg-blue-50 text-blue-600">
+            <Icon name="storage" sizePx={21} />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[17px] font-extrabold text-slate-900">
+                Storage Integrity
+              </h2>
+              <span className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-1 text-[10px] font-extrabold uppercase text-blue-700">
+                Read-only
+              </span>
+              {report ? (
+                <span
+                  className={cn(
+                    "rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase",
+                    report.status === "HEALTHY"
+                      ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+                      : report.status === "UNAVAILABLE"
+                        ? "border-rose-200 bg-rose-50 text-rose-700"
+                        : "border-amber-200 bg-amber-50 text-amber-800",
+                  )}
+                >
+                  {report.status === "HEALTHY"
+                    ? "Healthy"
+                    : report.status === "UNAVAILABLE"
+                      ? "Check incomplete"
+                      : `${findings} finding${findings === 1 ? "" : "s"}`}
+                </span>
+              ) : null}
+            </div>
+            <p className="mt-1 max-w-3xl text-[12px] font-medium leading-5 text-slate-500">
+              Compare database records with product images, profile photos, and protected documents on disk. This check never deletes, moves, renames, or restores files.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRun}
+          disabled={busy}
+          className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-4 text-[12px] font-extrabold text-white transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60 sm:w-auto"
+        >
+          <Icon name={busy ? "progress_activity" : "fact_check"} sizePx={18} className={busy ? "animate-spin" : ""} />
+          {busy ? "Checking storage..." : report ? "Run check again" : "Run storage check"}
+        </button>
+      </div>
+
+      {error ? (
+        <div className="mt-4 rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[12px] font-bold text-rose-700">
+          {error}
+        </div>
+      ) : null}
+
+      {!report && !error ? (
+        <div className="mt-4 rounded-[8px] border border-slate-200 bg-slate-50 px-4 py-3 text-[12px] font-semibold text-slate-600">
+          Run this after imports, migrations, restores, or manual file transfers. It is intentionally manual so normal Settings visits stay fast.
+        </div>
+      ) : null}
+
+      {report ? (
+        <div className="mt-5 space-y-4">
+          <div className="grid grid-cols-2 gap-2.5 lg:grid-cols-4">
+            {[
+              ["Tracked references", report.summary.databaseReferences],
+              ["Files on disk", report.summary.filesOnDisk],
+              ["Missing files", report.summary.missingReferences],
+              ["Review candidates", report.summary.unreferencedFiles + report.summary.staleTempFiles],
+            ].map(([label, value]) => (
+              <div key={String(label)} className="rounded-[8px] border border-slate-200 bg-slate-50 p-3.5">
+                <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
+                  {label}
+                </div>
+                <div className="mt-1 text-[22px] font-black text-slate-950">{value}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="flex flex-col gap-2 rounded-[8px] border border-slate-200 bg-slate-50 px-4 py-3 sm:flex-row sm:items-center sm:justify-between">
+            <div className="flex flex-wrap gap-x-4 gap-y-1 text-[11px] font-bold text-slate-600">
+              {report.roots.map((root) => (
+                <span key={root.storage} className={root.accessible ? "text-slate-600" : "text-rose-700"}>
+                  {root.storage === "UPLOADS" ? "Uploads" : "Documents"}: {root.accessible ? `${root.filesOnDisk} files · ${formatFileSize(root.bytesOnDisk)}` : root.error}
+                </span>
+              ))}
+            </div>
+            <span className="shrink-0 text-[11px] font-semibold text-slate-500">
+              Checked {formatDateTime(report.generatedAt)}
+            </span>
+          </div>
+
+          {report.status === "HEALTHY" ? (
+            <div className="flex items-start gap-3 rounded-[8px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-emerald-800">
+              <Icon name="check_circle" sizePx={20} className="mt-0.5 shrink-0" />
+              <div>
+                <div className="text-[13px] font-extrabold">Storage references are healthy</div>
+                <div className="mt-0.5 text-[11px] font-semibold opacity-80">Every tracked file was found and no unreferenced or stale temporary files were detected.</div>
+              </div>
+            </div>
+          ) : null}
+
+          {report.status !== "HEALTHY" ? (
+            <div className="space-y-2.5">
+              <StorageIssueGroup
+                title="Missing referenced files"
+                count={report.summary.missingReferences}
+                issues={report.issues.missingReferences}
+                truncated={report.limits.missingReferencesTruncated}
+                tone="rose"
+                description="The database expects these files, but they were not found on readable storage."
+              />
+              <StorageIssueGroup
+                title="Unreferenced files"
+                count={report.summary.unreferencedFiles}
+                issues={report.issues.unreferencedFiles}
+                truncated={report.limits.unreferencedFilesTruncated}
+                tone="amber"
+                description="These files are not linked by current database records. Review them before any future cleanup."
+              />
+              <StorageIssueGroup
+                title="Stale temporary files"
+                count={report.summary.staleTempFiles}
+                issues={report.issues.staleTempFiles}
+                truncated={report.limits.staleTempFilesTruncated}
+                tone="amber"
+                description={`Temporary document files older than ${report.limits.staleTempHours} hours.`}
+              />
+              {(report.summary.unreferencedFiles > 0 || report.summary.staleTempFiles > 0) ? (
+                <div className="text-[11px] font-semibold leading-5 text-slate-500">
+                  A review candidate is not automatically safe to delete. This screen intentionally provides no cleanup button.
+                </div>
+              ) : null}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+    </div>
+  );
 }
 
 function formatNpr(value: number) {
@@ -525,6 +799,10 @@ export default function SettingsPage() {
     useState<BackupScheduleDraft>(INITIAL_BACKUP_SCHEDULE);
   const [backupScheduleBusy, setBackupScheduleBusy] = useState(false);
   const [backupScheduleError, setBackupScheduleError] = useState("");
+  const [storageIntegrityReport, setStorageIntegrityReport] =
+    useState<StorageIntegrityReport | null>(null);
+  const [storageIntegrityBusy, setStorageIntegrityBusy] = useState(false);
+  const [storageIntegrityError, setStorageIntegrityError] = useState("");
   const [showBackupScheduleConfirm, setShowBackupScheduleConfirm] =
     useState(false);
   const [restoreTarget, setRestoreTarget] = useState<BackupHistoryRow | null>(
@@ -1245,6 +1523,26 @@ export default function SettingsPage() {
       );
     } finally {
       setBackupBusy(false);
+    }
+  }
+
+  async function handleStorageIntegrityCheck() {
+    try {
+      setStorageIntegrityBusy(true);
+      setStorageIntegrityError("");
+      const report = await getStorageIntegrityReportApi();
+      setStorageIntegrityReport(report);
+      if (report.status === "HEALTHY") {
+        showToast("success", "Storage check completed with no findings.");
+      }
+    } catch (error: any) {
+      setStorageIntegrityError(
+        error?.response?.data?.error ||
+          error?.message ||
+          "Storage check could not be completed.",
+      );
+    } finally {
+      setStorageIntegrityBusy(false);
     }
   }
 
@@ -3475,6 +3773,12 @@ export default function SettingsPage() {
 
         {tab === "backup" ? (
           <section className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+            <StorageIntegrityPanel
+              report={storageIntegrityReport}
+              busy={storageIntegrityBusy}
+              error={storageIntegrityError}
+              onRun={handleStorageIntegrityCheck}
+            />
             <div className="space-y-5">
               <div className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-3">
