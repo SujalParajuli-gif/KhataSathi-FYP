@@ -11,6 +11,7 @@ test("catalog redaction removes inventory facts while preserving catalog identit
     id: "product-1",
     name: "Bucket",
     imageUrl: "/uploads/products/bucket.webp",
+    thumbnailUrl: "/uploads/products/bucket-thumb.webp",
     saleUnit: "PIECE",
     stock: 30,
     availableStock: 28,
@@ -21,6 +22,7 @@ test("catalog redaction removes inventory facts while preserving catalog identit
 
   assert.equal(product.saleUnit, "PIECE");
   assert.equal(product.imageUrl, "/uploads/products/bucket.webp");
+  assert.equal(product.thumbnailUrl, "/uploads/products/bucket-thumb.webp");
   assert.equal("stock" in product, false);
   assert.equal("availableStock" in product, false);
   assert.equal("pendingDraftQty" in product, false);

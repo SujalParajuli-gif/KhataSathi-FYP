@@ -541,6 +541,7 @@ export async function updateProduct(
     actor?: { id: string; role?: string },
 ) {
     let previousImageUrl: string | null = null;
+    let previousThumbnailUrl: string | null = null;
     const needsPreviousProduct =
         data.imageUrl !== undefined ||
         data.retailPrice !== undefined ||
@@ -554,6 +555,7 @@ export async function updateProduct(
                 name: true,
                 sku: true,
                 imageUrl: true,
+                thumbnailUrl: true,
                 retailPrice: true,
                 wholesalePrice: true,
                 ratePerPiece: true,
@@ -564,9 +566,18 @@ export async function updateProduct(
     // if the image URL is being changed, save the old one so we can delete the old file later
     if (data.imageUrl !== undefined) {
         previousImageUrl = previousProduct?.imageUrl ?? null;
+        previousThumbnailUrl = previousProduct?.thumbnailUrl ?? null;
     }
 
     const updateData: any = { ...data };
+    // A thumbnail belongs to one exact display image. Preserve it for ordinary
+    // edits, but clear it if a legacy/direct image URL is removed or changed.
+    if (
+        data.imageUrl !== undefined &&
+        (data.imageUrl ?? null) !== (previousProduct?.imageUrl ?? null)
+    ) {
+        updateData.thumbnailUrl = null;
+    }
 
     // when a custom wholesale threshold is provided but usesDefault is not explicitly set,
     // we automatically set usesDefault to false because the admin is providing a custom value
@@ -656,7 +667,10 @@ export async function updateProduct(
 
     // deleting the old image file from disk if the image was changed
     if (data.imageUrl !== undefined) {
-        await deleteReplacedUpload(previousImageUrl, product.imageUrl);
+        await Promise.all([
+            deleteReplacedUpload(previousImageUrl, product.imageUrl),
+            deleteReplacedUpload(previousThumbnailUrl, product.thumbnailUrl),
+        ]);
     }
 
     const settings = await getBusinessSettings();
@@ -803,10 +817,13 @@ export async function permanentlyDeleteProduct(id: string, actorId: string) {
 
     const product = await prisma.product.delete({
         where: { id },
-        select: { id: true, name: true, sku: true, imageUrl: true },
+        select: { id: true, name: true, sku: true, imageUrl: true, thumbnailUrl: true },
     });
 
-    await deleteUploadFile(product.imageUrl);
+    await Promise.all([
+        deleteUploadFile(product.imageUrl),
+        deleteUploadFile(product.thumbnailUrl),
+    ]);
 
     await prisma.auditLog.create({
         data: {
@@ -844,13 +861,13 @@ export async function discardStockAndPermanentlyDeleteProduct(id: string, actorI
 
         const productBeforeDelete = await tx.product.findUniqueOrThrow({
             where: { id },
-            select: { id: true, name: true, sku: true, stock: true, imageUrl: true },
+            select: { id: true, name: true, sku: true, stock: true, imageUrl: true, thumbnailUrl: true },
         });
 
         await tx.product.update({ where: { id }, data: { stock: 0 } });
         const product = await tx.product.delete({
             where: { id },
-            select: { id: true, name: true, sku: true, imageUrl: true },
+            select: { id: true, name: true, sku: true, imageUrl: true, thumbnailUrl: true },
         });
 
         await tx.auditLog.create({
@@ -871,7 +888,10 @@ export async function discardStockAndPermanentlyDeleteProduct(id: string, actorI
         return { product, safety, discardedStock: Number(productBeforeDelete.stock || 0) };
     });
 
-    await deleteUploadFile(result.product.imageUrl);
+    await Promise.all([
+        deleteUploadFile(result.product.imageUrl),
+        deleteUploadFile(result.product.thumbnailUrl),
+    ]);
     return {
         deleted: true,
         ...result,

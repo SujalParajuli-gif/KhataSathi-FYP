@@ -4,10 +4,11 @@ import { authGuard } from "../../middleware/auth";
 import multer from "multer";
 import path from "path";
 import fs from "fs";
+import { uploadsRoot } from "../../lib/uploads";
 
 // making sure the uploads directory exists before multer tries to save files there
 // if it does not exist, we create it recursively (including any parent folders)
-const uploadsDir = path.join(__dirname, "../../../../uploads");
+const uploadsDir = uploadsRoot;
 if (!fs.existsSync(uploadsDir)) {
     fs.mkdirSync(uploadsDir, { recursive: true });
 }

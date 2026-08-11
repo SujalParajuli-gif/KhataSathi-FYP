@@ -3353,7 +3353,7 @@ export default function ProductsModals({
 
             <div className="text-[14px] text-slate-500 mb-[28px] leading-relaxed">
               <div className="mb-[16px] flex items-center gap-3 rounded-[14px] border border-[#E5E7EB] bg-white p-3 text-left">
-                <PreviewableImage src={activeProduct?.imageUrl || ""} alt={activeProduct?.name || "Selected product"} title={activeProduct?.name || "Selected product"} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[11px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                <PreviewableImage src={activeProduct?.thumbnailUrl || activeProduct?.imageUrl || ""} previewSrc={activeProduct?.imageUrl} alt={activeProduct?.name || "Selected product"} title={activeProduct?.name || "Selected product"} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[11px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
                 <div className="min-w-0"><div className="truncate text-[15px] font-extrabold text-[#11120d]">{activeProduct?.name || "Selected product"}</div><div className="mt-1 truncate font-mono text-[11px] text-[#8C8889]">SKU: {activeProduct?.sku || "-"}</div></div>
               </div>
 
@@ -3443,7 +3443,7 @@ export default function ProductsModals({
                 <div className="max-h-[min(48dvh,360px)] divide-y divide-[#E5E7EB] overflow-y-auto overscroll-contain rounded-[14px] border border-[#E5E7EB] bg-white">
                   {bulkProducts.map((product) => (
                     <div key={product.id} className="flex min-h-[64px] items-center gap-3 px-3 py-2.5">
-                      <PreviewableImage src={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                      <PreviewableImage src={product.thumbnailUrl || product.imageUrl} previewSrc={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
                       <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
                       <button type="button" onClick={() => onRemoveBulkProduct(product.id)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[#BE123C] transition hover:bg-[#FFF1F2]" aria-label={`Remove ${product.name} from selection`}><Icon name="close" className="text-[20px]" /></button>
                     </div>

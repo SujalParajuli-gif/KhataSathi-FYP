@@ -1,9 +1,13 @@
-import { Router } from "express";
-import fs from "fs";
+import { Router, type RequestHandler } from "express";
 import multer from "multer";
-import path from "path";
 import prisma from "../../db/prisma";
-import { deleteReplacedUpload, deleteUploadFile } from "../../lib/uploads";
+import { deleteReplacedUpload } from "../../lib/uploads";
+import {
+  deleteProductMedia,
+  PRODUCT_IMAGE_LIMIT_BYTES,
+  ProductImageValidationError,
+  saveProductImageVariants,
+} from "../../lib/productMedia";
 import {
   list,
   listForPriceLookup,
@@ -41,20 +45,25 @@ const csvUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 }); // import sources are parsed immediately and never written as unreviewed temp files
-const productUploadsDir = path.join(__dirname, "../../../../uploads/products");
-
-// making sure the product uploads directory exists before multer tries to save image files there
-if (!fs.existsSync(productUploadsDir)) {
-  fs.mkdirSync(productUploadsDir, { recursive: true });
-}
-
-// configuring multer for product image uploads
-// each file gets a "prod_" prefix followed by a timestamp for unique naming
-const imgStorage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, productUploadsDir),
-  filename: (_req, file, cb) => cb(null, `prod_${Date.now()}${path.extname(file.originalname)}`),
+// Product images are held in memory only long enough to validate and create
+// optimized display/thumbnail variants. Untrusted originals are never served.
+const imgUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PRODUCT_IMAGE_LIMIT_BYTES, files: 1 },
 });
-const imgUpload = multer({ storage: imgStorage, limits: { fileSize: 5 * 1024 * 1024 } }); // limiting image size to 5 MB
+const receiveProductImage: RequestHandler = (req, res, next) => {
+  imgUpload.single("image")(req, res, (error: any) => {
+    if (!error) {
+      next();
+      return;
+    }
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      res.status(400).json({ error: "Product images must be 5 MB or smaller." });
+      return;
+    }
+    next(error);
+  });
+};
 
 router.use(authGuard); // all product routes require authentication
 
@@ -87,40 +96,42 @@ router.patch("/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivate); //
 
 // handling product image upload — admin uploads a new product image
 // the handler is inline because it directly uses prisma and file cleanup logic
-router.post("/:id/image", requireRole("ADMIN", "MANAGER"), imgUpload.single("image"), async (req, res) => {
+router.post("/:id/image", requireRole("ADMIN", "MANAGER"), receiveProductImage, async (req, res) => {
+  let savedMedia: Awaited<ReturnType<typeof saveProductImageVariants>> | null = null;
   try {
     if (!req.file) { res.status(400).json({ error: "No file uploaded" }); return; }
-    const imageUrl = `/uploads/products/${req.file.filename}`; // building the public URL for the new image
 
-    // fetching the product's current image URL so we can delete the old file after updating
+    // Fetch both current variants so replacement never leaves unused media behind.
     const existingProduct = await prisma.product.findUnique({
       where: { id: req.params.id },
-      select: { imageUrl: true },
+      select: { imageUrl: true, thumbnailUrl: true },
     });
 
-    // if the product does not exist, we delete the just-uploaded file and return 404
     if (!existingProduct) {
-      await deleteUploadFile(imageUrl);
       res.status(404).json({ error: "Product not found" });
       return;
     }
 
-    // updating the product's image URL in the database
+    savedMedia = await saveProductImageVariants(req.file.buffer);
     const product = await prisma.product.update({
       where: { id: req.params.id },
-      data: { imageUrl },
+      data: savedMedia,
       include: {
         brand: { select: { id: true, name: true } },
       },
     });
-    await deleteReplacedUpload(existingProduct.imageUrl, product.imageUrl); // deleting the old image file from disk
+    await Promise.all([
+      deleteReplacedUpload(existingProduct.imageUrl, product.imageUrl),
+      deleteReplacedUpload(existingProduct.thumbnailUrl, product.thumbnailUrl),
+    ]);
     res.json(product);
   } catch (err: any) {
-    // if anything goes wrong after the file was saved, we clean up the orphaned file
-    if (req.file) {
-      await deleteUploadFile(`/uploads/products/${req.file.filename}`);
+    if (savedMedia) await deleteProductMedia(savedMedia);
+    if (err instanceof ProductImageValidationError) {
+      res.status(400).json({ error: err.message });
+      return;
     }
-    res.status(500).json({ error: err.message });
+    res.status(500).json({ error: err.message || "Product image upload failed" });
   }
 });
 

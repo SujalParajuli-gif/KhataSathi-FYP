@@ -51,6 +51,7 @@ type BackendProduct = {
   lowStockThreshold: number;
   usesDefaultLowStockThreshold?: boolean;
   imageUrl?: string | null;
+  thumbnailUrl?: string | null;
   isActive: boolean;
 };
 
@@ -68,6 +69,7 @@ function toFrontendProduct(product: BackendProduct): Product {
     sku: product.sku,
     barcode: product.barcode ?? "",
     imageUrl: product.imageUrl ?? "",
+    thumbnailUrl: product.thumbnailUrl ?? "",
     brand: product.brand?.name ?? "Unknown",
     category: product.category ?? "Uncategorized",
     categoryGroup: product.categoryGroup ?? product.category ?? "",

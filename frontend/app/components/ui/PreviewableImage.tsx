@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { useResilientImage } from "~/hooks/useResilientImage";
+import { resolveMediaUrl, useResilientImage } from "~/hooks/useResilientImage";
 import Icon from "./Icon";
 
 function cn(...values: Array<string | false | null | undefined>) {
@@ -8,6 +8,7 @@ function cn(...values: Array<string | false | null | undefined>) {
 
 type Props = {
   src?: string | null;
+  previewSrc?: string | null;
   alt: string;
   title?: string;
   subtitle?: string;
@@ -20,6 +21,7 @@ type Props = {
 
 export default function PreviewableImage({
   src,
+  previewSrc,
   alt,
   title,
   subtitle,
@@ -30,11 +32,12 @@ export default function PreviewableImage({
   enablePreview = true,
 }: Props) {
   const image = useResilientImage(src);
+  const previewUrl = resolveMediaUrl(previewSrc || src);
   const [open, setOpen] = useState(false);
   const [desktopViewport, setDesktopViewport] = useState(false);
   const previewEnabled = enablePreview === true || (enablePreview === "desktop" && desktopViewport);
 
-  useEffect(() => setOpen(false), [image.originalUrl]);
+  useEffect(() => setOpen(false), [image.originalUrl, previewUrl]);
 
   useEffect(() => {
     if (enablePreview !== "desktop") return undefined;
@@ -120,7 +123,7 @@ export default function PreviewableImage({
                 {subtitle ? <div className="mt-1 truncate text-[12px] font-bold text-slate-500">{subtitle}</div> : null}
               </div>
               <div className="flex shrink-0 items-center gap-2">
-                <a href={image.originalUrl} target="_blank" rel="noreferrer" className="hidden h-[42px] items-center justify-center gap-2 rounded-[13px] border border-slate-300 bg-white px-3 text-[12px] font-black text-slate-700 transition hover:bg-[#ECEFF3] sm:flex">
+                <a href={previewUrl} target="_blank" rel="noreferrer" className="hidden h-[42px] items-center justify-center gap-2 rounded-[13px] border border-slate-300 bg-white px-3 text-[12px] font-black text-slate-700 transition hover:bg-[#ECEFF3] sm:flex">
                   <Icon name="open_in_new" sizePx={17} />
                   Open full size
                 </a>
@@ -131,7 +134,7 @@ export default function PreviewableImage({
             </div>
             <div className="min-h-0 flex-1 bg-slate-50 p-3 sm:p-5">
               <div className="flex h-full min-h-[360px] max-h-[70vh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white">
-                <img src={image.originalUrl} alt={alt} className="max-h-full max-w-full object-contain" decoding="async" />
+                <img src={previewUrl} alt={alt} className="max-h-full max-w-full object-contain" decoding="async" />
               </div>
             </div>
           </div>

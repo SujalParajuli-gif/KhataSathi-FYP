@@ -396,12 +396,13 @@ function ProductPreviewThumb({
   iconClassName = "text-slate-400",
   onOpen,
 }: ProductPreviewThumbProps) {
-  const image = useResilientImage(product.imageUrl);
+  const listImageUrl = product.thumbnailUrl || product.imageUrl;
+  const image = useResilientImage(listImageUrl);
 
-  if (!product.imageUrl) {
+  if (!listImageUrl) {
     return (
       <ProductImage
-        src={product.imageUrl}
+        src={listImageUrl}
         alt={product.name}
         className={className}
         iconClassName={iconClassName}

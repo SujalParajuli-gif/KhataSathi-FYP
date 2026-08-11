@@ -126,6 +126,7 @@ export async function searchAliasProductOptions(req: Request, res: Response) {
         name: product.name,
         sku: product.sku,
         imageUrl: product.imageUrl,
+        thumbnailUrl: product.thumbnailUrl,
         brand: product.brand,
         category: product.category,
       })),

@@ -5,12 +5,12 @@ import * as userController from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { uploadUserPhoto } from "./service";
-import { deleteUploadFile } from "../../lib/uploads";
+import { deleteUploadFile, uploadsRoot } from "../../lib/uploads";
 
 // configuring multer to save user photos to the uploads directory
 // each file gets a "user_" prefix followed by a timestamp to avoid name collisions
 const storage = multer.diskStorage({
-  destination: (_req, _file, cb) => cb(null, path.join(__dirname, "../../../../uploads")),
+  destination: (_req, _file, cb) => cb(null, uploadsRoot),
   filename: (_req, file, cb) => cb(null, `user_${Date.now()}${path.extname(file.originalname)}`),
 });
 const upload = multer({ storage, limits: { fileSize: 5 * 1024 * 1024 } }); // limiting upload size to 5 MB

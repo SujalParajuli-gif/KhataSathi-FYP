@@ -43,7 +43,7 @@ import {
   requireBusinessCapability,
 } from "./modules/settings/capabilities";
 import { logger } from "./lib/logger";
-import { uploadsRoot } from "./lib/uploads";
+import { productUploadsDir, uploadsRoot } from "./lib/uploads";
 import {
   attachRateLimitIdentity,
   generalApiRateLimitKey,
@@ -225,9 +225,22 @@ app.use("/api", apiLimiter);
 app.use(express.json({ limit: "1mb" })); // parsing incoming JSON request bodies so we can access req.body
 app.use(express.urlencoded({ extended: true, limit: "1mb" })); // parsing URL-encoded form data (used by some payment callbacks)
 app.use(sanitizeBody);
-// serving uploaded files (product images, profile photos) as static files
-// the uploads folder sits at the project root, two levels up from this file's compiled location
-app.use("/uploads", express.static(uploadsRoot));
+// Versioned product media can be cached for a year. Other uploads keep a
+// conservative policy because profile filenames are not yet uniformly versioned.
+app.use(
+  "/uploads/products",
+  express.static(productUploadsDir, {
+    immutable: true,
+    maxAge: "1y",
+  }),
+);
+app.use(
+  "/uploads",
+  express.static(uploadsRoot, {
+    maxAge: 0,
+    setHeaders: (res) => res.setHeader("Cache-Control", "no-cache"),
+  }),
+);
 
 // simple health check endpoint so we can verify the backend is running
 // hitting http://localhost:4000/api/health should return { status: "OK" }

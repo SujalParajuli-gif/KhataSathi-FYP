@@ -16,6 +16,7 @@ export type Product = {
   sku: string;
   barcode?: string;
   imageUrl?: string;
+  thumbnailUrl?: string;
 
   brand: string; // brand name (not the ID — we resolve it when saving)
   category: string;

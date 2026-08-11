@@ -309,7 +309,8 @@ export default function ProductsTableCard({
               ) : null}
 
               <PreviewableImage
-                src={product.imageUrl}
+                src={product.thumbnailUrl || product.imageUrl}
+                previewSrc={product.imageUrl}
                 alt={product.name}
                 title={product.name}
                 subtitle={`SKU: ${product.sku}`}
@@ -361,7 +362,7 @@ export default function ProductsTableCard({
           <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-4 flex items-center gap-3 border-b border-[#E5E7EB] pb-4">
-              <PreviewableImage src={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+              <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
               <div className="min-w-0 flex-1"><div className="truncate text-[17px] font-extrabold">{mobileActionProduct.name}</div><div className="mt-1 truncate font-mono text-[12px] text-[#6B7280]">SKU: {mobileActionProduct.sku}</div></div>
               <button type="button" onClick={() => setMobileActionProduct(null)} className="h-11 w-11" aria-label="Close actions"><GoogleIcon name="close" className="text-[25px]" /></button>
             </div>
@@ -443,7 +444,8 @@ export default function ProductsTableCard({
                     <td className="px-3 py-3 align-top">
                       <div className="flex items-center gap-[12px]">
                         <PreviewableImage
-                          src={product.imageUrl}
+                          src={product.thumbnailUrl || product.imageUrl}
+                          previewSrc={product.imageUrl}
                           alt={product.name}
                           title={product.name}
                           subtitle={`SKU: ${product.sku}`}

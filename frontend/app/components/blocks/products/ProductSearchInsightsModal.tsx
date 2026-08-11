@@ -66,7 +66,7 @@ function ProductOption({
       }`}
     >
       <ProductImage
-        src={product.imageUrl}
+        src={product.thumbnailUrl || product.imageUrl}
         alt=""
         className="h-12 w-12 shrink-0 overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC]"
         iconSizePx={20}

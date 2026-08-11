@@ -337,6 +337,7 @@ export type SearchAliasProductOption = {
     name: string;
     sku: string;
     imageUrl?: string | null;
+    thumbnailUrl?: string | null;
     brand?: { id?: string; name?: string } | null;
     category?: string | null;
 };

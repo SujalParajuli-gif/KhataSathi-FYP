@@ -8,6 +8,10 @@ export const uploadsRoot = process.env.UPLOADS_ROOT?.trim()
   ? path.resolve(process.env.UPLOADS_ROOT)
   : path.resolve(__dirname, "../../../uploads");
 
+// Every application upload directory is derived from the same configurable
+// root. This keeps local development and the mounted production volume aligned.
+export const productUploadsDir = path.join(uploadsRoot, "products");
+
 // converting a public URL like "/uploads/products/image.png" to the actual file path on disk
 // we added multiple safety checks here to prevent path traversal attacks
 // where someone could try to access files outside the uploads folder using "../" in the URL
