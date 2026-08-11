@@ -41,6 +41,7 @@ services:
       UPLOADS_ROOT: /uploads
       DOCUMENT_STORAGE_ROOT: /document-storage
       BACKUP_ROOT: /backups
+      BACKUP_STATUS_ROOT: /backup-status
       LOGIN_RATE_LIMIT_PER_MINUTE: ${LOGIN_RATE_LIMIT_PER_MINUTE:-5}
       API_RATE_LIMIT_REQUESTS: ${API_RATE_LIMIT_REQUESTS:-600}
       API_RATE_LIMIT_WINDOW_MINUTES: ${API_RATE_LIMIT_WINDOW_MINUTES:-15}
@@ -55,6 +56,7 @@ services:
       - uploads:/uploads
       - document_storage:/document-storage
       - backup_staging:/backups
+      - backup_status:/backup-status:ro
     depends_on:
       mysql:
         condition: service_healthy
@@ -70,6 +72,52 @@ services:
       start_period: 45s
     networks:
       - edge
+      - data
+
+  recovery:
+    profiles: ["recovery"]
+    build:
+      context: ./deploy/recovery
+      dockerfile: Dockerfile
+    environment:
+      TZ: ${TZ:-Asia/Kathmandu}
+      DB_NAME: ${DB_NAME:?Set DB_NAME in the production environment file}
+      DB_USER: ${DB_USER:?Set DB_USER in the production environment file}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the production environment file}
+      BACKUP_STATUS_ROOT: /status
+      RESTIC_REPOSITORY: ${RESTIC_REPOSITORY:-/repository}
+      RESTIC_PASSWORD_FILE: /run/secrets/restic_password
+      RESTIC_CACHE_DIR: /cache
+      RESTIC_BACKUP_HOST: ${RESTIC_BACKUP_HOST:-khatasathi-vps}
+      RESTIC_AUTO_INIT: ${RESTIC_AUTO_INIT:-false}
+      RESTIC_KEEP_DAILY: ${RESTIC_KEEP_DAILY:-14}
+      RESTIC_KEEP_WEEKLY: ${RESTIC_KEEP_WEEKLY:-8}
+      RESTIC_KEEP_MONTHLY: ${RESTIC_KEEP_MONTHLY:-6}
+      AWS_ACCESS_KEY_ID: ${AWS_ACCESS_KEY_ID:-}
+      AWS_SECRET_ACCESS_KEY: ${AWS_SECRET_ACCESS_KEY:-}
+      AWS_DEFAULT_REGION: ${AWS_DEFAULT_REGION:-}
+      B2_ACCOUNT_ID: ${B2_ACCOUNT_ID:-}
+      B2_ACCOUNT_KEY: ${B2_ACCOUNT_KEY:-}
+    volumes:
+      - uploads:/payload/uploads:ro
+      - document_storage:/payload/documents:ro
+      - recovery_staging:/payload/backup
+      - backup_status:/status
+      - restic_repository:/repository
+      - restic_cache:/cache
+    secrets:
+      - restic_password
+    depends_on:
+      mysql:
+        condition: service_healthy
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
       - data
 
   web:
@@ -105,6 +153,10 @@ volumes:
   uploads:
   document_storage:
   backup_staging:
+  backup_status:
+  recovery_staging:
+  restic_repository:
+  restic_cache:
   caddy_data:
   caddy_config:
 
@@ -112,3 +164,7 @@ networks:
   edge:
   data:
     internal: true
+
+secrets:
+  restic_password:
+    file: ${RESTIC_PASSWORD_FILE_HOST:-./deploy/secrets/restic-password}

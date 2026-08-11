@@ -28,6 +28,7 @@ import {
   getBusinessModePreflightApi,
   getBackupScheduleApi,
   getStorageIntegrityReportApi,
+  getRecoveryBackupStatusApi,
   getCurrentCashDrawerApi,
   getOverridePolicyApi,
   listCashDrawersApi,
@@ -55,6 +56,7 @@ import {
   type OverridePolicy,
   type StorageIntegrityIssue,
   type StorageIntegrityReport,
+  type RecoveryBackupStatus,
 } from "~/lib/api/endpoints";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
@@ -464,6 +466,126 @@ function StorageIntegrityPanel({
   );
 }
 
+function RecoveryBackupPanel({
+  status,
+  busy,
+  onRefresh,
+}: {
+  status: RecoveryBackupStatus | null;
+  busy: boolean;
+  onRefresh: () => void;
+}) {
+  const successful = status?.status === "SUCCESS";
+  const running = status?.status === "RUNNING";
+  const needsAttention =
+    status?.status === "FAILED" ||
+    status?.status === "STALE" ||
+    status?.status === "UNAVAILABLE";
+  const badgeClass = successful
+    ? "border-emerald-200 bg-emerald-50 text-emerald-700"
+    : running
+      ? "border-blue-200 bg-blue-50 text-blue-700"
+      : needsAttention
+        ? "border-rose-200 bg-rose-50 text-rose-700"
+        : "border-slate-200 bg-slate-100 text-slate-600";
+  const badgeLabel = status
+    ? status.status === "NEVER"
+      ? "Not run yet"
+      : status.status === "STALE"
+        ? "Server review needed"
+        : status.status.toLowerCase().replace(/^./, (letter) => letter.toUpperCase())
+    : "Loading";
+
+  return (
+    <div className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm xl:col-span-2">
+      <div className="flex flex-col gap-4 border-b border-slate-200 p-4 sm:flex-row sm:items-start sm:justify-between sm:p-5">
+        <div className="flex min-w-0 items-start gap-3">
+          <span className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[8px] bg-emerald-50 text-emerald-600">
+            <Icon name="encrypted" sizePx={21} />
+          </span>
+          <div>
+            <div className="flex flex-wrap items-center gap-2">
+              <h2 className="text-[17px] font-extrabold text-slate-900">
+                Full Recovery Backup
+              </h2>
+              <span className={`rounded-full border px-2.5 py-1 text-[10px] font-extrabold uppercase ${badgeClass}`}>
+                {badgeLabel}
+              </span>
+            </div>
+            <p className="mt-1 max-w-3xl text-[12px] font-medium leading-5 text-slate-500">
+              Deduplicated and encrypted Restic snapshot of MySQL, product/profile uploads, and protected documents. It runs from the isolated VPS recovery service, not from the browser.
+            </p>
+          </div>
+        </div>
+        <button
+          type="button"
+          onClick={onRefresh}
+          disabled={busy}
+          className="inline-flex h-10 w-full shrink-0 items-center justify-center gap-2 rounded-[8px] border border-slate-300 bg-white px-4 text-[12px] font-extrabold text-slate-800 transition hover:bg-slate-100 disabled:opacity-60 sm:w-auto"
+        >
+          <Icon name="refresh" sizePx={17} className={busy ? "animate-spin" : ""} />
+          Refresh status
+        </button>
+      </div>
+
+      <div className="grid gap-4 p-4 sm:p-5 lg:grid-cols-[minmax(0,1fr)_auto] lg:items-center">
+        <div>
+          <div className="flex flex-wrap gap-2">
+            {["Database", "Uploads", "Documents"].map((item) => (
+              <span key={item} className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-slate-50 px-3 py-1.5 text-[11px] font-extrabold text-slate-700">
+                <Icon name="check_circle" sizePx={14} className="text-emerald-600" />
+                {item}
+              </span>
+            ))}
+          </div>
+          <div className={cn(
+            "mt-3 rounded-[8px] border px-4 py-3 text-[12px] font-semibold leading-5",
+            successful
+              ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+              : needsAttention
+                ? "border-rose-200 bg-rose-50 text-rose-700"
+                : "border-slate-200 bg-slate-50 text-slate-600",
+          )}>
+            {status?.message || "Reading the latest recovery backup status..."}
+          </div>
+          {status?.status === "SUCCESS" && !status.retentionApplied ? (
+            <div className="mt-2 text-[11px] font-bold text-amber-700">
+              The snapshot succeeded, but retention cleanup needs server review.
+            </div>
+          ) : null}
+        </div>
+
+        <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-slate-200 pt-4 lg:min-w-[370px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Last completed</div>
+            <div className="mt-1 text-[12px] font-extrabold text-slate-900">
+              {formatDateTime(status?.completedAt)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Snapshot</div>
+            <div className="mt-1 font-mono text-[12px] font-extrabold text-slate-900">
+              {status?.snapshotId ? status.snapshotId.slice(0, 12) : "-"}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Protected data</div>
+            <div className="mt-1 text-[12px] font-extrabold text-slate-900">
+              {formatFileSize(status?.totalBytesProcessed)}
+            </div>
+          </div>
+          <div>
+            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Added this run</div>
+            <div className="mt-1 text-[12px] font-extrabold text-slate-900">
+              {formatFileSize(status?.dataAdded)}
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function formatNpr(value: number) {
   return `NPR ${Number(value || 0).toLocaleString(undefined, {
     maximumFractionDigits: 2,
@@ -803,6 +925,10 @@ export default function SettingsPage() {
     useState<StorageIntegrityReport | null>(null);
   const [storageIntegrityBusy, setStorageIntegrityBusy] = useState(false);
   const [storageIntegrityError, setStorageIntegrityError] = useState("");
+  const [recoveryBackupStatus, setRecoveryBackupStatus] =
+    useState<RecoveryBackupStatus | null>(null);
+  const [recoveryBackupStatusBusy, setRecoveryBackupStatusBusy] =
+    useState(false);
   const [showBackupScheduleConfirm, setShowBackupScheduleConfirm] =
     useState(false);
   const [restoreTarget, setRestoreTarget] = useState<BackupHistoryRow | null>(
@@ -990,6 +1116,7 @@ export default function SettingsPage() {
         settingsData,
         backupData,
         scheduleData,
+        recoveryStatusData,
         currentDrawerData,
         drawerHistoryData,
         cashierPrivilegeData,
@@ -1003,6 +1130,7 @@ export default function SettingsPage() {
         needsBusinessRules ? getBusinessSettingsApi() : Promise.resolve(null),
         needsBackup ? listBackupHistoryApi() : Promise.resolve(null),
         needsBackup ? getBackupScheduleApi() : Promise.resolve(null),
+        needsBackup ? getRecoveryBackupStatusApi() : Promise.resolve(null),
         needsDrawer ? getCurrentCashDrawerApi() : Promise.resolve(null),
         needsDrawer ? listCashDrawersApi() : Promise.resolve(null),
         needsUsers ? listCashierPrivilegesApi() : Promise.resolve(null),
@@ -1150,6 +1278,13 @@ export default function SettingsPage() {
         setBackupSchedule(nextSchedule);
         setBackupScheduleDraft(nextSchedule);
       }
+      if (
+        needsBackup &&
+        recoveryStatusData.status === "fulfilled" &&
+        recoveryStatusData.value
+      ) {
+        setRecoveryBackupStatus(recoveryStatusData.value);
+      }
 
       const relevantResults = [
         ...(needsBrands ? [brandData, productData] : []),
@@ -1157,7 +1292,7 @@ export default function SettingsPage() {
           ? [userData, cashierPrivilegeData, overridePolicyData]
           : []),
         ...(needsBusinessRules ? [settingsData] : []),
-        ...(needsBackup ? [backupData, scheduleData] : []),
+        ...(needsBackup ? [backupData, scheduleData, recoveryStatusData] : []),
         ...(needsDrawer ? [currentDrawerData, drawerHistoryData] : []),
       ];
       const hasFailure = relevantResults.some(
@@ -1511,7 +1646,7 @@ export default function SettingsPage() {
       setBackupBusy(true);
       const result = await triggerBackupApi();
       setBackupResult(result);
-      showToast("success", result?.message || "Backup created successfully.");
+      showToast("success", "Database export created successfully.");
       setShowBackupConfirm(false);
       setShowBackupSuccess(true);
       await refreshSettingsData();
@@ -1543,6 +1678,22 @@ export default function SettingsPage() {
       );
     } finally {
       setStorageIntegrityBusy(false);
+    }
+  }
+
+  async function refreshRecoveryBackupStatus() {
+    try {
+      setRecoveryBackupStatusBusy(true);
+      setRecoveryBackupStatus(await getRecoveryBackupStatusApi());
+    } catch (error: any) {
+      showToast(
+        "danger",
+        error?.response?.data?.error ||
+          error?.message ||
+          "Recovery backup status could not be refreshed.",
+      );
+    } finally {
+      setRecoveryBackupStatusBusy(false);
     }
   }
 
@@ -1654,7 +1805,7 @@ export default function SettingsPage() {
       setBackupSchedule(nextSchedule);
       setBackupScheduleDraft(nextSchedule);
       setShowBackupScheduleConfirm(false);
-      showToast("success", "Backup schedule updated.");
+      showToast("success", "Database export schedule updated.");
       await loadData(false);
     } catch (error: any) {
       setBackupScheduleError(
@@ -3773,6 +3924,11 @@ export default function SettingsPage() {
 
         {tab === "backup" ? (
           <section className="grid grid-cols-1 items-start gap-5 xl:grid-cols-[340px_minmax(0,1fr)]">
+            <RecoveryBackupPanel
+              status={recoveryBackupStatus}
+              busy={recoveryBackupStatusBusy}
+              onRefresh={refreshRecoveryBackupStatus}
+            />
             <StorageIntegrityPanel
               report={storageIntegrityReport}
               busy={storageIntegrityBusy}
@@ -3788,12 +3944,13 @@ export default function SettingsPage() {
                     className="text-blue-600"
                   />
                   <h2 className="text-[17px] font-extrabold text-slate-800">
-                    Manual Backup
+                    Database Export
                   </h2>
                 </div>
                 <p className="text-[13px] font-medium leading-5 text-slate-500">
-                  Snapshot products, users, brands, invoices, payments,
-                  inventory, settings, and logs immediately.
+                  Create a SQL-only export for quick database recovery. Product
+                  images and protected documents are included only in the full
+                  recovery backup above.
                 </p>
                 <button
                   type="button"
@@ -3801,7 +3958,7 @@ export default function SettingsPage() {
                   disabled={backupBusy}
                   className="mt-5 h-11 w-full rounded-[8px] bg-slate-950 text-[13px] font-extrabold text-white transition hover:bg-slate-800 disabled:opacity-50"
                 >
-                  {backupBusy ? "Backing up..." : "Start Manual Backup"}
+                  {backupBusy ? "Exporting..." : "Create Database Export"}
                 </button>
               </div>
 
@@ -3814,7 +3971,7 @@ export default function SettingsPage() {
                       className="text-violet-500"
                     />
                     <h2 className="text-[17px] font-extrabold text-slate-800">
-                      Auto Schedule
+                      Database Export Schedule
                     </h2>
                   </div>
                   <label className="relative inline-flex h-[30px] w-[58px] cursor-pointer items-center">
@@ -3909,7 +4066,7 @@ export default function SettingsPage() {
             <div className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm">
               <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
                 <h2 className="text-[17px] font-extrabold text-slate-800">
-                  Backup & Restore History
+                  Database Export & Restore History
                 </h2>
                 <span className="rounded-[6px] bg-slate-100 px-3 py-1.5 text-[11px] font-extrabold text-slate-600">
                   {backupHistory.length} records
@@ -3921,11 +4078,11 @@ export default function SettingsPage() {
                     <Icon name="history" sizePx={22} />
                   </span>
                   <div className="mt-4 text-[15px] font-extrabold text-slate-900">
-                    No backup activity yet
+                    No database export activity yet
                   </div>
                   <p className="mt-1 max-w-sm text-[12px] font-medium leading-5 text-slate-500">
-                    Manual backups and restore attempts will appear here with
-                    their status, size, and completion details.
+                    Database exports and database restore attempts will appear
+                    here with their status, size, and completion details.
                   </p>
                   <button
                     type="button"
@@ -3934,7 +4091,7 @@ export default function SettingsPage() {
                     className="mt-5 inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-4 text-[12px] font-extrabold text-white transition hover:bg-slate-800 disabled:opacity-50"
                   >
                     <Icon name="cloud_download" sizePx={17} />
-                    Create first backup
+                    Create database export
                   </button>
                 </div>
               ) : null}
@@ -3967,7 +4124,7 @@ export default function SettingsPage() {
                                 : "bg-violet-100 text-violet-700",
                             )}
                           >
-                            {backup.type === "BACKUP" ? "Backup" : "Restore"}
+                            {backup.type === "BACKUP" ? "Export" : "Restore"}
                           </span>
                         </td>
                         <td className="px-4 py-3">
@@ -4025,7 +4182,7 @@ export default function SettingsPage() {
                             : "border-violet-100 bg-violet-50 text-violet-700",
                         )}
                       >
-                        {backup.type === "BACKUP" ? "Backup" : "Restore"}
+                        {backup.type === "BACKUP" ? "Export" : "Restore"}
                       </span>
                       {backup.type === "BACKUP" &&
                       backup.status === "SUCCESS" ? (
@@ -4447,9 +4604,9 @@ export default function SettingsPage() {
 
       <ConfirmDialog
         open={showBackupConfirm}
-        title="Create database backup?"
-        message="This will generate a manual backup of the current KhataSathi database for recovery purposes."
-        confirmLabel="Create Backup"
+        title="Create database export?"
+        message="This creates a SQL-only database export. Product images and protected documents are covered by the separate full recovery backup."
+        confirmLabel="Create Export"
         onConfirm={handleBackup}
         onClose={() => setShowBackupConfirm(false)}
         tone="primary"
@@ -4460,7 +4617,7 @@ export default function SettingsPage() {
       <ConfirmDialog
         open={showBackupScheduleConfirm}
         title="Save backup schedule?"
-        message="The backend will check this schedule every minute and create backups automatically when due."
+        message="The backend will check this schedule every minute and create SQL-only database exports when due. The VPS full recovery schedule is managed separately."
         confirmLabel="Save Schedule"
         onConfirm={saveBackupSchedule}
         onClose={() => setShowBackupScheduleConfirm(false)}
@@ -4561,8 +4718,8 @@ export default function SettingsPage() {
 
       <SuccessDialog
         open={showBackupSuccess}
-        title="Backup created successfully"
-        message="Your database backup file has been generated."
+        title="Database export created"
+        message="The SQL database export was generated successfully."
         onClose={() => setShowBackupSuccess(false)}
         secondaryAction={
           backupResult?.filename ? (

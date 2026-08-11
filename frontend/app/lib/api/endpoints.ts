@@ -1515,6 +1515,22 @@ export type StorageIntegrityReport = {
     };
 };
 
+export type RecoveryBackupStatus = {
+    available: boolean;
+    status: "NEVER" | "RUNNING" | "SUCCESS" | "FAILED" | "STALE" | "UNAVAILABLE";
+    stage: string | null;
+    startedAt: string | null;
+    completedAt: string | null;
+    snapshotId: string | null;
+    appCommit: string | null;
+    totalFilesProcessed: number;
+    totalBytesProcessed: number;
+    dataAdded: number;
+    retentionApplied: boolean;
+    contents: string[];
+    message: string;
+};
+
 // triggering a full database backup (admin only)
 export async function triggerBackupApi() {
     const res = await api.post("/api/admin/backup");
@@ -1528,6 +1544,11 @@ export async function listBackupHistoryApi() {
 
 export async function getStorageIntegrityReportApi() {
     const res = await api.get<StorageIntegrityReport>("/api/admin/storage-integrity");
+    return res.data;
+}
+
+export async function getRecoveryBackupStatusApi() {
+    const res = await api.get<RecoveryBackupStatus>("/api/admin/recovery-backup-status");
     return res.data;
 }
 

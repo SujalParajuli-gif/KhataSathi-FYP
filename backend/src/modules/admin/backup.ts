@@ -14,6 +14,7 @@ import { requireRole } from "../../middleware/rbac";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import { buildStorageIntegrityReport } from "./storageIntegrity";
+import { getRecoveryBackupStatus } from "./recoveryBackupStatus";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard);
@@ -153,9 +154,21 @@ function mysqlArgs(config: DbConfig) {
         `--host=${config.host}`,
         `--port=${config.port}`,
         `--user=${config.user}`,
-        `--password=${config.password}`,
         config.database,
     ];
+}
+
+function mysqlProcessEnvironment(config: DbConfig) {
+    // MYSQL_PWD keeps the database password out of the spawned process command
+    // line. The child receives only the minimum inherited environment change.
+    return { ...process.env, MYSQL_PWD: config.password };
+}
+
+function publicBackupJob<T extends Record<string, any>>(backup: T) {
+    // The absolute staging path is an implementation detail and can reveal
+    // server filesystem layout. Restore requests need only the database ID.
+    const { filepath: _filepath, ...publicFields } = backup;
+    return publicFields;
 }
 
 function timestampedBackupFile() {
@@ -276,7 +289,10 @@ export async function runBackupJob(actor: BackupActor, source: "MANUAL" | "SCHED
 
     return new Promise<any>((resolve, reject) => {
         const output = createWriteStream(filepath, { encoding: "utf8" });
-        const dump = spawn(mysqldumpPath, mysqlArgs(config), { windowsHide: true });
+        const dump = spawn(mysqldumpPath, mysqlArgs(config), {
+            windowsHide: true,
+            env: mysqlProcessEnvironment(config),
+        });
         let stderr = "";
         let settled = false;
 
@@ -341,7 +357,7 @@ export async function runBackupJob(actor: BackupActor, source: "MANUAL" | "SCHED
                     action: source === "SCHEDULED" ? "DATABASE_BACKUP_SCHEDULED" : "DATABASE_BACKUP",
                     entityType: "System",
                     entityId: "backup",
-                    meta: { backupJobId: backupJob.id, filename, filepath, sizeBytes },
+                    meta: { backupJobId: backupJob.id, filename, sizeBytes },
                 },
             }).catch((auditError) => {
                 logger.error("Backup audit log error", auditError);
@@ -393,7 +409,10 @@ async function runRestoreJob(backupId: string, actorId: string, confirmation: st
     }
 
     return new Promise<any>((resolve, reject) => {
-        const restore = spawn(mysqlPath, mysqlArgs(config), { windowsHide: true });
+        const restore = spawn(mysqlPath, mysqlArgs(config), {
+            windowsHide: true,
+            env: mysqlProcessEnvironment(config),
+        });
         const input = createReadStream(restorePath, { encoding: "utf8" });
         let stderr = "";
         let settled = false;
@@ -508,7 +527,7 @@ router.get("/backups", async (_req: Request, res: Response) => {
                 createdBy: { select: { id: true, name: true, email: true, role: true } },
             },
         });
-        res.json({ backups });
+        res.json({ backups: backups.map(publicBackupJob) });
     } catch (err) {
         logger.error("List backup history error", err);
         res.status(500).json({ error: "Internal server error" });
@@ -531,6 +550,10 @@ router.get("/storage-integrity", async (_req: Request, res: Response) => {
         logger.error("Storage integrity report error", err);
         res.status(500).json({ error: "Storage check could not be completed." });
     }
+});
+
+router.get("/recovery-backup-status", async (_req: Request, res: Response) => {
+    res.json(await getRecoveryBackupStatus());
 });
 
 router.put("/backup-schedule", async (req: Request, res: Response) => {
@@ -589,8 +612,7 @@ router.post("/backup", async (req: Request, res: Response) => {
         res.json({
             message: "Backup created successfully",
             filename: backup.filename,
-            filepath: backup.filepath,
-            backup,
+            backup: publicBackupJob(backup),
             createdAt: backup.createdAt,
         });
     } catch (err: any) {
@@ -598,7 +620,7 @@ router.post("/backup", async (req: Request, res: Response) => {
         res.status(500).json({
             error: "Backup failed",
             detail: err.message || "Internal server error",
-            backup: err.backup,
+            backup: err.backup ? publicBackupJob(err.backup) : undefined,
         });
     }
 });
@@ -610,7 +632,10 @@ router.post("/backups/:id/restore", async (req: Request, res: Response) => {
             req.user!.id,
             String(req.body?.confirmation || ""),
         );
-        res.json({ message: "Restore completed successfully", backup: restore });
+        res.json({
+            message: "Restore completed successfully",
+            backup: publicBackupJob(restore),
+        });
     } catch (err: any) {
         const known =
             err.message?.includes("RESTORE") ||
@@ -621,7 +646,7 @@ router.post("/backups/:id/restore", async (req: Request, res: Response) => {
         res.status(known ? 400 : 500).json({
             error: known ? err.message : "Restore failed",
             detail: known ? undefined : err.message,
-            backup: err.backup,
+            backup: err.backup ? publicBackupJob(err.backup) : undefined,
         });
     }
 });

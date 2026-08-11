@@ -8,6 +8,7 @@ Thumbs.db
 !.env.example
 deploy/production.env
 deploy/backup-output/
+deploy/secrets/
 
 # dependencies
 node_modules/
@@ -62,6 +63,7 @@ temp/
 backend/uploads/
 uploads/
 backend/backups/
+backend/backup-status/
 backend/document-storage/
 
 # optional generated assets if not source-controlled

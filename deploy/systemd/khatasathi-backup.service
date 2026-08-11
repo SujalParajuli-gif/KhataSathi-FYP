@@ -1,5 +1,5 @@
 [Unit]
-Description=KhataSathi encrypted application backup
+Description=KhataSathi deduplicated full recovery backup
 Requires=docker.service
 After=docker.service
 
@@ -7,10 +7,11 @@ After=docker.service
 Type=oneshot
 WorkingDirectory=/opt/khatasathi
 EnvironmentFile=/opt/khatasathi/deploy/production.env
-Environment=KHATASATHI_BACKUP_DIR=/var/backups/khatasathi
+Environment=KHATASATHI_PROJECT_DIR=/opt/khatasathi
 ExecStart=/opt/khatasathi/deploy/scripts/backup.sh
 User=root
 Group=root
+TimeoutStartSec=6h
 
 [Install]
 WantedBy=multi-user.target

@@ -11,6 +11,7 @@ const validProductionEnvironment: NodeJS.ProcessEnv = {
   UPLOADS_ROOT: "/uploads",
   DOCUMENT_STORAGE_ROOT: "/document-storage",
   BACKUP_ROOT: "/backups",
+  BACKUP_STATUS_ROOT: "/backup-status",
 };
 
 test("production environment accepts HTTPS, least-privilege MySQL, and explicit storage", () => {
@@ -30,6 +31,7 @@ test("production environment rejects root MySQL, public HTTP, weak secrets, and 
   assert.match(problems.join(" "), /32 characters/i);
   assert.match(problems.join(" "), /Asia\/Kathmandu/i);
   assert.match(problems.join(" "), /UPLOADS_ROOT/i);
+  assert.match(problems.join(" "), /BACKUP_STATUS_ROOT/i);
 });
 
 test("local development does not require production-only settings", () => {

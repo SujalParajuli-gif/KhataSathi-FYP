@@ -1,5 +1,5 @@
 [Unit]
-Description=Run the KhataSathi backup every night
+Description=Run the KhataSathi full recovery backup every night
 
 [Timer]
 OnCalendar=*-*-* 02:15:00 Asia/Kathmandu

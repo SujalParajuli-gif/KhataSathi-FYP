@@ -3,60 +3,100 @@ set -eu
 
 umask 077
 
-if [ "$#" -ne 1 ]; then
-  echo "Usage: $0 /absolute/path/to/khatasathi-backup.tar.gz[.age]" >&2
+SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+PROJECT_DIR=${KHATASATHI_PROJECT_DIR:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}
+COMPOSE_FILE=${KHATASATHI_COMPOSE_FILE:-$PROJECT_DIR/compose.production.yml}
+ENV_FILE=${KHATASATHI_ENV_FILE:-$PROJECT_DIR/deploy/production.env}
+REQUESTED_SNAPSHOT=${1:-latest}
+
+if [ ! -f "$COMPOSE_FILE" ] || [ ! -f "$ENV_FILE" ]; then
+  echo "Compose file or production environment file is missing." >&2
   exit 1
 fi
-
-ARCHIVE=$1
-if [ ! -f "$ARCHIVE" ]; then
-  echo "Backup archive not found: $ARCHIVE" >&2
-  exit 1
-fi
-
-for command_name in docker tar gzip sha256sum od tr; do
+for command_name in docker jq od tr; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command is unavailable: $command_name" >&2
     exit 1
   }
 done
 
+compose() {
+  docker compose \
+    --project-directory "$PROJECT_DIR" \
+    --env-file "$ENV_FILE" \
+    -f "$COMPOSE_FILE" \
+    "$@"
+}
+
+restic_command() {
+  compose run --rm --no-deps --entrypoint restic recovery "$@"
+}
+
+if [ "$REQUESTED_SNAPSHOT" = "latest" ]; then
+  SNAPSHOT_JSON=$(restic_command snapshots --json --tag full-recovery)
+  SNAPSHOT_ID=$(printf '%s' "$SNAPSHOT_JSON" | jq -r 'sort_by(.time) | last | .id // empty')
+else
+  case "$REQUESTED_SNAPSHOT" in
+    *[!0-9a-fA-F]*)
+      echo "Snapshot must be 'latest' or a hexadecimal Restic snapshot ID." >&2
+      exit 1
+      ;;
+  esac
+  SNAPSHOT_ID=$REQUESTED_SNAPSHOT
+fi
+
+if [ -z "$SNAPSHOT_ID" ]; then
+  echo "No full recovery snapshot is available for verification." >&2
+  exit 1
+fi
+
 WORK_DIR=$(mktemp -d)
 CONTAINER_NAME="khatasathi-restore-check-$$"
 VOLUME_NAME="khatasathi_restore_check_$$"
 ROOT_PASSWORD=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
-RESTORE_ARCHIVE=$ARCHIVE
 
 cleanup() {
   docker rm -f "$CONTAINER_NAME" >/dev/null 2>&1 || true
   docker volume rm "$VOLUME_NAME" >/dev/null 2>&1 || true
   rm -rf -- "$WORK_DIR"
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
-case "$ARCHIVE" in
-  *.age)
-    command -v age >/dev/null 2>&1 || {
-      echo "An encrypted backup requires the age command." >&2
-      exit 1
-    }
-    if [ -z "${BACKUP_AGE_IDENTITY:-}" ]; then
-      echo "Set BACKUP_AGE_IDENTITY to the private age identity file." >&2
-      exit 1
-    fi
-    RESTORE_ARCHIVE="$WORK_DIR/decrypted.tar.gz"
-    age --decrypt --identity "$BACKUP_AGE_IDENTITY" --output "$RESTORE_ARCHIVE" "$ARCHIVE"
-    ;;
-esac
+echo "Checking repository metadata before restore..."
+restic_command check
 
-tar -xzf "$RESTORE_ARCHIVE" -C "$WORK_DIR"
-(
-  cd "$WORK_DIR"
-  sha256sum -c SHA256SUMS
-  gzip -t database.sql.gz
-  tar -tzf uploads.tar.gz >/dev/null
-  tar -tzf document-storage.tar.gz >/dev/null
-)
+echo "Restoring snapshot $SNAPSHOT_ID into an isolated temporary directory..."
+compose run --rm --no-deps \
+  --volume "$WORK_DIR:/restore" \
+  --entrypoint restic \
+  recovery restore "$SNAPSHOT_ID" --target /restore
+
+PAYLOAD_DIR="$WORK_DIR/payload"
+DATABASE_DUMP="$PAYLOAD_DIR/backup/current/database.sql"
+MANIFEST="$PAYLOAD_DIR/backup/current/manifest.json"
+UPLOADS_DIR="$PAYLOAD_DIR/uploads"
+DOCUMENTS_DIR="$PAYLOAD_DIR/documents"
+
+if [ ! -s "$DATABASE_DUMP" ] || [ ! -s "$MANIFEST" ]; then
+  echo "Restore verification failed: database dump or manifest is missing." >&2
+  exit 1
+fi
+if [ ! -d "$UPLOADS_DIR" ] || [ ! -d "$DOCUMENTS_DIR" ]; then
+  echo "Restore verification failed: uploads or document storage is missing." >&2
+  exit 1
+fi
+jq -e '.schemaVersion == 1 and .contents.databaseDump == "backup/current/database.sql"' "$MANIFEST" >/dev/null
+
+EXPECTED_UPLOADS=$(jq -r '.sourceCounts.uploadFiles' "$MANIFEST")
+EXPECTED_DOCUMENTS=$(jq -r '.sourceCounts.documentFiles' "$MANIFEST")
+RESTORED_UPLOADS=$(find "$UPLOADS_DIR" -type f | wc -l | tr -d ' ')
+RESTORED_DOCUMENTS=$(find "$DOCUMENTS_DIR" -type f | wc -l | tr -d ' ')
+if [ "$RESTORED_UPLOADS" -ne "$EXPECTED_UPLOADS" ] || [ "$RESTORED_DOCUMENTS" -ne "$EXPECTED_DOCUMENTS" ]; then
+  echo "Restore verification failed: restored file counts do not match the snapshot manifest." >&2
+  exit 1
+fi
 
 docker volume create "$VOLUME_NAME" >/dev/null
 docker run -d --name "$CONTAINER_NAME" \
@@ -77,16 +117,23 @@ until docker exec "$CONTAINER_NAME" mysqladmin ping \
   sleep 1
 done
 
-gzip -dc "$WORK_DIR/database.sql.gz" | docker exec -i "$CONTAINER_NAME" \
-  mysql --user=root --password="$ROOT_PASSWORD" khatasathi_restore
+docker exec -i "$CONTAINER_NAME" mysql \
+  --user=root --password="$ROOT_PASSWORD" khatasathi_restore < "$DATABASE_DUMP"
 
 TABLE_COUNT=$(docker exec "$CONTAINER_NAME" mysql \
   --batch --skip-column-names --user=root --password="$ROOT_PASSWORD" \
   --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='khatasathi_restore';")
+CRITICAL_TABLE_COUNT=$(docker exec "$CONTAINER_NAME" mysql \
+  --batch --skip-column-names --user=root --password="$ROOT_PASSWORD" \
+  --execute="SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='khatasathi_restore' AND table_name IN ('User','Product','Document');")
 
-if [ "$TABLE_COUNT" -lt 1 ]; then
-  echo "Restore verification failed: the restored database contains no tables." >&2
+if [ "$TABLE_COUNT" -lt 1 ] || [ "$CRITICAL_TABLE_COUNT" -ne 3 ]; then
+  echo "Restore verification failed: required database tables are missing." >&2
   exit 1
 fi
 
-echo "Restore verification passed: $TABLE_COUNT database tables plus valid file archives."
+echo "Restore verification passed without touching live data:"
+echo "- Snapshot: $SNAPSHOT_ID"
+echo "- Database tables: $TABLE_COUNT (all critical tables present)"
+echo "- Upload files: $RESTORED_UPLOADS"
+echo "- Document files: $RESTORED_DOCUMENTS"

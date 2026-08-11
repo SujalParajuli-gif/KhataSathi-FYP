@@ -55,7 +55,12 @@ export function productionEnvironmentProblems(
   if (env.TZ !== "Asia/Kathmandu") {
     problems.push("TZ must be Asia/Kathmandu for shop schedules and business dates.");
   }
-  for (const variable of ["UPLOADS_ROOT", "DOCUMENT_STORAGE_ROOT", "BACKUP_ROOT"] as const) {
+  for (const variable of [
+    "UPLOADS_ROOT",
+    "DOCUMENT_STORAGE_ROOT",
+    "BACKUP_ROOT",
+    "BACKUP_STATUS_ROOT",
+  ] as const) {
     const value = String(env[variable] || "").trim();
     if (!value || !path.isAbsolute(value)) {
       problems.push(`${variable} must be an explicit absolute path in production.`);
