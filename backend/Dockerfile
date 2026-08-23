@@ -3,6 +3,9 @@
 FROM node:22.23.0-bookworm-slim AS dependencies
 ENV PNPM_HOME=/pnpm
 ENV PATH=$PNPM_HOME:$PATH
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends openssl \
+    && rm -rf /var/lib/apt/lists/*
 RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
@@ -22,7 +25,7 @@ ENV TZ=Asia/Kathmandu
 WORKDIR /app
 
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ca-certificates default-mysql-client gosu tini \
+    && apt-get install -y --no-install-recommends ca-certificates default-mysql-client gosu openssl tini \
     && rm -rf /var/lib/apt/lists/*
 
 COPY --from=build /app/package.json ./package.json

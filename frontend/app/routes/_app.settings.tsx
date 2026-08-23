@@ -2336,7 +2336,7 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
+    <div className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
       <div className="border-b border-[#CFCFD3] bg-white shadow-sm">
         <SwipeableTabRail
           items={settingsTabs.map((item) => ({ value: item.key, label: item.label }))}
@@ -2344,13 +2344,13 @@ export default function SettingsPage() {
           controllerRef={settingsTabRailRef}
           onChange={setTab}
           ariaLabel="Settings sections"
-          className="px-5 sm:px-7"
+          className="px-4 sm:px-7"
           railClassName="gap-6 sm:gap-8"
           buttonClassName="px-1 py-4 text-[14px] font-extrabold sm:text-[15px]"
         />
       </div>
 
-      <main {...settingsSwipeGesture} className="w-full px-5 py-6 sm:px-7">
+      <main {...settingsSwipeGesture} className="w-full px-4 py-5 sm:px-7 sm:py-6">
         <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
           <div>
             <h1 className="text-[24px] font-extrabold leading-tight text-[#11120D]">
@@ -3747,16 +3747,16 @@ export default function SettingsPage() {
                       key={log.id}
                       className="rounded-[8px] border border-slate-200 bg-white p-4"
                     >
-                      <div className="flex items-start justify-between gap-4">
-                        <div>
-                          <div className="text-[16px] font-extrabold text-slate-950">
+                      <div className="flex items-start justify-between gap-3">
+                        <div className="min-w-0 flex-1">
+                          <div className="break-words text-[15px] font-extrabold leading-snug text-slate-950" style={{ overflowWrap: "anywhere" }}>
                             {log.action}
                           </div>
                           <div className="mt-1 text-[12px] font-semibold text-slate-500">
                             {String(log.meta?.invoiceNo || log.entityType)}
                           </div>
                         </div>
-                        <div className="text-right text-[12px] font-extrabold text-slate-500">
+                        <div className="shrink-0 whitespace-nowrap text-right text-[12px] font-extrabold text-slate-500">
                           {formatRelativeTime(log.createdAt)}
                         </div>
                       </div>
@@ -4340,15 +4340,27 @@ export default function SettingsPage() {
           title={`Edit ${editingCashier.name}`}
           description={`${roleLabel(editingCashier.role)} permission controls and discount caps.`}
           maxWidthClass="max-w-[720px]"
+          mobileBottomSheet
+          footer={(
+            <div className="grid w-full grid-cols-2 gap-3 sm:flex sm:justify-end">
+              <DialogButton onClick={closeCashierEdit}>Cancel</DialogButton>
+              <DialogButton
+                variant="primary"
+                onClick={() => setShowCashierSaveConfirm(true)}
+              >
+                Save Permissions
+              </DialogButton>
+            </div>
+          )}
         >
           <div className="space-y-5">
             <div className="grid gap-3 sm:grid-cols-2">
               {permissionDisplay.map(([key, label]) => (
                 <label
                   key={key}
-                  className="flex items-center justify-between rounded-[16px] border border-slate-200 bg-slate-50 px-4 py-4"
+                  className="flex min-h-[64px] items-center justify-between gap-3 rounded-[16px] border border-slate-200 bg-slate-50 px-3 py-3 sm:px-4 sm:py-4"
                 >
-                  <span className="text-[13px] font-extrabold text-slate-700">
+                  <span className="min-w-0 text-[12px] font-extrabold leading-5 text-slate-700 min-[360px]:text-[13px]">
                     {label}
                   </span>
                   <SwitchControl
@@ -4396,15 +4408,6 @@ export default function SettingsPage() {
                   className="mt-2 h-[48px] w-full rounded-[14px] border border-slate-200 px-4 font-bold outline-none"
                 />
               </label>
-            </div>
-            <div className="flex justify-end gap-3">
-              <DialogButton onClick={closeCashierEdit}>Cancel</DialogButton>
-              <DialogButton
-                variant="primary"
-                onClick={() => setShowCashierSaveConfirm(true)}
-              >
-                Save Permissions
-              </DialogButton>
             </div>
           </div>
         </ModalFrame>

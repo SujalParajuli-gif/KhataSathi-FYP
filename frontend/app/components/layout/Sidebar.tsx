@@ -178,6 +178,7 @@ export default function Sidebar({
   const openDrawerGesture = useHorizontalGesture<HTMLDivElement>({
     enabled: mobileEnabled && !isMobileOpen && allowEdgeGesture,
     threshold: 42,
+    edgeGuard: 14,
     allowMouse: true,
     ignoreInteractive: false,
     onStart: () => {
@@ -257,7 +258,8 @@ export default function Sidebar({
       {mobileEnabled && !isMobileOpen && allowEdgeGesture ? (
         <div
           aria-hidden="true"
-          className="fixed bottom-0 left-0 top-[68px] z-[100] w-7 lg:hidden"
+          className="fixed bottom-0 left-0 top-[68px] z-[100] w-9 touch-pan-y lg:hidden"
+          style={{ overscrollBehaviorX: "none" }}
           {...openDrawerGesture}
         />
       ) : null}

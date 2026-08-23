@@ -93,6 +93,26 @@ test("a reviewed synonym forms one alternative group instead of requiring both w
   assert.equal(ranked[0]?.tier, "ALL_EXACT_TOKENS");
 });
 
+test("a global product-type synonym finds every matching variant and respects extra size terms", () => {
+  const basinRule = [
+    { normalizedAlias: "bata", normalizedCanonicalTerm: "basin" },
+  ];
+  const products = [
+    candidate("basin-12", "Basin 12 L"),
+    candidate("basin-15", "Basin 15 L"),
+    candidate("bucket-15", "Bucket 15 L"),
+  ];
+
+  assert.deepEqual(
+    rankProductSearchCandidates("bata", products, basinRule).map((result) => result.candidate.id),
+    ["basin-12", "basin-15"],
+  );
+  assert.deepEqual(
+    rankProductSearchCandidates("bata 15", products, basinRule).map((result) => result.candidate.id),
+    ["basin-15"],
+  );
+});
+
 test("prefix matches rank above typo matches without relying on score constants", () => {
   const ranked = rankProductSearchCandidates(
     "botle",

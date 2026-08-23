@@ -242,7 +242,7 @@ model Product {
   productCodeVariant               String?
   sizeValue                        Float?
   sizeUnit                         String   @default("STANDARD")
-  ratePerPiece                     Float    @default(0)
+  ratePerPiece                     Float?
   packageQuantity                  Float    @default(1)
   packageUnit                      String   @default("PIECE")
   saleUnit                         String   @default("PIECE")

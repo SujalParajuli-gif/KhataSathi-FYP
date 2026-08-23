@@ -766,10 +766,10 @@ export default function HistoryPage() {
     const eventPageEnd = eventTotal === 0 ? 0 : eventPageStart + eventRows.length;
 
     return (
-      <div {...historySwipeGesture} className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
+      <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
         {categoryTabs}
 
-        <main className="px-5 py-7 sm:px-7">
+        <main className="px-4 py-5 sm:px-7 sm:py-7">
           <div className="text-[13px] font-bold text-[#8C8889]">
             {new Date().toLocaleDateString(undefined, {
               weekday: "long",
@@ -1118,10 +1118,10 @@ export default function HistoryPage() {
   }
 
   return (
-    <div {...historySwipeGesture} className="-m-[20px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 lg:-m-[24px]">
+    <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
       {categoryTabs}
 
-      <main className="px-5 py-7 sm:px-7">
+      <main className="px-4 py-5 sm:px-7 sm:py-7">
         <div className="text-[13px] font-bold text-[#8C8889]">
           {new Date().toLocaleDateString(undefined, {
             weekday: "long",

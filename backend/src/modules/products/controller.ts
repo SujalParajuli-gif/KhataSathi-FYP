@@ -135,6 +135,27 @@ function parseOptionalNumber(
   return normalized;
 }
 
+// Purchase cost is genuinely optional. `undefined` means "not supplied" on an
+// update, while null/blank means "clear the currently stored cost".
+function parseNullableNumber(
+  value: unknown,
+  label: string,
+  options?: { min?: number },
+) {
+  if (value === undefined) return undefined;
+  if (value === null || value === "") return null;
+
+  const normalized = Number(value);
+  if (!Number.isFinite(normalized)) {
+    throw new Error(`${label} must be a valid number`);
+  }
+  if (typeof options?.min === "number" && normalized < options.min) {
+    throw new Error(`${label} must be at least ${options.min}`);
+  }
+
+  return normalized;
+}
+
 // same as parseOptionalNumber but the value is required — it cannot be empty or missing
 function parseRequiredNumber(
   value: unknown,
@@ -349,8 +370,8 @@ export async function create(req: Request, res: Response) {
       productCodeVariant: parseOptionalText(req.body.productCodeVariant),
       sizeValue: parseOptionalNumber(req.body.sizeValue, "sizeValue", { min: 0 }),
       sizeUnit: parseOptionalText(req.body.sizeUnit),
-      ratePerPiece: parseOptionalNumber(req.body.ratePerPiece, "ratePerPiece", {
-        min: 0,
+      ratePerPiece: parseNullableNumber(req.body.ratePerPiece, "ratePerPiece", {
+        min: 0.01,
       }),
       packageQuantity: parseOptionalNumber(
         req.body.packageQuantity,
@@ -473,8 +494,8 @@ export async function update(req: Request, res: Response) {
       data.sizeUnit = parseOptionalText(body.sizeUnit) || "STANDARD";
     }
     if (body.ratePerPiece !== undefined) {
-      data.ratePerPiece = parseOptionalNumber(body.ratePerPiece, "ratePerPiece", {
-        min: 0,
+      data.ratePerPiece = parseNullableNumber(body.ratePerPiece, "ratePerPiece", {
+        min: 0.01,
       });
     }
     if (body.packageQuantity !== undefined) {
@@ -989,6 +1010,12 @@ export async function saveReviewedBatchRows(req: Request, res: Response) {
 // importing only the PDF rows the admin reviewed and selected
 export async function importReviewedBatchRows(req: Request, res: Response) {
   try {
+    if (req.body?.approved !== true) {
+      res.status(400).json({
+        error: "Final import approval is required. Review the selected rows and confirm the import.",
+      });
+      return;
+    }
     const batchId = String(req.params.batchId);
     const result = await productService.importReviewedPdfRows(batchId, {
       rows: Array.isArray(req.body?.rows) ? req.body.rows : [],
@@ -996,6 +1023,7 @@ export async function importReviewedBatchRows(req: Request, res: Response) {
         ? req.body.ignoredRowIds
         : [],
       actorId: req.user!.id,
+      approved: true,
     });
     res.json(result);
   } catch (err: any) {

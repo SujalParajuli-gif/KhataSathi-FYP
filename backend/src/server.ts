@@ -85,7 +85,12 @@ app.use(
       }
 
       const normalizedOrigin = origin.replace(/\/+$/, "");
-      if (allowedCorsOrigins.includes(normalizedOrigin)) {
+      if (
+        allowedCorsOrigins.includes(normalizedOrigin) ||
+        /^https?:\/\/(localhost|127\.0\.0\.1|::1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(
+          normalizedOrigin,
+        )
+      ) {
         callback(null, true);
         return;
       }
@@ -258,7 +263,9 @@ app.use("/api/reports", requireBusinessCapability("POS"), reportRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/admin", adminRoutes);
 app.use("/api/users", userRoutes);
-app.use("/api/alerts", requireBusinessCapability("INVENTORY"), alertRoutes);
+// Alerts are an application-wide catalog feature. The service itself removes
+// inventory and POS-only alert sources when those capabilities are disabled.
+app.use("/api/alerts", requireBusinessCapability("CATALOG"), alertRoutes);
 app.use("/api/settings", settingsRoutes);
 app.use("/api/returns", requireBusinessCapability("POS"), returnRoutes);
 app.use("/api/cash-drawers", requireBusinessCapability("POS"), cashDrawerRoutes);

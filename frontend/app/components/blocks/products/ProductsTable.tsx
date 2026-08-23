@@ -145,6 +145,7 @@ export default function ProductsTableCard({
   onClearFilters,
   onRetry,
   stockTracked,
+  purchaseCostVisible,
 }: {
   rows: Product[];
   loading?: boolean;
@@ -167,6 +168,7 @@ export default function ProductsTableCard({
   onClearFilters: () => void;
   onRetry: () => void;
   stockTracked: boolean;
+  purchaseCostVisible: boolean;
 }) {
   const paginationItems = buildPaginationItems(page, totalPages);
   const [mobileActionProduct, setMobileActionProduct] = React.useState<Product | null>(null);
@@ -310,6 +312,7 @@ export default function ProductsTableCard({
 
               <PreviewableImage
                 src={product.thumbnailUrl || product.imageUrl}
+                fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
                 previewSrc={product.imageUrl}
                 alt={product.name}
                 title={product.name}
@@ -359,21 +362,22 @@ export default function ProductsTableCard({
       {mobileActionProduct ? (
         <div className="fixed inset-0 z-[130] lg:hidden">
           <button type="button" className="absolute inset-0 bg-slate-950/50" onClick={() => setMobileActionProduct(null)} aria-label="Close product actions" />
-          <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
+          <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-4 flex items-center gap-3 border-b border-[#E5E7EB] pb-4">
-              <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+              <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} fallbackSrc={mobileActionProduct.thumbnailUrl ? mobileActionProduct.imageUrl : undefined} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
               <div className="min-w-0 flex-1"><div className="truncate text-[17px] font-extrabold">{mobileActionProduct.name}</div><div className="mt-1 truncate font-mono text-[12px] text-[#6B7280]">SKU: {mobileActionProduct.sku}</div></div>
-              <button type="button" onClick={() => setMobileActionProduct(null)} className="h-11 w-11" aria-label="Close actions"><GoogleIcon name="close" className="text-[25px]" /></button>
+              <button type="button" onClick={() => setMobileActionProduct(null)} className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-[#F3F4F6]" aria-label="Close actions"><GoogleIcon name="close" className="text-[25px]" /></button>
             </div>
+            <div className="mt-2 space-y-1">
             {[
               { icon: "visibility", label: "View details", action: () => onView(mobileActionProduct) },
               { icon: "edit", label: "Edit product", action: () => onEdit(mobileActionProduct) },
-              { icon: "check_box", label: "Select product", action: () => toggleOne(mobileActionProduct.id, true) },
               { icon: "do_not_disturb_on", label: mobileActionProduct.status === "Active" ? "Deactivate product" : "Product options", action: () => onDelete(mobileActionProduct), danger: true },
             ].map((item) => (
-              <button key={item.label} type="button" onClick={() => { setMobileActionProduct(null); item.action(); }} className={cn("flex min-h-[58px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left last:min-h-[calc(58px+env(safe-area-inset-bottom))] last:border-0 last:pb-[env(safe-area-inset-bottom)]", item.danger ? "text-[#BE123C]" : "text-[#11120d]")}><GoogleIcon name={item.icon} className="text-[21px]" /><span className="flex-1 text-[15px] font-bold">{item.label}</span><GoogleIcon name="chevron_right" /></button>
+              <button key={item.label} type="button" onClick={() => { setMobileActionProduct(null); item.action(); }} className={cn("flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]", item.danger ? "text-[#BE123C]" : "text-[#11120d]")}><span className={cn("inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]", item.danger ? "bg-rose-50 text-[#BE123C]" : "bg-[#F3F4F6] text-[#565449]")}><GoogleIcon name={item.icon} className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">{item.label}</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
             ))}
+            </div>
           </section>
         </div>
       ) : null}
@@ -382,7 +386,14 @@ export default function ProductsTableCard({
       <Card>
       <div>
         <div className="overflow-x-auto">
-          <table className={cn("w-full border-collapse text-left", stockTracked ? "min-w-[1120px]" : "min-w-[1010px]")}>
+          <table
+            className={cn(
+              "w-full border-collapse text-left",
+              stockTracked
+                ? purchaseCostVisible ? "min-w-[1230px]" : "min-w-[1120px]"
+                : purchaseCostVisible ? "min-w-[1120px]" : "min-w-[1010px]",
+            )}
+          >
             <thead>
               <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                 <th className="w-[52px] p-0">
@@ -402,7 +413,8 @@ export default function ProductsTableCard({
                 <th className="px-3 py-3">Group / Variant</th>
                 <th className="px-3 py-3">Size</th>
                 <th className="px-3 py-3">Package</th>
-                <th className="px-3 py-3">Purchase Cost</th>
+                {purchaseCostVisible ? <th className="px-3 py-3">Purchase Cost</th> : null}
+                <th className="px-3 py-3">Retail / खुद्रा</th>
                 <th className="px-3 py-3">Wholesale / थोक</th>
                 {stockTracked ? <th className="px-3 py-3">Stock</th> : null}
                 <th className="px-3 py-3">Status</th>
@@ -445,6 +457,7 @@ export default function ProductsTableCard({
                       <div className="flex items-center gap-[12px]">
                         <PreviewableImage
                           src={product.thumbnailUrl || product.imageUrl}
+                          fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
                           previewSrc={product.imageUrl}
                           alt={product.name}
                           title={product.name}
@@ -507,8 +520,15 @@ export default function ProductsTableCard({
                         Step {formatQty(product.quantityStep || 1)}
                       </div>
                     </td>
+                    {purchaseCostVisible ? (
+                      <td className="px-3 py-3 align-top font-semibold text-[#000000]">
+                        {product.ratePerPiece === null
+                          ? "Not entered"
+                          : formatNpr(product.ratePerPiece)}
+                      </td>
+                    ) : null}
                     <td className="px-3 py-3 align-top font-semibold text-[#000000]">
-                      {formatNpr(product.ratePerPiece || product.retailPrice)}
+                      {formatNpr(product.retailPrice)}
                     </td>
                     <td className="px-3 py-3 align-top text-[#565449]">
                       <div className="font-semibold text-[#000000]">
@@ -568,7 +588,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 && loading ? (
                 <tr>
-                  <td colSpan={stockTracked ? 11 : 10} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
+                  <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
                     <div className="flex items-center gap-2">
                       <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#CFCFD3] border-t-[#11120d]" />
                       Loading products...
@@ -579,7 +599,7 @@ export default function ProductsTableCard({
 
               {rows.length === 0 && !loading ? (
                 <tr>
-                  <td colSpan={stockTracked ? 11 : 10} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
+                  <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
                     {loadError || "No products match your filters."}
                   </td>
                 </tr>

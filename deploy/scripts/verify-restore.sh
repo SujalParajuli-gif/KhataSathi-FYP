@@ -13,6 +13,17 @@ if [ ! -f "$COMPOSE_FILE" ] || [ ! -f "$ENV_FILE" ]; then
   echo "Compose file or production environment file is missing." >&2
   exit 1
 fi
+
+# The hardened recovery container runs as root with all capabilities dropped.
+# Running this verifier as root ensures its private temporary restore directory
+# is writable only by the verifier/container and remains inaccessible to other
+# local users while decrypted business data exists there.
+if [ "$(id -u)" -ne 0 ]; then
+  echo "Restore verification requires root-owned temporary storage." >&2
+  echo "Run: sudo sh deploy/scripts/verify-restore.sh ${REQUESTED_SNAPSHOT}" >&2
+  exit 1
+fi
+
 for command_name in docker jq od tr; do
   command -v "$command_name" >/dev/null 2>&1 || {
     echo "Required command is unavailable: $command_name" >&2
@@ -69,6 +80,7 @@ restic_command check
 
 echo "Restoring snapshot $SNAPSHOT_ID into an isolated temporary directory..."
 compose run --rm --no-deps \
+  --cap-add CHOWN \
   --volume "$WORK_DIR:/restore" \
   --entrypoint restic \
   recovery restore "$SNAPSHOT_ID" --target /restore

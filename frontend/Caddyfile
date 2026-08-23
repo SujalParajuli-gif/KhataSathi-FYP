@@ -5,9 +5,6 @@
 {$APP_DOMAIN} {
 	encode zstd gzip
 
-	@product_media path /uploads/products/*
-	header @product_media Cache-Control "public, max-age=31536000, immutable"
-
 	@backend path /api/* /uploads/*
 	handle @backend {
 		reverse_proxy backend:4000

@@ -1,0 +1,17 @@
+{
+  "name": "KhataSathi",
+  "short_name": "KhataSathi",
+  "description": "Smart Retail and Inventory Management System",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#11120d",
+  "icons": [
+    {
+      "src": "/assets/icons/smalllogo.png",
+      "sizes": "192x192 512x512",
+      "type": "image/png",
+      "purpose": "any maskable"
+    }
+  ]
+}

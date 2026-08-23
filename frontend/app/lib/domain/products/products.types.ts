@@ -25,7 +25,7 @@ export type Product = {
   productCodeVariant?: string;
   sizeValue?: number | null;
   sizeUnit: string;
-  ratePerPiece: number;
+  ratePerPiece: number | null;
   packageQuantity: number;
   packageUnit: string;
   saleUnit: string;

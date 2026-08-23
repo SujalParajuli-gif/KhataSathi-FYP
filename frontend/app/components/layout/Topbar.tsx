@@ -97,11 +97,11 @@ export default function Topbar({
         className={
           staffMode
             ? "flex h-full items-center px-[14px] sm:px-[20px]"
-            : "flex h-full items-center px-[20px]"
+            : "flex h-full items-center px-[12px] sm:px-[20px]"
         }
       >
-        <div className="flex w-full items-center justify-between gap-4">
-          <div className="min-w-0 flex items-center gap-4">
+        <div className="flex w-full items-center justify-between gap-2.5 sm:gap-4">
+          <div className="min-w-0 flex items-center gap-2.5 sm:gap-4">
             <div className="flex items-center gap-3">
               {/* mobile hamburger menu button — only visible on small screens */}
               {staffMode ? (
@@ -145,7 +145,7 @@ export default function Topbar({
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
             {/* notification bell with dropdown */}
             {showNotifications ? (
               <div className="relative" ref={bellRef}>

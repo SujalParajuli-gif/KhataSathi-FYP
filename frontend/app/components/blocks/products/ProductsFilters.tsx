@@ -25,12 +25,14 @@ function Button({
   onClick,
   disabled,
   icon,
+  ariaPressed,
 }: {
   children: React.ReactNode;
   variant?: "primary" | "secondary" | "danger";
   onClick?: () => void;
   disabled?: boolean;
   icon?: string;
+  ariaPressed?: boolean;
 }) {
   const base =
     "inline-flex items-center justify-center gap-[8px] rounded-[12px] px-[14px] py-[10px] text-[13px] font-semibold border active:scale-[0.98] transition";
@@ -45,6 +47,7 @@ function Button({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      aria-pressed={ariaPressed}
       className={cn(base, styles, disabled && "opacity-50 pointer-events-none")}
     >
       {icon ? <GoogleIcon name={icon} className="text-inherit" /> : null}
@@ -124,6 +127,8 @@ export default function ProductsFiltersCard({
   onImport,
   onManageStock,
   onSearchInsights,
+  purchaseCostVisible,
+  onTogglePurchaseCost,
   stockTracked,
 }: {
   q: string;
@@ -149,6 +154,8 @@ export default function ProductsFiltersCard({
   onImport: () => void;
   onManageStock: () => void;
   onSearchInsights?: () => void;
+  purchaseCostVisible?: boolean;
+  onTogglePurchaseCost?: () => void;
   stockTracked: boolean;
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
@@ -221,6 +228,18 @@ export default function ProductsFiltersCard({
             <GoogleIcon name="add_circle" className="text-[20px]" />
             Add Product
           </button>
+          {onTogglePurchaseCost ? (
+            <button
+              type="button"
+              onClick={onTogglePurchaseCost}
+              className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
+              aria-label={purchaseCostVisible ? "Hide purchase costs" : "Show purchase costs"}
+              title={purchaseCostVisible ? "Hide purchase costs" : "Show purchase costs"}
+              aria-pressed={purchaseCostVisible}
+            >
+              <GoogleIcon name={purchaseCostVisible ? "visibility" : "visibility_off"} className="text-[21px]" />
+            </button>
+          ) : null}
           <button type="button" onClick={() => setMobileActionsOpen(true)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]" aria-label="More product actions">
             <GoogleIcon name="more_horiz" className="text-[22px]" />
           </button>
@@ -260,12 +279,14 @@ export default function ProductsFiltersCard({
       {mobileActionsOpen ? (
         <div className="fixed inset-0 z-[130] lg:hidden">
           <button type="button" className="absolute inset-0 bg-slate-950/50" aria-label="Close actions" onClick={() => setMobileActionsOpen(false)} />
-          <section role="dialog" aria-modal="true" aria-label="Product actions" className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
+          <section role="dialog" aria-modal="true" aria-label="Product actions" className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
-            <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[20px] font-extrabold">Product actions</h2><button type="button" onClick={() => setMobileActionsOpen(false)} className="h-11 w-11" aria-label="Close actions"><GoogleIcon name="close" className="text-[26px]" /></button></div>
-            <button type="button" onClick={() => { setMobileActionsOpen(false); onImport(); }} className="flex min-h-[58px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="upload_file" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Import products</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button>
-            {onSearchInsights ? <button type="button" onClick={() => { setMobileActionsOpen(false); onSearchInsights(); }} className="flex min-h-[58px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="search_off" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Unmatched searches</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button> : null}
-            {stockTracked ? <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[calc(58px+env(safe-area-inset-bottom))] w-full items-center gap-3 pb-[env(safe-area-inset-bottom)] text-left"><span className="inline-flex h-9 w-9 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[19px]" /></span><span className="flex-1 text-[14px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#565449]" /></button> : null}
+            <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[20px] font-extrabold">Product actions</h2><button type="button" onClick={() => setMobileActionsOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-[#F3F4F6]" aria-label="Close actions"><GoogleIcon name="close" className="text-[26px]" /></button></div>
+            <div className="mt-2 space-y-1">
+            <button type="button" onClick={() => { setMobileActionsOpen(false); onImport(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="upload_file" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Import products</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
+            {onSearchInsights ? <button type="button" onClick={() => { setMobileActionsOpen(false); onSearchInsights(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="search_off" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Unmatched searches</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
+            {stockTracked ? <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
+            </div>
           </section>
         </div>
       ) : null}
@@ -302,6 +323,15 @@ export default function ProductsFiltersCard({
             {onSearchInsights ? (
               <Button icon="search_off" onClick={onSearchInsights}>
                 Unmatched Searches
+              </Button>
+            ) : null}
+            {onTogglePurchaseCost ? (
+              <Button
+                icon={purchaseCostVisible ? "visibility" : "visibility_off"}
+                onClick={onTogglePurchaseCost}
+                ariaPressed={purchaseCostVisible}
+              >
+                {purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
               </Button>
             ) : null}
 

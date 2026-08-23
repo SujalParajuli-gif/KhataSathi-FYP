@@ -37,7 +37,7 @@ services:
       SESSION_SECRET: ${SESSION_SECRET:?Set a random SESSION_SECRET of at least 32 characters}
       SESSION_TTL_HOURS: ${SESSION_TTL_HOURS:-168}
       FRONTEND_BASE_URL: ${APP_ORIGIN:?Set APP_ORIGIN to the exact public origin}
-      CORS_ORIGINS: ${APP_ORIGIN}
+      CORS_ORIGINS: ${CORS_ORIGINS:-${APP_ORIGIN}}
       UPLOADS_ROOT: /uploads
       DOCUMENT_STORAGE_ROOT: /document-storage
       BACKUP_ROOT: /backups

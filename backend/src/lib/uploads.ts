@@ -15,7 +15,7 @@ export const productUploadsDir = path.join(uploadsRoot, "products");
 // converting a public URL like "/uploads/products/image.png" to the actual file path on disk
 // we added multiple safety checks here to prevent path traversal attacks
 // where someone could try to access files outside the uploads folder using "../" in the URL
-function resolveUploadFile(publicUrl?: string | null) {
+export function resolveUploadFilePath(publicUrl?: string | null) {
   if (!publicUrl || typeof publicUrl !== "string") return null; // skip if no URL is provided
   if (!publicUrl.startsWith(UPLOADS_PREFIX)) return null; // reject URLs that do not start with /uploads/
 
@@ -44,7 +44,7 @@ function resolveUploadFile(publicUrl?: string | null) {
 export async function isUploadFileAvailable(publicUrl?: string | null) {
   if (!publicUrl) return false;
 
-  const filePath = resolveUploadFile(publicUrl);
+  const filePath = resolveUploadFilePath(publicUrl);
   if (!filePath) return true;
 
   try {
@@ -60,7 +60,7 @@ export async function isUploadFileAvailable(publicUrl?: string | null) {
 // deleting an uploaded file from disk using its public URL
 // we use this when a product image or profile photo is replaced with a new one, so the old file does not stay on disk
 export async function deleteUploadFile(publicUrl?: string | null) {
-  const filePath = resolveUploadFile(publicUrl); // converting the URL to an actual file path
+  const filePath = resolveUploadFilePath(publicUrl); // converting the URL to an actual file path
   if (!filePath) return; // skip if the URL could not be resolved safely
 
   try {

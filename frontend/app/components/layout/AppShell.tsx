@@ -202,7 +202,10 @@ export default function AppShell({ children, statusBanner }: Props) {
   const isBillingRoute = location.pathname === "/billing";
 
   return (
-    <AlertsProvider enabled={!isStaff && capabilities.inventoryEnabled}>
+    <AlertsProvider
+      enabled={!isStaff && capabilities.catalogEnabled}
+      identityKey={user?.id}
+    >
       <ToastProvider>
         <RateLimitBanner />
         <div className="h-dvh overflow-hidden bg-white text-slate-900">
@@ -246,7 +249,7 @@ export default function AppShell({ children, statusBanner }: Props) {
                 "min-h-0 flex-1 overscroll-contain bg-white",
                 isBillingRoute
                   ? "overflow-hidden p-[12px]"
-                  : "overflow-y-auto p-[20px] lg:p-[24px]",
+                  : "overflow-y-auto p-[12px] sm:p-[20px] lg:p-[24px]",
                 isStaff && !isBillingRoute
                   ? "pb-[calc(84px+env(safe-area-inset-bottom))] lg:pb-[24px]"
                   : "",

@@ -80,7 +80,10 @@ function toFrontendProduct(product: BackendProduct): Product {
         ? null
         : Number(product.sizeValue),
     sizeUnit: product.sizeUnit ?? "STANDARD",
-    ratePerPiece: Number(product.ratePerPiece ?? product.retailPrice ?? 0),
+    ratePerPiece:
+      product.ratePerPiece === null || product.ratePerPiece === undefined
+        ? null
+        : Number(product.ratePerPiece),
     packageQuantity: Number(product.packageQuantity ?? 1),
     packageUnit: product.packageUnit ?? "PIECE",
     saleUnit: product.saleUnit ?? "PIECE",
@@ -236,7 +239,10 @@ function toBackendPayload(product: Omit<Product, "id">) {
     productCodeVariant: product.productCodeVariant || undefined,
     sizeValue: product.sizeValue ?? undefined,
     sizeUnit: product.sizeUnit || "STANDARD",
-    ratePerPiece: Number(product.ratePerPiece || product.retailPrice),
+    ratePerPiece:
+      product.ratePerPiece === null || product.ratePerPiece === undefined
+        ? null
+        : Number(product.ratePerPiece),
     packageQuantity: Number(product.packageQuantity || 1),
     packageUnit: product.packageUnit || "PIECE",
     saleUnit: product.saleUnit || "PIECE",

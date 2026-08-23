@@ -11,6 +11,10 @@ import {
   supportsDocumentThumbnail,
   writeDocumentImageThumbnail,
 } from "./documentMedia";
+import {
+  normalizeDocumentRelativePath,
+  resolveDocumentStoragePath,
+} from "./storagePath";
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
@@ -111,7 +115,7 @@ function buildRelativeFolderPath(date: Date = new Date()): string {
   const year = date.getFullYear().toString();
   const month = String(date.getMonth() + 1).padStart(2, "0");
   const week = `W${String(getISOWeekNumber(date)).padStart(2, "0")}`;
-  return path.join("documents", year, month, week);
+  return path.posix.join("documents", year, month, week);
 }
 
 // building a safe stored filename: {cuid}_{document-type}.{ext}
@@ -180,7 +184,9 @@ async function moveToFinalPath(
   relativeFolderPath: string,
   storedFileName: string,
 ): Promise<string> {
-  const absoluteFolder = path.resolve(STORAGE_ROOT, relativeFolderPath);
+  const portableFolder = normalizeDocumentRelativePath(relativeFolderPath);
+  if (!portableFolder) throw new Error("Invalid document storage path");
+  const absoluteFolder = path.resolve(STORAGE_ROOT, ...portableFolder.split("/"));
   mkdirSync(absoluteFolder, { recursive: true });
 
   const finalPath = path.join(absoluteFolder, storedFileName);
@@ -193,7 +199,18 @@ async function removeFileFromDisk(
   relativePath: string,
   storedFileName: string,
 ): Promise<void> {
-  const absolutePath = path.resolve(STORAGE_ROOT, relativePath, storedFileName);
+  const absolutePath = resolveDocumentStoragePath(
+    STORAGE_ROOT,
+    relativePath,
+    storedFileName,
+  );
+  if (!absolutePath) {
+    logger.warn("Refused to remove a document with an invalid stored path", {
+      relativePath,
+      storedFileName,
+    });
+    return;
+  }
   try {
     await fs.unlink(absolutePath);
   } catch (error: any) {
@@ -209,13 +226,12 @@ function resolveDocumentFileSafe(
   relativePath: string,
   storedFileName: string,
 ): string | null {
-  const absolutePath = path.resolve(STORAGE_ROOT, relativePath, storedFileName);
-  const normalizedRoot = path.resolve(STORAGE_ROOT);
-
-  // ensuring the resolved path stays within the storage root
-  if (!absolutePath.startsWith(`${normalizedRoot}${path.sep}`) && absolutePath !== normalizedRoot) {
-    return null;
-  }
+  const absolutePath = resolveDocumentStoragePath(
+    STORAGE_ROOT,
+    relativePath,
+    storedFileName,
+  );
+  if (!absolutePath) return null;
 
   if (!existsSync(absolutePath)) return null;
   return absolutePath;
@@ -280,11 +296,12 @@ export async function createDocuments(
       let thumbnailSize: number | null = null;
       if (supportsDocumentThumbnail(file.mimetype)) {
         const candidateFileName = buildDocumentThumbnailFileName(doc.id);
-        const candidatePath = path.resolve(
+        const candidatePath = resolveDocumentStoragePath(
           STORAGE_ROOT,
           relativeFolderPath,
           candidateFileName,
         );
+        if (!candidatePath) throw new Error("Invalid document thumbnail path");
         try {
           thumbnailSize = await writeDocumentImageThumbnail(finalPath, candidatePath);
           thumbnailFileName = candidateFileName;
@@ -829,7 +846,15 @@ export async function backfillDocumentImageThumbnails() {
     }
 
     const thumbnailFileName = buildDocumentThumbnailFileName(document.id);
-    const thumbnailPath = path.resolve(STORAGE_ROOT, document.storedPath, thumbnailFileName);
+    const thumbnailPath = resolveDocumentStoragePath(
+      STORAGE_ROOT,
+      document.storedPath,
+      thumbnailFileName,
+    );
+    if (!thumbnailPath) {
+      result.failed += 1;
+      continue;
+    }
     try {
       const thumbnailSize = await writeDocumentImageThumbnail(originalPath, thumbnailPath);
       await prisma.document.update({

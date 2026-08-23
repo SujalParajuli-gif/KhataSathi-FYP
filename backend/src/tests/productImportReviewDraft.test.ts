@@ -47,7 +47,7 @@ test("review draft save rejects missing identity fields", () => {
 test("review draft save rejects invalid prices, packages, and stock", () => {
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: 0 })),
-    /Rate per piece/,
+    /Purchase cost/,
   );
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ packageQuantity: 0 })),
@@ -56,6 +56,26 @@ test("review draft save rejects invalid prices, packages, and stock", () => {
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ stock: -1 })),
     /Stock/,
+  );
+});
+
+test("review draft keeps an unknown purchase cost null without copying a selling price", () => {
+  const prepared = prepareReviewedImportRowDraft(
+    validRow({ ratePerPiece: null }),
+  );
+  assert.equal(prepared.ratePerPiece, null);
+  assert.equal(prepared.retailPrice, 130);
+  assert.equal(prepared.wholesalePrice, 118);
+});
+
+test("review draft still requires independent retail and wholesale prices", () => {
+  assert.throws(
+    () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: null, retailPrice: null })),
+    /Retail price is required/,
+  );
+  assert.throws(
+    () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: null, wholesalePrice: "" })),
+    /Wholesale price is required/,
   );
 });
 

@@ -13,6 +13,7 @@ import { evaluateProductDeletePolicy } from "./deletePolicy";
 import { priceFromGrossMargin } from "./pricingMath";
 import {
     getEnabledSearchSynonymRules,
+    prepareReviewedProductAlias,
     rebuildProductSearchDocument,
 } from "./searchAliasService";
 import { searchProductsWithDeterministicRanking } from "./productSearchService";
@@ -358,7 +359,7 @@ interface CreateProductInput {
     productCodeVariant?: string | null;
     sizeValue?: number | null;
     sizeUnit?: string | null;
-    ratePerPiece?: number;
+    ratePerPiece?: number | null;
     packageQuantity?: number;
     packageUnit?: string | null;
     saleUnit?: string | null;
@@ -476,7 +477,7 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
             productCodeVariant: data.productCodeVariant || null,
             sizeValue: data.sizeValue ?? null,
             sizeUnit: normalizeUnitLabel(data.sizeUnit, "STANDARD"),
-            ratePerPiece: data.ratePerPiece ?? data.retailPrice,
+            ratePerPiece: data.ratePerPiece ?? null,
             packageQuantity: normalizePositiveNumber(data.packageQuantity, 1),
             packageUnit: normalizeUnitLabel(data.packageUnit, "PIECE"),
             saleUnit: normalizeUnitLabel(data.saleUnit, "PIECE"),
@@ -534,7 +535,37 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
     return withAvailableStock(applyBusinessThresholds(product, settings));
 }
 
-// updating an existing product — handles threshold flag logic and image replacement
+const PRODUCT_CATALOG_DETAIL_LABELS: Record<string, string> = {
+    name: "name",
+    sku: "SKU",
+    barcode: "barcode",
+    brandId: "brand",
+    category: "category",
+    categoryGroup: "category group",
+    vendorSource: "supplier",
+    productCodeVariant: "variant",
+    sizeValue: "size",
+    sizeUnit: "size unit",
+    packageQuantity: "package quantity",
+    packageUnit: "package unit",
+    saleUnit: "sale unit",
+    allowFractionalQty: "fractional quantity setting",
+    quantityStep: "quantity step",
+    wholesaleEligible: "wholesale eligibility",
+    sourceCitation: "source reference",
+    wholesaleQtyThreshold: "wholesale threshold",
+    usesDefaultWholesaleQtyThreshold: "wholesale threshold rule",
+    imageUrl: "image",
+};
+
+function comparableProductValue(value: unknown) {
+    if (value === null || value === undefined) return "";
+    if (typeof value === "string") return value.trim();
+    return String(value);
+}
+
+// updating an existing product — handles threshold flag logic, audit events,
+// and image replacement
 export async function updateProduct(
     id: string,
     data: Partial<CreateProductInput> & { isActive?: boolean },
@@ -542,26 +573,14 @@ export async function updateProduct(
 ) {
     let previousImageUrl: string | null = null;
     let previousThumbnailUrl: string | null = null;
-    const needsPreviousProduct =
-        data.imageUrl !== undefined ||
-        data.retailPrice !== undefined ||
-        data.wholesalePrice !== undefined ||
-        data.ratePerPiece !== undefined;
-    const previousProduct = needsPreviousProduct
-        ? await prisma.product.findUnique({
-            where: { id },
-            select: {
-                id: true,
-                name: true,
-                sku: true,
-                imageUrl: true,
-                thumbnailUrl: true,
-                retailPrice: true,
-                wholesalePrice: true,
-                ratePerPiece: true,
-            },
-        })
-        : null;
+    // Always capture the previous row. Besides image cleanup, this is what lets
+    // us emit exact, non-duplicated price/status/details events for Alerts.
+    const previousProduct = await prisma.product.findUnique({ where: { id } });
+    if (!previousProduct) {
+        const error: any = new Error("Product not found");
+        error.code = "P2025";
+        throw error;
+    }
 
     // if the image URL is being changed, save the old one so we can delete the old file later
     if (data.imageUrl !== undefined) {
@@ -628,42 +647,85 @@ export async function updateProduct(
             include: { brand: { select: { id: true, name: true } } },
         });
         await rebuildProductSearchDocument(updated.id, tx);
+
+        if (actor?.id) {
+            const priceChanged =
+                (data.retailPrice !== undefined && Number(previousProduct.retailPrice) !== Number(updated.retailPrice)) ||
+                (data.wholesalePrice !== undefined && Number(previousProduct.wholesalePrice) !== Number(updated.wholesalePrice)) ||
+                (data.ratePerPiece !== undefined &&
+                    comparableProductValue(previousProduct.ratePerPiece) !==
+                        comparableProductValue(updated.ratePerPiece));
+            const statusChanged =
+                data.isActive !== undefined && previousProduct.isActive !== updated.isActive;
+            const changedDetailFields = Object.entries(PRODUCT_CATALOG_DETAIL_LABELS)
+                .filter(([field]) =>
+                    updateData[field] !== undefined &&
+                    comparableProductValue((previousProduct as any)[field]) !==
+                        comparableProductValue((updated as any)[field]),
+                )
+                .map(([, label]) => label);
+
+            if (priceChanged) {
+                await tx.auditLog.create({
+                    data: {
+                        actorId: actor.id,
+                        action: "PRODUCT_PRICE_UPDATED",
+                        entityType: "Product",
+                        entityId: updated.id,
+                        meta: {
+                            actorRole: actor.role,
+                            productName: updated.name,
+                            sku: updated.sku,
+                            before: {
+                                retailPrice: previousProduct.retailPrice,
+                                wholesalePrice: previousProduct.wholesalePrice,
+                                ratePerPiece: previousProduct.ratePerPiece,
+                            },
+                            after: {
+                                retailPrice: updated.retailPrice,
+                                wholesalePrice: updated.wholesalePrice,
+                                ratePerPiece: updated.ratePerPiece,
+                            },
+                        },
+                    },
+                });
+            }
+
+            if (statusChanged) {
+                await tx.auditLog.create({
+                    data: {
+                        actorId: actor.id,
+                        action: updated.isActive ? "PRODUCT_ACTIVATED" : "PRODUCT_DEACTIVATED",
+                        entityType: "Product",
+                        entityId: updated.id,
+                        meta: {
+                            actorRole: actor.role,
+                            productName: updated.name,
+                            sku: updated.sku,
+                        },
+                    },
+                });
+            }
+
+            if (changedDetailFields.length > 0) {
+                await tx.auditLog.create({
+                    data: {
+                        actorId: actor.id,
+                        action: "PRODUCT_UPDATED",
+                        entityType: "Product",
+                        entityId: updated.id,
+                        meta: {
+                            actorRole: actor.role,
+                            productName: updated.name,
+                            sku: updated.sku,
+                            changedFields: changedDetailFields,
+                        },
+                    },
+                });
+            }
+        }
         return updated;
     });
-
-    const priceChanged =
-        !!previousProduct &&
-        (
-            (data.retailPrice !== undefined && Number(previousProduct.retailPrice) !== Number(product.retailPrice)) ||
-            (data.wholesalePrice !== undefined && Number(previousProduct.wholesalePrice) !== Number(product.wholesalePrice)) ||
-            (data.ratePerPiece !== undefined && Number(previousProduct.ratePerPiece) !== Number(product.ratePerPiece))
-        );
-
-    if (actor?.id && priceChanged) {
-        await prisma.auditLog.create({
-            data: {
-                actorId: actor.id,
-                action: "PRODUCT_PRICE_UPDATED",
-                entityType: "Product",
-                entityId: product.id,
-                meta: {
-                    actorRole: actor.role,
-                    productName: product.name,
-                    sku: product.sku,
-                    before: {
-                        retailPrice: previousProduct.retailPrice,
-                        wholesalePrice: previousProduct.wholesalePrice,
-                        ratePerPiece: previousProduct.ratePerPiece,
-                    },
-                    after: {
-                        retailPrice: product.retailPrice,
-                        wholesalePrice: product.wholesalePrice,
-                        ratePerPiece: product.ratePerPiece,
-                    },
-                },
-            },
-        }).catch(() => undefined);
-    }
 
     // deleting the old image file from disk if the image was changed
     if (data.imageUrl !== undefined) {
@@ -928,7 +990,7 @@ type CsvImportRow = {
     productCodeVariant?: string | null;
     sizeValue?: number | null;
     sizeUnit?: string | null;
-    ratePerPiece?: number;
+    ratePerPiece?: number | null;
     packageQuantity?: number;
     packageUnit?: string | null;
     saleUnit?: string | null;
@@ -936,6 +998,7 @@ type CsvImportRow = {
     quantityStep?: number;
     wholesaleEligible?: boolean;
     sourceCitation?: string | null;
+    searchAliases?: string[];
     retailPrice: number;
     wholesalePrice: number;
     stock?: number;
@@ -961,7 +1024,7 @@ type ReviewedPdfImportRowInput = {
     productCodeVariant?: string;
     sizeValue?: number | string | null;
     sizeUnit?: string;
-    ratePerPiece?: number | string;
+    ratePerPiece?: number | string | null;
     packageQuantity?: number | string;
     packageUnit?: string;
     saleUnit?: string;
@@ -969,6 +1032,7 @@ type ReviewedPdfImportRowInput = {
     quantityStep?: number | string;
     wholesaleEligible?: boolean;
     sourceCitation?: string;
+    searchAliases?: string[] | string;
     retailPrice?: number | string;
     wholesalePrice?: number | string;
     stock?: number | string;
@@ -1006,14 +1070,31 @@ function reviewedDraftNumber(
     return normalized;
 }
 
+function reviewedSearchAliases(value: unknown) {
+    const values = Array.isArray(value)
+        ? value
+        : typeof value === "string"
+          ? value.split(/[,;\n]/g)
+          : [];
+    if (values.length > 20) {
+        throw new ReviewedImportRowValidationError(
+            "A product can have at most 20 search terms.",
+        );
+    }
+    const prepared = values
+        .map((alias) => String(alias || "").trim())
+        .filter(Boolean)
+        .map((alias) => prepareReviewedProductAlias(alias));
+    return [...new Map(prepared.map((alias) => [alias.normalizedAlias, alias.alias])).values()];
+}
+
 export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) {
     const rowId = reviewedDraftText(input.rowId, "Import row", true)!;
     const name = reviewedDraftText(input.name, "Product name", true)!;
     const sku = reviewedDraftText(input.sku, "SKU", true)!;
-    const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Rate per piece", {
+    const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Purchase cost", {
         min: 0.01,
-        required: true,
-    })!;
+    }) ?? null;
     const packageQuantity = reviewedDraftNumber(
         input.packageQuantity ?? 1,
         "Package quantity",
@@ -1029,12 +1110,12 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
         required: true,
     })!;
     const retailPrice = reviewedDraftNumber(
-        input.retailPrice ?? ratePerPiece,
+        input.retailPrice,
         "Retail price",
         { min: 0.01, required: true },
     )!;
     const wholesalePrice = reviewedDraftNumber(
-        input.wholesalePrice ?? ratePerPiece,
+        input.wholesalePrice,
         "Wholesale price",
         { min: 0.01, required: true },
     )!;
@@ -1062,6 +1143,7 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
         quantityStep,
         wholesaleEligible: input.wholesaleEligible !== false,
         sourceCitation: reviewedDraftText(input.sourceCitation, "Source citation"),
+        searchAliases: reviewedSearchAliases(input.searchAliases),
         retailPrice,
         wholesalePrice,
         stock,
@@ -1131,6 +1213,12 @@ function parseBooleanCsvValue(value: unknown, fallback: boolean) {
     if (["true", "yes", "y", "1"].includes(normalized)) return true;
     if (["false", "no", "n", "0"].includes(normalized)) return false;
     return fallback;
+}
+
+function parseCsvSearchAliases(value: unknown) {
+    if (Array.isArray(value)) return reviewedSearchAliases(value);
+    const normalized = normalizeCsvText(value);
+    return normalized ? reviewedSearchAliases(normalized) : [];
 }
 
 function escapeImportRegExp(value: string) {
@@ -1351,6 +1439,22 @@ function normalizeCsvImportRow(
                 "company",
             ),
         ) || normalizeCsvText(defaults.supplier);
+    const reviewedBrand = normalizeCsvText(
+        getMappedCsvCell(normalizedRow, options.fieldMap, "brand", "brand", "company"),
+    );
+    const reviewedCategory = normalizeCsvText(
+        getMappedCsvCell(normalizedRow, options.fieldMap, "category", "category"),
+    );
+    const reviewedCategoryGroup = normalizeCsvText(
+        getMappedCsvCell(
+            normalizedRow,
+            options.fieldMap,
+            "categoryGroup",
+            "categorygroup",
+            "category_group",
+            "category group",
+        ),
+    );
 
     if (supplierProductName || vendorSource) {
         let fullName = supplierProductName;
@@ -1413,8 +1517,6 @@ function normalizeCsvImportRow(
                 "dealer price",
                 "dealer_price",
                 "rate",
-                "rateperpiece",
-                "rate_per_piece",
                 "base price",
                 "base_price",
             ),
@@ -1434,6 +1536,22 @@ function normalizeCsvImportRow(
                 "price",
             ),
             "Retail price",
+            rowNumber,
+            { min: 0.01, allowBlank: true },
+        );
+        const purchaseCostCsv = parseCsvNumber(
+            getMappedCsvCell(
+                normalizedRow,
+                options.fieldMap,
+                "ratePerPiece",
+                "rateperpiece",
+                "rate_per_piece",
+                "purchase cost",
+                "purchase_cost",
+                "cost price",
+                "cost_price",
+            ),
+            "Purchase cost",
             rowNumber,
             { min: 0.01, allowBlank: true },
         );
@@ -1478,19 +1596,29 @@ function normalizeCsvImportRow(
             sku,
             skuWasGenerated: !providedSku,
             barcode: normalizeCsvText(getCsvCell(normalizedRow, "barcode")) || undefined,
-            brand: normalizeCsvText(defaults.brand) || vendorSource || "Supplier",
+            brand:
+                normalizeCsvText(defaults.brand) ||
+                reviewedBrand ||
+                vendorSource ||
+                "Supplier",
             brandId: undefined,
-            category: normalizeCsvText(defaults.category) || vendorSource || "Supplier",
+            category:
+                normalizeCsvText(defaults.category) ||
+                reviewedCategory ||
+                vendorSource ||
+                "Supplier",
             categoryGroup:
                 normalizeCsvText(defaults.categoryGroup) ||
+                reviewedCategoryGroup ||
                 normalizeCsvText(defaults.category) ||
+                reviewedCategory ||
                 vendorSource ||
                 null,
             vendorSource: vendorSource || null,
             productCodeVariant: variant || null,
             sizeValue: parsedSize.sizeValue,
             sizeUnit: parsedSize.sizeUnit,
-            ratePerPiece: rate,
+            ratePerPiece: purchaseCostCsv ?? null,
             packageQuantity,
             packageUnit: normalizeUnitLabel(
                 getMappedCsvCell(
@@ -1509,6 +1637,17 @@ function normalizeCsvImportRow(
             sourceCitation:
                 normalizeCsvText(getCsvCell(normalizedRow, "citation", "sourcecitation")) ||
                 null,
+            searchAliases: parseCsvSearchAliases(
+                getMappedCsvCell(
+                    normalizedRow,
+                    options.fieldMap,
+                    "searchAliases",
+                    "searchaliases",
+                    "search_aliases",
+                    "search terms",
+                    "aliases",
+                ),
+            ),
             retailPrice:
                 retailCsvPrice ??
                 (wholesaleCsvPrice
@@ -1567,7 +1706,7 @@ function normalizeCsvImportRow(
             "ratePerPiece",
             rowNumber,
             { min: 0.01, allowBlank: true },
-        ),
+        ) ?? null,
         packageQuantity:
             parseCsvNumber(
                 getCsvCell(normalizedRow, "packagequantity", "package_quantity"),
@@ -1598,6 +1737,15 @@ function normalizeCsvImportRow(
         sourceCitation:
             normalizeCsvText(getCsvCell(normalizedRow, "sourcecitation", "source_citation")) ||
             undefined,
+        searchAliases: parseCsvSearchAliases(
+            getCsvCell(
+                normalizedRow,
+                "searchaliases",
+                "search_aliases",
+                "search terms",
+                "aliases",
+            ),
+        ),
         retailPrice: parseCsvNumber(getCsvCell(normalizedRow, "retailprice", "retail_price"), "retailPrice", rowNumber, { min: 0.01 })!,
         wholesalePrice: parseCsvNumber(getCsvCell(normalizedRow, "wholesaleprice", "wholesale_price"), "wholesalePrice", rowNumber, { min: 0.01 })!,
         stock:
@@ -1609,12 +1757,21 @@ function normalizeCsvImportRow(
 // processing all CSV rows and creating products one by one
 // each row runs in its own transaction so one failing row does not block the others
 // returns a summary with created count, error count, and details for both
-export async function importProductsFromCsv(rawRows: Array<Record<string, unknown>>) {
+export async function importProductsFromCsv(
+    rawRows: Array<Record<string, unknown>>,
+    options: { actorId?: string } = {},
+) {
     const createdProducts: Array<{ id: string; sku: string; name: string }> = [];
     const errors: CsvImportError[] = [];
     const brandCache = new Map<string, string>(); // caching brand lookups to reduce database queries
     const settings = await getBusinessSettings(); // fetching business defaults for new product thresholds
     const searchSynonymRules = await getEnabledSearchSynonymRules();
+    const aliasApprover = options.actorId
+        ? await prisma.user.findUnique({
+              where: { id: options.actorId },
+              select: { id: true, role: true, isActive: true },
+          })
+        : null;
 
     // pre-loading all existing brands into the cache
     const existingBrands = await prisma.brand.findMany({
@@ -1682,14 +1839,24 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
                     }
                 }
 
+                // Spreadsheet and reviewed imports follow the same identifier
+                // contract as Add Product: a blank barcode receives a unique
+                // internal barcode instead of remaining null.
+                const identifiers = await allocateProductIdentifiers(
+                    tx,
+                    finalSku,
+                    row.barcode,
+                );
+
                 // creating the product with all business defaults applied
                 // all imported products use the business default thresholds
                 const created = await tx.product.create({
                     data: {
                         name: row.name,
                         productName: row.productName || row.name,
-                        sku: finalSku,
-                        barcode: row.barcode || null,
+                        sku: identifiers.sku,
+                        barcode: identifiers.barcode,
+                        barcodeOrigin: identifiers.barcodeOrigin,
                         brandId,
                         category: row.category || null,
                         categoryGroup: row.categoryGroup || row.category || null,
@@ -1697,7 +1864,7 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
                         productCodeVariant: row.productCodeVariant || null,
                         sizeValue: row.sizeValue ?? null,
                         sizeUnit: normalizeUnitLabel(row.sizeUnit, "STANDARD"),
-                        ratePerPiece: row.ratePerPiece ?? row.retailPrice,
+                        ratePerPiece: row.ratePerPiece ?? null,
                         packageQuantity: normalizePositiveNumber(row.packageQuantity, 1),
                         packageUnit: normalizeUnitLabel(row.packageUnit, "PIECE"),
                         saleUnit: normalizeUnitLabel(row.saleUnit, "PIECE"),
@@ -1719,6 +1886,24 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
                     },
                     select: { id: true, sku: true, name: true },
                 });
+                if (row.searchAliases && row.searchAliases.length > 0) {
+                    if (!aliasApprover || aliasApprover.role !== "ADMIN" || !aliasApprover.isActive) {
+                        throw new Error(
+                            `Row ${rowNumber}: product search terms require active Admin approval.`,
+                        );
+                    }
+                    for (const aliasValue of row.searchAliases) {
+                        const alias = prepareReviewedProductAlias(aliasValue);
+                        await tx.productSearchAlias.create({
+                            data: {
+                                productId: created.id,
+                                ...alias,
+                                source: "IMPORT_REVIEW",
+                                approvedById: aliasApprover.id,
+                            },
+                        });
+                    }
+                }
                 await rebuildProductSearchDocument(created.id, tx, searchSynonymRules);
                 return created;
             });
@@ -1749,7 +1934,6 @@ export async function importProductsFromCsv(rawRows: Array<Record<string, unknow
 }
 
 function csvImportRowToParsedProduct(row: CsvImportRow) {
-    const rate = Number(row.ratePerPiece ?? row.wholesalePrice ?? row.retailPrice ?? 0);
     return {
         name: row.name,
         productName: row.productName || row.name,
@@ -1762,7 +1946,7 @@ function csvImportRowToParsedProduct(row: CsvImportRow) {
         productCodeVariant: row.productCodeVariant || "",
         sizeValue: row.sizeValue ?? null,
         sizeUnit: normalizeUnitLabel(row.sizeUnit, "STANDARD"),
-        ratePerPiece: rate || row.retailPrice,
+        ratePerPiece: row.ratePerPiece ?? null,
         packageQuantity: normalizePositiveNumber(row.packageQuantity, 1),
         packageUnit: normalizeUnitLabel(row.packageUnit, "PIECE"),
         saleUnit: normalizeUnitLabel(row.saleUnit, "PIECE"),
@@ -2120,7 +2304,7 @@ export async function createImageImportPreview(input: {
             productCodeVariant: code,
             sizeValue: parsedSize.sizeValue,
             sizeUnit: parsedSize.sizeUnit,
-            ratePerPiece: wholesalePrice,
+            ratePerPiece: null,
             packageQuantity: Number.isFinite(packageQuantity) ? packageQuantity : 1,
             packageUnit: "PIECE",
             saleUnit:
@@ -2590,7 +2774,7 @@ export async function bulkUpdateProductPrices(input: {
         productId: string;
         retailPrice?: number;
         wholesalePrice?: number;
-        ratePerPiece?: number;
+        ratePerPiece?: number | null;
     }>;
     scope?: "IDS" | "FILTERED";
     filters?: BulkPriceFilterInput;
@@ -2630,7 +2814,12 @@ export async function bulkUpdateProductPrices(input: {
         updates = productsResult.products
           .filter((product: any) => !excludedProductIdSet.has(product.id))
           .map((product: any) => {
-            const baseRate = Number(product.ratePerPiece || product.wholesalePrice || product.retailPrice || 0);
+            if (product.ratePerPiece === null || product.ratePerPiece === undefined) {
+                throw new Error(
+                    `Purchase cost is not entered for ${product.name}. Add it before applying cost-based margins.`,
+                );
+            }
+            const baseRate = Number(product.ratePerPiece);
             return {
                 productId: product.id,
                 ratePerPiece: baseRate,
@@ -2650,7 +2839,14 @@ export async function bulkUpdateProductPrices(input: {
         try {
             const retailPrice = Number(update.retailPrice);
             const wholesalePrice = Number(update.wholesalePrice);
-            const ratePerPiece = Number(update.ratePerPiece ?? update.wholesalePrice ?? update.retailPrice);
+            const purchaseCostWasProvided = Object.prototype.hasOwnProperty.call(
+                update,
+                "ratePerPiece",
+            );
+            const ratePerPiece =
+                update.ratePerPiece === null || update.ratePerPiece === undefined
+                    ? null
+                    : Number(update.ratePerPiece);
 
             if (!update.productId) {
                 throw new Error("Missing product id.");
@@ -2660,6 +2856,13 @@ export async function bulkUpdateProductPrices(input: {
             }
             if (!Number.isFinite(wholesalePrice) || wholesalePrice <= 0) {
                 throw new Error("Wholesale price must be greater than 0.");
+            }
+            if (
+                purchaseCostWasProvided &&
+                ratePerPiece !== null &&
+                (!Number.isFinite(ratePerPiece) || ratePerPiece <= 0)
+            ) {
+                throw new Error("Purchase cost must be greater than 0 or left blank.");
             }
 
             const result = await prisma.$transaction(async (tx) => {
@@ -2684,7 +2887,7 @@ export async function bulkUpdateProductPrices(input: {
                     data: {
                         retailPrice,
                         wholesalePrice,
-                        ratePerPiece: Number.isFinite(ratePerPiece) && ratePerPiece > 0 ? ratePerPiece : wholesalePrice,
+                        ...(purchaseCostWasProvided ? { ratePerPiece } : {}),
                     },
                     select: { id: true, name: true, sku: true },
                 });
@@ -2701,7 +2904,9 @@ export async function bulkUpdateProductPrices(input: {
                             after: {
                                 retailPrice,
                                 wholesalePrice,
-                                ratePerPiece: Number.isFinite(ratePerPiece) && ratePerPiece > 0 ? ratePerPiece : wholesalePrice,
+                                ratePerPiece: purchaseCostWasProvided
+                                    ? ratePerPiece
+                                    : before.ratePerPiece,
                             },
                         },
                     },
@@ -2772,7 +2977,6 @@ export async function bulkUpdateProductPrices(input: {
 }
 
 function reviewedPdfRowToCsvRow(input: ReviewedPdfImportRowInput) {
-    const rate = input.ratePerPiece ?? input.retailPrice;
     return {
         name: input.name,
         sku: input.sku,
@@ -2784,7 +2988,7 @@ function reviewedPdfRowToCsvRow(input: ReviewedPdfImportRowInput) {
         productCodeVariant: input.productCodeVariant,
         sizeValue: input.sizeValue ?? undefined,
         sizeUnit: input.sizeUnit || "STANDARD",
-        ratePerPiece: rate,
+        ratePerPiece: input.ratePerPiece ?? null,
         packageQuantity: input.packageQuantity ?? 1,
         packageUnit: input.packageUnit || "PIECE",
         saleUnit: input.saleUnit || "PIECE",
@@ -2792,8 +2996,9 @@ function reviewedPdfRowToCsvRow(input: ReviewedPdfImportRowInput) {
         quantityStep: input.quantityStep ?? 1,
         wholesaleEligible: input.wholesaleEligible === false ? "false" : "true",
         sourceCitation: input.sourceCitation,
-        retailPrice: input.retailPrice ?? rate,
-        wholesalePrice: input.wholesalePrice ?? rate,
+        searchAliases: input.searchAliases,
+        retailPrice: input.retailPrice,
+        wholesalePrice: input.wholesalePrice,
         stock: input.stock ?? 0,
     };
 }
@@ -2803,9 +3008,15 @@ export async function importReviewedPdfRows(
     input: {
         rows: ReviewedPdfImportRowInput[];
         ignoredRowIds?: string[];
-        actorId?: string;
+        actorId: string;
+        approved: true;
     },
 ) {
+    if (input.approved !== true) {
+        throw new Error(
+            "Final import approval is required. Review the selected rows and confirm the import.",
+        );
+    }
     const batch = await prisma.productImportBatch.findUnique({
         where: { id: batchId },
         include: { rows: true },
@@ -2849,8 +3060,24 @@ export async function importReviewedPdfRows(
         };
     }
 
+    await prisma.auditLog.create({
+        data: {
+            actorId: input.actorId,
+            action: "PRODUCT_IMPORT_APPROVED",
+            entityType: "ProductImportBatch",
+            entityId: batchId,
+            meta: {
+                fileName: batch.fileName,
+                sourceType: batch.sourceType,
+                selectedRowIds: rows.map((row) => row.rowId),
+                selectedCount: rows.length,
+                ignoredCount: ignoredRowIds.length,
+            },
+        },
+    });
+
     const csvRows = rows.map(reviewedPdfRowToCsvRow);
-    const result = await importProductsFromCsv(csvRows);
+    const result = await importProductsFromCsv(csvRows, { actorId: input.actorId });
     const errorsBySelectedIndex = new Map<number, CsvImportError>();
 
     result.errors.forEach((error) => {

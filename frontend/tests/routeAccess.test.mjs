@@ -50,7 +50,7 @@ test("Catalog mode permits product work but rejects direct POS and inventory rou
   assert.equal(hasCapabilityRouteAccess("/settings", catalog), true);
   assert.equal(hasCapabilityRouteAccess("/billing", catalog), false);
   assert.equal(hasCapabilityRouteAccess("/invoices/example", catalog), false);
-  assert.equal(hasCapabilityRouteAccess("/alerts", catalog), false);
+  assert.equal(hasCapabilityRouteAccess("/alerts", catalog), true);
   assert.equal(hasCapabilityRouteAccess("/staff-requests", catalog), false);
 });
 

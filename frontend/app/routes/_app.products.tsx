@@ -22,6 +22,8 @@ import {
   importPdfApi,
   importReviewedPdfRowsApi,
   saveReviewedProductImportRowsApi,
+  listProductSearchAliasesApi,
+  replaceProductSearchAliasesApi,
   recordProductSearchSelectionApi,
   listDocumentsApi,
   listProductImportBatchesApi,
@@ -65,6 +67,7 @@ import Icon from "~/components/ui/Icon";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
+import { usePurchaseCostPrivacy } from "~/hooks/usePurchaseCostPrivacy";
 type ProductFormErrors = Partial<
   Record<
     | "name"
@@ -145,12 +148,13 @@ type QuickStockProductForm = {
   brand: string;
   category: string;
   ratePerPiece: string;
+  wholesalePrice: string;
   retailPrice: string;
   saleUnit: string;
 };
 
 type QuickStockErrors = Partial<
-  Record<"name" | "brand" | "category" | "ratePerPiece" | "retailPrice", string>
+  Record<"name" | "brand" | "category" | "ratePerPiece" | "wholesalePrice" | "retailPrice", string>
 >;
 
 type StockFieldErrors = Partial<Record<"reason" | "supplier", string>>;
@@ -229,6 +233,10 @@ export default function ProductsPage() {
   const capabilities = useBusinessCapabilities();
   const stockTracked = capabilities.stockTracked;
   const isAdmin = getAuthUser()?.role === "admin";
+  const {
+    purchaseCostVisible,
+    togglePurchaseCostVisibility,
+  } = usePurchaseCostPrivacy(isAdmin);
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
@@ -243,6 +251,7 @@ export default function ProductsPage() {
     requestedEditProductId,
   );
   const handledEditRequestRef = React.useRef<string | null>(null);
+  const productAliasRequestRef = React.useRef(0);
   const [returnAfterProductEdit, setReturnAfterProductEdit] = useState("");
   const [returnAfterProductEditSnapshot, setReturnAfterProductEditSnapshot] =
     useState<ProductLookupSnapshot | undefined>(
@@ -269,7 +278,7 @@ export default function ProductsPage() {
       productCodeVariant: "",
       sizeValue: null,
       sizeUnit: "STANDARD",
-      ratePerPiece: 0,
+      ratePerPiece: null,
       packageQuantity: 1,
       packageUnit: "PIECE",
       saleUnit: "PIECE",
@@ -444,6 +453,7 @@ export default function ProductsPage() {
     brand: "",
     category: "",
     ratePerPiece: "",
+    wholesalePrice: "",
     retailPrice: "",
     saleUnit: "PIECE",
   });
@@ -480,6 +490,9 @@ export default function ProductsPage() {
   const [formErrors, setFormErrors] = useState<ProductFormErrors>({}); // field-level validation messages for the product form
   const [productImageFile, setProductImageFile] = useState<File | null>(null); // uploaded image file waiting to be sent after save
   const [productImagePreview, setProductImagePreview] = useState(""); // local preview URL or existing product image URL
+  const [productSearchTerms, setProductSearchTerms] = useState<string[]>([]);
+  const [productSearchTermsBaseline, setProductSearchTermsBaseline] = useState("[]");
+  const [productSearchTermsLoading, setProductSearchTermsLoading] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null); // selected CSV file for bulk import
   const [importBusy, setImportBusy] = useState(false); // disables repeated import submits while upload is running
   const [importError, setImportError] = useState(""); // import-specific error shown in the modal
@@ -1000,7 +1013,8 @@ export default function ProductsPage() {
     openAddEdit &&
     (JSON.stringify(form) !== productEditorBaseline ||
       productImagePreview !== productEditorImageBaseline ||
-      Boolean(productImageFile));
+      Boolean(productImageFile) ||
+      JSON.stringify(productSearchTerms) !== productSearchTermsBaseline);
 
   React.useEffect(() => {
     if (!isProductEditorDirty) return undefined;
@@ -1171,6 +1185,7 @@ export default function ProductsPage() {
 
   // this opens the add product modal with a brand-new form based on the latest business defaults
   function openAdd() {
+    productAliasRequestRef.current += 1;
     const nextForm = buildDefaultProductForm(brands, categories, businessDefaults);
     setReturnAfterProductEdit("");
     setActiveProductId(null);
@@ -1178,6 +1193,9 @@ export default function ProductsPage() {
     setProductEditorBaseline(JSON.stringify(nextForm));
     setProductEditorImageBaseline("");
     setConfirmDiscardProductEditor(false);
+    setProductSearchTerms([]);
+    setProductSearchTermsBaseline("[]");
+    setProductSearchTermsLoading(false);
     clearFormValidation();
     resetImageState("");
     setOpenAddEdit(true);
@@ -1204,17 +1222,46 @@ export default function ProductsPage() {
     setProductEditorBaseline(JSON.stringify(nextForm));
     setProductEditorImageBaseline(product.imageUrl || "");
     setConfirmDiscardProductEditor(false);
+    setProductSearchTerms([]);
+    setProductSearchTermsBaseline("[]");
+    if (isAdmin) {
+      const aliasRequestId = productAliasRequestRef.current + 1;
+      productAliasRequestRef.current = aliasRequestId;
+      setProductSearchTermsLoading(true);
+      void listProductSearchAliasesApi(product.id)
+        .then((aliases) => {
+          if (productAliasRequestRef.current !== aliasRequestId) return;
+          const terms = aliases
+            .filter((alias) => alias.isEnabled)
+            .map((alias) => alias.alias);
+          setProductSearchTerms(terms);
+          setProductSearchTermsBaseline(JSON.stringify(terms));
+        })
+        .catch((error: any) => {
+          if (productAliasRequestRef.current !== aliasRequestId) return;
+          toastMsg("danger", error?.message || "Search terms could not be loaded.");
+        })
+        .finally(() => {
+          if (productAliasRequestRef.current === aliasRequestId) {
+            setProductSearchTermsLoading(false);
+          }
+        });
+    }
     clearFormValidation();
     resetImageState(product.imageUrl || "");
     setOpenAddEdit(true);
   }
 
   function closeProductEditor() {
+    productAliasRequestRef.current += 1;
     setOpenAddEdit(false);
     setConfirmDiscardProductEditor(false);
     setActiveProductId(null);
     clearFormValidation();
     resetImageState("");
+    setProductSearchTerms([]);
+    setProductSearchTermsBaseline("[]");
+    setProductSearchTermsLoading(false);
   }
 
   function closeProductEditorAndReturn() {
@@ -1320,8 +1367,11 @@ export default function ProductsPage() {
     if (!form.category.trim() || form.category === "All Categories") {
       errors.category = "Category is required.";
     }
-    if (!Number.isFinite(form.ratePerPiece) || form.ratePerPiece <= 0) {
-      errors.ratePerPiece = "Purchase cost must be greater than 0.";
+    if (
+      form.ratePerPiece !== null &&
+      (!Number.isFinite(form.ratePerPiece) || form.ratePerPiece <= 0)
+    ) {
+      errors.ratePerPiece = "Purchase cost must be greater than 0 or left blank.";
     }
     if (!Number.isFinite(form.retailPrice) || form.retailPrice <= 0) {
       errors.retailPrice = "Retail price must be greater than 0.";
@@ -1332,10 +1382,10 @@ export default function ProductsPage() {
     if (form.wholesaleEligible && form.wholesalePrice > form.retailPrice) {
       errors.wholesalePrice = "Wholesale price cannot be higher than retail price.";
     }
-    if (form.retailPrice > 0 && form.ratePerPiece > form.retailPrice) {
+    if (form.ratePerPiece !== null && form.retailPrice > 0 && form.ratePerPiece > form.retailPrice) {
       errors.retailPrice = "Retail price is below purchase cost. Increase it before saving.";
     }
-    if (form.wholesaleEligible && form.wholesalePrice > 0 && form.ratePerPiece > form.wholesalePrice) {
+    if (form.ratePerPiece !== null && form.wholesaleEligible && form.wholesalePrice > 0 && form.ratePerPiece > form.wholesalePrice) {
       errors.wholesalePrice = "Wholesale price is below purchase cost. Increase it before saving.";
     }
     if (
@@ -1420,7 +1470,10 @@ export default function ProductsPage() {
             ? null
             : Math.max(0, Number(form.sizeValue || 0)),
         sizeUnit: form.sizeUnit || "STANDARD",
-        ratePerPiece: Math.max(0, Number(form.ratePerPiece || form.retailPrice || 0)),
+        ratePerPiece:
+          form.ratePerPiece === null
+            ? null
+            : Math.max(0.01, Number(form.ratePerPiece)),
         packageQuantity: Math.max(0.001, Number(form.packageQuantity || 1)),
         packageUnit: form.packageUnit || "PIECE",
         saleUnit: form.saleUnit || "PIECE",
@@ -1447,7 +1500,7 @@ export default function ProductsPage() {
       delete (payload as any).id;
 
       // deciding between create and update based on whether a product is currently active in edit mode
-      const savedProduct = activeProductId
+      let savedProduct = activeProductId
         ? await updateProduct(activeProductId, payload as any)
         : await createProduct(payload as any);
 
@@ -1455,7 +1508,7 @@ export default function ProductsPage() {
       // uploading the image after the product save gives us the real saved product id to attach it to
       if (productImageFile) {
         try {
-          await uploadProductImage(savedProduct.id, productImageFile);
+          savedProduct = await uploadProductImage(savedProduct.id, productImageFile);
         } catch (error: any) {
           // this handles when the image upload fails after the product itself was already saved
           imageUploadError = error?.message || "Image upload failed.";
@@ -1463,6 +1516,24 @@ export default function ProductsPage() {
             ...prev,
             image: imageUploadError,
           }));
+        }
+      }
+
+      if (isAdmin) {
+        try {
+          const aliases = await replaceProductSearchAliasesApi({
+            productId: savedProduct.id,
+            aliases: productSearchTerms,
+          });
+          const savedTerms = aliases.map((alias) => alias.alias);
+          setProductSearchTerms(savedTerms);
+          setProductSearchTermsBaseline(JSON.stringify(savedTerms));
+        } catch (error: any) {
+          toastMsg(
+            "danger",
+            `Product saved, but its search terms were not updated: ${error?.message || "Unknown error"}`,
+            { persistent: true },
+          );
         }
       }
 
@@ -1891,7 +1962,8 @@ export default function ProductsPage() {
           {
             retailPrice: String(product.retailPrice || ""),
             wholesalePrice: String(product.wholesalePrice || ""),
-            ratePerPiece: String(product.ratePerPiece || product.wholesalePrice || ""),
+            ratePerPiece:
+              product.ratePerPiece === null ? "" : String(product.ratePerPiece),
           },
         ]),
       ),
@@ -1972,6 +2044,7 @@ export default function ProductsPage() {
       brand: firstBrand,
       category: firstCategory,
       ratePerPiece: "",
+      wholesalePrice: "",
       retailPrice: "",
       saleUnit: "PIECE",
     });
@@ -1993,6 +2066,7 @@ export default function ProductsPage() {
       brand: firstBrand,
       category: firstCategory,
       ratePerPiece: "",
+      wholesalePrice: "",
       retailPrice: "",
       saleUnit: "PIECE",
     });
@@ -2002,7 +2076,10 @@ export default function ProductsPage() {
     const name = quickStockProduct.name.trim();
     const brandName = quickStockProduct.brand.trim();
     const categoryName = quickStockProduct.category.trim();
-    const ratePerPiece = Number(quickStockProduct.ratePerPiece || 0);
+    const ratePerPiece = quickStockProduct.ratePerPiece.trim()
+      ? Number(quickStockProduct.ratePerPiece)
+      : null;
+    const wholesalePrice = Number(quickStockProduct.wholesalePrice || 0);
     const retailPrice = Number(quickStockProduct.retailPrice || 0);
     const saleUnit = quickStockProduct.saleUnit || "PIECE";
     const sku = quickStockProduct.sku.trim();
@@ -2010,13 +2087,21 @@ export default function ProductsPage() {
     if (!name) validationErrors.name = "Product name is required.";
     if (!brandName) validationErrors.brand = "Choose a brand before saving.";
     if (!categoryName) validationErrors.category = "Choose a category before saving.";
-    if (!Number.isFinite(ratePerPiece) || ratePerPiece <= 0) {
-      validationErrors.ratePerPiece = "Purchase cost must be greater than 0.";
+    if (ratePerPiece !== null && (!Number.isFinite(ratePerPiece) || ratePerPiece <= 0)) {
+      validationErrors.ratePerPiece = "Purchase cost must be greater than 0 or left blank.";
+    }
+    if (!Number.isFinite(wholesalePrice) || wholesalePrice <= 0) {
+      validationErrors.wholesalePrice = "Wholesale price must be greater than 0.";
     }
     if (!Number.isFinite(retailPrice) || retailPrice <= 0) {
       validationErrors.retailPrice = "Retail price must be greater than 0.";
-    } else if (Number.isFinite(ratePerPiece) && retailPrice < ratePerPiece) {
+    } else if (ratePerPiece !== null && Number.isFinite(ratePerPiece) && retailPrice < ratePerPiece) {
       validationErrors.retailPrice = "Retail price cannot be below purchase cost.";
+    }
+    if (wholesalePrice > retailPrice && retailPrice > 0) {
+      validationErrors.wholesalePrice = "Wholesale price cannot be higher than retail price.";
+    } else if (ratePerPiece !== null && wholesalePrice < ratePerPiece) {
+      validationErrors.wholesalePrice = "Wholesale price cannot be below purchase cost.";
     }
     setQuickStockErrors(validationErrors);
     const firstInvalidField = Object.keys(validationErrors)[0] as keyof QuickStockErrors | undefined;
@@ -2053,7 +2138,7 @@ export default function ProductsPage() {
         wholesaleEligible: true,
         sourceCitation: "",
         retailPrice,
-        wholesalePrice: ratePerPiece,
+        wholesalePrice,
         thresholdQty: businessDefaults.defaultWholesaleQtyThreshold,
         thresholdQtyMode: "default",
         stock: 0,
@@ -2078,6 +2163,38 @@ export default function ProductsPage() {
   }
 
   function applyPriceMarginsToSelected() {
+    const missingCostProducts = selectedProducts.filter(
+      (product) =>
+        priceMarginTargetIds[product.id] &&
+        !String(priceRows[product.id]?.ratePerPiece ?? "").trim(),
+    );
+    if (missingCostProducts.length > 0) {
+      setBulkPriceErrors((current) => ({
+        ...current,
+        rows: {
+          ...(current.rows || {}),
+          ...Object.fromEntries(
+            missingCostProducts.map((product) => [
+              product.id,
+              { ratePerPiece: "Enter purchase cost before applying cost-based margins." },
+            ]),
+          ),
+        },
+      }));
+      setConfirmApplyPriceMargins(false);
+      toastMsg(
+        "info",
+        `${missingCostProducts.length} selected product${missingCostProducts.length === 1 ? " has" : "s have"} no purchase cost.`,
+      );
+      window.setTimeout(() => {
+        focusInvalidField(
+          document.querySelector<HTMLElement>(
+            `[data-price-field="${missingCostProducts[0].id}-ratePerPiece"]`,
+          ),
+        );
+      }, 0);
+      return;
+    }
     setPriceRows((current) => {
       const next = { ...current };
       selectedProducts.forEach((product) => {
@@ -2085,7 +2202,8 @@ export default function ProductsPage() {
           const row = next[product.id] || {
             retailPrice: String(product.retailPrice),
             wholesalePrice: String(product.wholesalePrice),
-            ratePerPiece: String(product.ratePerPiece),
+            ratePerPiece:
+              product.ratePerPiece === null ? "" : String(product.ratePerPiece),
           };
           const rate = Number(row.ratePerPiece || 0);
           next[product.id] = {
@@ -2369,7 +2487,7 @@ export default function ProductsPage() {
 
           <label>
             <div className="mb-[6px] text-[12px] font-extrabold uppercase text-[#8C8889]">
-              Rate / base price
+              Purchase cost (optional)
             </div>
             <input
               id="quick-stock-ratePerPiece"
@@ -2384,16 +2502,36 @@ export default function ProductsPage() {
                 setQuickStockProduct((current) => ({
                   ...current,
                   ratePerPiece: value,
-                  retailPrice:
-                    current.retailPrice || !value
-                      ? current.retailPrice
-                      : String(roundMoney(Number(value) * 1.18)),
                 }));
                 clearQuickStockFieldError("ratePerPiece");
               }}
               className={`h-[42px] w-full rounded-[12px] px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none ${quickStockControlTone("ratePerPiece")}`}
             />
             {quickStockErrors.ratePerPiece ? <span id="quick-stock-rate-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.ratePerPiece}</span> : null}
+          </label>
+
+          <label>
+            <div className="mb-[6px] text-[12px] font-extrabold uppercase text-[#8C8889]">
+              Wholesale price
+            </div>
+            <input
+              id="quick-stock-wholesalePrice"
+              type="number"
+              min={0}
+              step="0.01"
+              value={quickStockProduct.wholesalePrice}
+              aria-invalid={Boolean(quickStockErrors.wholesalePrice)}
+              aria-describedby={quickStockErrors.wholesalePrice ? "quick-stock-wholesale-error" : undefined}
+              onChange={(event) => {
+                setQuickStockProduct((current) => ({
+                  ...current,
+                  wholesalePrice: event.target.value,
+                }));
+                clearQuickStockFieldError("wholesalePrice");
+              }}
+              className={`h-[42px] w-full rounded-[12px] px-[12px] text-right text-[13px] font-semibold text-[#000000] outline-none ${quickStockControlTone("wholesalePrice")}`}
+            />
+            {quickStockErrors.wholesalePrice ? <span id="quick-stock-wholesale-error" className="mt-1 block text-[11px] font-bold text-[#BE123C]" role="alert">{quickStockErrors.wholesalePrice}</span> : null}
           </label>
 
           <label>
@@ -2455,7 +2593,9 @@ export default function ProductsPage() {
           productId: product.id,
           retailPrice: Number(priceRows[product.id]?.retailPrice || 0),
           wholesalePrice: Number(priceRows[product.id]?.wholesalePrice || 0),
-          ratePerPiece: Number(priceRows[product.id]?.ratePerPiece || priceRows[product.id]?.wholesalePrice || 0),
+          ratePerPiece: String(priceRows[product.id]?.ratePerPiece ?? "").trim()
+            ? Number(priceRows[product.id]?.ratePerPiece)
+            : null,
         }));
   }
 
@@ -2466,7 +2606,9 @@ export default function ProductsPage() {
     if (!isFilteredSelection) {
       updates.forEach((row) => {
         const errors: Partial<Record<PriceField, string>> = {};
-        if (!Number.isFinite(row.ratePerPiece) || row.ratePerPiece <= 0) errors.ratePerPiece = "Enter a rate greater than 0.";
+        if (row.ratePerPiece !== null && (!Number.isFinite(row.ratePerPiece) || row.ratePerPiece <= 0)) {
+          errors.ratePerPiece = "Enter a purchase cost greater than 0 or leave it blank.";
+        }
         if (!Number.isFinite(row.wholesalePrice) || row.wholesalePrice <= 0) errors.wholesalePrice = "Enter a wholesale price greater than 0.";
         if (!Number.isFinite(row.retailPrice) || row.retailPrice <= 0) errors.retailPrice = "Enter a retail price greater than 0.";
         if (Object.keys(errors).length > 0) rowErrors[row.productId] = errors;
@@ -2546,6 +2688,7 @@ export default function ProductsPage() {
       const result = await importReviewedPdfRowsApi(pdfReviewBatch.id, {
         rows,
         ignoredRowIds,
+        approved: true,
       });
       setPdfReviewBatch(result.batch);
       setImportResult({
@@ -2645,6 +2788,8 @@ export default function ProductsPage() {
           }}
           onManageStock={openStockManagerForSelection}
           onSearchInsights={isAdmin ? () => setOpenSearchInsights(true) : undefined}
+          purchaseCostVisible={purchaseCostVisible}
+          onTogglePurchaseCost={isAdmin ? togglePurchaseCostVisibility : undefined}
         />
       </div>
 
@@ -2652,10 +2797,10 @@ export default function ProductsPage() {
         <>
         {/* ── mobile selection bar (< lg) ── */}
         <div
-          className={`selection-sticky-wrap sticky top-0 z-[30] -mx-5 lg:hidden ${
+          className={`selection-sticky-wrap sticky top-0 z-[30] -mx-3 sm:-mx-5 lg:hidden ${
             isSelectionPinned
-              ? "bg-white/95 px-5 pb-2 pt-2 shadow-[0_10px_18px_-16px_rgba(15,23,42,0.7)] backdrop-blur-md"
-              : "px-5 pt-0"
+              ? "bg-white/95 px-3 pb-2 pt-2 shadow-[0_10px_18px_-16px_rgba(15,23,42,0.7)] backdrop-blur-md sm:px-5"
+              : "px-3 pt-0 sm:px-5"
           }`}
         >
           <div
@@ -2815,6 +2960,7 @@ export default function ProductsPage() {
       {/* this table only receives the current client-side page slice, not the full product array */}
       <ProductsTableCard
         stockTracked={stockTracked}
+        purchaseCostVisible={purchaseCostVisible}
         rows={pageItems}
         loading={productsLoading}
         loadError={productsLoadError}
@@ -2976,6 +3122,10 @@ export default function ProductsPage() {
         formErrors={formErrors}
         productImagePreview={productImagePreview}
         productImageName={productImageFile?.name || ""}
+        productSearchTerms={productSearchTerms}
+        setProductSearchTerms={setProductSearchTerms}
+        productSearchTermsLoading={productSearchTermsLoading}
+        purchaseCostVisible={purchaseCostVisible}
         onProductImageChange={handleProductImageChange}
         onClearProductImage={() => handleProductImageChange(null)}
         onSave={saveProduct}
@@ -3958,7 +4108,8 @@ export default function ProductsPage() {
               const row = priceRows[product.id] || {
                 retailPrice: String(product.retailPrice),
                 wholesalePrice: String(product.wholesalePrice),
-                ratePerPiece: String(product.ratePerPiece),
+                ratePerPiece:
+                  product.ratePerPiece === null ? "" : String(product.ratePerPiece),
               };
               return (
                 <article key={product.id} className="rounded-[14px] border border-[#E5E7EB] bg-white p-3 shadow-sm">
@@ -4032,7 +4183,8 @@ export default function ProductsPage() {
                   const row = priceRows[product.id] || {
                     retailPrice: String(product.retailPrice),
                     wholesalePrice: String(product.wholesalePrice),
-                    ratePerPiece: String(product.ratePerPiece),
+                    ratePerPiece:
+                      product.ratePerPiece === null ? "" : String(product.ratePerPiece),
                   };
                   return (
                     <tr key={product.id} className="transition-colors hover:bg-[#ECEFF3]">
@@ -4042,7 +4194,7 @@ export default function ProductsPage() {
                         <div className="text-[11px] text-[#565449] mt-[2px]">SKU: {product.sku || "-"}</div>
                       </td>
                       <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50">
-                        {product.ratePerPiece}
+                        {product.ratePerPiece === null ? "Not entered" : product.ratePerPiece}
                       </td>
                       <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50">
                         {product.wholesalePrice}

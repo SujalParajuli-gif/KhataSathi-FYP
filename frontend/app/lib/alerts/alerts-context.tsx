@@ -19,6 +19,7 @@ import { isRateLimitError } from "~/lib/api/client";
 type AlertsContextValue = {
   alerts: AppAlert[];
   loading: boolean;
+  error: string | null;
   unreadCount: number;
   refreshAlerts: (limit?: number) => Promise<void>;
   markAlertRead: (alertKey: string) => Promise<void>;
@@ -33,6 +34,7 @@ const AlertsContext = createContext<AlertsContextValue | null>(null);
 const emptyAlertsContext: AlertsContextValue = {
   alerts: [],
   loading: false,
+  error: null,
   unreadCount: 0,
   refreshAlerts: async () => {},
   markAlertRead: async () => {},
@@ -45,30 +47,45 @@ const emptyAlertsContext: AlertsContextValue = {
 export function AlertsProvider({
   children,
   enabled = true,
+  identityKey,
 }: {
   children: ReactNode;
   enabled?: boolean;
+  identityKey?: string;
 }) {
   const [alerts, setAlerts] = useState<AppAlert[]>([]);
   const [loading, setLoading] = useState(enabled);
+  const [error, setError] = useState<string | null>(null);
   const latestLimitRef = useRef(100);
   const refreshInFlightRef = useRef<Promise<void> | null>(null);
+  const activeIdentityRef = useRef(identityKey);
 
   async function refreshAlerts(limit = latestLimitRef.current) {
     if (!enabled) return;
     if (refreshInFlightRef.current) return refreshInFlightRef.current;
 
     latestLimitRef.current = limit;
-    const refresh = (async () => {
+    const requestIdentity = identityKey;
+    let refresh: Promise<void> = Promise.resolve();
+    refresh = (async () => {
       setLoading(true);
       try {
-        setAlerts(await fetchAlerts(limit));
+        const nextAlerts = await fetchAlerts(limit);
+        if (activeIdentityRef.current === requestIdentity) {
+          setAlerts(nextAlerts);
+          setError(null);
+        }
       } catch {
         // Preserve the last successful result. Empty data must mean there are
         // no alerts, not that a transient request failed.
+        if (activeIdentityRef.current === requestIdentity) {
+          setError("Alerts could not be loaded. Check the connection and try again.");
+        }
       } finally {
-        setLoading(false);
-        refreshInFlightRef.current = null;
+        if (activeIdentityRef.current === requestIdentity) setLoading(false);
+        if (refreshInFlightRef.current === refresh) {
+          refreshInFlightRef.current = null;
+        }
       }
     })();
 
@@ -77,13 +94,17 @@ export function AlertsProvider({
   }
 
   useEffect(() => {
+    activeIdentityRef.current = identityKey;
+    refreshInFlightRef.current = null;
+    setAlerts([]);
+    setError(null);
     if (!enabled) {
-      setAlerts([]);
       setLoading(false);
       return;
     }
+    setLoading(true);
     void refreshAlerts(100);
-  }, [enabled]);
+  }, [enabled, identityKey]);
 
   async function refreshAfterMutationFailure(error: unknown) {
     if (!isRateLimitError(error)) await refreshAlerts();
@@ -168,6 +189,7 @@ export function AlertsProvider({
       value={{
         alerts,
         loading,
+        error,
         unreadCount,
         refreshAlerts,
         markAlertRead,

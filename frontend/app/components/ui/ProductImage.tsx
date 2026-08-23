@@ -3,6 +3,7 @@ import Icon from "./Icon";
 
 type Props = {
   src?: string | null;
+  fallbackSrc?: string | null;
   alt: string;
   className?: string;
   imgClassName?: string;
@@ -14,6 +15,7 @@ type Props = {
 
 export default function ProductImage({
   src,
+  fallbackSrc,
   alt,
   className = "",
   imgClassName = "h-full w-full object-contain",
@@ -22,12 +24,14 @@ export default function ProductImage({
   loading = "lazy",
   showRetryOnFailure = false,
 }: Props) {
-  const image = useResilientImage(src);
+  const image = useResilientImage(src, fallbackSrc);
 
   return (
     <div className={`relative ${className}`}>
       {image.requestUrl && !image.failed ? (
         <img
+          key={image.requestUrl}
+          ref={image.imageRef}
           src={image.requestUrl}
           alt={alt}
           className={`${imgClassName} transition-opacity duration-200 ${image.ready ? "opacity-100" : "opacity-0"}`}
@@ -39,7 +43,12 @@ export default function ProductImage({
       ) : null}
       {!image.ready ? (
         <div className="absolute inset-0 flex items-center justify-center bg-inherit">
-          {image.failed && showRetryOnFailure ? (
+          {image.loading ? (
+            <div
+              className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100"
+              aria-label={`Loading image for ${alt}`}
+            />
+          ) : image.failed && showRetryOnFailure ? (
             <button
               type="button"
               onClick={image.retryNow}
@@ -48,6 +57,8 @@ export default function ProductImage({
               <Icon name="refresh" sizePx={17} />
               Retry image
             </button>
+          ) : image.failed ? (
+            <Icon name="broken_image" sizePx={iconSizePx} className={iconClassName} />
           ) : (
             <Icon name="inventory_2" sizePx={iconSizePx} className={iconClassName} />
           )}

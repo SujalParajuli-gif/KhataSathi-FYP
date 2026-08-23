@@ -1,6 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { buildAuditAlert, shouldIncludeAuditLogForRole } from "../modules/alerts/service";
+import {
+  buildAuditAlert,
+  getAllowedAuditActionsForCapabilities,
+  isAuditAlertImplicitlyRead,
+  shouldIncludeAuditLogForRole,
+} from "../modules/alerts/service";
 
 function managerLog(action: string, meta: Record<string, unknown> = {}) {
   return {
@@ -24,6 +29,40 @@ test("manager import audit logs produce one admin product alert", () => {
   assert.equal(alert?.level, "INFO");
   assert.equal(alert?.type, "Product");
   assert.match(alert?.message || "", /Mina imported 8 products from supplier\.csv/);
+});
+
+test("product creation produces a catalog alert", () => {
+  const alert = buildAuditAlert(
+    managerLog("PRODUCT_CREATED", {
+      productName: "Plastic Bucket",
+      sku: "PB-1",
+    }),
+  );
+
+  assert.equal(alert?.title, "Product added");
+  assert.equal(alert?.type, "Product");
+  assert.match(alert?.message || "", /Plastic Bucket/);
+});
+
+test("product details, activation, and mode changes produce clear alerts", () => {
+  const details = buildAuditAlert(managerLog("PRODUCT_UPDATED", {
+    productName: "Plastic Bucket",
+    changedFields: ["name", "image"],
+  }));
+  const activation = buildAuditAlert(managerLog("PRODUCT_ACTIVATED", {
+    productName: "Plastic Bucket",
+  }));
+  const mode = buildAuditAlert(managerLog("BUSINESS_MODE_CHANGED", {
+    previousMode: "FULL_POS",
+    businessMode: "CATALOG_ONLY",
+  }));
+
+  assert.equal(details?.title, "Product details updated");
+  assert.match(details?.message || "", /name, image/);
+  assert.equal(activation?.title, "Product available for sale");
+  assert.match(activation?.message || "", /activated product Plastic Bucket/);
+  assert.equal(mode?.type, "System");
+  assert.match(mode?.message || "", /full pos to catalog only/);
 });
 
 test("manager bulk price update audit logs produce a warning digest alert", () => {
@@ -142,7 +181,7 @@ test("new operational alert rules render clear messages", () => {
   assert.match(priceAlert?.message || "", /NPR 100 -> NPR 125/);
 });
 
-test("role alert filter suppresses routine self-alerts and targets cashier catalog alerts", () => {
+test("role alert filter keeps manager activity visible without making it unread", () => {
   const ownManagerAction = {
     ...managerLog("STOCK_ADJUSTED", { qtyDelta: -1 }),
     actorId: "manager-1",
@@ -158,8 +197,10 @@ test("role alert filter suppresses routine self-alerts and targets cashier catal
     entityId: "product-1",
   };
 
-  assert.equal(shouldIncludeAuditLogForRole(ownManagerAction, "manager-1", "MANAGER"), false);
+  assert.equal(shouldIncludeAuditLogForRole(ownManagerAction, "manager-1", "MANAGER"), true);
+  assert.equal(isAuditAlertImplicitlyRead(ownManagerAction, "manager-1"), true);
   assert.equal(shouldIncludeAuditLogForRole(backupFailure, "manager-1", "MANAGER"), true);
+  assert.equal(isAuditAlertImplicitlyRead(backupFailure, "manager-1"), false);
   assert.equal(
     shouldIncludeAuditLogForRole(priceUpdate, "cashier-1", "CASHIER", {
       cashierRecentProductIds: new Set(["product-1"]),
@@ -172,4 +213,56 @@ test("role alert filter suppresses routine self-alerts and targets cashier catal
     }),
     false,
   );
+  assert.equal(
+    shouldIncludeAuditLogForRole(
+      { ...priceUpdate, action: "PRODUCT_ACTIVATED" },
+      "cashier-1",
+      "CASHIER",
+    ),
+    true,
+  );
+  assert.equal(
+    shouldIncludeAuditLogForRole(priceUpdate, "cashier-1", "CASHIER", {
+      posDisabled: true,
+    }),
+    true,
+  );
+});
+
+test("business-mode alert matrix exposes only relevant operational events", () => {
+  const catalog = getAllowedAuditActionsForCapabilities({
+    businessMode: "CATALOG_ONLY",
+    posEnabled: false,
+  });
+  const inventory = getAllowedAuditActionsForCapabilities({
+    businessMode: "INVENTORY_ONLY",
+    posEnabled: false,
+  });
+  const fullPos = getAllowedAuditActionsForCapabilities({
+    businessMode: "FULL_POS",
+    posEnabled: true,
+  });
+
+  for (const action of [
+    "PRODUCT_CREATED",
+    "PRODUCT_UPDATED",
+    "PRODUCT_PRICE_UPDATED",
+    "PRODUCT_ACTIVATED",
+    "PRODUCT_DEACTIVATED",
+    "PRODUCT_IMPORT_COMPLETED",
+    "BUSINESS_MODE_CHANGED",
+  ]) {
+    assert.equal(catalog.includes(action as any), true, `${action} should be available in catalog mode`);
+    assert.equal(inventory.includes(action as any), true, `${action} should be available in inventory mode`);
+    assert.equal(fullPos.includes(action as any), true, `${action} should be available in full POS mode`);
+  }
+
+  assert.equal(catalog.includes("STOCK_ADJUSTED" as any), false);
+  assert.equal(catalog.includes("INVOICE_FINALIZED" as any), false);
+  assert.equal(inventory.includes("STOCK_ADJUSTED" as any), true);
+  assert.equal(inventory.includes("INVOICE_FINALIZED" as any), false);
+  assert.equal(fullPos.includes("STOCK_ADJUSTED" as any), true);
+  assert.equal(fullPos.includes("INVOICE_FINALIZED" as any), true);
+  assert.equal(fullPos.includes("PAYMENT_VOIDED" as any), true);
+  assert.equal(fullPos.includes("RETURN_REQUEST_CREATED" as any), true);
 });

@@ -37,6 +37,67 @@ export async function createSynonym(req: Request, res: Response) {
   }
 }
 
+export async function previewSynonymPromotion(req: Request, res: Response) {
+  try {
+    const context = await searchAliases.getSearchSynonymPromotionContext({
+      alias: req.query.alias,
+      canonicalTerm: req.query.canonicalTerm,
+    });
+    const result = await productService.listProducts({
+      search: context.prepared.canonicalTerm,
+      isActive: true,
+      page: 1,
+      pageSize: 6,
+    });
+    res.json({
+      alias: context.prepared.alias,
+      canonicalTerm: context.prepared.canonicalTerm,
+      normalizedCanonicalTerm: context.prepared.normalizedCanonicalTerm,
+      totalMatches: result.total,
+      products: result.products.map((product) => ({
+        id: product.id,
+        name: product.name,
+        sku: product.sku,
+        imageUrl: product.imageUrl,
+        thumbnailUrl: product.thumbnailUrl,
+        brand: product.brand,
+        category: product.category,
+      })),
+      existingSynonym: context.existingSynonym,
+      linkedProductAliases: context.linkedProductAliases.map((alias) => ({
+        id: alias.id,
+        product: alias.product,
+      })),
+    });
+  } catch (error) {
+    sendSearchAliasError(res, error);
+  }
+}
+
+export async function promoteSynonym(req: Request, res: Response) {
+  try {
+    const matching = await productService.listProducts({
+      search: String(req.body.canonicalTerm || "").trim(),
+      isActive: true,
+      page: 1,
+      pageSize: 1,
+    });
+    if (matching.total < 1) {
+      throw Object.assign(
+        new Error("The product type must match at least one active product before this rule can be saved."),
+        { statusCode: 400 },
+      );
+    }
+    const result = await searchAliases.promoteSearchSynonym(
+      { alias: req.body.alias, canonicalTerm: req.body.canonicalTerm },
+      req.user!.id,
+    );
+    res.status(201).json(result);
+  } catch (error) {
+    sendSearchAliasError(res, error);
+  }
+}
+
 export async function updateSynonym(req: Request, res: Response) {
   try {
     const synonym = await searchAliases.updateSearchSynonym(
@@ -83,6 +144,19 @@ export async function updateProductAlias(req: Request, res: Response) {
       req.user!.id,
     );
     res.json(alias);
+  } catch (error) {
+    sendSearchAliasError(res, error);
+  }
+}
+
+export async function replaceProductAliases(req: Request, res: Response) {
+  try {
+    const aliases = await searchAliases.replaceProductSearchAliases(
+      req.body.productId,
+      req.body.aliases,
+      req.user!.id,
+    );
+    res.json({ aliases });
   } catch (error) {
     sendSearchAliasError(res, error);
   }

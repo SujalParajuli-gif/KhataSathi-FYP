@@ -43,7 +43,14 @@ export function productionEnvironmentProblems(
   for (const origin of origins) {
     try {
       const parsed = new URL(origin);
-      const local = parsed.hostname === "localhost" || parsed.hostname === "127.0.0.1";
+      const host = parsed.hostname;
+      const local =
+        host === "localhost" ||
+        host === "127.0.0.1" ||
+        host === "::1" ||
+        /^192\.168\.\d{1,3}\.\d{1,3}$/.test(host) ||
+        /^10\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(host) ||
+        /^172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3}$/.test(host);
       if (parsed.protocol !== "https:" && !local) {
         problems.push(`Production origin must use HTTPS: ${origin}`);
       }
@@ -63,7 +70,7 @@ export function productionEnvironmentProblems(
   ] as const) {
     const value = String(env[variable] || "").trim();
     if (!value || !path.isAbsolute(value)) {
-      problems.push(`${variable} must be an explicit absolute path in production.`);
+      problems.push(`${variable} must be an absolute path in production.`);
     }
   }
   return problems;
@@ -129,9 +136,15 @@ export function getSessionConfig() {
     throw new Error("SESSION_SECRET must contain at least 32 characters.");
   }
 
+  const rawOrigin = String(
+    process.env.FRONTEND_BASE_URL || process.env.CORS_ORIGINS || "",
+  ).toLowerCase();
+  const isPlainHttp = rawOrigin.startsWith("http://");
+  const secureCookies = process.env.NODE_ENV === "production" && !isPlainHttp;
+
   return {
     ttlHours,
-    secureCookies: process.env.NODE_ENV === "production",
+    secureCookies,
     sessionSecret,
   };
 }

@@ -361,6 +361,71 @@ export async function createProductSearchAliasApi(input: {
     return res.data;
 }
 
+export type SearchSynonymPromotionPreview = {
+    alias: string;
+    canonicalTerm: string;
+    normalizedCanonicalTerm: string;
+    totalMatches: number;
+    products: SearchAliasProductOption[];
+    existingSynonym?: {
+        id: string;
+        alias: string;
+        canonicalTerm: string;
+        normalizedCanonicalTerm: string;
+        isEnabled: boolean;
+    } | null;
+    linkedProductAliases: Array<{
+        id: string;
+        product: { id: string; name: string; sku: string };
+    }>;
+};
+
+export async function previewSearchSynonymPromotionApi(
+    input: { alias: string; canonicalTerm: string },
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/product-search/synonyms/promotion-preview", {
+        params: input,
+        signal: options?.signal,
+    });
+    return res.data as SearchSynonymPromotionPreview;
+}
+
+export async function promoteSearchSynonymApi(input: {
+    alias: string;
+    canonicalTerm: string;
+}) {
+    const res = await api.post("/api/product-search/synonyms/promote", input);
+    return res.data as {
+        synonym: { id: string; alias: string; canonicalTerm: string; isEnabled: boolean };
+        disabledProductAliasCount: number;
+    };
+}
+
+export type ProductSearchAliasRecord = {
+    id: string;
+    productId: string;
+    alias: string;
+    normalizedAlias: string;
+    source: string;
+    isEnabled: boolean;
+};
+
+export async function listProductSearchAliasesApi(productId: string) {
+    const res = await api.get("/api/product-search/product-aliases", {
+        params: { productId },
+    });
+    return (res.data?.aliases || []) as ProductSearchAliasRecord[];
+}
+
+export async function replaceProductSearchAliasesApi(input: {
+    productId: string;
+    aliases: string[];
+}) {
+    const res = await api.put("/api/product-search/product-aliases", input);
+    return (res.data?.aliases || []) as ProductSearchAliasRecord[];
+}
+
 // fetching a single product by its ID
 export async function getProductApi(id: string) {
     const res = await api.get(`/api/products/${id}`);
@@ -547,7 +612,7 @@ export async function bulkUpdateProductPricesApi(payload: {
         productId: string;
         retailPrice: number;
         wholesalePrice: number;
-        ratePerPiece?: number;
+        ratePerPiece?: number | null;
     }>;
     scope?: "IDS" | "FILTERED";
     filters?: {
@@ -659,7 +724,7 @@ export type ReviewedPdfImportRowPayload = {
     productCodeVariant?: string;
     sizeValue?: number | null;
     sizeUnit?: string;
-    ratePerPiece: number;
+    ratePerPiece: number | null;
     packageQuantity: number;
     packageUnit: string;
     saleUnit: string;
@@ -667,6 +732,7 @@ export type ReviewedPdfImportRowPayload = {
     quantityStep: number;
     wholesaleEligible: boolean;
     sourceCitation?: string;
+    searchAliases?: string[];
     retailPrice: number;
     wholesalePrice: number;
     stock: number;
@@ -712,7 +778,11 @@ export async function saveReviewedProductImportRowsApi(
 
 export async function importReviewedPdfRowsApi(
     batchId: string,
-    payload: { rows: ReviewedPdfImportRowPayload[]; ignoredRowIds?: string[] },
+    payload: {
+        rows: ReviewedPdfImportRowPayload[];
+        ignoredRowIds?: string[];
+        approved: true;
+    },
 ) {
     const res = await api.post(`/api/products/import-batches/${batchId}/import`, payload);
     return res.data as ReviewedPdfImportResult;

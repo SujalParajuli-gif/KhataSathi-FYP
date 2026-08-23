@@ -8,6 +8,7 @@ function cn(...values: Array<string | false | null | undefined>) {
 
 type Props = {
   src?: string | null;
+  fallbackSrc?: string | null;
   previewSrc?: string | null;
   alt: string;
   title?: string;
@@ -21,6 +22,7 @@ type Props = {
 
 export default function PreviewableImage({
   src,
+  fallbackSrc,
   previewSrc,
   alt,
   title,
@@ -31,7 +33,7 @@ export default function PreviewableImage({
   previewCue = "hover",
   enablePreview = true,
 }: Props) {
-  const image = useResilientImage(src);
+  const image = useResilientImage(src, fallbackSrc);
   const previewUrl = resolveMediaUrl(previewSrc || src);
   const [open, setOpen] = useState(false);
   const [desktopViewport, setDesktopViewport] = useState(false);
@@ -61,6 +63,8 @@ export default function PreviewableImage({
 
   const imageElement = (
     <img
+      key={image.requestUrl}
+      ref={image.imageRef}
       src={image.requestUrl}
       alt={alt}
       className={cn(imgClassName, "transition-opacity duration-200", image.ready ? "opacity-100" : "opacity-0")}
@@ -76,7 +80,11 @@ export default function PreviewableImage({
       <div className={cn("relative", className)}>
         {!image.failed ? imageElement : null}
         {!image.ready ? (
-          <div className="absolute inset-0 flex items-center justify-center bg-inherit">{fallback}</div>
+          <div className="absolute inset-0 flex items-center justify-center bg-inherit">
+            {image.loading ? (
+              <div className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100" aria-label={`Loading image for ${alt}`} />
+            ) : fallback}
+          </div>
         ) : null}
       </div>
     );
@@ -98,7 +106,11 @@ export default function PreviewableImage({
       >
         {!image.failed ? imageElement : null}
         {!image.ready ? (
-          <span className="absolute inset-0 flex items-center justify-center bg-inherit">{fallback}</span>
+          <span className="absolute inset-0 flex items-center justify-center bg-inherit">
+            {image.loading ? (
+              <span className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100" aria-label={`Loading image for ${alt}`} />
+            ) : fallback}
+          </span>
         ) : null}
         {image.ready ? (
           <span className={cn(
@@ -110,13 +122,13 @@ export default function PreviewableImage({
 
       {open ? (
         <div
-          className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/55 p-3 backdrop-blur-[2px] sm:p-6"
+          className="fixed inset-0 z-[140] flex items-center justify-center bg-slate-950/55 p-2 backdrop-blur-[2px] sm:p-6"
           role="dialog"
           aria-modal="true"
           aria-label={`Image preview for ${title || alt}`}
           onMouseDown={(event) => event.target === event.currentTarget && setOpen(false)}
         >
-          <div className="flex max-h-[92vh] w-full max-w-[980px] flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-2xl">
+          <div className="flex max-h-[calc(100dvh-16px)] w-full max-w-[980px] flex-col overflow-hidden rounded-[18px] border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100dvh-48px)] sm:rounded-[22px]">
             <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
               <div className="min-w-0">
                 <div className="truncate text-[18px] font-black text-slate-950 sm:text-[20px]">{title || alt}</div>
@@ -133,7 +145,7 @@ export default function PreviewableImage({
               </div>
             </div>
             <div className="min-h-0 flex-1 bg-slate-50 p-3 sm:p-5">
-              <div className="flex h-full min-h-[360px] max-h-[70vh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white">
+              <div className="flex h-full min-h-[200px] max-h-[70dvh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white sm:min-h-[360px]">
                 <img src={previewUrl} alt={alt} className="max-h-full max-w-full object-contain" decoding="async" />
               </div>
             </div>

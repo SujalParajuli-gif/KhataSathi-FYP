@@ -112,6 +112,7 @@ function toReviewedImportRowPayload(
     quantityStep: row.quantityStep,
     wholesaleEligible: row.wholesaleEligible,
     sourceCitation: row.sourceCitation,
+    searchAliases: row.searchAliases || [],
     retailPrice: row.retailPrice,
     wholesalePrice: row.wholesalePrice,
     stock: row.stock,
@@ -122,7 +123,8 @@ function reviewedImportRowFingerprint(row: PdfReviewDraft) {
   return JSON.stringify(toReviewedImportRowPayload(row));
 }
 
-function formatQty(value: number) {
+function formatQty(value: number | null) {
+  if (value === null) return "Not entered";
   const safe = Number.isFinite(value) ? Math.round(value * 1000) / 1000 : 0;
   return Number.isInteger(safe)
     ? safe.toLocaleString()
@@ -180,6 +182,20 @@ function readParsedBoolean(
     }
   }
   return fallback;
+}
+
+function formatOptionalPurchaseCost(value: number | null) {
+  return value === null ? "Not entered" : formatNpr(value);
+}
+
+function readParsedAliases(parsed: Record<string, unknown>) {
+  const value = parsed.searchAliases ?? parsed.search_aliases ?? parsed.aliases;
+  const values = Array.isArray(value)
+    ? value
+    : typeof value === "string"
+      ? value.split(/[,;\n]/g)
+      : [];
+  return [...new Set(values.map((item) => String(item || "").trim()).filter(Boolean))];
 }
 
 function displaySourceType(sourceType?: string | null) {
@@ -379,21 +395,20 @@ function guessPdfReviewDraft(
       null,
     ) !== null
   ) {
-    const baseRate =
-      readParsedNumber(parsed, ["ratePerPiece"], null) ??
-      readParsedNumber(parsed, ["wholesalePrice"], null) ??
-      readParsedNumber(parsed, ["retailPrice"], 0) ??
+    const purchaseCost = readParsedNumber(parsed, ["ratePerPiece"], null);
+    const catalogueRate =
+      readParsedNumber(parsed, ["retailPrice"], null) ??
+      readParsedNumber(parsed, ["wholesalePrice"], 0) ??
       0;
     const wholesalePrice =
       readParsedNumber(parsed, ["wholesalePrice"], null) ??
-      readParsedNumber(parsed, ["ratePerPiece"], baseRate) ??
-      baseRate;
+      roundReviewCurrency(catalogueRate * 0.82);
     const retailPrice =
       readParsedNumber(parsed, ["retailPrice"], null) ??
-      applyRetailMargin(Number(wholesalePrice || baseRate || 0), 18);
+      catalogueRate;
     const parsedName = cleanReviewProductName(
       readParsedString(parsed, ["name", "productName"], rawText),
-      Number(baseRate || wholesalePrice || retailPrice || 0),
+      Number(retailPrice || wholesalePrice || 0),
     );
     const sizeUnit = readParsedString(parsed, ["sizeUnit"], "STANDARD");
     const saleUnit = readParsedString(
@@ -432,7 +447,7 @@ function guessPdfReviewDraft(
       productCodeVariant: readParsedString(parsed, ["productCodeVariant"]),
       sizeValue: readParsedNumber(parsed, ["sizeValue"], null),
       sizeUnit,
-      ratePerPiece: Number(baseRate || wholesalePrice || retailPrice || 0),
+      ratePerPiece: purchaseCost,
       packageQuantity: Number.isFinite(Number(packageQuantity))
         ? Number(packageQuantity)
         : 1,
@@ -458,8 +473,9 @@ function guessPdfReviewDraft(
         batch.fileName ||
           `${displaySourceType(batch.sourceType)} supplier import`,
       ),
+      searchAliases: readParsedAliases(parsed),
       retailPrice: Number(retailPrice || 0),
-      wholesalePrice: Number(wholesalePrice || baseRate || 0),
+      wholesalePrice: Number(wholesalePrice || 0),
       stock: readParsedNumber(parsed, ["stock"], 0) ?? 0,
     };
   }
@@ -505,7 +521,7 @@ function guessPdfReviewDraft(
     productCodeVariant: "",
     sizeValue: size.sizeValue,
     sizeUnit: size.sizeUnit,
-    ratePerPiece: rate,
+    ratePerPiece: null,
     packageQuantity: Number.isFinite(packageQuantity) ? packageQuantity : 1,
     packageUnit,
     saleUnit:
@@ -519,8 +535,9 @@ function guessPdfReviewDraft(
     sourceCitation:
       batch.fileName ||
       `${displaySourceType(batch.sourceType)} supplier import`,
-    retailPrice: applyRetailMargin(rate, 18),
-    wholesalePrice: rate,
+    searchAliases: [],
+    retailPrice: rate,
+    wholesalePrice: roundReviewCurrency(rate * 0.82),
     stock,
   };
 }
@@ -826,6 +843,11 @@ function ModalShell({
   );
 }
 
+function csvCell(value: unknown) {
+  const text = value === null || value === undefined ? "" : String(value);
+  return `"${text.replace(/"/g, '""')}"`;
+}
+
 // this component holds all the modals for the products page (Add, Edit, View, Import, Confirm Delete)
 // it keeps the main Products page cleaner by separating all modal jsx and state wiring into this file
 export default function ProductsModals({
@@ -852,6 +874,10 @@ export default function ProductsModals({
   formErrors,
   productImagePreview,
   productImageName,
+  productSearchTerms,
+  setProductSearchTerms,
+  productSearchTermsLoading,
+  purchaseCostVisible,
   onProductImageChange,
   onClearProductImage,
 
@@ -935,6 +961,10 @@ export default function ProductsModals({
   formErrors: ProductFormErrors;
   productImagePreview: string;
   productImageName: string;
+  productSearchTerms: string[];
+  setProductSearchTerms: React.Dispatch<React.SetStateAction<string[]>>;
+  productSearchTermsLoading: boolean;
+  purchaseCostVisible: boolean;
   onProductImageChange: (file: File | null) => void;
   onClearProductImage: () => void;
 
@@ -1013,6 +1043,7 @@ export default function ProductsModals({
   const productEditorTabRailRef = React.useRef<SwipeableTabRailController | null>(null);
   const [pricingDraft, setPricingDraft] = React.useState({ cost: "", wholesale: "", retail: "" });
   const [pricingMarkupDraft, setPricingMarkupDraft] = React.useState({ wholesale: "", retail: "" });
+  const [productSearchTermDraft, setProductSearchTermDraft] = React.useState("");
   const [pdfReviewRows, setPdfReviewRows] = React.useState<PdfReviewDraft[]>(
     [],
   );
@@ -1096,8 +1127,85 @@ export default function ProductsModals({
         wholesale: cost > 0 && wholesale > 0 ? String(Math.round(((wholesale - cost) / cost) * 10000) / 100) : "",
         retail: cost > 0 && retail > 0 ? String(Math.round(((retail - cost) / cost) * 10000) / 100) : "",
       });
+      setProductSearchTermDraft("");
     }
   }, [openAddEdit, activeProductId]);
+
+  function addProductSearchTerm() {
+    const term = productSearchTermDraft.trim().replace(/\s+/g, " ");
+    if (!term || term.length > 120 || productSearchTerms.length >= 20) return;
+    setProductSearchTerms((current) => {
+      if (current.some((item) => item.localeCompare(term, undefined, { sensitivity: "accent" }) === 0)) {
+        return current;
+      }
+      return [...current, term];
+    });
+    setProductSearchTermDraft("");
+  }
+
+  function downloadImportReviewSheet() {
+    if (!pdfReviewBatch || pdfReviewRows.length === 0) return;
+    const headers = [
+      "Row",
+      "Selected",
+      "Ignored",
+      "Status",
+      "Product name",
+      "SKU",
+      "Barcode",
+      "Brand",
+      "Category",
+      "Supplier",
+      "Variant / code",
+      "Search terms",
+      "Purchase cost",
+      "Wholesale price",
+      "Retail price",
+      "Package quantity",
+      "Package unit",
+      "Sale unit",
+      "Stock",
+      "Issue",
+    ];
+    const rows = pdfReviewRows.map((row) => [
+      row.rowNumber,
+      row.selected ? "Yes" : "No",
+      row.ignored ? "Yes" : "No",
+      row.status,
+      row.name,
+      row.sku,
+      row.barcode || "",
+      row.brand,
+      row.category,
+      row.vendorSource || "",
+      row.productCodeVariant || "",
+      (row.searchAliases || []).join(" | "),
+      row.ratePerPiece,
+      row.wholesalePrice,
+      row.retailPrice,
+      row.packageQuantity,
+      row.packageUnit,
+      row.saleUnit,
+      stockTracked ? row.stock : "Not tracked",
+      row.error || "",
+    ]);
+    const csv = [headers, ...rows]
+      .map((row) => row.map(csvCell).join(","))
+      .join("\r\n");
+    const blob = new Blob(["\uFEFF", csv], { type: "text/csv;charset=utf-8" });
+    const objectUrl = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    const baseName = (pdfReviewBatch.fileName || "supplier-catalog")
+      .replace(/\.[^.]+$/, "")
+      .replace(/[^a-z0-9_-]+/gi, "-")
+      .replace(/^-+|-+$/g, "") || "supplier-catalog";
+    link.href = objectUrl;
+    link.download = `${baseName}-review.csv`;
+    document.body.appendChild(link);
+    link.click();
+    link.remove();
+    URL.revokeObjectURL(objectUrl);
+  }
 
   React.useEffect(() => {
     if (!openImport) setImportSupplierError("");
@@ -1283,9 +1391,8 @@ export default function ProductsModals({
       rows.map((row) => {
         if (!row.selected || row.ignored || row.status === "IMPORTED")
           return row;
-        const rate = Number(
-          row.ratePerPiece || row.wholesalePrice || row.retailPrice || 0,
-        );
+        if (row.ratePerPiece === null) return row;
+        const rate = Number(row.ratePerPiece);
         return {
           ...row,
           wholesalePrice: applyRetailMargin(rate, bulkWholesaleMargin),
@@ -1398,9 +1505,13 @@ export default function ProductsModals({
             <div>
               {editorStepIndex > 0 ? <Button onClick={goToPreviousProductStep} disabled={productSaveBusy}>Back</Button> : <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy}>Cancel</Button>}
             </div>
-            {mobileEditorTab === "review" ? (
+            {activeProductId ? (
               <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy}>
-                {productSaveBusy ? "Saving..." : activeProductId ? "Save Changes" : "Create Product"}
+                {productSaveBusy ? "Saving..." : "Save Changes"}
+              </Button>
+            ) : mobileEditorTab === "review" ? (
+              <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy}>
+                {productSaveBusy ? "Saving..." : "Create Product"}
               </Button>
             ) : (
               <Button variant="primary" icon="arrow_forward" onClick={goToNextProductStep}>Continue</Button>
@@ -1409,7 +1520,10 @@ export default function ProductsModals({
         }
       >
         <div className="border-b border-[#E5E7EB] bg-white px-3 pt-2 md:px-6">
-          <div className="mb-1 text-[11px] font-bold text-[#6B7280]">Step {editorStepIndex + 1} of {productEditorSteps.length}</div>
+          <div className="mb-1 text-[11px] font-bold text-[#6B7280]">
+            {activeProductId ? "Edit section" : "Step"} {editorStepIndex + 1} of {productEditorSteps.length}
+            {activeProductId ? " · Save from any section" : ""}
+          </div>
           <SwipeableTabRail
             items={productEditorSteps}
             value={mobileEditorTab}
@@ -1546,6 +1660,59 @@ export default function ProductsModals({
                     />
                   </Field>
                 </div>
+
+                {isAdmin ? (
+                  <Field label="Search terms (optional)">
+                    <div className="rounded-[12px] border border-[#CFCFD3] bg-white p-2.5">
+                      <div className="flex gap-2">
+                        <input
+                          value={productSearchTermDraft}
+                          maxLength={120}
+                          disabled={productSearchTermsLoading || productSearchTerms.length >= 20}
+                          onChange={(event) => setProductSearchTermDraft(event.target.value)}
+                          onKeyDown={(event) => {
+                            if (event.key === "Enter" || event.key === ",") {
+                              event.preventDefault();
+                              addProductSearchTerm();
+                            }
+                          }}
+                          className="h-10 min-w-0 flex-1 rounded-[10px] border border-[#DADDE3] px-3 text-[13px] font-semibold outline-none focus:border-[#2563EB]"
+                          placeholder="e.g. balti, local nickname, Nepali term"
+                          aria-label="Product-specific search term"
+                        />
+                        <button
+                          type="button"
+                          onClick={addProductSearchTerm}
+                          disabled={productSearchTermsLoading || !productSearchTermDraft.trim() || productSearchTerms.length >= 20}
+                          className="inline-flex h-10 shrink-0 items-center justify-center rounded-[10px] bg-[#11120d] px-3 text-[12px] font-extrabold text-white disabled:opacity-40"
+                        >
+                          Add
+                        </button>
+                      </div>
+                      <div className="mt-2 flex min-h-7 flex-wrap gap-1.5">
+                        {productSearchTermsLoading ? (
+                          <span className="text-[11px] font-semibold text-[#6B7280]">Loading saved terms...</span>
+                        ) : productSearchTerms.length > 0 ? (
+                          productSearchTerms.map((term) => (
+                            <span key={term} className="inline-flex min-h-8 items-center gap-1 rounded-full border border-[#BFDBFE] bg-[#EFF6FF] pl-3 pr-1.5 text-[11px] font-bold text-[#1D4ED8]">
+                              {term}
+                              <button
+                                type="button"
+                                onClick={() => setProductSearchTerms((current) => current.filter((item) => item !== term))}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-full hover:bg-blue-100"
+                                aria-label={`Remove search term ${term}`}
+                              >
+                                <GoogleIcon name="close" className="text-[15px]" />
+                              </button>
+                            </span>
+                          ))
+                        ) : (
+                          <span className="text-[11px] font-medium text-[#6B7280]">Add only real names customers or staff use for this exact product. Normal spelling mistakes are handled automatically.</span>
+                        )}
+                      </div>
+                    </div>
+                  </Field>
+                ) : null}
 
                 <Field label="Supplier / Source (optional)">
                   <CreatableCombobox
@@ -1719,7 +1886,7 @@ export default function ProductsModals({
                   PRICING
                 </h3>
                 
-                <Field label={`Purchase cost per ${(form.saleUnit || "unit").toLowerCase()} (NPR)`} error={formErrors.ratePerPiece}>
+                <Field label={`Purchase cost per ${(form.saleUnit || "unit").toLowerCase()} (optional)`} error={formErrors.ratePerPiece}>
                   <input
                     type="number"
                     min={0}
@@ -1727,13 +1894,16 @@ export default function ProductsModals({
                     inputMode="decimal"
                     aria-invalid={Boolean(formErrors.ratePerPiece)}
                     value={pricingDraft.cost}
-                    placeholder="0.00"
+                    placeholder="Leave blank if unknown"
                     onFocus={(event) => event.currentTarget.select()}
                     onChange={(event) => {
                       const value = event.target.value;
                       const nextCost = Number(value || 0);
                       setPricingDraft((current) => ({ ...current, cost: value }));
-                      setForm((product) => ({ ...product, ratePerPiece: value === "" ? 0 : nextCost }));
+                      setForm((product) => ({
+                        ...product,
+                        ratePerPiece: value === "" ? null : nextCost,
+                      }));
                       setPricingMarkupDraft({
                         wholesale: nextCost > 0 && Number(pricingDraft.wholesale) > 0 ? String(Math.round(((Number(pricingDraft.wholesale) - nextCost) / nextCost) * 10000) / 100) : "",
                         retail: nextCost > 0 && Number(pricingDraft.retail) > 0 ? String(Math.round(((Number(pricingDraft.retail) - nextCost) / nextCost) * 10000) / 100) : "",
@@ -1804,6 +1974,7 @@ export default function ProductsModals({
                           step="0.01"
                           inputMode="decimal"
                           value={pricingMarkupDraft[kind]}
+                          disabled={!Number(pricingDraft.cost)}
                           placeholder="e.g. 20"
                           onFocus={(event) => event.currentTarget.select()}
                           onChange={(event) => {
@@ -1814,10 +1985,12 @@ export default function ProductsModals({
                             setPricingDraft((current) => ({ ...current, [kind]: nextPrice > 0 ? String(nextPrice) : "" }));
                             setForm((product) => ({ ...product, [kind === "wholesale" ? "wholesalePrice" : "retailPrice"]: nextPrice }));
                           }}
-                          className={compactInputClass}
+                          className={`${compactInputClass} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
                         />
                         <div className="mt-1 text-[11px] font-semibold text-[#1D4ED8]">
-                          Profit {formatNpr(profit)} · Gross margin {Number.isFinite(grossMargin) ? grossMargin.toFixed(1) : "0.0"}%
+                          {cost > 0
+                            ? `Profit ${formatNpr(profit)} · Gross margin ${Number.isFinite(grossMargin) ? grossMargin.toFixed(1) : "0.0"}%`
+                            : "Enter purchase cost to calculate markup and profit."}
                         </div>
                       </Field>
                     );
@@ -1946,7 +2119,7 @@ export default function ProductsModals({
                     title: "Pricing",
                     step: "pricing" as ProductEditorStep,
                     lines: [
-                      `Purchase cost: ${formatNpr(Number(form.ratePerPiece || 0))}`,
+                      `Purchase cost: ${formatOptionalPurchaseCost(form.ratePerPiece)}`,
                       `Wholesale: ${formatNpr(Number(form.wholesalePrice || 0))}`,
                       `Retail: ${formatNpr(Number(form.retailPrice || 0))}`,
                     ],
@@ -2073,9 +2246,21 @@ export default function ProductsModals({
                       </div>
                     </div>
                   </div>
-                  <span className="rounded-full border border-sky-200 bg-sky-50 px-[10px] py-[5px] text-[11px] font-extrabold text-sky-800">
-                    {pdfReviewBatch.status}
-                  </span>
+                  <div className="flex shrink-0 items-center gap-2">
+                    <button
+                      type="button"
+                      onClick={downloadImportReviewSheet}
+                      className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-[10px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-extrabold text-[#11120d] transition hover:bg-[#F3F4F6]"
+                      aria-label="Download supplier review sheet"
+                      title="Download the current review as CSV"
+                    >
+                      <GoogleIcon name="download" className="text-[17px]" />
+                      <span className="hidden sm:inline">Review sheet</span>
+                    </button>
+                    <span className="rounded-full border border-sky-200 bg-sky-50 px-[10px] py-[5px] text-[11px] font-extrabold text-sky-800">
+                      {pdfReviewBatch.status}
+                    </span>
+                  </div>
                 </div>
                 {!stockTracked ? (
                   <div className="mt-2 rounded-[10px] border border-blue-200 bg-blue-50 px-3 py-2 text-[11px] font-bold leading-4 text-blue-900">
@@ -2134,7 +2319,7 @@ export default function ProductsModals({
                       <button type="button" onClick={() => { setActiveReviewRowId(row.rowId); setReviewPanelTab("row"); setMobileReviewView("editor"); }} className={cn("w-full min-w-0 text-left", row.ignored && "opacity-60")}>
                         <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold text-[#6B7280]">Row {row.rowNumber}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-extrabold", imported ? "bg-emerald-50 text-emerald-700" : row.ignored ? "bg-slate-200 text-slate-700" : dirtyReviewRowIds.has(row.rowId) ? "bg-amber-50 text-amber-800" : verifiedReviewRowIds.has(row.rowId) ? "bg-emerald-50 text-emerald-700" : row.status === "DUPLICATE" ? "bg-amber-50 text-amber-700" : row.error ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-sky-700")}>{row.ignored ? "Ignored" : dirtyReviewRowIds.has(row.rowId) ? "Unsaved" : verifiedReviewRowIds.has(row.rowId) ? "Saved" : row.status}</span></div>
                         <div className="mt-1 line-clamp-2 text-[13px] font-extrabold leading-[18px] text-[#11120d]">{row.name || row.rawText || "No text captured"}</div>
-                        <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Rate रु. ${formatQty(row.ratePerPiece)}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
+                        <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Purchase cost ${row.ratePerPiece === null ? "not entered" : `रु. ${formatQty(row.ratePerPiece)}`}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
                       </button>
                       <div className="mt-3 grid grid-cols-2 gap-2">
                         <button type="button" disabled={imported || row.ignored} onClick={() => updateReviewRow(row.rowId, { selected: !row.selected, ignored: false })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold", row.selected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]", (imported || row.ignored) && "pointer-events-none opacity-45")}><GoogleIcon name={row.selected ? "check_box" : "check_box_outline_blank"} className="text-[19px]" />{row.selected ? "Selected" : "Select row"}</button>
@@ -2199,7 +2384,9 @@ export default function ProductsModals({
                           </div>
                         ) : (
                           <div className="truncate text-[10px] font-semibold text-[#8C8889]">
-                            NPR {formatQty(row.ratePerPiece)}
+                            {row.ratePerPiece === null
+                              ? "Purchase cost not entered"
+                              : `NPR ${formatQty(row.ratePerPiece)}`}
                             {stockTracked ? ` | Stock ${formatQty(row.stock)}` : ""}
                           </div>
                         )}
@@ -2570,6 +2757,27 @@ export default function ProductsModals({
                             className={compactInputClass}
                           />
                         </Field>
+                        {isAdmin ? (
+                          <Field label="Product search terms (optional)">
+                            <input
+                              value={(activeReviewRow.searchAliases || []).join(", ")}
+                              maxLength={1200}
+                              onChange={(event) =>
+                                updateReviewRow(activeReviewRow.rowId, {
+                                  searchAliases: event.target.value
+                                    .split(/[,;\n]/g)
+                                    .map((term) => term.trim())
+                                    .filter(Boolean),
+                                })
+                              }
+                              className={compactInputClass}
+                              placeholder="balti, local nickname, Nepali term"
+                            />
+                            <div className="mt-1 text-[10px] font-semibold leading-4 text-[#6B7280]">
+                              Separate terms with commas. Use only real names for this exact product; ordinary typos are handled automatically.
+                            </div>
+                          </Field>
+                        ) : null}
                       </div>
 
                       <div className="grid grid-cols-2 gap-[10px] lg:grid-cols-4">
@@ -2639,19 +2847,16 @@ export default function ProductsModals({
                       </div>
 
                       <div className="grid grid-cols-2 gap-[10px] lg:grid-cols-4">
-                        <Field label="Rate / Piece">
+                        <Field label="Purchase cost (optional)">
                           <input
                             type="number"
-                            value={activeReviewRow.ratePerPiece}
+                            value={activeReviewRow.ratePerPiece ?? ""}
                             onChange={(event) => {
-                              const next = Number(event.target.value);
+                              const next = event.target.value
+                                ? Number(event.target.value)
+                                : null;
                               updateReviewRow(activeReviewRow.rowId, {
                                 ratePerPiece: next,
-                                retailPrice: applyRetailMargin(
-                                  next,
-                                  reviewMarginPercent,
-                                ),
-                                wholesalePrice: next,
                               });
                             }}
                             className={compactInputClass}
@@ -3127,7 +3332,9 @@ export default function ProductsModals({
                 icon: "sell",
                 title: "Pricing",
                 rows: [
-                  ["Rate per Piece", formatNpr(activeProduct.ratePerPiece)],
+                  ...(purchaseCostVisible
+                    ? [["Purchase cost", formatOptionalPurchaseCost(activeProduct.ratePerPiece)] as const]
+                    : []),
                   ["Retail Price", formatNpr(activeProduct.retailPrice)],
                   ["Wholesale Price", formatNpr(activeProduct.wholesalePrice)],
                   ["Wholesale Threshold", `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}${activeProduct.thresholdQtyMode === "default" ? " (Default)" : ""}`],
@@ -3273,10 +3480,12 @@ export default function ProductsModals({
                       Pricing
                     </h4>
                     <div className="space-y-[8px] text-[14px]">
-                      <div className="flex justify-between">
-                        <span className="text-[#565449]">Rate per Piece</span>
-                        <span className="font-extrabold text-[15px] text-[#11120d]">{formatNpr(activeProduct.ratePerPiece)}</span>
-                      </div>
+                      {purchaseCostVisible ? (
+                        <div className="flex justify-between">
+                          <span className="text-[#565449]">Purchase cost</span>
+                          <span className="font-extrabold text-[15px] text-[#11120d]">{formatOptionalPurchaseCost(activeProduct.ratePerPiece)}</span>
+                        </div>
+                      ) : null}
                       <div className="flex justify-between">
                         <span className="text-[#565449]">Retail Price</span>
                         <span className="font-extrabold text-[15px] text-[#16A34A]">{formatNpr(activeProduct.retailPrice)}</span>
@@ -3443,7 +3652,7 @@ export default function ProductsModals({
                 <div className="max-h-[min(48dvh,360px)] divide-y divide-[#E5E7EB] overflow-y-auto overscroll-contain rounded-[14px] border border-[#E5E7EB] bg-white">
                   {bulkProducts.map((product) => (
                     <div key={product.id} className="flex min-h-[64px] items-center gap-3 px-3 py-2.5">
-                      <PreviewableImage src={product.thumbnailUrl || product.imageUrl} previewSrc={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+                      <PreviewableImage src={product.thumbnailUrl || product.imageUrl} fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined} previewSrc={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
                       <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
                       <button type="button" onClick={() => onRemoveBulkProduct(product.id)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[#BE123C] transition hover:bg-[#FFF1F2]" aria-label={`Remove ${product.name} from selection`}><Icon name="close" className="text-[20px]" /></button>
                     </div>

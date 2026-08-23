@@ -104,7 +104,7 @@ router.post("/:id/image", requireRole("ADMIN", "MANAGER"), receiveProductImage, 
     // Fetch both current variants so replacement never leaves unused media behind.
     const existingProduct = await prisma.product.findUnique({
       where: { id: req.params.id },
-      select: { imageUrl: true, thumbnailUrl: true },
+      select: { imageUrl: true, thumbnailUrl: true, name: true, sku: true },
     });
 
     if (!existingProduct) {
@@ -113,12 +113,29 @@ router.post("/:id/image", requireRole("ADMIN", "MANAGER"), receiveProductImage, 
     }
 
     savedMedia = await saveProductImageVariants(req.file.buffer);
-    const product = await prisma.product.update({
-      where: { id: req.params.id },
-      data: savedMedia,
-      include: {
-        brand: { select: { id: true, name: true } },
-      },
+    const product = await prisma.$transaction(async (tx) => {
+      const updated = await tx.product.update({
+        where: { id: req.params.id },
+        data: savedMedia,
+        include: {
+          brand: { select: { id: true, name: true } },
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorId: req.user!.id,
+          action: "PRODUCT_UPDATED",
+          entityType: "Product",
+          entityId: updated.id,
+          meta: {
+            actorRole: req.user!.role,
+            productName: updated.name,
+            sku: updated.sku,
+            changedFields: ["image"],
+          },
+        },
+      });
+      return updated;
     });
     await Promise.all([
       deleteReplacedUpload(existingProduct.imageUrl, product.imageUrl),

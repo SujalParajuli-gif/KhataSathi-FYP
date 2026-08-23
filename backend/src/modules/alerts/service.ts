@@ -4,6 +4,10 @@ import {
   getBusinessSettings,
 } from "../settings/service";
 import { getDocumentStorageHealth } from "../documents/service";
+import {
+  getBusinessCapabilities,
+  type BusinessCapabilities,
+} from "../settings/capabilities";
 
 type AlertLevel = "CRITICAL" | "WARNING" | "LOW" | "INFO";
 type AlertType = "Stock" | "Invoice" | "Product" | "Return" | "Payment" | "System";
@@ -40,6 +44,8 @@ const ALERT_AUDIT_ACTIONS = [
   "RETURN_REQUEST_APPROVED",
   "RETURN_REQUEST_REJECTED",
   "RETURN_REQUEST_REVERSED",
+  "PRODUCT_CREATED",
+  "PRODUCT_UPDATED",
   "PRODUCT_IMPORT_COMPLETED",
   "PRODUCT_RESTOCKED",
   "STOCK_RECEIVE_BATCH_CREATED",
@@ -49,6 +55,8 @@ const ALERT_AUDIT_ACTIONS = [
   "PRODUCT_PRICE_UPDATE_DIGEST",
   "MANAGER_PRODUCT_BULK_PRICE_UPDATE",
   "PRODUCT_DEACTIVATED",
+  "PRODUCT_ACTIVATED",
+  "BUSINESS_MODE_CHANGED",
   "CUSTOMER_DEACTIVATED",
   "DOCUMENT_UPLOADED",
   "DOCUMENT_DELETED",
@@ -67,11 +75,53 @@ const ALERT_AUDIT_ACTIONS = [
   "CUSTOMER_DISCOUNT_REQUEST_REJECTED",
 ] as const;
 
+const CATALOG_ALERT_ACTIONS = new Set<string>([
+  "PRODUCT_CREATED",
+  "PRODUCT_UPDATED",
+  "PRODUCT_IMPORT_COMPLETED",
+  "PRODUCT_PRICE_UPDATED",
+  "PRODUCT_PRICE_UPDATE_DIGEST",
+  "MANAGER_PRODUCT_BULK_PRICE_UPDATE",
+  "PRODUCT_DEACTIVATED",
+  "PRODUCT_ACTIVATED",
+  "BUSINESS_MODE_CHANGED",
+  "DOCUMENT_UPLOADED",
+  "DOCUMENT_DELETED",
+  "DATABASE_BACKUP",
+  "DATABASE_BACKUP_SCHEDULED",
+  "DATABASE_RESTORE",
+  "SCHEDULED_BACKUP_FAILED",
+  "BACKUP_SCHEDULE_UPDATED",
+]);
+
+const CASHIER_CATALOG_ALERT_ACTIONS = new Set<string>([
+  "PRODUCT_CREATED",
+  "PRODUCT_UPDATED",
+  "PRODUCT_IMPORT_COMPLETED",
+  "PRODUCT_PRICE_UPDATED",
+  "PRODUCT_PRICE_UPDATE_DIGEST",
+  "MANAGER_PRODUCT_BULK_PRICE_UPDATE",
+  "PRODUCT_DEACTIVATED",
+  "PRODUCT_ACTIVATED",
+]);
+
+const INVENTORY_ALERT_ACTIONS = new Set<string>([
+  ...CATALOG_ALERT_ACTIONS,
+  "PRODUCT_RESTOCKED",
+  "STOCK_RECEIVE_BATCH_CREATED",
+  "STOCK_RECEIVE_BILL_UPLOAD_FAILED",
+  "STOCK_ADJUSTED",
+]);
+
 const CASHIER_GLOBAL_ACTIONS = new Set([
+  "PRODUCT_CREATED",
+  "PRODUCT_UPDATED",
+  "PRODUCT_IMPORT_COMPLETED",
   "PRODUCT_RESTOCKED",
   "STOCK_RECEIVE_BATCH_CREATED",
   "STOCK_ADJUSTED",
   "PRODUCT_DEACTIVATED",
+  "PRODUCT_ACTIVATED",
 ]);
 
 const SELF_ALERT_ACTIONS = new Set([
@@ -79,6 +129,16 @@ const SELF_ALERT_ACTIONS = new Set([
   "OVERRIDE_PIN_UPDATED",
   "SCHEDULED_BACKUP_FAILED",
 ]);
+
+export function getAllowedAuditActionsForCapabilities(
+  capabilities: Pick<BusinessCapabilities, "businessMode" | "posEnabled">,
+) {
+  if (capabilities.posEnabled) return [...ALERT_AUDIT_ACTIONS];
+  const allowed = capabilities.businessMode === "CATALOG_ONLY"
+    ? CATALOG_ALERT_ACTIONS
+    : INVENTORY_ALERT_ACTIONS;
+  return ALERT_AUDIT_ACTIONS.filter((action) => allowed.has(action));
+}
 
 function formatCurrency(value: unknown) {
   const amount = Number(value ?? 0);
@@ -171,10 +231,31 @@ export function buildAuditAlert(log: any): Omit<AlertItem, "key" | "createdAt" |
     return { ...invoiceAlert, level: "INFO", type: "Invoice" };
   }
 
-  if (log.action === "PRODUCT_IMPORT_COMPLETED" && isManagerActor) {
+  if (log.action === "PRODUCT_CREATED") {
     return {
-      title: "Manager imported products",
-      message: `Manager ${actorName} imported ${log.meta?.createdCount || log.meta?.importedCount || 0} products from ${log.meta?.fileName || "an import file"}.`,
+      title: "Product added",
+      message: `${actorName} added ${log.meta?.productName || log.meta?.sku || "a product"} to the catalog.`,
+      level: "INFO",
+      type: "Product",
+    };
+  }
+
+  if (log.action === "PRODUCT_UPDATED") {
+    const fields = Array.isArray(log.meta?.changedFields)
+      ? log.meta.changedFields.filter(Boolean).join(", ")
+      : "catalog details";
+    return {
+      title: "Product details updated",
+      message: `${actorName} updated ${log.meta?.productName || log.meta?.sku || log.entityId} (${fields || "catalog details"}).`,
+      level: "INFO",
+      type: "Product",
+    };
+  }
+
+  if (log.action === "PRODUCT_IMPORT_COMPLETED") {
+    return {
+      title: isManagerActor ? "Manager imported products" : "Products imported",
+      message: `${isManagerActor ? "Manager " : ""}${actorName} imported ${log.meta?.createdCount || log.meta?.importedCount || 0} products from ${log.meta?.fileName || "an import file"}.`,
       level: "INFO",
       type: "Product",
     };
@@ -222,6 +303,27 @@ export function buildAuditAlert(log: any): Omit<AlertItem, "key" | "createdAt" |
       message: `Manager ${actorName} deactivated product ${log.meta?.productName || log.meta?.sku || log.entityId}.`,
       level: "INFO",
       type: "Product",
+    };
+  }
+
+  if (log.action === "PRODUCT_ACTIVATED") {
+    return {
+      title: "Product available for sale",
+      message: `${isManagerActor ? "Manager " : ""}${actorName} activated product ${log.meta?.productName || log.meta?.sku || log.entityId}.`,
+      level: "INFO",
+      type: "Product",
+    };
+  }
+
+  if (log.action === "BUSINESS_MODE_CHANGED") {
+    const nextMode = String(log.meta?.businessMode || "the new mode")
+      .replaceAll("_", " ")
+      .toLowerCase();
+    return {
+      title: "Shop operating mode changed",
+      message: `${actorName} changed the shop from ${String(log.meta?.previousMode || "the previous mode").replaceAll("_", " ").toLowerCase()} to ${nextMode}.`,
+      level: "WARNING",
+      type: "System",
     };
   }
 
@@ -452,6 +554,7 @@ type AlertRole = "ADMIN" | "MANAGER" | "CASHIER";
 
 type AlertAudienceContext = {
   cashierRecentProductIds?: Set<string>;
+  posDisabled?: boolean;
 };
 
 function auditLogProductIds(log: any) {
@@ -485,11 +588,16 @@ export function shouldIncludeAuditLogForRole(
   role: AlertRole,
   context: AlertAudienceContext = {},
 ) {
+  // Admins and managers use Alerts as a compact operational activity feed.
+  // Their own routine actions remain visible but are marked read below so the
+  // notification bell does not congratulate them for work they just did.
+  if (role === "ADMIN" || role === "MANAGER") return true;
+
   if (log.actorId === userId) {
     return SELF_ALERT_ACTIONS.has(log.action);
   }
 
-  if (role === "ADMIN" || role === "MANAGER") return true;
+  if (context.posDisabled && CASHIER_CATALOG_ALERT_ACTIONS.has(log.action)) return true;
 
   if (CASHIER_GLOBAL_ACTIONS.has(log.action)) return true;
 
@@ -510,7 +618,13 @@ export function shouldIncludeAuditLogForRole(
   return false;
 }
 
+export function isAuditAlertImplicitlyRead(log: any, userId: string) {
+  return log.actorId === userId && !SELF_ALERT_ACTIONS.has(log.action);
+}
+
 export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
+  const capabilities = await getBusinessCapabilities();
+  const allowedAuditActions = getAllowedAuditActionsForCapabilities(capabilities);
   const [stateRows, lowStockProducts, auditLogs, settings] = await Promise.all([
     prisma.userAlertRead.findMany({
       where: { userId },
@@ -522,13 +636,15 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
         createdAt: true,
       },
     }),
-    prisma.product.findMany({
-      where: { isActive: true },
-      include: { brand: { select: { id: true, name: true } } },
-      orderBy: { stock: "asc" },
-    }),
+    capabilities.inventoryEnabled
+      ? prisma.product.findMany({
+          where: { isActive: true },
+          include: { brand: { select: { id: true, name: true } } },
+          orderBy: { stock: "asc" },
+        })
+      : Promise.resolve([]),
     prisma.auditLog.findMany({
-      where: { action: { in: [...ALERT_AUDIT_ACTIONS] } },
+      where: { action: { in: allowedAuditActions } },
       include: { actor: { select: { id: true, name: true, email: true, role: true } } },
       orderBy: { createdAt: "desc" },
       take: Math.max(limit * 4, 40),
@@ -538,7 +654,7 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
 
   const recentProductCutoff = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
   const [recentSoldRows, parkedDrafts, storageHealth] = await Promise.all([
-    role === "CASHIER"
+    role === "CASHIER" && capabilities.posEnabled
       ? prisma.invoiceItem.findMany({
           where: {
             invoice: {
@@ -551,7 +667,7 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
           distinct: ["productId"],
         })
       : Promise.resolve([]),
-    role === "CASHIER"
+    role === "CASHIER" && capabilities.posEnabled
       ? prisma.invoice.findMany({
           where: {
             cashierId: userId,
@@ -627,7 +743,7 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
     }
   }
 
-  if (role === "CASHIER") {
+  if (role === "CASHIER" && capabilities.posEnabled) {
     const expiryHours = Math.max(1, Number(settings.parkedBillExpiryHours || 8));
     const expiryMs = expiryHours * 60 * 60 * 1000;
     const warnAfterMs = Math.floor(expiryMs * 0.75);
@@ -659,7 +775,10 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
   }
 
   auditLogs.forEach((log) => {
-    if (!shouldIncludeAuditLogForRole(log, userId, role, { cashierRecentProductIds })) {
+    if (!shouldIncludeAuditLogForRole(log, userId, role, {
+      cashierRecentProductIds,
+      posDisabled: !capabilities.posEnabled,
+    })) {
       return;
     }
 
@@ -676,7 +795,7 @@ export async function listAlerts(userId: string, role: AlertRole, limit = 20) {
       key,
       ...auditAlert,
       createdAt: log.createdAt.toISOString(),
-      read: isReadState(state),
+      read: isReadState(state) || isAuditAlertImplicitlyRead(log, userId),
       resolved: !!state?.resolvedAt,
     });
   });

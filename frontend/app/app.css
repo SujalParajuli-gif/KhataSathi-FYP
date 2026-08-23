@@ -89,6 +89,7 @@ body {
     "Noto Color Emoji";
   background: #cfcfd3;
   color: #000000;
+  overscroll-behavior-x: none;
 }
 
 /* form controls do not always inherit fonts the same way across browsers

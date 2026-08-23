@@ -128,7 +128,7 @@ export function ModalFrame({
         "absolute inset-0 flex justify-center",
         mobileFullScreen || mobileBottomSheet
           ? "items-end p-0 lg:items-center lg:p-4"
-          : "items-center p-4",
+          : "items-center p-2 sm:p-4",
       )}>
         <div
           ref={dialogRef}
@@ -139,12 +139,12 @@ export function ModalFrame({
           data-modal-frame="true"
           tabIndex={-1}
           className={cn(
-            "relative w-full overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
+            "relative flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF] sm:max-h-[calc(100dvh-32px)]",
             mobileFullScreen
               ? "flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:h-auto lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
               : mobileBottomSheet
                 ? "flex max-h-[88dvh] flex-col rounded-t-[26px] border-x-0 border-b-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
-              : compact ? "rounded-[18px]" : "rounded-[24px]",
+              : compact ? "rounded-[18px]" : "rounded-[20px] sm:rounded-[24px]",
             maxWidthClass,
           )}
         >
@@ -158,7 +158,7 @@ export function ModalFrame({
           <div
             className={cn(
               "flex items-start justify-between gap-4 border-b border-[#CFCFD3]",
-              compact ? "px-[18px] py-[14px]" : "px-[24px] py-[20px]",
+              compact ? "px-[16px] py-[14px] sm:px-[18px]" : "px-[16px] py-[16px] sm:px-[24px] sm:py-[20px]",
               mobileBottomSheet && "pt-[22px]",
             )}
           >
@@ -206,8 +206,7 @@ export function ModalFrame({
           {/* modal body content */}
           <div className={cn(
             compact ? "px-[18px] py-[14px]" : "px-[16px] py-[14px] lg:px-[24px] lg:py-[20px]",
-            (mobileFullScreen || mobileBottomSheet) &&
-              "min-h-0 flex-1 overflow-y-auto overscroll-contain",
+            "min-h-0 flex-1 overflow-y-auto overscroll-contain",
           )}>
             {children}
           </div>
@@ -305,7 +304,25 @@ export function ConfirmDialog({
       : "border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F]";
 
   return (
-    <ModalFrame open={open} onClose={onClose} title={title}>
+    <ModalFrame
+      open={open}
+      onClose={onClose}
+      title={title}
+      mobileBottomSheet
+      footer={(
+        <div className="grid w-full grid-cols-2 gap-3">
+          <DialogButton onClick={onClose}>{cancelLabel}</DialogButton>
+          <DialogButton
+            onClick={onConfirm}
+            variant={tone === "danger" ? "danger" : "primary"}
+            icon={tone === "danger" ? "block" : "check_circle"}
+            disabled={busy}
+          >
+            {busy ? "Please wait..." : confirmLabel}
+          </DialogButton>
+        </div>
+      )}
+    >
       <div className="space-y-5">
         <div className="flex items-start gap-4">
           <div
@@ -330,17 +347,6 @@ export function ConfirmDialog({
         ) : null}
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-3">
-        <DialogButton onClick={onClose}>{cancelLabel}</DialogButton>
-        <DialogButton
-          onClick={onConfirm}
-          variant={tone === "danger" ? "danger" : "primary"}
-          icon={tone === "danger" ? "block" : "check_circle"}
-          disabled={busy}
-        >
-          {busy ? "Please wait..." : confirmLabel}
-        </DialogButton>
-      </div>
     </ModalFrame>
   );
 }
@@ -366,7 +372,20 @@ export function SuccessDialog({
   secondaryAction,
 }: SuccessDialogProps) {
   return (
-    <ModalFrame open={open} onClose={onClose} title={title}>
+    <ModalFrame
+      open={open}
+      onClose={onClose}
+      title={title}
+      mobileBottomSheet
+      footer={(
+        <div className="flex w-full items-center justify-end gap-3">
+          {secondaryAction}
+          <DialogButton onClick={onClose} variant="primary" icon="check_circle">
+            {actionLabel}
+          </DialogButton>
+        </div>
+      )}
+    >
       <div className="space-y-5">
         <div className="flex items-start gap-4">
           <div className="inline-flex h-14 w-14 shrink-0 items-center justify-center rounded-[18px] border border-emerald-200 bg-emerald-50 text-emerald-600">
@@ -379,12 +398,6 @@ export function SuccessDialog({
         </div>
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-3">
-        {secondaryAction}
-        <DialogButton onClick={onClose} variant="primary" icon="check_circle">
-          {actionLabel}
-        </DialogButton>
-      </div>
     </ModalFrame>
   );
 }
@@ -418,7 +431,17 @@ export function StatusDialog({
   const iconName = tone === "error" ? "error" : "check_circle";
 
   return (
-    <ModalFrame open={open} onClose={onClose} title={title}>
+    <ModalFrame
+      open={open}
+      onClose={onClose}
+      title={title}
+      mobileBottomSheet
+      footer={(
+        <DialogButton onClick={onClose} variant={actionTone} icon={iconName}>
+          {actionLabel}
+        </DialogButton>
+      )}
+    >
       <div className="space-y-5">
         <div className="flex items-start gap-4">
           <div
@@ -436,11 +459,6 @@ export function StatusDialog({
         </div>
       </div>
 
-      <div className="mt-5 flex items-center justify-end gap-3">
-        <DialogButton onClick={onClose} variant={actionTone} icon={iconName}>
-          {actionLabel}
-        </DialogButton>
-      </div>
     </ModalFrame>
   );
 }

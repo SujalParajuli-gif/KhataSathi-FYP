@@ -159,7 +159,7 @@ export function hasCapabilityRouteAccess(
     return capabilities.staffDraftRequestsEnabled;
   }
   if (matchesAllowedRoute(pathname, "/alerts")) {
-    return capabilities.inventoryEnabled;
+    return capabilities.catalogEnabled;
   }
   return true;
 }

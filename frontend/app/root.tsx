@@ -17,6 +17,14 @@ export const links: Route.LinksFunction = () => [
     rel: "stylesheet",
     href: "https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200",
   },
+  {
+    rel: "manifest",
+    href: "/manifest.webmanifest",
+  },
+  {
+    rel: "apple-touch-icon",
+    href: "/assets/icons/smalllogo.png",
+  },
   // this replaces the default browser tab icon with our project branding
   {
     rel: "icon",
@@ -39,6 +47,10 @@ export function Layout({ children }: { children: React.ReactNode }) {
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <meta name="theme-color" content="#11120D" />
+        <meta name="apple-mobile-web-app-capable" content="yes" />
+        <meta name="apple-mobile-web-app-status-bar-style" content="default" />
+        <meta name="apple-mobile-web-app-title" content="KhataSathi" />
         <Meta />
         <Links />
       </head>

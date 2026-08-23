@@ -282,6 +282,102 @@ export async function createSearchSynonym(
   }, { timeout: 30_000 });
 }
 
+export async function getSearchSynonymPromotionContext(input: {
+  alias: unknown;
+  canonicalTerm: unknown;
+}) {
+  const prepared = prepareReviewedSearchSynonym(input);
+  const [existingSynonym, linkedProductAliases] = await Promise.all([
+    prisma.productSearchSynonym.findUnique({
+      where: { normalizedAlias: prepared.normalizedAlias },
+      select: {
+        id: true,
+        alias: true,
+        canonicalTerm: true,
+        normalizedCanonicalTerm: true,
+        isEnabled: true,
+      },
+    }),
+    prisma.productSearchAlias.findMany({
+      where: { normalizedAlias: prepared.normalizedAlias, isEnabled: true },
+      select: {
+        id: true,
+        product: { select: { id: true, name: true, sku: true } },
+      },
+      orderBy: { product: { name: "asc" } },
+    }),
+  ]);
+  return { prepared, existingSynonym, linkedProductAliases };
+}
+
+export async function promoteSearchSynonym(
+  input: { alias: unknown; canonicalTerm: unknown },
+  actorId: string,
+) {
+  const prepared = prepareReviewedSearchSynonym(input);
+  return prisma.$transaction(async (tx) => {
+    await assertActiveAdminApprover(actorId, tx);
+    const existingSynonym = await tx.productSearchSynonym.findUnique({
+      where: { normalizedAlias: prepared.normalizedAlias },
+    });
+    if (
+      existingSynonym &&
+      existingSynonym.normalizedCanonicalTerm !== prepared.normalizedCanonicalTerm
+    ) {
+      throw Object.assign(
+        new Error(
+          `“${existingSynonym.alias}” already maps to “${existingSynonym.canonicalTerm}”. Disable or edit that rule first.`,
+        ),
+        { statusCode: 409 },
+      );
+    }
+
+    const linkedAliases = await tx.productSearchAlias.findMany({
+      where: { normalizedAlias: prepared.normalizedAlias, isEnabled: true },
+      select: { id: true, productId: true, product: { select: { name: true } } },
+    });
+    if (linkedAliases.length > 0) {
+      await tx.productSearchAlias.updateMany({
+        where: { id: { in: linkedAliases.map((alias) => alias.id) } },
+        data: { isEnabled: false, approvedById: actorId },
+      });
+    }
+
+    const synonym = existingSynonym
+      ? await tx.productSearchSynonym.update({
+          where: { id: existingSynonym.id },
+          data: { ...prepared, isEnabled: true, source: "ADMIN_REVIEW", approvedById: actorId },
+          include: { approvedBy: { select: { id: true, name: true } } },
+        })
+      : await tx.productSearchSynonym.create({
+          data: { ...prepared, source: "ADMIN_REVIEW", approvedById: actorId },
+          include: { approvedBy: { select: { id: true, name: true } } },
+        });
+
+    await rebuildAllProductSearchDocuments(tx);
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: "PRODUCT_SEARCH_SYNONYM_PROMOTED",
+        entityType: "ProductSearchSynonym",
+        entityId: synonym.id,
+        meta: {
+          alias: prepared.alias,
+          canonicalTerm: prepared.canonicalTerm,
+          disabledProductAliases: linkedAliases.map((alias) => ({
+            productId: alias.productId,
+            productName: alias.product.name,
+          })),
+        },
+      },
+    });
+    return {
+      synonym,
+      disabledProductAliasCount: linkedAliases.length,
+    };
+  }, { timeout: 60_000 });
+}
+
 export async function updateSearchSynonym(
   id: string,
   input: { alias?: unknown; canonicalTerm?: unknown; isEnabled?: unknown },
@@ -413,6 +509,98 @@ export async function updateProductSearchAlias(
       },
     });
     return alias;
+  }, { timeout: 30_000 });
+}
+
+export async function replaceProductSearchAliases(
+  productIdInput: unknown,
+  aliasInputs: unknown,
+  actorId: string,
+) {
+  const productId = String(productIdInput || "").trim();
+  if (!productId) throw new SearchAliasValidationError("Product is required.");
+  if (!Array.isArray(aliasInputs)) {
+    throw new SearchAliasValidationError("Search terms must be an array.");
+  }
+  if (aliasInputs.length > 20) {
+    throw new SearchAliasValidationError("A product can have at most 20 search terms.");
+  }
+
+  const preparedByNormalized = new Map<string, ReturnType<typeof prepareReviewedProductAlias>>();
+  for (const aliasInput of aliasInputs) {
+    const prepared = prepareReviewedProductAlias(aliasInput);
+    preparedByNormalized.set(prepared.normalizedAlias, prepared);
+  }
+  const preparedAliases = [...preparedByNormalized.values()];
+
+  return prisma.$transaction(async (tx) => {
+    await assertActiveAdminApprover(actorId, tx);
+    const product = await tx.product.findUnique({
+      where: { id: productId },
+      select: { id: true, name: true, sku: true },
+    });
+    if (!product) throw Object.assign(new Error("Product not found."), { statusCode: 404 });
+
+    const existing = await tx.productSearchAlias.findMany({ where: { productId } });
+    const keepNormalized = preparedAliases.map((alias) => alias.normalizedAlias);
+    await tx.productSearchAlias.updateMany({
+      where: {
+        productId,
+        ...(keepNormalized.length > 0
+          ? { normalizedAlias: { notIn: keepNormalized } }
+          : {}),
+        isEnabled: true,
+      },
+      data: { isEnabled: false, approvedById: actorId },
+    });
+
+    for (const prepared of preparedAliases) {
+      await tx.productSearchAlias.upsert({
+        where: {
+          productId_normalizedAlias: {
+            productId,
+            normalizedAlias: prepared.normalizedAlias,
+          },
+        },
+        create: {
+          productId,
+          ...prepared,
+          source: "PRODUCT_EDITOR",
+          approvedById: actorId,
+        },
+        update: {
+          alias: prepared.alias,
+          isEnabled: true,
+          source: "PRODUCT_EDITOR",
+          approvedById: actorId,
+        },
+      });
+    }
+
+    await rebuildProductSearchDocument(productId, tx);
+    await tx.auditLog.create({
+      data: {
+        actorId,
+        action: "PRODUCT_SEARCH_ALIASES_REPLACED",
+        entityType: "Product",
+        entityId: productId,
+        meta: {
+          productName: product.name,
+          sku: product.sku,
+          before: existing.filter((alias) => alias.isEnabled).map((alias) => alias.alias),
+          after: preparedAliases.map((alias) => alias.alias),
+        },
+      },
+    });
+
+    return tx.productSearchAlias.findMany({
+      where: { productId, isEnabled: true },
+      include: {
+        product: { select: { id: true, name: true, sku: true } },
+        approvedBy: { select: { id: true, name: true } },
+      },
+      orderBy: { normalizedAlias: "asc" },
+    });
   }, { timeout: 30_000 });
 }
 

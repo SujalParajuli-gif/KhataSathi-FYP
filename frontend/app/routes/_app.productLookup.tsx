@@ -12,6 +12,7 @@ import { ConfirmDialog, SuccessDialog } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
 import ProductImage from "~/components/ui/ProductImage";
 import { resolveMediaUrl, useResilientImage } from "~/hooks/useResilientImage";
+import { usePurchaseCostPrivacy } from "~/hooks/usePurchaseCostPrivacy";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import { useToast } from "~/components/ui/Toast";
 import {
@@ -65,10 +66,17 @@ function CompactPrice({
   tone = "default",
   compact = false,
 }: {
-  value: number;
+  value: number | null;
   tone?: "default" | "retail";
   compact?: boolean;
 }) {
+  if (value === null) {
+    return (
+      <div className="mt-1 text-[12px] font-extrabold leading-5 text-slate-600">
+        Not entered
+      </div>
+    );
+  }
   return (
     <div
       className={cn(
@@ -213,19 +221,19 @@ function readStoredStaffDraft(userId: string): StoredStaffDraft | null {
     const parsed = JSON.parse(raw) as Partial<StoredStaffDraft>;
     const items = Array.isArray(parsed.items)
       ? parsed.items
-          .map((item) => ({
-            product: item?.product as Product,
-            qty: Number(item?.qty || 0),
-            note: String(item?.note || ""),
-          }))
-          .filter(
-            (item) =>
-              item.product &&
-              typeof item.product.id === "string" &&
-              typeof item.product.name === "string" &&
-              Number.isFinite(item.qty) &&
-              item.qty > 0,
-          )
+        .map((item) => ({
+          product: item?.product as Product,
+          qty: Number(item?.qty || 0),
+          note: String(item?.note || ""),
+        }))
+        .filter(
+          (item) =>
+            item.product &&
+            typeof item.product.id === "string" &&
+            typeof item.product.name === "string" &&
+            Number.isFinite(item.qty) &&
+            item.qty > 0,
+        )
       : [];
     if (items.length === 0) {
       window.localStorage.removeItem(staffDraftStorageKey(userId));
@@ -387,6 +395,7 @@ type ProductPreviewThumbProps = {
   product: Product;
   className: string;
   iconClassName?: string;
+  priority?: boolean;
   onOpen: (product: Product, trigger: HTMLButtonElement) => void;
 };
 
@@ -394,10 +403,14 @@ function ProductPreviewThumb({
   product,
   className,
   iconClassName = "text-slate-400",
+  priority = false,
   onOpen,
 }: ProductPreviewThumbProps) {
   const listImageUrl = product.thumbnailUrl || product.imageUrl;
-  const image = useResilientImage(listImageUrl);
+  const image = useResilientImage(
+    listImageUrl,
+    product.thumbnailUrl ? product.imageUrl : undefined,
+  );
 
   if (!listImageUrl) {
     return (
@@ -413,25 +426,35 @@ function ProductPreviewThumb({
   return (
     <button
       type="button"
-      disabled={!image.ready}
-      onClick={(event) => onOpen(product, event.currentTarget)}
+      disabled={!image.ready && !image.failed}
+      onClick={(event) => {
+        if (image.failed) image.retryNow();
+        else onOpen(product, event.currentTarget);
+      }}
       className={cn(
         "group relative outline-none transition focus-visible:ring-4 focus-visible:ring-slate-200",
-        image.ready ? "cursor-zoom-in" : "cursor-default",
+        image.ready ? "cursor-zoom-in" : image.failed ? "cursor-pointer" : "cursor-default",
         className,
       )}
-      title={`Preview image for ${product.name}`}
-      aria-label={`Preview image for ${product.name}`}
+      title={image.failed ? `Retry image for ${product.name}` : `Preview image for ${product.name}`}
+      aria-label={image.failed ? `Retry image for ${product.name}` : `Preview image for ${product.name}`}
     >
       {!image.ready ? (
         <span className="absolute inset-0 flex items-center justify-center bg-slate-50">
-          <Icon name="inventory_2" sizePx={24} className={iconClassName} />
+          {image.loading ? (
+            <span className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100" />
+          ) : (
+            <Icon name="refresh" sizePx={22} className={iconClassName} />
+          )}
         </span>
       ) : null}
       <img
+        key={image.requestUrl}
+        ref={image.imageRef}
         src={image.requestUrl}
         alt={product.name}
-        loading="lazy"
+        loading={priority ? "eager" : "lazy"}
+        fetchPriority={priority ? "high" : "auto"}
         decoding="async"
         onLoad={image.markLoaded}
         onError={image.markFailed}
@@ -465,7 +488,7 @@ function ProductImagePreviewModal({
 
   return (
     <div
-      className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/55 p-3 backdrop-blur-[2px] sm:p-6"
+      className="fixed inset-0 z-[120] flex items-center justify-center bg-slate-950/55 p-2 backdrop-blur-[2px] sm:p-6"
       role="dialog"
       aria-modal="true"
       aria-labelledby="product-image-preview-title"
@@ -473,7 +496,7 @@ function ProductImagePreviewModal({
         if (event.target === event.currentTarget) onClose();
       }}
     >
-      <div className="flex max-h-[92vh] w-full max-w-[980px] flex-col overflow-hidden rounded-[22px] border border-slate-200 bg-white shadow-2xl">
+      <div className="flex max-h-[calc(100dvh-16px)] w-full max-w-[980px] flex-col overflow-hidden rounded-[18px] border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100dvh-48px)] sm:rounded-[22px]">
         <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-4 py-4 sm:px-6">
           <div className="min-w-0">
             <div
@@ -508,7 +531,7 @@ function ProductImagePreviewModal({
         </div>
 
         <div className="min-h-0 flex-1 bg-slate-50 p-3 sm:p-5">
-          <div className="flex h-full min-h-[360px] max-h-[70vh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white">
+          <div className="flex h-full min-h-[200px] max-h-[70dvh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white sm:min-h-[360px]">
             <ProductImage
               src={product.imageUrl}
               alt={product.name}
@@ -1018,6 +1041,11 @@ export default function ProductLookupPage() {
   const [canViewPurchaseCost, setCanViewPurchaseCost] = useState(
     restoredLookupSnapshot?.canViewPurchaseCost ?? isAdmin,
   );
+  const {
+    purchaseCostVisible,
+    togglePurchaseCostVisibility,
+  } = usePurchaseCostPrivacy(canViewPurchaseCost);
+  const showPurchaseCost = canViewPurchaseCost && purchaseCostVisible;
   const [canViewWholesalePrice, setCanViewWholesalePrice] = useState(
     restoredLookupSnapshot?.canViewWholesalePrice ?? isAdmin,
   );
@@ -1540,55 +1568,55 @@ export default function ProductLookupPage() {
   const mobileFilterChips: MobileFilterChip[] = [
     ...(debouncedQuery
       ? [
-          {
-            id: "query",
-            label: `Search: ${debouncedQuery}`,
-            onRemove: () => {
-              setQuery("");
-              setDebouncedQuery("");
-              setPage(1);
-              writeLookupUrl({ q: "", page: 1 }, { replace: true });
-            },
+        {
+          id: "query",
+          label: `Search: ${debouncedQuery}`,
+          onRemove: () => {
+            setQuery("");
+            setDebouncedQuery("");
+            setPage(1);
+            writeLookupUrl({ q: "", page: 1 }, { replace: true });
           },
-        ]
+        },
+      ]
       : []),
     ...(brand !== "All Brands"
       ? [
-          {
-            id: "brand",
-            label: `Brand: ${brand}`,
-            onRemove: () => {
-              applyDesktopBrand("All Brands");
-            },
+        {
+          id: "brand",
+          label: `Brand: ${brand}`,
+          onRemove: () => {
+            applyDesktopBrand("All Brands");
           },
-        ]
+        },
+      ]
       : []),
     ...(category !== "All Categories"
       ? [
-          {
-            id: "category",
-            label: `Category: ${category}`,
-            onRemove: () => {
-              applyDesktopCategory("All Categories");
-            },
+        {
+          id: "category",
+          label: `Category: ${category}`,
+          onRemove: () => {
+            applyDesktopCategory("All Categories");
           },
-        ]
+        },
+      ]
       : []),
     ...(stockStatus !== "all"
       ? [
-          {
-            id: "stock",
-            label:
-              stockStatus === "in"
-                ? "In stock"
-                : stockStatus === "low"
-                  ? "Low stock"
-                  : "Out of stock",
-            onRemove: () => {
-              applyDesktopStock("all");
-            },
+        {
+          id: "stock",
+          label:
+            stockStatus === "in"
+              ? "In stock"
+              : stockStatus === "low"
+                ? "Low stock"
+                : "Out of stock",
+          onRemove: () => {
+            applyDesktopStock("all");
           },
-        ]
+        },
+      ]
       : []),
   ];
 
@@ -1731,7 +1759,14 @@ export default function ProductLookupPage() {
     <div className="min-h-full bg-white text-[#000000]">
       <div className="w-full space-y-4">
         <section className="bg-white lg:relative lg:z-20 lg:overflow-visible lg:rounded-[20px] lg:border lg:border-slate-200 lg:shadow-sm">
-          <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2.5 bg-white lg:grid-cols-[minmax(0,1fr)_180px] lg:gap-3 lg:border-b lg:border-slate-200 lg:p-3">
+          <div
+            className={cn(
+              "grid gap-2.5 bg-white lg:gap-3 lg:border-b lg:border-slate-200 lg:p-3",
+              canViewPurchaseCost
+                ? "grid-cols-[minmax(0,1fr)_auto_auto] lg:grid-cols-[minmax(0,1fr)_auto_180px]"
+                : "grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_180px]",
+            )}
+          >
             <div className="relative">
               <Icon
                 name="barcode_scanner"
@@ -1745,6 +1780,18 @@ export default function ProductLookupPage() {
                 className="h-[50px] w-full rounded-[12px] border border-[#CFCFD3] bg-white pl-11 pr-3 text-[14px] font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-slate-950 focus:ring-4 focus:ring-slate-100 lg:rounded-[15px] lg:border-2 lg:text-[15px] lg:font-bold"
               />
             </div>
+            {canViewPurchaseCost ? (
+              <button
+                type="button"
+                onClick={togglePurchaseCostVisibility}
+                className="inline-flex h-[50px] min-w-[50px] items-center justify-center rounded-[12px] border border-slate-300 bg-white text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 lg:rounded-[15px]"
+                aria-label={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                title={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                aria-pressed={purchaseCostVisible}
+              >
+                <Icon name={purchaseCostVisible ? "visibility" : "visibility_off"} sizePx={21} />
+              </button>
+            ) : null}
             <button
               type="button"
               onClick={clearFilters}
@@ -1761,7 +1808,7 @@ export default function ProductLookupPage() {
             />
             <ActiveFilterChips
               items={mobileFilterChips}
-              className="col-span-2 lg:hidden"
+              className={cn(canViewPurchaseCost ? "col-span-3" : "col-span-2", "lg:hidden")}
             />
           </div>
 
@@ -1879,7 +1926,7 @@ export default function ProductLookupPage() {
                       <th className="px-4 py-3">Product info</th>
                       <th className="px-4 py-3">Category / brand</th>
                       <th className="px-4 py-3">Packaging</th>
-                      {canViewPurchaseCost ? (
+                      {showPurchaseCost ? (
                         <th className="px-4 py-3 text-right">
                           Purchase cost / खरिद दर
                         </th>
@@ -1906,7 +1953,7 @@ export default function ProductLookupPage() {
                           <td
                             colSpan={
                               (stockTracked ? 5 : 4) +
-                              (canViewPurchaseCost ? 1 : 0) +
+                              (showPurchaseCost ? 1 : 0) +
                               (canViewWholesalePrice ? 1 : 0) +
                               (isAdmin ? 1 : 0) +
                               (isStaff ? 1 : 0)
@@ -1922,7 +1969,7 @@ export default function ProductLookupPage() {
                         <td
                           colSpan={
                             (stockTracked ? 5 : 4) +
-                            (canViewPurchaseCost ? 1 : 0) +
+                            (showPurchaseCost ? 1 : 0) +
                             (canViewWholesalePrice ? 1 : 0) +
                             (isAdmin ? 1 : 0) +
                             (isStaff ? 1 : 0)
@@ -1937,7 +1984,7 @@ export default function ProductLookupPage() {
                         <td
                           colSpan={
                             (stockTracked ? 5 : 4) +
-                            (canViewPurchaseCost ? 1 : 0) +
+                            (showPurchaseCost ? 1 : 0) +
                             (canViewWholesalePrice ? 1 : 0) +
                             (isAdmin ? 1 : 0) +
                             (isStaff ? 1 : 0)
@@ -1952,7 +1999,7 @@ export default function ProductLookupPage() {
                         </td>
                       </tr>
                     ) : (
-                      products.map((product) => {
+                      products.map((product, index) => {
                         const draftQty =
                           draftByProductId.get(product.id)?.qty || 0;
                         const categoryBrand = getCategoryBrandDisplay(product);
@@ -1965,6 +2012,7 @@ export default function ProductLookupPage() {
                               <div className="flex items-start gap-3">
                                 <ProductPreviewThumb
                                   product={product}
+                                  priority={index < 6}
                                   className="flex h-[52px] w-[52px] shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-slate-200 bg-slate-50"
                                   iconClassName="text-slate-400"
                                   onOpen={openImagePreview}
@@ -2011,9 +2059,11 @@ export default function ProductLookupPage() {
                                 Step {formatQty(product.quantityStep || 1)}
                               </div>
                             </td>
-                            {canViewPurchaseCost ? (
+                            {showPurchaseCost ? (
                               <td className="px-4 py-4 text-right font-mono text-[15px] font-black text-slate-950">
-                                {formatNpr(product.ratePerPiece)}
+                                {product.ratePerPiece === null
+                                  ? "Not entered"
+                                  : formatNpr(product.ratePerPiece)}
                               </td>
                             ) : null}
                             <td className="px-4 py-4 text-right font-mono text-[15px] font-black text-slate-950">
@@ -2103,7 +2153,7 @@ export default function ProductLookupPage() {
                     query={debouncedQuery}
                   />
                 ) : (
-                  products.map((product) => {
+                  products.map((product, index) => {
                     const draftQty = draftByProductId.get(product.id)?.qty || 0;
                     const categoryBrand = getCategoryBrandDisplay(product);
                     return (
@@ -2112,11 +2162,12 @@ export default function ProductLookupPage() {
                         data-product-id={product.id}
                         className="rounded-[16px] border border-[#E5E7EB] bg-white p-3 shadow-sm"
                       >
-                        <div className="grid grid-cols-[76px_minmax(0,1fr)_124px] items-stretch gap-x-2.5 min-[400px]:grid-cols-[84px_minmax(0,1fr)_136px] min-[400px]:gap-x-3">
-                          <div className="flex min-w-0 flex-col items-center">
+                        <div className="grid grid-cols-[68px_minmax(0,1fr)_112px] items-stretch gap-x-2 min-[360px]:grid-cols-[76px_minmax(0,1fr)_124px] min-[360px]:gap-x-2.5 min-[400px]:grid-cols-[84px_minmax(0,1fr)_136px] min-[400px]:gap-x-3">
+                          <div className="flex min-w-0 flex-col items-center justify-center">
                             <ProductPreviewThumb
                               product={product}
-                              className="flex h-[76px] w-[76px] shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#DDE2E8] bg-[#F8FAFC] min-[400px]:h-[84px] min-[400px]:w-[84px]"
+                              priority={index < 4}
+                              className="flex h-[68px] w-[68px] shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#DDE2E8] bg-[#F8FAFC] min-[360px]:h-[76px] min-[360px]:w-[76px] min-[400px]:h-[84px] min-[400px]:w-[84px]"
                               iconClassName="text-[#8C8889]"
                               onOpen={openImagePreview}
                             />
@@ -2141,20 +2192,20 @@ export default function ProductLookupPage() {
                           <div
                             className={cn(
                               "flex min-h-[126px] min-w-0 flex-col py-1",
-                              canViewPurchaseCost
+                              showPurchaseCost
                                 ? "justify-between"
                                 : "justify-center",
                             )}
                           >
                             <div>
-                              <h2 className="break-words text-[16px] font-black leading-5 text-[#11120d] [overflow-wrap:anywhere] min-[400px]:text-[17px] min-[400px]:leading-[21px]">
+                              <h2 className="break-words text-[14px] font-black leading-tight text-[#11120d] [overflow-wrap:anywhere] min-[400px]:text-[14px]">
                                 {product.name}
                               </h2>
                               <div className="mt-1 truncate text-[12px] font-bold leading-4 text-[#4B5563] min-[400px]:text-[13px]">
                                 {product.brand || "Unbranded"}
                               </div>
                             </div>
-                            {canViewPurchaseCost ? (
+                            {showPurchaseCost ? (
                               <div className="mt-4 border-t border-slate-200 pt-2.5">
                                 <div className="text-[11px] font-black leading-4 text-slate-800 min-[400px]:text-[14px]">
                                   खरिद दर
@@ -2175,7 +2226,7 @@ export default function ProductLookupPage() {
                               className={cn(
                                 "flex min-w-0 flex-col justify-center px-2 py-2 min-[400px]:px-2.5",
                                 canViewWholesalePrice &&
-                                  "border-b border-slate-200 bg-emerald-50",
+                                "border-b border-slate-200 bg-emerald-50",
                               )}
                             >
                               <div className="text-[10px] font-black uppercase leading-3 tracking-[-0.01em] text-emerald-800">

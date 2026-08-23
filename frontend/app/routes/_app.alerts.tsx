@@ -11,6 +11,7 @@ import {
 } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
 import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
+import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 
 // utility to cleanly join tailwind classes
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -200,9 +201,11 @@ function AlertRow({
 // the standalone alerts page — shows a list of system alerts (low stock, invoice updates)
 // connects directly to the global AlertsProvider via useAlerts hook
 export default function AlertsPage() {
+  const capabilities = useBusinessCapabilities();
   const {
     alerts,
     loading,
+    error,
     unreadCount,
     refreshAlerts,
     markAlertRead,
@@ -254,7 +257,17 @@ export default function AlertsPage() {
   }, [alerts, filterType, showUnreadOnly, searchQuery]);
 
   // calculating counts for the filter pills
-  const typeFilters: AppAlertType[] = ["Invoice", "Stock", "Product", "Payment", "Return", "System"];
+  const typeFilters: AppAlertType[] = capabilities.posEnabled
+    ? ["Invoice", "Stock", "Product", "Payment", "Return", "System"]
+    : capabilities.inventoryEnabled
+      ? ["Stock", "Product", "System"]
+      : ["Product", "System"];
+
+  useEffect(() => {
+    if (filterType !== "all" && !typeFilters.includes(filterType)) {
+      setFilterType("all");
+    }
+  }, [capabilities.businessMode, filterType]);
   const typeCounts = useMemo(() => {
     return typeFilters.reduce<Record<AppAlertType, number>>((acc, type) => {
       acc[type] = alerts.filter((alert) => alert.type === type).length;
@@ -329,7 +342,13 @@ export default function AlertsPage() {
         <div className="mb-4 flex flex-col justify-between gap-3 md:mb-8 md:flex-row md:items-center md:gap-4">
           <div className="hidden md:block">
             <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Alerts</h1>
-            <p className="text-sm md:text-base text-slate-500 mt-1">Stay updated on stock changes, price updates, and your system alerts.</p>
+            <p className="text-sm md:text-base text-slate-500 mt-1">
+              {capabilities.businessMode === "CATALOG_ONLY"
+                ? "Stay updated on catalog, price, product, and essential system changes."
+                : capabilities.posEnabled
+                  ? "Stay updated on sales, stock, price, payment, and system changes."
+                  : "Stay updated on inventory, stock, price, product, and system changes."}
+            </p>
           </div>
           <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:gap-3">
             <button 
@@ -349,6 +368,25 @@ export default function AlertsPage() {
             </button>
           </div>
         </div>
+
+        {error ? (
+          <div className="mb-4 flex flex-col gap-3 rounded-[14px] border border-amber-300 bg-amber-50 p-4 text-amber-950 md:mb-6 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-start gap-3">
+              <Icon name="wifi_off" className="mt-0.5 text-[20px] text-amber-700" />
+              <div>
+                <p className="text-[14px] font-extrabold">Unable to refresh alerts</p>
+                <p className="mt-0.5 text-[13px] font-medium text-amber-800">{error}</p>
+              </div>
+            </div>
+            <button
+              type="button"
+              onClick={() => refreshAlerts(500)}
+              className="min-h-11 rounded-[11px] bg-[#11120d] px-4 text-[13px] font-extrabold text-white"
+            >
+              Try again
+            </button>
+          </div>
+        ) : null}
 
         {/* Global Stats Banner */}
         <div className="mb-4 rounded-[16px] border border-[#CFCFD3] bg-[#F8FAFC] p-4 shadow-sm md:mb-8 md:rounded-[18px] md:bg-white md:p-6">
@@ -456,8 +494,12 @@ export default function AlertsPage() {
             {filteredAlerts.length === 0 ? (
               <div className="flex min-h-[280px] flex-col items-center justify-center bg-white text-slate-400 p-6 text-center">
                 <Icon name="notifications_off" className="text-[40px] mb-3 text-[#CFCFD3]" />
-                <div className="text-[14px] font-extrabold text-slate-600">No alerts found.</div>
-                <p className="text-[13px] mt-1 text-slate-500">Try adjusting your filters or search query.</p>
+                <div className="text-[14px] font-extrabold text-slate-600">
+                  {error ? "Alerts are temporarily unavailable." : "No alerts found."}
+                </div>
+                <p className="text-[13px] mt-1 text-slate-500">
+                  {error ? "Use Try again after checking the connection." : "Try adjusting your filters or search query."}
+                </p>
               </div>
             ) : (
               pageItems.map((alert) => (
