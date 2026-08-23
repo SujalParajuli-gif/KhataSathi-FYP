@@ -162,8 +162,12 @@ volumes:
 
 networks:
   edge:
+    driver_opts:
+      com.docker.network.driver.mtu: "1380"
   data:
     internal: true
+    driver_opts:
+      com.docker.network.driver.mtu: "1380"
 
 secrets:
   restic_password:
