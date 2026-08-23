@@ -1,4 +1,4 @@
-# syntax=docker/dockerfile:1.7
+# Backend production image
 
 FROM node:22.23.0-bookworm-slim AS dependencies
 ENV PNPM_HOME=/pnpm
@@ -10,8 +10,7 @@ RUN corepack enable
 WORKDIR /app
 COPY package.json pnpm-lock.yaml ./
 COPY prisma ./prisma
-RUN --mount=type=cache,id=pnpm-backend,target=/pnpm/store \
-    pnpm install --frozen-lockfile
+RUN pnpm install --frozen-lockfile
 
 FROM dependencies AS build
 COPY tsconfig.json ./
