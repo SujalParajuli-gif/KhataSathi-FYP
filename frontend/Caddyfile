@@ -2,6 +2,10 @@
 	admin off
 }
 
+:8080 {
+	respond /healthz 200
+}
+
 {$APP_DOMAIN} {
 	encode zstd gzip
 

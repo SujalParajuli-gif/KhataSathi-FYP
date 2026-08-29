@@ -47,6 +47,9 @@ services:
       API_RATE_LIMIT_WINDOW_MINUTES: ${API_RATE_LIMIT_WINDOW_MINUTES:-15}
       BACKGROUND_RATE_LIMIT_REQUESTS: ${BACKGROUND_RATE_LIMIT_REQUESTS:-200}
       MEDIA_RATE_LIMIT_REQUESTS: ${MEDIA_RATE_LIMIT_REQUESTS:-600}
+      GEMINI_API_KEY: ${GEMINI_API_KEY:-}
+      GEMINI_IMPORT_MODEL: ${GEMINI_IMPORT_MODEL:-gemini-2.5-flash}
+      GEMINI_IMPORT_FALLBACK_MODEL: ${GEMINI_IMPORT_FALLBACK_MODEL:-gemini-3.5-flash-lite}
       ESEWA_ENV: ${ESEWA_ENV:-sandbox}
       ESEWA_PRODUCT_CODE: ${ESEWA_PRODUCT_CODE:-EPAYTEST}
       ESEWA_SECRET_KEY: "${ESEWA_SECRET_KEY:-8gBm/:&EnhH.1/q}"
@@ -127,6 +130,7 @@ services:
       args:
         VITE_API_BASE_URL: ""
     restart: unless-stopped
+    init: true
     environment:
       APP_DOMAIN: ${APP_DOMAIN:?Set APP_DOMAIN to :80 locally or the production hostname}
     ports:
@@ -140,7 +144,7 @@ services:
       backend:
         condition: service_healthy
     healthcheck:
-      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1/api/health"]
+      test: ["CMD", "wget", "-q", "--spider", "http://127.0.0.1:8080/healthz"]
       interval: 15s
       timeout: 5s
       retries: 8
