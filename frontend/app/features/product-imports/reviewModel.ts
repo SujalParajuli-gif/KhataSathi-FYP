@@ -97,6 +97,18 @@ export function readableSourceHeader(value: string) {
     .trim();
 }
 
+export function sourcePreviewColumnWidth(header: string) {
+  const normalized = readableSourceHeader(header).toLowerCase();
+
+  if (/product name|description|item name|particular/.test(normalized)) return 240;
+  if (/sku|barcode|product code|item code|model/.test(normalized)) return 250;
+  if (/supplier|vendor|category|brand|group/.test(normalized)) return 150;
+  if (/price|rate|cost|mrp|amount/.test(normalized)) return 120;
+  if (/stock|quantity|packing|package|unit|size/.test(normalized)) return 105;
+
+  return 150;
+}
+
 const reviewFieldLabels: Partial<Record<keyof ReviewedPdfImportRowPayload, string>> = {
   name: "Product name",
   sku: "SKU",

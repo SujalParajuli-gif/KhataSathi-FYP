@@ -6,6 +6,7 @@ import {
   displayImportSourceRegion,
   parsedImportRow,
   readableSourceHeader,
+  sourcePreviewColumnWidth,
   sourceCellHasValue,
 } from "../app/features/product-imports/reviewModel.ts";
 
@@ -43,6 +44,15 @@ test("spreadsheet preview removes empty columns without hiding zero values", () 
   assert.equal(sourceCellHasValue("SPL"), true);
   assert.equal(readableSourceHeader("Purchase_Rate"), "Purchase Rate");
   assert.equal(readableSourceHeader("sku"), "SKU");
+});
+
+test("spreadsheet preview gives identifiers and product names enough isolated space", () => {
+  assert.equal(sourcePreviewColumnWidth("SKU"), 250);
+  assert.equal(sourcePreviewColumnWidth("Product_Name"), 240);
+  assert.equal(sourcePreviewColumnWidth("Brand"), 150);
+  assert.equal(sourcePreviewColumnWidth("Stock"), 105);
+  assert.equal(sourcePreviewColumnWidth("Wholesale_Rate"), 120);
+  assert.equal(sourcePreviewColumnWidth("Notes"), 150);
 });
 
 test("review history describes the exact saved fields that changed", () => {

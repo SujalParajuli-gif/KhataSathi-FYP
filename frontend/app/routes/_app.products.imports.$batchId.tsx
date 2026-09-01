@@ -29,6 +29,7 @@ import {
   importRowToDraft,
   parsedImportRow,
   readableSourceHeader,
+  sourcePreviewColumnWidth,
   sourceCellHasValue,
   type ImportBulkEditConfig,
   type ImportPriceField,
@@ -342,6 +343,10 @@ export default function ProductImportReviewPage() {
       sourceRows.some((row) => sourceCellHasValue(cellsFromRow(row)[key])),
     );
   }, [sourceRows]);
+  const sourceTableWidth = useMemo(
+    () => 56 + sourceHeaders.reduce((total, header) => total + sourcePreviewColumnWidth(header), 0),
+    [sourceHeaders],
+  );
   const activeSourceRow = sourceRows.find((row) => row.id === activeRowId) || null;
   const activeSourceEntries = activeSourceRow
     ? sourceHeaders
@@ -825,14 +830,26 @@ export default function ProductImportReviewPage() {
           {isSpreadsheet ? (
             sourceHeaders.length > 0 ? (
               <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[#D8DBE0] bg-white shadow-sm">
-                <div className="min-h-0 flex-1 overflow-auto overscroll-contain">
-                  <table className="w-max min-w-full border-collapse text-left text-[11px]">
+                <div className="min-h-0 flex-1 overflow-auto overscroll-contain [scrollbar-gutter:stable]">
+                  <table
+                    aria-label="Original spreadsheet rows"
+                    className="table-fixed border-separate border-spacing-0 text-left text-[11px]"
+                    style={{ width: `${sourceTableWidth}px`, minWidth: "100%" }}
+                  >
+                    <colgroup>
+                      <col style={{ width: "56px" }} />
+                      {sourceHeaders.map((header) => (
+                        <col key={header} style={{ width: `${sourcePreviewColumnWidth(header)}px` }} />
+                      ))}
+                    </colgroup>
                     <thead className="sticky top-0 z-10 bg-[#EFF2F5] text-[#4B5563]">
                       <tr>
-                        <th className="sticky left-0 z-20 min-w-[54px] border-b border-r border-[#D8DBE0] bg-[#EFF2F5] px-2.5 py-2 font-extrabold">Row</th>
+                        <th scope="col" className="sticky left-0 z-20 overflow-hidden border-b border-r border-[#D8DBE0] bg-[#EFF2F5] px-2.5 py-2 font-extrabold shadow-[2px_0_0_0_#D8DBE0]">Row</th>
                         {sourceHeaders.map((header) => (
-                          <th key={header} className="min-w-[110px] whitespace-nowrap border-b border-r border-[#D8DBE0] px-2.5 py-2 font-extrabold">
-                            {readableSourceHeader(header)}
+                          <th key={header} scope="col" className="overflow-hidden border-b border-r border-[#D8DBE0] px-2.5 py-2 font-extrabold">
+                            <div className="truncate" title={readableSourceHeader(header)}>
+                              {readableSourceHeader(header)}
+                            </div>
                           </th>
                         ))}
                       </tr>
@@ -849,16 +866,19 @@ export default function ProductImportReviewPage() {
                               const match = review?.rows.find((r) => r.id === row.id);
                               if (match) chooseRow(match);
                             }}
+                            aria-selected={selected}
                             className={`cursor-pointer transition hover:bg-amber-50/60 ${selected ? "bg-amber-100 outline outline-2 -outline-offset-2 outline-amber-500" : "bg-white"}`}
                           >
-                            <td className={`sticky left-0 z-[5] whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-extrabold ${selected ? "bg-amber-100 text-amber-950" : "bg-white text-[#374151]"}`}>
+                            <td className={`sticky left-0 z-[5] overflow-hidden whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-extrabold shadow-[2px_0_0_0_#E2E4E8] ${selected ? "bg-amber-100 text-amber-950" : "bg-white text-[#374151]"}`}>
                               {row.sourceLocator?.rowNumber || row.rowNumber}
                             </td>
                             {sourceHeaders.map((header) => {
                               const value = cells[header];
                               return (
-                                <td key={header} className={`max-w-[280px] whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-semibold ${sourceCellHasValue(value) ? (selected ? "text-amber-950 font-bold" : "text-[#374151]") : "text-[#C4C8CE]"}`}>
-                                  {sourceCellHasValue(value) ? String(value) : "—"}
+                                <td key={header} className={`overflow-hidden border-b border-r border-[#E2E4E8] px-2.5 py-2 font-semibold ${sourceCellHasValue(value) ? (selected ? "text-amber-950 font-bold" : "text-[#374151]") : "text-[#C4C8CE]"}`}>
+                                  <div className="truncate" title={sourceCellHasValue(value) ? String(value) : undefined}>
+                                    {sourceCellHasValue(value) ? String(value) : "—"}
+                                  </div>
                                 </td>
                               );
                             })}
