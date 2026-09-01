@@ -81,6 +81,7 @@ restic_command check
 echo "Restoring snapshot $SNAPSHOT_ID into an isolated temporary directory..."
 compose run --rm --no-deps \
   --cap-add CHOWN \
+  --cap-add FOWNER \
   --volume "$WORK_DIR:/restore" \
   --entrypoint restic \
   recovery restore "$SNAPSHOT_ID" --target /restore
