@@ -8,6 +8,7 @@ Thumbs.db
 !.env.example
 deploy/production.env
 deploy/backup-output/
+deploy/private-config/
 deploy/secrets/
 
 # dependencies
