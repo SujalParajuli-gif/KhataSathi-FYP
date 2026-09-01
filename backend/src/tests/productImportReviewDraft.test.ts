@@ -68,15 +68,20 @@ test("review draft keeps an unknown purchase cost null without copying a selling
   assert.equal(prepared.wholesalePrice, 118);
 });
 
-test("review draft still requires independent retail and wholesale prices", () => {
-  assert.throws(
-    () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: null, retailPrice: null })),
-    /Retail price is required/,
+test("review draft keeps unknown selling prices null instead of inventing them", () => {
+  const prepared = prepareReviewedImportRowDraft(
+    validRow({ retailPrice: null, wholesalePrice: "" }),
   );
-  assert.throws(
-    () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: null, wholesalePrice: "" })),
-    /Wholesale price is required/,
+  assert.equal(prepared.ratePerPiece, 100);
+  assert.equal(prepared.retailPrice, null);
+  assert.equal(prepared.wholesalePrice, null);
+});
+
+test("review draft keeps an unknown package quantity null", () => {
+  const prepared = prepareReviewedImportRowDraft(
+    validRow({ packageQuantity: null }),
   );
+  assert.equal(prepared.packageQuantity, null);
 });
 
 test("optional review fields receive safe import defaults", () => {

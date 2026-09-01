@@ -76,6 +76,36 @@ function getInvoiceCustomerType(invoice: Pick<AppInvoice, "customerId">) {
   return invoice.customerId ? "Registered" : "Walk-in";
 }
 
+function getPresetDateRange(preset: "today" | "last7" | "last30" | "thisMonth") {
+  const now = new Date();
+  const formatIso = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayStr = formatIso(now);
+  if (preset === "today") {
+    return { from: todayStr, to: todayStr };
+  }
+  if (preset === "last7") {
+    const past = new Date(now);
+    past.setDate(past.getDate() - 7);
+    return { from: formatIso(past), to: todayStr };
+  }
+  if (preset === "last30") {
+    const past = new Date(now);
+    past.setDate(past.getDate() - 30);
+    return { from: formatIso(past), to: todayStr };
+  }
+  if (preset === "thisMonth") {
+    const firstDay = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { from: formatIso(firstDay), to: todayStr };
+  }
+  return { from: "", to: "" };
+}
+
 type HistoryCustomerTypeFilter = "All" | "Walk-in" | "Registered";
 const HISTORY_CATEGORIES: Array<{ key: HistoryCategory; label: string }> = [
   { key: "sales", label: "Sales" },
@@ -196,15 +226,55 @@ function getEventHighlights(event: HistoryEventRow, category: HistoryCategory) {
   };
 
   if (category === "product") {
-    add("Product", meta.productName || meta.sku || event.entityId);
+    // Only show product tag if title doesn't already contain it
+    const titleHasProduct = meta.productName && event.title?.toLowerCase().includes(meta.productName.toLowerCase());
+    if (!titleHasProduct) {
+      add("Product", meta.productName || meta.sku || event.entityId);
+    }
     add("SKU", meta.sku);
-    addMoney("Retail before", meta.before?.retailPrice);
-    addMoney("Retail after", meta.after?.retailPrice, "text-[#B7791F]");
+
+    // Sleek Price Diff Chips
+    if (meta.before?.retailPrice !== undefined && meta.after?.retailPrice !== undefined) {
+      add(
+        "Retail",
+        `${formatMetaMoney(meta.before.retailPrice) || "—"} → ${formatMetaMoney(meta.after.retailPrice) || "—"}`,
+        "text-amber-800 font-extrabold",
+      );
+    } else {
+      addMoney("Retail before", meta.before?.retailPrice);
+      addMoney("Retail after", meta.after?.retailPrice, "text-[#B7791F]");
+    }
+
+    if (meta.before?.wholesalePrice !== undefined && meta.after?.wholesalePrice !== undefined) {
+      add(
+        "Wholesale",
+        `${formatMetaMoney(meta.before.wholesalePrice) || "—"} → ${formatMetaMoney(meta.after.wholesalePrice) || "—"}`,
+        "text-blue-800 font-extrabold",
+      );
+    } else if (meta.after?.wholesalePrice !== undefined) {
+      addMoney("Wholesale after", meta.after?.wholesalePrice, "text-blue-800");
+    }
+
+    if (meta.before?.ratePerPiece !== undefined && meta.after?.ratePerPiece !== undefined) {
+      add(
+        "Cost",
+        `${formatMetaMoney(meta.before.ratePerPiece) || "—"} → ${formatMetaMoney(meta.after.ratePerPiece) || "—"}`,
+        "text-emerald-800 font-extrabold",
+      );
+    } else if (meta.after?.ratePerPiece !== undefined) {
+      addMoney("Cost after", meta.after?.ratePerPiece, "text-emerald-800");
+    }
+
     add("Reason", meta.reason);
   } else if (category === "stock") {
-    add("Product", meta.productName || event.entityId);
+    const titleHasProduct = meta.productName && event.title?.toLowerCase().includes(meta.productName.toLowerCase());
+    if (!titleHasProduct) {
+      add("Product", meta.productName || event.entityId);
+    }
     add("Qty", meta.qty ?? meta.qtyDelta, "text-[#2F67D8]");
-    if (meta.previousStock !== undefined || meta.nextStock !== undefined) {
+    if (meta.previousStock !== undefined && meta.nextStock !== undefined) {
+      add("Stock", `${meta.previousStock} → ${meta.nextStock}`);
+    } else if (meta.previousStock !== undefined || meta.nextStock !== undefined) {
       add("Stock", `${meta.previousStock ?? "?"} -> ${meta.nextStock ?? "?"}`);
     }
     add("Supplier", meta.supplierName);
@@ -335,6 +405,10 @@ export default function HistoryPage() {
   const [draftCashierFilter, setDraftCashierFilter] = useState("All");
   const [draftCustomerTypeFilter, setDraftCustomerTypeFilter] = useState<HistoryCustomerTypeFilter>("All");
   const [draftMethodFilter, setDraftMethodFilter] = useState<"All" | AppInvoice["paymentMethod"]>("All");
+  const [eventActorFilter, setEventActorFilter] = useState("All");
+  const [eventActionFilter, setEventActionFilter] = useState("All");
+  const [draftEventActorFilter, setDraftEventActorFilter] = useState("All");
+  const [draftEventActionFilter, setDraftEventActionFilter] = useState("All");
   const [page, setPage] = useState(1); // current page inside the filtered results list
   const [pageSize, setPageSize] = useState(20);
   const [cashierOptions, setCashierOptions] = useState<Array<{ id: string; name: string }>>([]);
@@ -501,12 +575,26 @@ export default function HistoryPage() {
     ...(methodFilter !== "All" ? [{ id: "method", label: methodFilter, onRemove: () => { setMethodFilter("All"); setPage(1); } }] : []),
   ];
 
+  const categoryFilterCount = [
+    Boolean(fromDate || toDate),
+    eventActorFilter !== "All",
+    eventActionFilter !== "All",
+  ].filter(Boolean).length;
+
+  const categoryFilterChips: MobileFilterChip[] = [
+    ...(fromDate || toDate ? [{ id: "dates", label: `${fromDate || "Any"} – ${toDate || "Any"}`, onRemove: () => { setFromDate(""); setToDate(""); setPage(1); } }] : []),
+    ...(eventActorFilter !== "All" ? [{ id: "actor", label: cashierOptions.find((c) => c.id === eventActorFilter)?.name || "Staff", onRemove: () => { setEventActorFilter("All"); setPage(1); } }] : []),
+    ...(eventActionFilter !== "All" ? [{ id: "action", label: eventActionFilter, onRemove: () => { setEventActionFilter("All"); setPage(1); } }] : []),
+  ];
+
   function openMobileFilters() {
     setDraftFromDate(fromDate);
     setDraftToDate(toDate);
     setDraftCashierFilter(cashierFilter);
     setDraftCustomerTypeFilter(customerTypeFilter);
     setDraftMethodFilter(methodFilter);
+    setDraftEventActorFilter(eventActorFilter);
+    setDraftEventActionFilter(eventActionFilter);
     setMobileFiltersOpen(true);
   }
 
@@ -520,6 +608,15 @@ export default function HistoryPage() {
     setMobileFiltersOpen(false);
   }
 
+  function applyCategoryMobileFilters() {
+    setFromDate(draftFromDate);
+    setToDate(draftToDate);
+    setEventActorFilter(draftEventActorFilter);
+    setEventActionFilter(draftEventActionFilter);
+    setPage(1);
+    setMobileFiltersOpen(false);
+  }
+
   useEffect(() => {
     if (historyCategory === "sales") return;
 
@@ -527,10 +624,18 @@ export default function HistoryPage() {
     async function loadEvents() {
       try {
         setEventLoading(true);
+        const combinedQuery = [
+          debouncedQuery,
+          eventActionFilter !== "All" ? eventActionFilter : "",
+          eventActorFilter !== "All" ? cashierOptions.find((c) => c.id === eventActorFilter)?.name || "" : "",
+        ]
+          .filter(Boolean)
+          .join(" ");
+
         const data = await listCategorizedHistoryApi(
           {
             category: historyCategory,
-            q: debouncedQuery || undefined,
+            q: combinedQuery || undefined,
             from: fromDate || undefined,
             to: toDate || undefined,
             page,
@@ -559,6 +664,9 @@ export default function HistoryPage() {
     };
   }, [
     debouncedQuery,
+    eventActionFilter,
+    eventActorFilter,
+    cashierOptions,
     fromDate,
     historyCategory,
     page,
@@ -652,7 +760,7 @@ export default function HistoryPage() {
     }
 
     if (event.detailType === "importBatch") {
-      navigate(`/products?importBatch=${encodeURIComponent(event.detailId)}`);
+      navigate(`/products/imports/${encodeURIComponent(event.detailId)}`);
       return;
     }
 
@@ -797,94 +905,98 @@ export default function HistoryPage() {
           ) : null}
 
 
-          <div className="mt-6 overflow-hidden rounded-[18px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-sm">
-            <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 lg:flex-row lg:items-center lg:justify-between">
-              <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
-                Browse {visibleHistoryCategories.find((item) => item.key === historyCategory)?.label || "records"}
-              </div>
-              <div className="flex w-full gap-2 lg:w-[520px]">
+          <div className="mt-4 rounded-[16px] border border-[#D8DBE0] bg-white p-2.5 shadow-2xs xl:rounded-[18px]">
+            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+              <div className="flex items-center gap-2">
                 <div className="relative min-w-0 flex-1">
-                <Icon
-                  name="search"
-                  className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#8C8889]"
-                />
-                <input
-                  value={query}
-                  onChange={(event) => {
-                    setQuery(event.target.value);
-                    setPage(1);
-                  }}
-                  placeholder="Search action, entity, actor..."
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] pl-[44px] pr-4 text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889] focus:border-[#11120d]"
-                />
+                  <Icon
+                    name="search"
+                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]"
+                    sizePx={18}
+                  />
+                  <input
+                    value={query}
+                    onChange={(event) => {
+                      setQuery(event.target.value);
+                      setPage(1);
+                    }}
+                    placeholder="Search action, entity, actor..."
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
+                  />
                 </div>
-                <MobileFilterButton activeCount={fromDate || toDate ? 1 : 0} onClick={openMobileFilters} className="lg:hidden" />
+
+                <div className="lg:hidden shrink-0">
+                  <MobileFilterButton activeCount={categoryFilterCount} onClick={openMobileFilters} />
+                </div>
               </div>
-              <ActiveFilterChips items={mobileFilterChips.filter((chip) => chip.id === "dates")} className="lg:hidden" />
-            </div>
 
-            <div className="hidden grid-cols-1 gap-3 bg-[#FAFBFC] p-4 lg:grid-cols-[minmax(160px,1fr)_minmax(160px,1fr)_auto] lg:items-end lg:grid">
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
-                  From date
+              {categoryFilterChips.length > 0 ? (
+                <div className="lg:hidden">
+                  <ActiveFilterChips items={categoryFilterChips} />
                 </div>
-                <ProjectDateInput
-                  value={fromDate}
-                  max={toDate || undefined}
-                  onChange={(event) => {
-                    setFromDate(event.target.value);
-                    setPage(1);
-                  }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
-                />
-              </label>
+              ) : null}
 
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
-                  To date
+              <div className="hidden items-center gap-2 lg:flex">
+                <div className="w-[150px]">
+                  <ProjectDateInput
+                    value={fromDate}
+                    max={toDate || undefined}
+                    onChange={(event) => {
+                      setFromDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  />
                 </div>
-                <ProjectDateInput
-                  value={toDate}
-                  min={fromDate || undefined}
-                  onChange={(event) => {
-                    setToDate(event.target.value);
-                    setPage(1);
-                  }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
-                />
-              </label>
-
-              <button
-                type="button"
-                onClick={() => {
-                  setQuery("");
-                  setFromDate("");
-                  setToDate("");
-                  setPage(1);
-                }}
-                className="h-[42px] rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
-              >
-                Clear filters
-              </button>
+                <span className="text-[11.5px] font-bold text-[#7A7F89]">to</span>
+                <div className="w-[150px]">
+                  <ProjectDateInput
+                    value={toDate}
+                    min={fromDate || undefined}
+                    onChange={(event) => {
+                      setToDate(event.target.value);
+                      setPage(1);
+                    }}
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  />
+                </div>
+                {(query || fromDate || toDate || eventActorFilter !== "All" || eventActionFilter !== "All") ? (
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setQuery("");
+                      setFromDate("");
+                      setToDate("");
+                      setEventActorFilter("All");
+                      setEventActionFilter("All");
+                      setPage(1);
+                    }}
+                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6]"
+                  >
+                    <Icon name="close" sizePx={15} />
+                    <span>Clear</span>
+                  </button>
+                ) : null}
+              </div>
             </div>
           </div>
 
-          <div className="mt-5 overflow-hidden rounded-[18px] border border-[#DADDE3] bg-white shadow-sm">
-            <div className="hidden grid-cols-[minmax(0,1.35fr)_minmax(260px,0.95fr)_minmax(180px,0.55fr)_150px] border-b border-[#DADDE3] bg-[#F8FAFC] px-5 py-3 text-left text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B] lg:grid">
+          <div className="mt-4 overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white shadow-xs xl:rounded-[18px]">
+            <div className="hidden grid-cols-[minmax(0,1.4fr)_minmax(240px,1fr)_minmax(170px,0.65fr)_130px] border-b border-[#E2E4E8] bg-[#F8F9FA] px-4 py-2.5 text-left text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B] lg:grid">
               <div>Activity</div>
               <div>Business detail</div>
               <div>Actor / Time</div>
-              <div className="text-right">Context</div>
+              <div className="text-right">Action</div>
             </div>
 
             {eventLoading ? (
-              <div className="flex h-[260px] items-center justify-center text-sm font-semibold text-slate-400">
-                Loading history...
+              <div className="flex h-[220px] items-center justify-center text-[12px] font-bold text-[#7A7F89]">
+                Loading history…
               </div>
             ) : eventRows.length === 0 ? (
-              <div className="flex h-[260px] flex-col items-center justify-center text-center text-slate-400">
-                <Icon name="history" className="text-[36px]" />
-                <div className="mt-3 text-[14px] font-semibold">
+              <div className="flex h-[220px] flex-col items-center justify-center text-center text-[#7A7F89]">
+                <Icon name="history" sizePx={32} className="text-[#A0AEC0]" />
+                <div className="mt-2 text-[13px] font-bold text-[#374151]">
                   No category history found.
                 </div>
               </div>
@@ -895,82 +1007,96 @@ export default function HistoryPage() {
                 const canOpen = Boolean(event.detailType && event.detailId) || Boolean(sectionAction);
                 const actionLabel =
                   event.actionLabel || sectionAction?.label || "Open context";
+                const humanAction = humanizeAction(event.action);
+                const isRedundantTitle = event.title && event.title.toLowerCase() === humanAction.toLowerCase();
+                const displayTitle = event.title || humanAction;
+                const isRedundantDesc = event.description && (
+                  event.description.toLowerCase().includes(humanAction.toLowerCase()) ||
+                  event.description === event.id
+                );
 
                 return (
                   <div
                     key={event.id}
-                    className="border-b border-[#E5E7EB] px-4 py-4 transition-colors last:border-b-0 hover:bg-[#ECEFF3] lg:grid lg:grid-cols-[minmax(0,1.35fr)_minmax(260px,0.95fr)_minmax(180px,0.55fr)_150px] lg:items-center lg:gap-4 lg:px-5"
+                    className="border-b border-[#E8EAED] p-3.5 transition-colors last:border-b-0 hover:bg-[#F8FAFC] lg:grid lg:grid-cols-[minmax(0,1.4fr)_minmax(240px,1fr)_minmax(170px,0.65fr)_130px] lg:items-center lg:gap-3 lg:px-4 lg:py-3"
                   >
-                    <div className="flex min-w-0 gap-3">
-                      <div className="mt-0.5 flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#11120d]">
+                    <div className="flex min-w-0 items-start gap-3">
+                      <div className="mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] bg-[#F1F3F5] text-[#11120d]">
                         <Icon
                           name={getEventIcon(historyCategory, event)}
-                          className="text-[20px]"
+                          sizePx={19}
                         />
                       </div>
-                      <div className="min-w-0">
-                        <div className="flex flex-wrap items-center gap-2">
-                          <div className="min-w-0 truncate text-[14px] font-extrabold text-slate-900">
-                            {event.title || humanizeAction(event.action)}
-                          </div>
-                          <span
-                            className={cn(
-                              "shrink-0 rounded-full border px-2 py-0.5 text-[10px] font-extrabold uppercase",
-                              getEventActionTone(event),
-                            )}
-                          >
-                            {humanizeAction(event.action)}
+                      <div className="min-w-0 flex-1">
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate text-[13.5px] font-black text-[#11120d]">
+                            {displayTitle}
                           </span>
+                          {!isRedundantTitle ? (
+                            <span
+                              className={cn(
+                                "shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-black uppercase tracking-wide",
+                                getEventActionTone(event),
+                              )}
+                            >
+                              {humanAction}
+                            </span>
+                          ) : null}
                         </div>
-                        <div className="mt-1 line-clamp-2 text-[12px] font-semibold leading-5 text-slate-500">
-                          {event.description || event.id}
+                        <div className="mt-0.5 text-[11.5px] font-medium text-[#64748B]">
+                          {!isRedundantDesc && event.description ? (
+                            <span className="line-clamp-1">{event.description}</span>
+                          ) : (
+                            <span>
+                              by <strong className="font-bold text-[#374151]">{event.actor?.name || "System"}</strong> · {formatEventTime(event.createdAt)}
+                            </span>
+                          )}
                         </div>
                       </div>
                     </div>
 
-                    <div className="mt-3 flex flex-wrap gap-2 lg:mt-0">
+                    <div className="mt-2.5 flex flex-wrap items-center gap-1.5 lg:mt-0">
                       {highlights.map((item) => (
-                        <div
+                        <span
                           key={`${event.id}-${item.label}-${item.value}`}
-                          className="rounded-[10px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2"
+                          className="inline-flex items-center gap-1 rounded-[7px] border border-[#E2E4E8] bg-[#F8FAFC] px-2 py-0.5 text-[11px] font-semibold text-[#4B5563]"
                         >
-                          <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
-                            {item.label}
-                          </div>
-                          <div
-                            className={cn(
-                              "mt-0.5 max-w-[220px] truncate text-[12px] font-extrabold text-[#000000]",
-                              item.tone,
-                            )}
-                          >
+                          <span className="text-[9px] font-extrabold uppercase text-[#7A7F89]">
+                            {item.label}:
+                          </span>
+                          <span className={cn("font-bold text-[#11120d]", item.tone)}>
                             {item.value}
-                          </div>
-                        </div>
+                          </span>
+                        </span>
                       ))}
                     </div>
 
-                    <div className="mt-3 min-w-0 text-[13px] font-semibold text-slate-700 lg:mt-0">
-                      <div className="truncate font-extrabold text-[#000000]">
+                    <div className="hidden min-w-0 text-[11.5px] font-medium text-[#64748B] lg:block">
+                      <div className="truncate font-extrabold text-[#11120d]">
                         {event.actor?.name || "System"}
                       </div>
-                      <div className="mt-1 truncate text-[12px] text-slate-500">
+                      <div className="mt-0.5 truncate text-[10.5px] text-[#7A7F89]">
                         {formatEventTime(event.createdAt)}
                       </div>
                     </div>
 
-                    <div className="mt-3 flex justify-start lg:mt-0 lg:justify-end">
+                    <div className="mt-2.5 flex items-center justify-between border-t border-[#F1F3F5] pt-2.5 lg:mt-0 lg:border-t-0 lg:pt-0 lg:justify-end">
+                      <span className="text-[11px] font-medium text-[#8C8889] lg:hidden">
+                        {formatEventTime(event.createdAt)}
+                      </span>
+
                       {canOpen ? (
                         <button
                           type="button"
                           onClick={() => openHistoryEventContext(event)}
-                          className="inline-flex h-[36px] items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#11120d] hover:text-white"
+                          className="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-[#D4D7DC] bg-white px-2.5 text-[11px] font-bold text-[#11120d] shadow-2xs transition hover:bg-[#F3F4F6] active:scale-[0.98]"
                         >
-                          <Icon name="open_in_new" className="text-[15px]" />
-                          {actionLabel}
+                          <span>{actionLabel}</span>
+                          <Icon name="open_in_new" sizePx={14} />
                         </button>
                       ) : (
-                        <span className="inline-flex h-[32px] items-center rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 text-[11px] font-extrabold text-slate-400">
-                          No linked record
+                        <span className="inline-flex h-7 items-center rounded-[7px] bg-[#F1F3F5] px-2 text-[10px] font-bold text-[#7A7F89]">
+                          No link
                         </span>
                       )}
                     </div>
@@ -1000,12 +1126,128 @@ export default function HistoryPage() {
         <MobileFilterSheet
           open={mobileFiltersOpen}
           onClose={() => setMobileFiltersOpen(false)}
-          onClear={() => { setDraftFromDate(""); setDraftToDate(""); }}
-          onApply={() => { setFromDate(draftFromDate); setToDate(draftToDate); setPage(1); setMobileFiltersOpen(false); }}
+          onClear={() => {
+            setDraftFromDate("");
+            setDraftToDate("");
+            setDraftEventActorFilter("All");
+            setDraftEventActionFilter("All");
+          }}
+          onApply={applyCategoryMobileFilters}
         >
-          <div className="grid grid-cols-2 gap-3">
-            <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={draftFromDate} max={draftToDate || undefined} onChange={(event) => setDraftFromDate(event.target.value)} /></label>
-            <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={draftToDate} min={draftFromDate || undefined} onChange={(event) => setDraftToDate(event.target.value)} /></label>
+          <div className="space-y-4">
+            {/* Quick Date Presets */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Quick Range</span>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  { label: "Today", preset: "today" as const },
+                  { label: "Last 7 Days", preset: "last7" as const },
+                  { label: "Last 30 Days", preset: "last30" as const },
+                  { label: "This Month", preset: "thisMonth" as const },
+                ].map(({ label, preset }) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => {
+                      const range = getPresetDateRange(preset);
+                      setDraftFromDate(range.from);
+                      setDraftToDate(range.to);
+                    }}
+                    className="flex h-9 items-center justify-center rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 text-[11.5px] font-bold text-[#11120d] transition active:scale-95 hover:bg-[#EDF2F7]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </div>
+
+            {/* Custom Dates */}
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1.5">
+                <span className="text-[12px] font-extrabold text-[#11120d]">From date</span>
+                <ProjectDateInput
+                  value={draftFromDate}
+                  max={draftToDate || undefined}
+                  onChange={(event) => setDraftFromDate(event.target.value)}
+                />
+              </label>
+              <label className="space-y-1.5">
+                <span className="text-[12px] font-extrabold text-[#11120d]">To date</span>
+                <ProjectDateInput
+                  value={draftToDate}
+                  min={draftFromDate || undefined}
+                  onChange={(event) => setDraftToDate(event.target.value)}
+                />
+              </label>
+            </div>
+
+            {/* Performed By / Staff Member */}
+            <label className="block space-y-1.5">
+              <span className="text-[12px] font-extrabold text-[#11120d]">Performed By</span>
+              <ProjectSelect
+                value={draftEventActorFilter}
+                onChange={(event) => setDraftEventActorFilter(event.target.value)}
+              >
+                <option value="All">All staff members</option>
+                {cashierOptions.map((cashier) => (
+                  <option key={cashier.id} value={cashier.id}>
+                    {cashier.name}
+                  </option>
+                ))}
+              </ProjectSelect>
+            </label>
+
+            {/* Activity Type */}
+            <label className="block space-y-1.5">
+              <span className="text-[12px] font-extrabold text-[#11120d]">Activity Type</span>
+              <ProjectSelect
+                value={draftEventActionFilter}
+                onChange={(event) => setDraftEventActionFilter(event.target.value)}
+              >
+                <option value="All">All activities</option>
+                {historyCategory === "product" ? (
+                  <>
+                    <option value="PRICE">Price Updates</option>
+                    <option value="DEACTIVATED">Product Deactivations</option>
+                  </>
+                ) : historyCategory === "stock" ? (
+                  <>
+                    <option value="RESTOCKED">Restocked</option>
+                    <option value="RECEIVE">Stock Receives</option>
+                    <option value="ADJUSTED">Stock Adjustments</option>
+                  </>
+                ) : historyCategory === "import" ? (
+                  <>
+                    <option value="COMPLETED">Completed Imports</option>
+                    <option value="DELETED">Deleted Reviews</option>
+                    <option value="RESTORED">Restored Reviews</option>
+                  </>
+                ) : historyCategory === "document" ? (
+                  <>
+                    <option value="UPLOADED">Document Uploads</option>
+                    <option value="METADATA">Metadata Updates</option>
+                    <option value="DELETED">Deleted Documents</option>
+                  </>
+                ) : historyCategory === "return" ? (
+                  <>
+                    <option value="APPROVED">Approved Returns</option>
+                    <option value="REJECTED">Rejected Returns</option>
+                    <option value="CREATED">New Return Requests</option>
+                  </>
+                ) : historyCategory === "payment" ? (
+                  <>
+                    <option value="UPDATED">Payment Added</option>
+                    <option value="VOIDED">Payment Voided</option>
+                  </>
+                ) : historyCategory === "system" ? (
+                  <>
+                    <option value="BACKUP">Database Backups</option>
+                    <option value="PIN">Security & PIN Overrides</option>
+                    <option value="PRIVILEGE">Cashier Privileges</option>
+                  </>
+                ) : null}
+              </ProjectSelect>
+            </label>
           </div>
         </MobileFilterSheet>
 
@@ -1269,27 +1511,27 @@ export default function HistoryPage() {
               </div>
             </div>
 
-            <div className="flex w-full gap-2 xl:w-[500px] xl:min-w-[500px]">
+            <div className="flex w-full gap-2 xl:w-[460px] xl:min-w-[460px]">
               <div className="relative min-w-0 flex-1">
-                <Icon name="search" className="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[#8C8889]" />
-                <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search invoice, customer, cashier, reference..." className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] pl-[44px] pr-4 text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889] focus:border-[#11120d]" />
+                <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]" sizePx={18} />
+                <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search invoice, customer, cashier, reference..." className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none placeholder:text-[#7A7F89] focus:border-[#11120d]" />
               </div>
               <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden" />
             </div>
             <ActiveFilterChips items={mobileFilterChips} className="lg:hidden" />
           </div>
 
-          <div className="hidden bg-[#FAFBFC] p-4 lg:block">
+          <div className="hidden border-t border-[#F1F3F5] bg-white p-3 lg:block">
             <div
               className={cn(
-                "grid grid-cols-1 gap-3 md:grid-cols-2 xl:items-end",
+                "grid grid-cols-1 gap-2.5 md:grid-cols-2 xl:items-end",
                 isAdminView
-                  ? "xl:grid-cols-[minmax(140px,0.8fr)_minmax(140px,0.8fr)_minmax(170px,1fr)_minmax(170px,1fr)_minmax(190px,1fr)_auto]"
-                  : "xl:grid-cols-[minmax(140px,0.9fr)_minmax(140px,0.9fr)_minmax(170px,1fr)_minmax(190px,1fr)_auto]",
+                  ? "xl:grid-cols-[minmax(130px,0.8fr)_minmax(130px,0.8fr)_minmax(150px,1fr)_minmax(150px,1fr)_minmax(160px,1fr)_auto]"
+                  : "xl:grid-cols-[minmax(130px,0.9fr)_minmax(130px,0.9fr)_minmax(150px,1fr)_minmax(160px,1fr)_auto]",
               )}
             >
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+              <label className="space-y-1">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
                   From date
                 </div>
                 <ProjectDateInput
@@ -1299,12 +1541,12 @@ export default function HistoryPage() {
                     setFromDate(event.target.value);
                     setPage(1);
                   }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                  className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                 />
               </label>
 
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+              <label className="space-y-1">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
                   To date
                 </div>
                 <ProjectDateInput
@@ -1314,13 +1556,13 @@ export default function HistoryPage() {
                     setToDate(event.target.value);
                     setPage(1);
                   }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                  className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                 />
               </label>
 
               {isAdminView ? (
-                <label className="space-y-2">
-                  <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+                <label className="space-y-1">
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
                     Cashier
                   </div>
                   <ProjectSelect
@@ -1329,7 +1571,7 @@ export default function HistoryPage() {
                       setCashierFilter(event.target.value);
                       setPage(1);
                     }}
-                    className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                    className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                   >
                     <option value="All">All cashiers</option>
                     {cashierOptions.map((cashier) => (
@@ -1341,8 +1583,8 @@ export default function HistoryPage() {
                 </label>
               ) : null}
 
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+              <label className="space-y-1">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
                   Customer type
                 </div>
                 <ProjectSelect
@@ -1353,7 +1595,7 @@ export default function HistoryPage() {
                     );
                     setPage(1);
                   }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                  className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                 >
                   <option value="All">All customers</option>
                   <option value="Walk-in">Walk-in</option>
@@ -1361,8 +1603,8 @@ export default function HistoryPage() {
                 </ProjectSelect>
               </label>
 
-              <label className="space-y-2">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.07em] text-[#64748B]">
+              <label className="space-y-1">
+                <div className="text-[9.5px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
                   Payment method
                 </div>
                 <ProjectSelect
@@ -1373,7 +1615,7 @@ export default function HistoryPage() {
                     );
                     setPage(1);
                   }}
-                  className="h-[42px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-bold text-[#000000] outline-none focus:border-[#11120d]"
+                  className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                 >
                   <option value="All">All methods</option>
                   <option value="Cash">Cash</option>
@@ -1390,10 +1632,10 @@ export default function HistoryPage() {
                 onClick={clearExtraFilters}
                 disabled={!hasExtraFilters}
                 className={cn(
-                  "h-[42px] rounded-[12px] border px-4 text-[12px] font-extrabold whitespace-nowrap transition",
+                  "h-9.5 rounded-[9px] border px-3 text-[11px] font-extrabold whitespace-nowrap transition",
                   hasExtraFilters
-                    ? "border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]"
-                    : "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#94A3B8]",
+                    ? "border-[#D4D7DC] bg-white text-[#374151] hover:bg-[#F3F4F6]"
+                    : "cursor-not-allowed border-[#E2E4E8] bg-[#F8FAFC] text-[#94A3B8]",
                 )}
               >
                 Clear filters
@@ -1408,14 +1650,40 @@ export default function HistoryPage() {
           onClear={() => { setDraftFromDate(""); setDraftToDate(""); setDraftCashierFilter("All"); setDraftCustomerTypeFilter("All"); setDraftMethodFilter("All"); }}
           onApply={applyMobileFilters}
         >
-          <div className="space-y-5">
-            <div className="grid grid-cols-2 gap-3">
-              <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={draftFromDate} max={draftToDate || undefined} onChange={(event) => setDraftFromDate(event.target.value)} /></label>
-              <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={draftToDate} min={draftFromDate || undefined} onChange={(event) => setDraftToDate(event.target.value)} /></label>
+          <div className="space-y-4">
+            {/* Quick Date Presets */}
+            <div className="space-y-1.5">
+              <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Quick Range</span>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {[
+                  { label: "Today", preset: "today" as const },
+                  { label: "Last 7 Days", preset: "last7" as const },
+                  { label: "Last 30 Days", preset: "last30" as const },
+                  { label: "This Month", preset: "thisMonth" as const },
+                ].map(({ label, preset }) => (
+                  <button
+                    key={preset}
+                    type="button"
+                    onClick={() => {
+                      const range = getPresetDateRange(preset);
+                      setDraftFromDate(range.from);
+                      setDraftToDate(range.to);
+                    }}
+                    className="flex h-9 items-center justify-center rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 text-[11.5px] font-bold text-[#11120d] transition active:scale-95 hover:bg-[#EDF2F7]"
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
             </div>
-            {isAdminView ? <label className="block space-y-2"><span className="text-[13px] font-bold">Cashier</span><ProjectSelect value={draftCashierFilter} onChange={(event) => setDraftCashierFilter(event.target.value)}><option value="All">All cashiers</option>{cashierOptions.map((cashier) => <option key={cashier.id} value={cashier.id}>{cashier.name}</option>)}</ProjectSelect></label> : null}
-            <label className="block space-y-2"><span className="text-[13px] font-bold">Customer type</span><ProjectSelect value={draftCustomerTypeFilter} onChange={(event) => setDraftCustomerTypeFilter(event.target.value as HistoryCustomerTypeFilter)}><option value="All">All customers</option><option value="Walk-in">Walk-in</option><option value="Registered">Registered</option></ProjectSelect></label>
-            <label className="block space-y-2"><span className="text-[13px] font-bold">Payment method</span><ProjectSelect value={draftMethodFilter} onChange={(event) => setDraftMethodFilter(event.target.value as "All" | AppInvoice["paymentMethod"])}><option value="All">All methods</option><option value="Cash">Cash</option><option value="eSewa">eSewa</option><option value="Fonepay">Fonepay</option><option value="Bank Transfer">Bank Transfer</option><option value="Mixed">Mixed</option><option value="None">None</option></ProjectSelect></label>
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="space-y-1.5"><span className="text-[12px] font-extrabold text-[#11120d]">From date</span><ProjectDateInput value={draftFromDate} max={draftToDate || undefined} onChange={(event) => setDraftFromDate(event.target.value)} /></label>
+              <label className="space-y-1.5"><span className="text-[12px] font-extrabold text-[#11120d]">To date</span><ProjectDateInput value={draftToDate} min={draftFromDate || undefined} onChange={(event) => setDraftToDate(event.target.value)} /></label>
+            </div>
+            {isAdminView ? <label className="block space-y-1.5"><span className="text-[12px] font-extrabold text-[#11120d]">Cashier</span><ProjectSelect value={draftCashierFilter} onChange={(event) => setDraftCashierFilter(event.target.value)}><option value="All">All cashiers</option>{cashierOptions.map((cashier) => <option key={cashier.id} value={cashier.id}>{cashier.name}</option>)}</ProjectSelect></label> : null}
+            <label className="block space-y-1.5"><span className="text-[12px] font-extrabold text-[#11120d]">Customer type</span><ProjectSelect value={draftCustomerTypeFilter} onChange={(event) => setDraftCustomerTypeFilter(event.target.value as HistoryCustomerTypeFilter)}><option value="All">All customers</option><option value="Walk-in">Walk-in</option><option value="Registered">Registered</option></ProjectSelect></label>
+            <label className="block space-y-1.5"><span className="text-[12px] font-extrabold text-[#11120d]">Payment method</span><ProjectSelect value={draftMethodFilter} onChange={(event) => setDraftMethodFilter(event.target.value as "All" | AppInvoice["paymentMethod"])}><option value="All">All methods</option><option value="Cash">Cash</option><option value="eSewa">eSewa</option><option value="Fonepay">Fonepay</option><option value="Bank Transfer">Bank Transfer</option><option value="Mixed">Mixed</option><option value="None">None</option></ProjectSelect></label>
           </div>
         </MobileFilterSheet>
 

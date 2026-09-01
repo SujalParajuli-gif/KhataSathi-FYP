@@ -23,10 +23,18 @@ import {
   importImage,
   importPdf,
   getImportBatch,
+  getImportBatchReview,
+  getImportBatchSource,
+  getImportBatchSourcePage,
+  getImportBatchSourceContext,
+  getImportRowSourceContext,
   listImportBatches,
   deleteImportBatch,
   importReviewedBatchRows,
   saveReviewedBatchRows,
+  setReviewedBatchRowResolution,
+  setImportBatchPriceMapping,
+  commitSavedImportBatch,
   listImportTemplates,
   saveImportTemplate,
   deleteImportTemplate,
@@ -45,6 +53,23 @@ const csvUpload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 },
 }); // import sources are parsed immediately and never written as unreviewed temp files
+const pdfUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: 50 * 1024 * 1024, files: 1 },
+});
+const receiveSupplierPdf: RequestHandler = (req, res, next) => {
+  pdfUpload.single("file")(req, res, (error: any) => {
+    if (!error) {
+      next();
+      return;
+    }
+    if (error instanceof multer.MulterError && error.code === "LIMIT_FILE_SIZE") {
+      res.status(413).json({ error: "Supplier PDFs must be 50 MB or smaller." });
+      return;
+    }
+    next(error);
+  });
+};
 // Product images are held in memory only long enough to validate and create
 // optimized display/thumbnail variants. Untrusted originals are never served.
 const imgUpload = multer({
@@ -74,6 +99,11 @@ router.get("/lookup", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getMa
 router.get("/lookup-code", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getByCode); // exact scanner lookup by SKU or barcode
 router.post("/search-selections", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), recordSearchSelection); // intentional action on a stabilized search result
 router.get("/import-batches", requireRole("ADMIN", "MANAGER"), listImportBatches); // recent CSV/PDF/image import batches
+router.get("/import-batches/:batchId/review", requireRole("ADMIN", "MANAGER"), getImportBatchReview); // paginated review workspace data
+router.get("/import-batches/:batchId/source", requireRole("ADMIN", "MANAGER"), getImportBatchSource); // protected original source file
+router.get("/import-batches/:batchId/source/pages/:pageNumber", requireRole("ADMIN", "MANAGER"), getImportBatchSourcePage); // rendered PDF page for source-row highlighting
+router.get("/import-batches/:batchId/source-context", requireRole("ADMIN", "MANAGER"), getImportBatchSourceContext); // whole batch spreadsheet context
+router.get("/import-batches/:batchId/rows/:rowId/source-context", requireRole("ADMIN", "MANAGER"), getImportRowSourceContext); // nearby original source rows
 router.get("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), getImportBatch); // returning extracted import rows for review
 router.delete("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), deleteImportBatch); // deleting import review history only, not products
 router.get("/import-templates", requireRole("ADMIN", "MANAGER"), listImportTemplates); // saved supplier column mappings
@@ -82,10 +112,13 @@ router.delete("/import-templates/:id", requireRole("ADMIN", "MANAGER"), deleteIm
 router.post("/", requireRole("ADMIN", "MANAGER"), create); // admin and managers can create new products
 router.post("/bulk-price-update", requireRole("ADMIN", "MANAGER"), bulkPriceUpdate); // audited seasonal/bulk price updates
 router.post("/import-csv", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importCsv); // admin and managers can create CSV/XLSX review batches
-router.post("/import-pdf", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importPdf); // admin and managers can create PDF import previews
+router.post("/import-pdf", requireRole("ADMIN", "MANAGER"), receiveSupplierPdf, importPdf); // text or scanned PDF review preview
 router.post("/import-image", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importImage); // image rate-list import via optional AI parser
 router.post("/import-documents/:documentId", requireRole("ADMIN", "MANAGER"), importFromDocument); // open an import review from an uploaded Documents inbox file
 router.put("/import-batches/:batchId/rows", requireRole("ADMIN", "MANAGER"), saveReviewedBatchRows); // persist corrected review drafts before final import
+router.patch("/import-batches/:batchId/rows/:rowId/resolution", requireRole("ADMIN", "MANAGER"), setReviewedBatchRowResolution); // lightweight keep/ignore decision, including failed rows
+router.patch("/import-batches/:batchId/price-mapping", requireRole("ADMIN", "MANAGER"), setImportBatchPriceMapping); // assign ambiguous supplier price columns before import
+router.post("/import-batches/:batchId/commit", requireRole("ADMIN", "MANAGER"), commitSavedImportBatch); // commit all saved decisions without sending every row back to the browser
 router.post("/import-batches/:batchId/import", requireRole("ADMIN", "MANAGER"), importReviewedBatchRows); // admin and managers can import reviewed rows
 router.get("/:id/delete-safety", requireRole("ADMIN", "MANAGER"), deleteSafety); // explains whether a product can be permanently deleted
 router.post("/:id/discard-stock-and-delete", requireRole("ADMIN"), requireBusinessCapability("INVENTORY"), discardStockAndPermanentDelete); // admin-only cleanup for unreferenced products with non-zero stock

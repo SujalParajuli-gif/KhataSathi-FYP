@@ -141,15 +141,15 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all",
+        "inline-flex h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] px-6 text-sm font-bold transition-all shadow-2xs active:scale-[0.99]",
         disabled ? "cursor-not-allowed opacity-50" : "",
         primary
-          ? "bg-[#11120d] text-white hover:bg-black shadow-sm focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
-          : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
+          ? "bg-[#11120d] text-white hover:bg-black shadow-xs focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
+          : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
       )}
     >
       <Icon name={icon} className="text-[18px]" />
-      {label}
+      <span>{label}</span>
     </button>
   );
 }
@@ -585,21 +585,21 @@ export default function CashierProfileSection() {
               </div>
             </div>
 
-            <nav className="bg-white rounded-xl border border-slate-200 p-2 space-y-1">
+            <nav className="grid grid-cols-2 gap-1.5 rounded-xl border border-slate-200 bg-slate-100/70 p-1.5 sm:flex sm:flex-col sm:space-y-1 sm:bg-white sm:p-2">
               <button
                 onClick={() => {
                   setTab("personal");
                   setError("");
                 }}
                 className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                  "flex items-center justify-center gap-2 rounded-lg py-2.5 px-3 text-xs font-bold transition-all sm:justify-start sm:px-4 sm:py-3 sm:text-sm sm:font-semibold",
                   tab === "personal"
-                    ? "bg-slate-100 text-slate-900"
-                    : "text-slate-600 hover:bg-slate-50"
+                    ? "bg-white text-slate-900 shadow-xs border border-slate-200/80 sm:bg-slate-100 sm:border-transparent sm:shadow-none"
+                    : "text-slate-600 hover:bg-slate-200/60 sm:hover:bg-slate-50"
                 )}
               >
                 <Icon name="person" className="text-[16px]" />
-                Personal Information
+                <span>Personal Info</span>
               </button>
               <button
                 onClick={() => {
@@ -607,14 +607,14 @@ export default function CashierProfileSection() {
                   setError("");
                 }}
                 className={cn(
-                  "w-full flex items-center gap-3 px-4 py-3 rounded-lg text-sm font-semibold transition-all",
+                  "flex items-center justify-center gap-2 rounded-lg py-2.5 px-3 text-xs font-bold transition-all sm:justify-start sm:px-4 sm:py-3 sm:text-sm sm:font-semibold",
                   tab === "security"
-                    ? "bg-slate-100 text-slate-900"
-                    : "text-slate-600 hover:bg-slate-50"
+                    ? "bg-white text-slate-900 shadow-xs border border-slate-200/80 sm:bg-slate-100 sm:border-transparent sm:shadow-none"
+                    : "text-slate-600 hover:bg-slate-200/60 sm:hover:bg-slate-50"
                 )}
               >
                 <Icon name="lock" className="text-[16px]" />
-                Login & Password
+                <span>Password</span>
               </button>
             </nav>
           </div>
@@ -824,7 +824,7 @@ export default function CashierProfileSection() {
                   )}
                 </div>
 
-                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
+                <div className="mt-8 flex flex-col-reverse gap-2.5 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
                   <ActionButton
                     icon="restart_alt"
                     label="Discard Changes"

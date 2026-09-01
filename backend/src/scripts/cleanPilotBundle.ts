@@ -60,10 +60,10 @@ const settingsSchema = z.object({
 });
 
 const bundleSchema = z.object({
-  schemaVersion: z.literal(1),
+  schemaVersion: z.literal(2),
   exportedAt: z.string().min(1),
-  accounts: z.array(accountSchema).length(4),
-  profileImages: z.array(profileImageSchema).max(4),
+  accounts: z.array(accountSchema).min(4).max(20),
+  profileImages: z.array(profileImageSchema).max(20),
   cashierPrivileges: z.array(cashierPrivilegeSchema).max(1),
   settings: settingsSchema,
 });
@@ -79,11 +79,20 @@ function assertUnique(values: Array<string | null>, label: string) {
 
 export function validateCleanPilotBundle(input: unknown): CleanPilotBundle {
   const bundle = bundleSchema.parse(input);
-  const roles = bundle.accounts.map((account) => account.role).sort();
-  const expectedRoles = [...CLEAN_PILOT_ROLES].sort();
-  if (JSON.stringify(roles) !== JSON.stringify(expectedRoles)) {
+  const roleCounts = Object.fromEntries(
+    CLEAN_PILOT_ROLES.map((role) => [
+      role,
+      bundle.accounts.filter((account) => account.role === role).length,
+    ]),
+  ) as Record<CleanPilotRole, number>;
+  if (
+    roleCounts.ADMIN !== 1 ||
+    roleCounts.MANAGER !== 1 ||
+    roleCounts.CASHIER !== 1 ||
+    roleCounts.STAFF < 1
+  ) {
     throw new Error(
-      "The clean-pilot bundle must contain exactly one active Admin, Manager, Cashier, and Staff account.",
+      "The clean-pilot bundle must contain exactly one active Admin, Manager, and Cashier account, plus at least one active Staff account.",
     );
   }
 
@@ -137,15 +146,34 @@ export function readIdentityArguments(args: string[]) {
     return index >= 0 ? String(args[index + 1] || "").trim() : "";
   };
 
-  const references: Record<Lowercase<CleanPilotRole>, string> = {
+  const readAll = (name: string) => {
+    const values: string[] = [];
+    for (let index = 0; index < args.length; index += 1) {
+      const argument = args[index];
+      if (argument.startsWith(`--${name}=`)) {
+        const value = argument.slice(name.length + 3).trim();
+        if (value) values.push(value);
+      } else if (argument === `--${name}`) {
+        const value = String(args[index + 1] || "").trim();
+        if (value) values.push(value);
+        index += 1;
+      }
+    }
+    return values;
+  };
+
+  const references = {
     admin: read("admin"),
     manager: read("manager"),
     cashier: read("cashier"),
-    staff: read("staff"),
+    staff: readAll("staff"),
   };
-  const missing = Object.entries(references)
-    .filter(([, value]) => !value)
-    .map(([key]) => `--${key}`);
+  const missing = [
+    ...(["admin", "manager", "cashier"] as const)
+      .filter((key) => !references[key])
+      .map((key) => `--${key}`),
+    ...(references.staff.length === 0 ? ["--staff"] : []),
+  ];
   if (missing.length > 0) {
     throw new Error(`Missing required pilot identities: ${missing.join(", ")}.`);
   }

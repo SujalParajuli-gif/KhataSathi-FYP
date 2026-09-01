@@ -37,7 +37,6 @@ import {
   listBrandsApi,
   listCashierPrivilegesApi,
   listLoginAttemptsApi,
-  listProductsApi,
   listUsersApi,
   openCashDrawerApi,
   restoreBackupApi,
@@ -62,6 +61,11 @@ import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import {
+  effectiveStaffDraftRequests,
+  isBusinessAccessDraftDirty,
+  stageBusinessModeSelection,
+} from "~/lib/settings/businessModeDraft";
 
 type TabKey =
   | "overview"
@@ -72,16 +76,12 @@ type TabKey =
   | "backup";
 
 const SETTINGS_TAB_CACHE_MS = 30_000;
-type Brand = { id: string; name: string; active: boolean };
-type ProductLite = {
+type Brand = {
   id: string;
   name: string;
-  sku: string;
-  brandId: string;
-  brand: string;
-  stock: number;
-  lowStockThreshold: number;
   active: boolean;
+  productCount: number;
+  activeProductCount: number;
 };
 type UserLite = {
   id: string;
@@ -187,6 +187,26 @@ function formatRelativeTime(value?: string | null) {
   return `${Math.floor(diffHours / 24)}d ago`;
 }
 
+function getPresetDateRange(preset: "today" | "7d" | "30d" | "thisMonth"): { from: string; to: string } {
+  const now = new Date();
+  const to = now.toISOString().slice(0, 10);
+  if (preset === "today") {
+    return { from: to, to };
+  }
+  if (preset === "7d") {
+    const d = new Date();
+    d.setDate(d.getDate() - 7);
+    return { from: d.toISOString().slice(0, 10), to };
+  }
+  if (preset === "30d") {
+    const d = new Date();
+    d.setDate(d.getDate() - 30);
+    return { from: d.toISOString().slice(0, 10), to };
+  }
+  const firstOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
+  return { from: firstOfMonth.toISOString().slice(0, 10), to };
+}
+
 function formatFileSize(value?: number | null) {
   const bytes = Number(value || 0);
   if (bytes <= 0) return "-";
@@ -204,6 +224,7 @@ const STORAGE_OWNER_LABELS: Record<
   PROFILE_IMAGE: "Profile image",
   DOCUMENT_ORIGINAL: "Document original",
   DOCUMENT_THUMBNAIL: "Document thumbnail",
+  PRODUCT_IMPORT_SOURCE: "Product import source",
 };
 
 function StorageIssueGroup({
@@ -320,8 +341,8 @@ function StorageIntegrityPanel({
 }) {
   const findings = report
     ? report.summary.missingReferences +
-      report.summary.unreferencedFiles +
-      report.summary.staleTempFiles
+    report.summary.unreferencedFiles +
+    report.summary.staleTempFiles
     : 0;
 
   return (
@@ -653,14 +674,14 @@ function validateBusinessDefaultsDraft(draft: BusinessDefaultsDraft) {
     max?: number;
     integer?: boolean;
   }> = [
-    { key: "defaultInitialStock", label: "New product initial stock", min: 0 },
-    { key: "defaultLowStock", label: "Stock alert threshold", min: 0 },
-    { key: "wholesaleQtyThreshold", label: "Wholesale quantity threshold", min: 1 },
-    { key: "loyaltyDiscountPercent", label: "Loyalty discount", min: 0, max: 100 },
-    { key: "returnWindowDays", label: "Return window", min: 0, integer: true },
-    { key: "parkedBillExpiryHours", label: "Parked bill expiry", min: 1, integer: true },
-    { key: "draftRequestExpiryMinutes", label: "Draft request expiry", min: 1, integer: true },
-  ];
+      { key: "defaultInitialStock", label: "New product initial stock", min: 0 },
+      { key: "defaultLowStock", label: "Stock alert threshold", min: 0 },
+      { key: "wholesaleQtyThreshold", label: "Wholesale quantity threshold", min: 1 },
+      { key: "loyaltyDiscountPercent", label: "Loyalty discount", min: 0, max: 100 },
+      { key: "returnWindowDays", label: "Return window", min: 0, integer: true },
+      { key: "parkedBillExpiryHours", label: "Parked bill expiry", min: 1, integer: true },
+      { key: "draftRequestExpiryMinutes", label: "Draft request expiry", min: 1, integer: true },
+    ];
 
   for (const rule of rules) {
     const raw = draft[rule.key].trim();
@@ -696,6 +717,42 @@ function formatBusinessMode(mode: BusinessMode) {
   return "Full POS";
 }
 
+function SettingsToggleSwitch({
+  checked,
+  onChange,
+  disabled = false,
+  ariaLabel,
+}: {
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+  disabled?: boolean;
+  ariaLabel?: string;
+}) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      aria-label={ariaLabel}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={cn(
+        "relative inline-flex h-[26px] w-[46px] min-h-[26px] min-w-[46px] shrink-0 cursor-pointer items-center rounded-full border p-0 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45",
+        checked
+          ? "border-slate-950 bg-slate-950"
+          : "border-slate-300 bg-slate-200",
+      )}
+    >
+      <span
+        className={cn(
+          "pointer-events-none absolute left-[3px] top-1/2 h-[20px] w-[20px] min-h-[20px] min-w-[20px] -translate-y-1/2 rounded-full bg-white shadow-sm transition-transform duration-150 ease-out",
+          checked ? "translate-x-[20px]" : "translate-x-0",
+        )}
+      />
+    </button>
+  );
+}
+
 function BusinessNumberField({
   fieldKey,
   label,
@@ -719,10 +776,12 @@ function BusinessNumberField({
 }) {
   return (
     <label className="block">
-      <span className={cn("text-[13px] font-extrabold", disabled ? "text-slate-500" : "text-slate-800")}>
-        {label}
-      </span>
-      <div className="relative mt-2">
+      <div className="flex items-center justify-between gap-2">
+        <span className={cn("text-[13px] font-extrabold", disabled ? "text-[#8C8889]" : "text-[#11120D]")}>
+          {label}
+        </span>
+      </div>
+      <div className="relative mt-1.5">
         <input
           data-business-default={fieldKey}
           data-business-default-error={error ? "true" : undefined}
@@ -735,26 +794,26 @@ function BusinessNumberField({
           onFocus={(event) => event.currentTarget.select()}
           onChange={(event) => onChange(event.target.value)}
           className={cn(
-            "h-11 w-full rounded-[8px] border px-3 text-[14px] font-semibold outline-none",
+            "h-10 w-full rounded-[10px] border px-3 text-[13px] font-semibold text-[#11120D] outline-none transition",
             suffix ? "pr-16" : "",
             disabled
-              ? "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-500"
+              ? "cursor-not-allowed border-[#E5E7EB] bg-[#F8FAFC] text-[#8C8889]"
               : error
-                ? "border-rose-400 bg-white focus:ring-2 focus:ring-rose-100"
-                : "border-slate-200 bg-white focus:border-[#11120D]",
+                ? "border-rose-400 bg-white focus:border-rose-600 focus:ring-2 focus:ring-rose-100"
+                : "border-[#D4D7DC] bg-white focus:border-[#11120D]",
           )}
         />
         {suffix ? (
-          <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-[12px] font-extrabold text-slate-500">
+          <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 rounded-[6px] bg-[#F1F3F5] px-2 py-0.5 text-[11px] font-extrabold text-[#64748B]">
             {suffix}
           </span>
         ) : null}
       </div>
-      <span id={`${fieldKey}-help`} className="mt-2 block text-[12px] font-medium leading-5 text-slate-500">
+      <span id={`${fieldKey}-help`} className="mt-1.5 block text-[11.5px] font-medium leading-4 text-[#64748B]">
         {helper}
       </span>
       {error ? (
-        <span id={`${fieldKey}-error`} className="mt-1 block text-[12px] font-bold text-rose-700" role="alert">
+        <span id={`${fieldKey}-error`} className="mt-1 block text-[11.5px] font-bold text-rose-700" role="alert">
           {error}
         </span>
       ) : null}
@@ -855,7 +914,6 @@ export default function SettingsPage() {
   const [showModeConfirm, setShowModeConfirm] = useState(false);
   const [refreshing, setRefreshing] = useState(false); // lighter refresh state used after saves without showing the full page loader
   const [brands, setBrands] = useState<Brand[]>([]); // brand records shown in brand management
-  const [products, setProducts] = useState<ProductLite[]>([]); // lightweight product list used for brand stats and low stock stats
   const [users, setUsers] = useState<UserLite[]>([]); // lightweight staff list used for overview counts
   const [cashierPrivileges, setCashierPrivileges] = useState<
     CashierPrivilegeRow[]
@@ -991,6 +1049,7 @@ export default function SettingsPage() {
     CashierPrivilegeRow["privilege"] | null
   >(null);
   const [showCashierSaveConfirm, setShowCashierSaveConfirm] = useState(false);
+  const [securitySubTab, setSecuritySubTab] = useState<"audit" | "login">("audit");
 
   // the security lists share one date range filter, so these helpers keep both API payloads consistent
   function buildSecurityDateParams() {
@@ -1111,7 +1170,6 @@ export default function SettingsPage() {
     try {
       const [
         brandData,
-        productData,
         userData,
         settingsData,
         backupData,
@@ -1123,9 +1181,6 @@ export default function SettingsPage() {
         overridePolicyData,
       ] = await Promise.allSettled([
         needsBrands ? listBrandsApi() : Promise.resolve(null),
-        needsBrands
-          ? listProductsApi({ pageSize: 200 })
-          : Promise.resolve(null),
         needsUsers ? listUsersApi() : Promise.resolve(null),
         needsBusinessRules ? getBusinessSettingsApi() : Promise.resolve(null),
         needsBackup ? listBackupHistoryApi() : Promise.resolve(null),
@@ -1145,24 +1200,8 @@ export default function SettingsPage() {
             id: brand.id,
             name: brand.name || "Unknown",
             active: brand.isActive !== false,
-          })),
-        );
-      }
-      if (needsBrands && productData.status === "fulfilled") {
-        // we only keep the product fields this page actually needs for counts and brand relationships
-        const raw = Array.isArray(productData.value?.products)
-          ? productData.value.products
-          : [];
-        setProducts(
-          raw.map((product: any) => ({
-            id: product.id,
-            name: product.name || "Unknown",
-            sku: product.sku || "",
-            brandId: product.brand?.id || "",
-            brand: product.brand?.name || "Unknown",
-            stock: Number(product.stock ?? 0),
-            lowStockThreshold: Number(product.lowStockThreshold ?? 0),
-            active: product.isActive !== false,
+            productCount: Number(brand.productCount || 0),
+            activeProductCount: Number(brand.activeProductCount || 0),
           })),
         );
       }
@@ -1226,7 +1265,7 @@ export default function SettingsPage() {
         }
         setStaffDraftsDraft(
           settingsData.value?.businessMode === "FULL_POS" &&
-            settingsData.value?.staffDraftRequestsEnabled === true,
+          settingsData.value?.staffDraftRequestsEnabled === true,
         );
       }
       if (
@@ -1287,7 +1326,7 @@ export default function SettingsPage() {
       }
 
       const relevantResults = [
-        ...(needsBrands ? [brandData, productData] : []),
+        ...(needsBrands ? [brandData] : []),
         ...(needsUsers
           ? [userData, cashierPrivilegeData, overridePolicyData]
           : []),
@@ -1357,29 +1396,22 @@ export default function SettingsPage() {
     setBrandPage(1);
   }, [brandQuery, brandSelection, brandFilter]);
 
-  // these brand stats are derived from the current products list so each brand row can show totals without extra API calls
+  // Counts come from the database with the brand list, so pagination on the
+  // Products page can never make these totals incomplete.
   const brandStats = useMemo(() => {
     const stats: Record<
       string,
       { total: number; active: number; low: number }
     > = {};
     brands.forEach((brand) => {
-      const related = products.filter(
-        (product) => product.brandId === brand.id,
-      );
       stats[brand.id] = {
-        total: related.length,
-        active: related.filter((product) => product.active).length,
-        low: related.filter(
-          (product) =>
-            product.active &&
-            product.stock > 0 &&
-            product.stock <= product.lowStockThreshold,
-        ).length,
+        total: brand.productCount,
+        active: brand.activeProductCount,
+        low: 0,
       };
     });
     return stats;
-  }, [brands, products]);
+  }, [brands]);
 
   const filteredBrands = useMemo(() => {
     const query = brandQuery.trim().toLowerCase();
@@ -1405,10 +1437,6 @@ export default function SettingsPage() {
     [brands],
   );
 
-  const editingBrandProducts = useMemo(() => {
-    if (!editingBrand) return [];
-    return products.filter((product) => product.brandId === editingBrand.id);
-  }, [editingBrand, products]);
   const auditTotalPages = Math.max(1, Math.ceil(auditTotal / auditPageSize));
   const loginTotalPages = Math.max(1, Math.ceil(loginTotal / loginPageSize));
   const brandTotalPages = Math.max(
@@ -1460,15 +1488,6 @@ export default function SettingsPage() {
   const loginPageEnd =
     loginTotal === 0 ? 0 : loginPageStart + loginAttempts.length;
 
-  const lowStockProducts = products.filter(
-    (product) =>
-      product.active &&
-      product.stock > 0 &&
-      product.stock <= product.lowStockThreshold,
-  );
-  const outOfStockProducts = products.filter(
-    (product) => product.active && product.stock <= 0,
-  );
   const activeUsers = users.filter((user) => user.isActive);
   const adminUsers = activeUsers.filter((user) => user.role === "ADMIN");
   const managerUsers = activeUsers.filter((user) => user.role === "MANAGER");
@@ -1500,40 +1519,89 @@ export default function SettingsPage() {
   }, [loginTotalPages]);
   const defaultsDirty =
     !defaultsValid || normalizedDefaults.defaultInitialStock !==
-      savedDefaults.defaultInitialStock ||
+    savedDefaults.defaultInitialStock ||
     normalizedDefaults.defaultLowStock !== savedDefaults.defaultLowStock ||
     normalizedDefaults.wholesaleQtyThreshold !==
-      savedDefaults.wholesaleQtyThreshold ||
+    savedDefaults.wholesaleQtyThreshold ||
     normalizedDefaults.loyaltyDiscountPercent !==
-      savedDefaults.loyaltyDiscountPercent ||
+    savedDefaults.loyaltyDiscountPercent ||
     normalizedDefaults.returnWindowDays !== savedDefaults.returnWindowDays ||
     normalizedDefaults.parkedBillExpiryHours !==
-      savedDefaults.parkedBillExpiryHours ||
+    savedDefaults.parkedBillExpiryHours ||
     normalizedDefaults.draftRequestExpiryMinutes !==
-      savedDefaults.draftRequestExpiryMinutes;
-  const effectiveStaffDraftsDraft =
-    modeDraft === "FULL_POS" && staffDraftsDraft;
-  const accessDirty =
-    modeDraft !== capabilities.businessMode ||
-    effectiveStaffDraftsDraft !== capabilities.staffDraftRequestsEnabled;
+    savedDefaults.draftRequestExpiryMinutes;
+  const effectiveStaffDraftsDraft = effectiveStaffDraftRequests(
+    modeDraft,
+    staffDraftsDraft,
+  );
+  const accessDirty = isBusinessAccessDraftDirty({
+    draftMode: modeDraft,
+    savedMode: capabilities.businessMode,
+    draftStaffRequests: staffDraftsDraft,
+    savedStaffRequests: capabilities.staffDraftRequestsEnabled,
+  });
+  const modeReasonPresets =
+    modeDraft !== capabilities.businessMode
+      ? [
+          modeDraft === "FULL_POS"
+            ? {
+                label: "Full POS rollout",
+                text: "Storewide Full POS launch and cashier rollout",
+              }
+            : modeDraft === "INVENTORY_ONLY"
+              ? {
+                  label: "Enable inventory",
+                  text: "Enabling counted stock management and receiving",
+                }
+              : {
+                  label: "Catalog maintenance",
+                  text: "Temporary catalog-only access for catalog maintenance",
+                },
+          {
+            label: "Workflow testing",
+            text: "System feature verification and workflow testing",
+          },
+          {
+            label: "Routine configuration",
+            text: "Routine operational capability update by administrator",
+          },
+        ]
+      : [
+          {
+            label: effectiveStaffDraftsDraft
+              ? "Enable staff requests"
+              : "Disable staff requests",
+            text: effectiveStaffDraftsDraft
+              ? "Enable staff billing draft requests for floor assistants"
+              : "Disable staff billing draft requests for floor assistants",
+          },
+          {
+            label: "Workflow testing",
+            text: "System feature verification and workflow testing",
+          },
+          {
+            label: "Routine configuration",
+            text: "Routine operational capability update by administrator",
+          },
+        ];
   const defaultChanges = defaultsValid
     ? [
-        { key: "defaultInitialStock" as const, label: "New product initial stock", unit: "units" },
-        { key: "defaultLowStock" as const, label: "Stock alert threshold", unit: "units" },
-        { key: "wholesaleQtyThreshold" as const, label: "Wholesale threshold", unit: "units" },
-        { key: "loyaltyDiscountPercent" as const, label: "Loyalty discount", unit: "%" },
-        { key: "returnWindowDays" as const, label: "Return window", unit: "days" },
-        { key: "parkedBillExpiryHours" as const, label: "Parked bill expiry", unit: "hours" },
-        { key: "draftRequestExpiryMinutes" as const, label: "Draft request expiry", unit: "minutes" },
-      ]
-        .filter(({ key }) => normalizedDefaults[key] !== savedDefaults[key])
-        .map(({ key, label, unit }) => ({
-          key,
-          label,
-          unit,
-          before: savedDefaults[key],
-          after: normalizedDefaults[key],
-        }))
+      { key: "defaultInitialStock" as const, label: "New product initial stock", unit: "units" },
+      { key: "defaultLowStock" as const, label: "Stock alert threshold", unit: "units" },
+      { key: "wholesaleQtyThreshold" as const, label: "Wholesale threshold", unit: "units" },
+      { key: "loyaltyDiscountPercent" as const, label: "Loyalty discount", unit: "%" },
+      { key: "returnWindowDays" as const, label: "Return window", unit: "days" },
+      { key: "parkedBillExpiryHours" as const, label: "Parked bill expiry", unit: "hours" },
+      { key: "draftRequestExpiryMinutes" as const, label: "Draft request expiry", unit: "minutes" },
+    ]
+      .filter(({ key }) => normalizedDefaults[key] !== savedDefaults[key])
+      .map(({ key, label, unit }) => ({
+        key,
+        label,
+        unit,
+        before: savedDefaults[key],
+        after: normalizedDefaults[key],
+      }))
     : [];
 
   // form state resetting functions
@@ -1588,8 +1656,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setBrandError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to save the brand.",
+        error?.message ||
+        "Failed to save the brand.",
       );
     }
   }
@@ -1611,8 +1679,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setBrandError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update the brand.",
+        error?.message ||
+        "Failed to update the brand.",
       );
     } finally {
       setPendingBrandSave(false);
@@ -1634,8 +1702,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setBrandError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to reactivate the brand.",
+        error?.message ||
+        "Failed to reactivate the brand.",
       );
     }
   }
@@ -1673,8 +1741,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setStorageIntegrityError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Storage check could not be completed.",
+        error?.message ||
+        "Storage check could not be completed.",
       );
     } finally {
       setStorageIntegrityBusy(false);
@@ -1689,8 +1757,8 @@ export default function SettingsPage() {
       showToast(
         "danger",
         error?.response?.data?.error ||
-          error?.message ||
-          "Recovery backup status could not be refreshed.",
+        error?.message ||
+        "Recovery backup status could not be refreshed.",
       );
     } finally {
       setRecoveryBackupStatusBusy(false);
@@ -1717,9 +1785,9 @@ export default function SettingsPage() {
     } catch (error: any) {
       setRestoreError(
         error?.response?.data?.error ||
-          error?.response?.data?.detail ||
-          error?.message ||
-          "Failed to restore backup.",
+        error?.response?.data?.detail ||
+        error?.message ||
+        "Failed to restore backup.",
       );
       await loadData(false);
     } finally {
@@ -1752,8 +1820,8 @@ export default function SettingsPage() {
       showToast(
         "danger",
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update user permissions.",
+        error?.message ||
+        "Failed to update user permissions.",
       );
       await refreshSettingsData();
     } finally {
@@ -1780,8 +1848,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setOverridePinError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update override PIN.",
+        error?.message ||
+        "Failed to update override PIN.",
       );
     } finally {
       setSavingOverridePin(false);
@@ -1810,8 +1878,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setBackupScheduleError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update backup schedule.",
+        error?.message ||
+        "Failed to update backup schedule.",
       );
     } finally {
       setBackupScheduleBusy(false);
@@ -1923,8 +1991,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setDrawerError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to open cash drawer.",
+        error?.message ||
+        "Failed to open cash drawer.",
       );
     } finally {
       setDrawerBusy(false);
@@ -1952,8 +2020,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setDrawerError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to update cash drawer.",
+        error?.message ||
+        "Failed to update cash drawer.",
       );
     } finally {
       setDrawerBusy(false);
@@ -1981,8 +2049,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setDrawerError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Failed to close cash drawer.",
+        error?.message ||
+        "Failed to close cash drawer.",
       );
     } finally {
       setDrawerBusy(false);
@@ -2038,70 +2106,70 @@ export default function SettingsPage() {
   const mobileSecurityFilterChips: MobileFilterChip[] = [
     ...(securityDateFilter.from || securityDateFilter.to
       ? [
-          {
-            id: "dates",
-            label: `${securityDateFilter.from || "Any"} – ${securityDateFilter.to || "Any"}`,
-            onRemove: () => {
-              setSecurityDateDraft(INITIAL_SECURITY_RANGE);
-              setSecurityDateFilter(INITIAL_SECURITY_RANGE);
-              setAuditPage(1);
-              setLoginPage(1);
-            },
+        {
+          id: "dates",
+          label: `${securityDateFilter.from || "Any"} – ${securityDateFilter.to || "Any"}`,
+          onRemove: () => {
+            setSecurityDateDraft(INITIAL_SECURITY_RANGE);
+            setSecurityDateFilter(INITIAL_SECURITY_RANGE);
+            setAuditPage(1);
+            setLoginPage(1);
           },
-        ]
+        },
+      ]
       : []),
     ...(securityAuditActionFilter
       ? [
-          {
-            id: "action",
-            label: `Action: ${securityAuditActionFilter}`,
-            onRemove: () => {
-              setSecurityAuditActionDraft("");
-              setSecurityAuditActionFilter("");
-              setAuditPage(1);
-            },
+        {
+          id: "action",
+          label: `Action: ${securityAuditActionFilter}`,
+          onRemove: () => {
+            setSecurityAuditActionDraft("");
+            setSecurityAuditActionFilter("");
+            setAuditPage(1);
           },
-        ]
+        },
+      ]
       : []),
     ...(securityEntityFilter
       ? [
-          {
-            id: "entity",
-            label: `Entity: ${securityEntityFilter}`,
-            onRemove: () => {
-              setSecurityEntityDraft("");
-              setSecurityEntityFilter("");
-              setAuditPage(1);
-            },
+        {
+          id: "entity",
+          label: `Entity: ${securityEntityFilter}`,
+          onRemove: () => {
+            setSecurityEntityDraft("");
+            setSecurityEntityFilter("");
+            setAuditPage(1);
           },
-        ]
+        },
+      ]
       : []),
     ...(securityLoginEmailFilter
       ? [
-          {
-            id: "account",
-            label: securityLoginEmailFilter,
-            onRemove: () => {
-              setSecurityLoginEmailDraft("");
-              setSecurityLoginEmailFilter("");
-              setLoginPage(1);
-            },
+        {
+          id: "account",
+          label: securityLoginEmailFilter,
+          onRemove: () => {
+            setSecurityLoginEmailDraft("");
+            setSecurityLoginEmailFilter("");
+            setLoginPage(1);
           },
-        ]
+        },
+      ]
       : []),
     ...(securityLoginStatusFilter !== "ALL"
       ? [
-          {
-            id: "login",
-            label:
-              securityLoginStatusFilter === "SUCCESS" ? "Successful" : "Failed",
-            onRemove: () => {
-              setSecurityLoginStatusDraft("ALL");
-              setSecurityLoginStatusFilter("ALL");
-              setLoginPage(1);
-            },
+        {
+          id: "login",
+          label:
+            securityLoginStatusFilter === "SUCCESS" ? "Successful" : "Failed",
+          onRemove: () => {
+            setSecurityLoginStatusDraft("ALL");
+            setSecurityLoginStatusFilter("ALL");
+            setLoginPage(1);
           },
-        ]
+        },
+      ]
       : []),
   ];
 
@@ -2126,12 +2194,19 @@ export default function SettingsPage() {
   }
 
   function selectBusinessMode(nextMode: BusinessMode) {
-    setModeDraft(nextMode);
-    setStaffDraftsDraft(
-      nextMode === "FULL_POS" && capabilities.businessMode === "FULL_POS"
-        ? capabilities.staffDraftRequestsEnabled
-        : false,
-    );
+    const next = stageBusinessModeSelection({
+      currentDraftMode: modeDraft,
+      currentStaffRequests: staffDraftsDraft,
+      nextMode,
+      savedMode: capabilities.businessMode,
+      savedStaffRequests: capabilities.staffDraftRequestsEnabled,
+    });
+    const selectionChanged =
+      next.mode !== modeDraft ||
+      next.staffDraftRequestsEnabled !== staffDraftsDraft;
+    setModeDraft(next.mode);
+    setStaffDraftsDraft(next.staffDraftRequestsEnabled);
+    if (selectionChanged) setModeReason("");
     setModeError("");
     setModePreflight(null);
   }
@@ -2173,8 +2248,8 @@ export default function SettingsPage() {
     } catch (error: any) {
       setModeError(
         error?.response?.data?.error ||
-          error?.message ||
-          "The mode safety check failed.",
+        error?.message ||
+        "The mode safety check failed.",
       );
     } finally {
       setModeBusy(false);
@@ -2208,8 +2283,8 @@ export default function SettingsPage() {
       if (preflight) setModePreflight(preflight);
       setModeError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Business mode could not be updated.",
+        error?.message ||
+        "Business mode could not be updated.",
       );
       setShowModeConfirm(false);
     } finally {
@@ -2351,26 +2426,18 @@ export default function SettingsPage() {
       </div>
 
       <main {...settingsSwipeGesture} className="w-full px-4 py-5 sm:px-7 sm:py-6">
-        <div className="mb-6 flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
-          <div>
-            <h1 className="text-[24px] font-extrabold leading-tight text-[#11120D]">
-              {pageTitle.title}
-            </h1>
-            <p className="mt-1 text-[13px] font-medium text-[#565449]">
-              {pageTitle.subtitle}
-            </p>
-          </div>
-
-          {tab === "overview" && defaultsDirty ? (
-            <div className="flex items-center gap-2 rounded-[8px] border border-amber-200 bg-amber-50 p-2">
-              <span className="px-2 text-[12px] font-extrabold uppercase text-amber-700">
-                Unsaved
-              </span>
+        {tab === "overview" && defaultsDirty ? (
+          <div className="mb-4 flex items-center justify-between gap-3 rounded-[12px] border border-[#D4D7DC] bg-[#F8FAFC] p-3">
+            <div className="flex items-center gap-2 text-[12.5px] font-bold text-[#11120D]">
+              <span className="h-2 w-2 rounded-full bg-amber-500" />
+              <span>Unsaved business rule changes</span>
+            </div>
+            <div className="flex items-center gap-2">
               <button
                 type="button"
                 onClick={discardBusinessDefaults}
                 disabled={defaultsBusy}
-                className="rounded-[8px] border border-transparent px-4 py-2 text-[13px] font-extrabold text-slate-600 hover:border-slate-200 hover:bg-white"
+                className="h-8.5 rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#374151] hover:bg-[#F3F4F6]"
               >
                 Discard
               </button>
@@ -2378,68 +2445,60 @@ export default function SettingsPage() {
                 type="button"
                 onClick={reviewBusinessDefaults}
                 disabled={defaultsBusy}
-                className="rounded-[8px] bg-[#11120D] px-4 py-2 text-[13px] font-extrabold text-white transition hover:bg-[#2A2C27] disabled:opacity-50"
+                className="h-8.5 rounded-[8px] bg-[#11120D] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2A2C27] disabled:opacity-50"
               >
                 {defaultsBusy ? "Saving…" : "Save Changes"}
               </button>
             </div>
-          ) : null}
-
-          {tab === "brands" ? (
-            <button
-              type="button"
-              onClick={() => {
-                resetBrandForm();
-                setShowBrandForm(true);
-              }}
-              className="inline-flex h-10 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-5 text-[13px] font-extrabold text-white shadow-sm transition hover:bg-slate-800"
-            >
-              <Icon name="add" sizePx={20} />
-              Add Brand
-            </button>
-          ) : null}
-        </div>
+          </div>
+        ) : null}
 
         {tab === "overview" ? (
           <section className="grid grid-cols-1 gap-5 xl:grid-cols-2">
-            <div className="rounded-[12px] border border-[#CFCFD3] bg-white p-5 shadow-sm xl:col-span-2">
+            <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs xl:col-span-2">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="text-[12px] font-black uppercase tracking-[0.08em] text-[#2F67D8]">
+                  <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     Active capability mode
                   </div>
-                  <h2 className="mt-1 text-[19px] font-extrabold text-[#11120D]">
+                  <h2 className="mt-1 text-[18px] font-black text-[#11120D]">
                     Choose what this shop can operate
                   </h2>
-                  <p className="mt-1 max-w-3xl text-[13px] font-medium leading-6 text-[#565449]">
-                    Roles decide who may act. This mode decides whether the
-                    whole shop may use inventory or POS features at all.
+                  <p className="mt-0.5 max-w-3xl text-[12.5px] font-medium leading-relaxed text-[#64748B]">
+                    Roles decide who may act. This mode decides whether the whole shop may use inventory or POS features at all.
                   </p>
                 </div>
-                <span className="inline-flex min-h-9 items-center rounded-full border border-[#CFCFD3] bg-[#F8FAFC] px-3 text-[12px] font-extrabold text-[#11120D]">
-                  Saved: {formatBusinessMode(capabilities.businessMode)}
+                <span className="inline-flex h-8 items-center gap-1.5 rounded-full border border-emerald-200 bg-emerald-50 px-3 text-[11.5px] font-bold text-emerald-800 shrink-0 shadow-2xs">
+                  <Icon name="check_circle" sizePx={14} className="text-emerald-600" />
+                  <span>Saved: {formatBusinessMode(capabilities.businessMode)}</span>
                 </span>
               </div>
 
-              <div className="mt-5 grid gap-3 lg:grid-cols-3">
+              <div className="mt-4 grid gap-3 lg:grid-cols-3">
                 {[
                   {
                     value: "CATALOG_ONLY" as const,
                     title: "Catalog only",
+                    icon: "storefront",
                     description:
                       "Products, imports, prices, lookup, users and audit. Stock is not shown or claimed.",
+                    badge: "Basic Mode",
                   },
                   {
                     value: "INVENTORY_ONLY" as const,
                     title: "Catalog + inventory",
+                    icon: "inventory_2",
                     description:
                       "Adds counted stock, receiving, corrections and stock alerts. Billing stays off.",
+                    badge: "Stock Control",
                   },
                   {
                     value: "FULL_POS" as const,
                     title: "Full POS",
+                    icon: "point_of_sale",
                     description:
                       "Adds billing, invoices, payments, cash drawer, returns and financial workflows.",
+                    badge: "Complete Suite",
                   },
                 ].map((option) => {
                   const selected = modeDraft === option.value;
@@ -2449,168 +2508,290 @@ export default function SettingsPage() {
                       type="button"
                       onClick={() => selectBusinessMode(option.value)}
                       className={cn(
-                        "min-h-[132px] rounded-[12px] border-2 p-4 text-left transition",
+                        "relative flex flex-col justify-between min-h-[136px] rounded-[12px] p-4 text-left transition active:scale-98",
                         selected
-                          ? "border-[#11120D] bg-[#11120D] text-white"
-                          : "border-[#CFCFD3] bg-white text-[#11120D] hover:border-[#8C8889] hover:bg-[#F8FAFC]",
+                          ? "border-2 border-slate-800 bg-[#F1F5F9] shadow-xs"
+                          : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50/60",
                       )}
                       aria-pressed={selected}
                     >
-                      <div className="flex items-center justify-between gap-3">
-                        <span className="text-[15px] font-extrabold">
-                          {option.title}
-                        </span>
-                        <Icon
-                          name={
-                            selected ? "check_circle" : "radio_button_unchecked"
-                          }
-                          sizePx={21}
-                        />
+                      <div>
+                        <div className="flex items-center justify-between gap-2">
+                          <div className="flex items-center gap-2.5">
+                            <div
+                              className={cn(
+                                "flex h-7 w-7 items-center justify-center rounded-[8px] transition",
+                                selected
+                                  ? "bg-slate-900 text-white shadow-2xs"
+                                  : "bg-slate-100 text-slate-500",
+                              )}
+                            >
+                              <Icon name={option.icon} sizePx={16} />
+                            </div>
+                            <span className={cn("text-[14px] font-black", selected ? "text-slate-950" : "text-slate-800")}>
+                              {option.title}
+                            </span>
+                          </div>
+                          <div
+                            className={cn(
+                              "flex h-5 w-5 items-center justify-center rounded-full transition",
+                              selected
+                                ? "bg-slate-900 text-white shadow-2xs"
+                                : "border-2 border-slate-300 bg-white",
+                            )}
+                          >
+                            {selected ? (
+                              <Icon name="check" sizePx={13} className="font-bold" />
+                            ) : null}
+                          </div>
+                        </div>
+                        <p className={cn("mt-2.5 text-[12px] font-medium leading-relaxed", selected ? "text-slate-600" : "text-slate-500")}>
+                          {option.description}
+                        </p>
                       </div>
-                      <p
-                        className={cn(
-                          "mt-2 text-[12px] font-semibold leading-5",
-                          selected ? "text-slate-200" : "text-slate-600",
-                        )}
-                      >
-                        {option.description}
-                      </p>
+                      <div className="mt-3">
+                        <span
+                          className={cn(
+                            "inline-block rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide transition",
+                            selected
+                              ? "border border-slate-300 bg-slate-200/80 text-slate-800"
+                              : "bg-slate-100 text-slate-500",
+                          )}
+                        >
+                          {option.badge}
+                        </span>
+                      </div>
                     </button>
                   );
                 })}
               </div>
 
-              {accessDirty ? (
-                <div className="mt-3 text-[12px] font-bold text-[#565449]">
-                  {modeDraft !== capabilities.businessMode
-                    ? `Selected change: ${formatBusinessMode(capabilities.businessMode)} → ${formatBusinessMode(modeDraft)}`
-                    : `Staff billing draft requests: ${effectiveStaffDraftsDraft ? "On" : "Off"}`}
-                </div>
-              ) : null}
-
-              <label
+              {/* Staff Billing Requests Pro Switch Toggle */}
+              <div
                 className={cn(
-                  "mt-4 flex min-h-14 items-center justify-between gap-4 rounded-[10px] border border-slate-200 px-4 py-3",
-                  modeDraft === "FULL_POS" ? "bg-slate-50" : "bg-slate-100",
+                  "mt-3.5 flex items-start sm:items-center justify-between gap-3 rounded-[12px] border p-3.5 transition",
+                  modeDraft === "FULL_POS" ? "border-slate-300 bg-[#F8FAFC] hover:bg-white" : "border-slate-200 bg-slate-50/80 opacity-75",
                 )}
               >
-                <span className="min-w-0">
-                  <span className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-extrabold text-[#11120D]">
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="text-[13px] font-extrabold text-slate-950">
                       Staff billing draft requests
                     </span>
-                    {modeDraft !== "FULL_POS" ? <Pill>Requires Full POS</Pill> : null}
-                  </span>
-                  <span className="mt-1 block text-[11px] font-semibold leading-5 text-[#565449]">
-                    Allows staff to send selected products to cashiers as a billing request.
-                  </span>
-                </span>
-                <input
-                  type="checkbox"
-                  checked={modeDraft === "FULL_POS" && staffDraftsDraft}
-                  disabled={modeDraft !== "FULL_POS"}
-                  onChange={(event) => {
-                    setStaffDraftsDraft(event.target.checked);
-                    setModeError("");
-                    setModePreflight(null);
-                  }}
-                  className="h-5 w-5 shrink-0 accent-[#11120D] disabled:cursor-not-allowed disabled:opacity-50"
-                />
-              </label>
-
-              <div className="mt-4 grid gap-3 sm:grid-cols-[minmax(0,1fr)_auto] sm:items-end">
-                <label className="block">
-                  <span className="text-[12px] font-extrabold text-slate-800">
-                    Reason for this access change
-                  </span>
-                  <input
-                    value={modeReason}
-                    disabled={!accessDirty || defaultsDirty}
-                    onChange={(event) => {
-                      setModeReason(event.target.value);
-                      setModeError("");
-                    }}
-                    placeholder="Example: Start the first shop catalog pilot"
-                    className={cn(
-                      "mt-2 h-11 w-full rounded-[9px] border bg-white px-3 text-[13px] font-semibold outline-none disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-500",
-                      modeError
-                        ? "border-rose-400 focus:ring-2 focus:ring-rose-100"
-                        : "border-[#CFCFD3] focus:border-[#2F67D8]",
+                    {modeDraft !== "FULL_POS" ? (
+                      <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-extrabold text-slate-500">
+                        Requires Full POS
+                      </span>
+                    ) : (
+                      <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10.5px] font-extrabold text-slate-800">
+                        Floor Assistant Tool
+                      </span>
                     )}
+                  </div>
+                  <p className="mt-1 text-[11.5px] font-medium leading-normal text-slate-500">
+                    Allows floor staff to build and transmit selected items directly to cashier registers as pending draft bills.
+                  </p>
+                </div>
+
+                <div className="flex items-center gap-2.5 shrink-0 pt-0.5 sm:pt-0">
+                  <span className="hidden sm:inline-block text-[11.5px] font-bold text-slate-500">
+                    {modeDraft === "FULL_POS" && staffDraftsDraft ? "Enabled" : "Disabled"}
+                  </span>
+                  <SettingsToggleSwitch
+                    checked={modeDraft === "FULL_POS" && staffDraftsDraft}
+                    disabled={modeDraft !== "FULL_POS"}
+                    onChange={(checked) => {
+                      setStaffDraftsDraft(checked);
+                      setModeReason("");
+                      setModeError("");
+                      setModePreflight(null);
+                    }}
+                    ariaLabel="Toggle staff billing draft requests"
                   />
-                </label>
-                <button
-                  type="button"
-                  onClick={() => void reviewBusinessModeChange()}
-                  disabled={modeBusy || !accessDirty || defaultsDirty}
-                  className="h-11 rounded-[9px] bg-[#11120D] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2A2C27] disabled:opacity-50"
-                >
-                  {modeBusy ? "Checking…" : "Review access change"}
-                </button>
+                </div>
               </div>
 
-              {!accessDirty ? (
-                <div className="mt-2 text-[12px] font-semibold text-slate-500">
-                  No access changes selected.
-                </div>
-              ) : defaultsDirty ? (
-                <div className="mt-2 text-[12px] font-bold text-amber-700">
-                  Save or discard the unsaved defaults before reviewing this access change.
-                </div>
-              ) : null}
-
-              {modeError ? (
-                <div
-                  className="mt-3 text-[12px] font-extrabold text-rose-700"
-                  role="alert"
-                >
-                  {modeError}
-                </div>
-              ) : null}
-              {modePreflight && modePreflight.blockers.length > 0 ? (
-                <div className="mt-3 overflow-hidden rounded-[10px] border border-amber-300 bg-amber-50">
-                  <div className="border-b border-amber-200 px-4 py-3">
-                    <div className="text-[13px] font-extrabold text-amber-950">
-                      {modePreflight.blockers.length} blocking workflow{modePreflight.blockers.length === 1 ? "" : "s"}
+              {/* Dynamic Staged Access Migration Panel */}
+              {accessDirty ? (
+                <div className="mt-4 overflow-hidden rounded-[14px] border border-slate-300 bg-[#F8FAFC] shadow-2xs">
+                  <div className="p-3.5 sm:p-4">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-2 text-[13px] font-black text-slate-950 sm:text-[14px]">
+                        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-slate-900 text-white">
+                          <Icon name="swap_horiz" sizePx={16} />
+                        </span>
+                        <span>Pending Shop Access Change</span>
+                      </div>
+                      <div className="mt-2 text-[12px] font-medium leading-relaxed text-slate-600">
+                        {modeDraft !== capabilities.businessMode ? (
+                          <div className="flex flex-wrap items-center gap-1.5">
+                            <span className="rounded-[7px] border border-slate-300 bg-white px-2 py-1 font-extrabold text-slate-800">
+                              {formatBusinessMode(capabilities.businessMode)}
+                            </span>
+                            <Icon name="arrow_forward" sizePx={14} className="text-slate-500" />
+                            <span className="rounded-[7px] bg-slate-900 px-2 py-1 font-extrabold text-white">
+                              {formatBusinessMode(modeDraft)}
+                            </span>
+                          </div>
+                        ) : (
+                          <span>
+                            Staff billing draft requests will be <strong className="font-extrabold text-slate-950">{effectiveStaffDraftsDraft ? "enabled" : "disabled"}</strong>.
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    <div className="mt-1 text-[12px] font-semibold text-amber-800">
-                      Resolve these items before changing shop access.
-                    </div>
-                  </div>
-                  <div className="divide-y divide-amber-200">
-                  {modePreflight.blockers.map((blocker) => (
-                    <div
-                      key={blocker.key}
-                      className="flex gap-3 px-4 py-3 text-[12px] text-amber-950"
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setModeDraft(capabilities.businessMode);
+                        setStaffDraftsDraft(capabilities.staffDraftRequestsEnabled);
+                        setModeReason("");
+                        setModeError("");
+                        setModePreflight(null);
+                      }}
+                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border border-slate-300 bg-white text-slate-700 shadow-2xs transition-colors hover:bg-slate-100 sm:w-auto sm:gap-1 sm:px-2.5"
+                      aria-label="Discard pending shop access change"
                     >
-                      <span className="font-black">{blocker.count}</span>
-                      <span className="font-semibold">{blocker.message}</span>
+                      <Icon name="close" sizePx={14} />
+                      <span className="hidden text-[11.5px] font-extrabold sm:inline">Discard</span>
+                    </button>
+                  </div>
+
+                  {/* Quick Reason Presets */}
+                  <div className="mt-3.5 space-y-2 border-t border-slate-200/80 pt-3.5">
+                    <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
+                      Suggested audit reasons
                     </div>
-                  ))}
+                    <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:flex sm:flex-wrap">
+                      {modeReasonPresets.map((preset) => (
+                        <button
+                          key={preset.label}
+                          type="button"
+                          onClick={() => {
+                            setModeReason(preset.text);
+                            setModeError("");
+                          }}
+                          className={cn(
+                            "min-h-9 max-w-full rounded-[9px] border px-3 py-2 text-left text-[11.5px] font-bold leading-snug shadow-2xs transition-colors sm:min-h-8 sm:py-1.5",
+                            modeReason === preset.text
+                              ? "border-slate-900 bg-slate-900 text-white"
+                              : "border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50",
+                          )}
+                          aria-pressed={modeReason === preset.text}
+                        >
+                          {preset.label}
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+
+                  {/* Reason Input & Action */}
+                  <div className="mt-3.5 flex flex-col gap-3 sm:flex-row sm:items-end">
+                    <label className="min-w-0 flex-1 space-y-1">
+                      <div className="flex flex-wrap items-center justify-between gap-1">
+                        <span className="text-[11.5px] font-extrabold text-slate-950">
+                          Audit trail reason <span className="text-rose-600">*</span>
+                        </span>
+                        <span className={cn("text-[10.5px] font-extrabold", modeReason.trim().length >= 5 ? "text-emerald-700" : "text-slate-500")}>
+                          {modeReason.trim().length} characters · 5 minimum
+                        </span>
+                      </div>
+                      <textarea
+                        value={modeReason}
+                        rows={2}
+                        maxLength={240}
+                        onChange={(event) => {
+                          setModeReason(event.target.value);
+                          setModeError("");
+                        }}
+                        placeholder="Explain why this access change is needed"
+                        className="min-h-[68px] w-full resize-y rounded-[10px] border border-slate-300 bg-white px-3 py-2.5 text-[12.5px] font-semibold leading-relaxed text-slate-900 outline-none transition-colors placeholder:font-medium placeholder:text-slate-400 focus:border-slate-900 focus:ring-2 focus:ring-slate-200"
+                      />
+                    </label>
+
+                    <button
+                      type="button"
+                      onClick={() => void reviewBusinessModeChange()}
+                      disabled={modeBusy || defaultsDirty || modeReason.trim().length < 5}
+                      className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-slate-950 px-5 text-[12.5px] font-extrabold text-white shadow-2xs transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 sm:h-10 sm:w-auto"
+                    >
+                      <Icon name="check_circle" sizePx={16} />
+                      <span>{modeBusy ? "Checking…" : "Review & Apply"}</span>
+                    </button>
+                  </div>
+
+                  {defaultsDirty ? (
+                    <div className="mt-2.5 text-[12px] font-bold text-amber-800">
+                      Save or discard the unsaved defaults above before reviewing this access change.
+                    </div>
+                  ) : null}
+
+                  {modeError ? (
+                    <div className="mt-2.5 text-[12px] font-extrabold text-rose-700" role="alert">
+                      {modeError}
+                    </div>
+                  ) : null}
+
+                  {modePreflight && modePreflight.blockers.length > 0 ? (
+                    <div className="mt-3 overflow-hidden rounded-[10px] border border-rose-300 bg-rose-50">
+                      <div className="border-b border-rose-200 px-3.5 py-2.5">
+                        <div className="text-[12.5px] font-extrabold text-rose-950">
+                          {modePreflight.blockers.length} blocking workflow{modePreflight.blockers.length === 1 ? "" : "s"}
+                        </div>
+                        <div className="mt-0.5 text-[11.5px] font-medium text-rose-800">
+                          Resolve these items before changing shop access.
+                        </div>
+                      </div>
+                      <div className="divide-y divide-rose-200">
+                        {modePreflight.blockers.map((blocker) => (
+                          <div key={blocker.key} className="flex gap-3 px-3.5 py-2.5 text-[12px] text-rose-950">
+                            <span className="font-black">{blocker.count}</span>
+                            <span className="font-semibold">{blocker.message}</span>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ) : null}
                   </div>
                 </div>
-              ) : null}
+              ) : (
+                <div className="mt-3.5 flex items-center justify-between rounded-[10px] border border-emerald-200/80 bg-emerald-50/50 px-3.5 py-2.5 text-[12px] font-semibold text-emerald-950">
+                  <div className="flex items-center gap-2">
+                    <Icon name="verified_user" sizePx={15} className="text-emerald-600" />
+                    <span>
+                      Current active mode: <strong className="font-black text-emerald-950">{formatBusinessMode(capabilities.businessMode)}</strong>. Click any capability mode above to stage a mode migration.
+                    </span>
+                  </div>
+                  <span className="hidden rounded-full border border-emerald-300 bg-white px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 shadow-2xs sm:inline-block">
+                    Active
+                  </span>
+                </div>
+              )}
             </div>
-            <div className="rounded-[8px] border border-[#CFCFD3] bg-white p-5 shadow-sm">
+
+            <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
               <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <Icon name="shopping_cart" sizePx={24} className="text-blue-600" />
-                  <h2 className="text-[17px] font-extrabold text-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-blue-50 text-[#2F67D8]">
+                    <Icon name="inventory_2" sizePx={17} />
+                  </div>
+                  <h2 className="text-[16px] font-black text-[#11120D]">
                     Inventory & Pricing
                   </h2>
                 </div>
-                {!capabilities.inventoryEnabled ? <Pill>Requires inventory</Pill> : null}
+                {!capabilities.inventoryEnabled ? <Pill tone="warning">Requires inventory</Pill> : null}
               </div>
 
               {!capabilities.inventoryEnabled ? (
-                <div className="mb-5 rounded-[10px] border border-slate-200 bg-slate-50 p-4 text-[12px] font-semibold leading-5 text-slate-700">
+                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B]">
                   Stock defaults are locked in Catalog only. Saved values remain preserved,
                   and new products will not claim stock until inventory is enabled and an
                   opening count is completed.
                 </div>
               ) : null}
 
-              <div className="space-y-5">
+              <div className="space-y-4">
                 <BusinessNumberField
                   fieldKey="defaultInitialStock"
                   label="New product initial stock"
@@ -2667,25 +2848,27 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <div className="rounded-[8px] border border-[#CFCFD3] bg-white p-5 shadow-sm">
+            <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
               <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
-                <div className="flex items-center gap-3">
-                  <Icon name="schedule" sizePx={24} className="text-slate-700" />
-                  <h2 className="text-[17px] font-extrabold text-slate-800">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-slate-100 text-[#11120D]">
+                    <Icon name="tune" sizePx={17} />
+                  </div>
+                  <h2 className="text-[16px] font-black text-[#11120D]">
                     Operational Limits
                   </h2>
                 </div>
-                {!capabilities.posEnabled ? <Pill>Requires Full POS</Pill> : null}
+                {!capabilities.posEnabled ? <Pill tone="warning">Requires Full POS</Pill> : null}
               </div>
 
               {!capabilities.posEnabled ? (
-                <div className="mb-5 rounded-[10px] border border-slate-200 bg-slate-50 p-4 text-[12px] font-semibold leading-5 text-slate-700">
+                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B]">
                   Billing time limits are locked while POS is off. Their saved values remain
                   available for the next time Full POS is enabled.
                 </div>
               ) : null}
 
-              <div className="space-y-5">
+              <div className="space-y-4">
                 <BusinessNumberField
                   fieldKey="returnWindowDays"
                   label="Return window"
@@ -2906,7 +3089,7 @@ export default function SettingsPage() {
                         </td>
                         <td className="px-4 py-3 font-mono text-[13px] font-extrabold text-slate-900">
                           {drawer.actualTotal === null ||
-                          drawer.actualTotal === undefined
+                            drawer.actualTotal === undefined
                             ? "-"
                             : `Rs. ${Number(drawer.actualTotal || 0).toLocaleString()}`}
                         </td>
@@ -2921,13 +3104,13 @@ export default function SettingsPage() {
                           )}
                         >
                           {drawer.difference === null ||
-                          drawer.difference === undefined
+                            drawer.difference === undefined
                             ? "-"
                             : Number(drawer.difference) === 0
                               ? "-"
                               : `${Number(drawer.difference) > 0 ? "+" : ""}${Number(
-                                  drawer.difference,
-                                ).toLocaleString()}`}
+                                drawer.difference,
+                              ).toLocaleString()}`}
                         </td>
                       </tr>
                     ))}
@@ -2967,14 +3150,14 @@ export default function SettingsPage() {
                       <span>
                         Closing:{" "}
                         {drawer.actualTotal === null ||
-                        drawer.actualTotal === undefined
+                          drawer.actualTotal === undefined
                           ? "-"
                           : `Rs. ${Number(drawer.actualTotal || 0).toLocaleString()}`}
                       </span>
                       <span>
                         Diff:{" "}
                         {drawer.difference === null ||
-                        drawer.difference === undefined
+                          drawer.difference === undefined
                           ? "-"
                           : Number(drawer.difference).toLocaleString()}
                       </span>
@@ -3224,49 +3407,79 @@ export default function SettingsPage() {
         ) : null}
 
         {tab === "brands" ? (
-          <section className="overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm">
-            <div className="flex flex-col gap-4 bg-white p-5 sm:flex-row sm:items-center sm:justify-between">
-              <div className="relative w-full sm:max-w-[480px]">
-                <Icon
-                  name="search"
-                  sizePx={20}
-                  className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400"
-                />
-                <input
-                  value={brandQuery}
-                  onChange={(event) => setBrandQuery(event.target.value)}
-                  placeholder="Search brands..."
-                  className="h-11 w-full rounded-[8px] border border-slate-200 bg-white pl-11 pr-4 text-[14px] font-medium outline-none focus:border-blue-600"
-                />
+          <section className="overflow-hidden rounded-[14px] border border-[#D8DBE0] bg-white shadow-2xs">
+            <div className="flex flex-col gap-3 border-b border-[#E5E7EB] bg-white p-3.5 sm:flex-row sm:items-center sm:justify-between sm:p-4">
+              <div className="flex w-full items-center gap-2 sm:max-w-[440px]">
+                <div className="relative flex-1">
+                  <Icon
+                    name="search"
+                    sizePx={18}
+                    className="absolute left-3.5 top-1/2 -translate-y-1/2 text-slate-400"
+                  />
+                  <input
+                    value={brandQuery}
+                    onChange={(event) => setBrandQuery(event.target.value)}
+                    placeholder="Search brands..."
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-10 pr-4 text-[13px] font-medium outline-none focus:border-[#11120D]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    resetBrandForm();
+                    setShowBrandForm(true);
+                  }}
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-[#11120D] px-3.5 text-[12.5px] font-extrabold text-white shadow-2xs transition active:scale-98 sm:hidden"
+                >
+                  <Icon name="add" sizePx={18} />
+                  <span>Add</span>
+                </button>
               </div>
-              <MobileFilterTabs
-                className="sm:hidden"
-                ariaLabel="Brand status"
-                value={brandFilter}
-                onChange={setBrandFilter}
-                items={(["all", "active", "inactive"] as const).map(
-                  (value) => ({
-                    value,
-                    label: value[0].toUpperCase() + value.slice(1),
-                  }),
-                )}
-              />
-              <div className="hidden rounded-[8px] border border-slate-200 bg-white p-1 sm:inline-flex">
-                {(["all", "active", "inactive"] as const).map((value) => (
+
+              <div className="flex w-full items-center justify-between gap-3 sm:w-auto">
+                <MobileFilterTabs
+                  className="w-full sm:hidden"
+                  ariaLabel="Brand status"
+                  value={brandFilter}
+                  onChange={setBrandFilter}
+                  items={(["all", "active", "inactive"] as const).map(
+                    (value) => ({
+                      value,
+                      label: value[0].toUpperCase() + value.slice(1),
+                    }),
+                  )}
+                />
+
+                <div className="hidden items-center gap-2.5 sm:flex">
+                  <div className="inline-flex rounded-[8px] border border-[#D4D7DC] bg-white p-1">
+                    {(["all", "active", "inactive"] as const).map((value) => (
+                      <button
+                        key={value}
+                        type="button"
+                        onClick={() => setBrandFilter(value)}
+                        className={cn(
+                          "rounded-[6px] px-3.5 py-1 text-[12.5px] font-extrabold capitalize transition",
+                          brandFilter === value
+                            ? "bg-[#11120D] text-white"
+                            : "text-[#64748B] hover:text-[#11120D]",
+                        )}
+                      >
+                        {value}
+                      </button>
+                    ))}
+                  </div>
                   <button
-                    key={value}
                     type="button"
-                    onClick={() => setBrandFilter(value)}
-                    className={cn(
-                      "rounded-[8px] px-4 py-1.5 text-[13px] font-extrabold capitalize",
-                      brandFilter === value
-                        ? "bg-slate-900 text-white"
-                        : "text-slate-500 hover:text-slate-700",
-                    )}
+                    onClick={() => {
+                      resetBrandForm();
+                      setShowBrandForm(true);
+                    }}
+                    className="inline-flex h-9 items-center justify-center gap-1.5 rounded-[8px] bg-[#11120D] px-3.5 text-[12.5px] font-extrabold text-white shadow-2xs transition hover:bg-[#2A2C27] active:scale-98"
                   >
-                    {value}
+                    <Icon name="add" sizePx={17} />
+                    <span>Add Brand</span>
                   </button>
-                ))}
+                </div>
               </div>
             </div>
             <div className="hidden overflow-x-auto sm:block">
@@ -3299,7 +3512,7 @@ export default function SettingsPage() {
                             {stats.total} items
                           </span>
                           <span className="ml-2 text-[11px] font-semibold text-slate-400">
-                            {stats.low} low
+                            {stats.active} active
                           </span>
                         </td>
                         <td className="px-4 py-3">
@@ -3332,14 +3545,26 @@ export default function SettingsPage() {
                             <button
                               type="button"
                               onClick={() => requestToggleBrandStatus(brand)}
+                              disabled={brand.active && stats.active > 0}
+                              title={
+                                brand.active && stats.active > 0
+                                  ? "Reassign or deactivate linked products first"
+                                  : undefined
+                              }
                               className={cn(
                                 "inline-flex h-9 items-center justify-center rounded-[8px] border px-3 text-[12px] font-extrabold transition",
                                 brand.active
                                   ? "border-rose-200 bg-rose-50 text-rose-700 hover:bg-rose-100"
                                   : "border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100",
+                                brand.active && stats.active > 0 &&
+                                "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400 hover:bg-slate-100",
                               )}
                             >
-                              {brand.active ? "Deactivate" : "Activate"}
+                              {brand.active
+                                ? stats.active > 0
+                                  ? "In use"
+                                  : "Deactivate"
+                                : "Activate"}
                             </button>
                           </div>
                         </td>
@@ -3365,7 +3590,7 @@ export default function SettingsPage() {
                       <div>
                         <div className="font-extrabold">{brand.name}</div>
                         <div className="text-[13px] text-slate-500">
-                          {stats.total} items | {stats.low} low stock
+                          {stats.total} items | {stats.active} active
                         </div>
                       </div>
                       <Pill tone={brand.active ? "success" : "neutral"}>
@@ -3389,14 +3614,21 @@ export default function SettingsPage() {
                       <button
                         type="button"
                         onClick={() => requestToggleBrandStatus(brand)}
+                        disabled={brand.active && stats.active > 0}
                         className={cn(
                           "inline-flex h-9 items-center justify-center rounded-[8px] border px-3 text-[12px] font-extrabold",
                           brand.active
                             ? "border-rose-200 bg-rose-50 text-rose-700"
                             : "border-emerald-200 bg-emerald-50 text-emerald-700",
+                          brand.active && stats.active > 0 &&
+                          "cursor-not-allowed border-slate-200 bg-slate-100 text-slate-400",
                         )}
                       >
-                        {brand.active ? "Deactivate" : "Activate"}
+                        {brand.active
+                          ? stats.active > 0
+                            ? "In use"
+                            : "Deactivate"
+                          : "Activate"}
                       </button>
                     </div>
                   </div>
@@ -3423,146 +3655,247 @@ export default function SettingsPage() {
         ) : null}
 
         {tab === "audit" ? (
-          <section className="space-y-5">
-            <div className="rounded-[8px] border border-slate-200 bg-white shadow-sm">
-              <div className="flex items-center gap-3 border-b border-slate-200 px-5 py-4">
-                <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[8px] bg-slate-100 text-slate-700">
-                  <Icon name="filter_alt" sizePx={18} />
-                </span>
-                <div>
-                  <h2 className="text-[17px] font-extrabold text-slate-900">
-                    Filter activity
-                  </h2>
-                  <p className="mt-0.5 text-[12px] font-medium text-slate-500">
-                    Narrow audit events and sign-in activity without losing
-                    either view.
-                  </p>
-                </div>
+          <section className="overflow-hidden rounded-[14px] border border-[#D8DBE0] bg-white shadow-2xs">
+            {/* Sub-Tab Navigation Header with Segmented Buttons & Mobile Filter Trigger */}
+            <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-white p-3 sm:p-4">
+              <div className="inline-flex w-full sm:w-auto rounded-[10px] border border-[#D4D7DC] bg-[#F1F3F5] p-1 shadow-2xs">
+                <button
+                  type="button"
+                  onClick={() => setSecuritySubTab("audit")}
+                  className={cn(
+                    "flex flex-1 sm:flex-initial items-center justify-center gap-2 rounded-[7px] px-4 py-2 text-[13px] font-extrabold transition-all",
+                    securitySubTab === "audit"
+                      ? "bg-white text-[#11120D] shadow-xs"
+                      : "text-[#64748B] hover:text-[#11120D]",
+                  )}
+                >
+                  <span>Audit Logs</span>
+                  <span
+                    className={cn(
+                      "rounded-full px-1.5 py-0.2 text-[10.5px] font-black",
+                      securitySubTab === "audit"
+                        ? "bg-[#11120D] text-white"
+                        : "bg-[#E2E8F0] text-[#64748B]",
+                    )}
+                  >
+                    {auditTotal}
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setSecuritySubTab("login")}
+                  className={cn(
+                    "flex flex-1 sm:flex-initial items-center justify-center gap-2 rounded-[7px] px-4 py-2 text-[13px] font-extrabold transition-all",
+                    securitySubTab === "login"
+                      ? "bg-white text-[#11120D] shadow-xs"
+                      : "text-[#64748B] hover:text-[#11120D]",
+                  )}
+                >
+                  <span>Login Activity</span>
+                  {failedLoginCount > 0 ? (
+                    <span className="rounded-full bg-rose-100 px-1.5 py-0.2 text-[10.5px] font-black text-rose-700">
+                      {failedLoginCount} failed
+                    </span>
+                  ) : (
+                    <span
+                      className={cn(
+                        "rounded-full px-1.5 py-0.2 text-[10.5px] font-black",
+                        securitySubTab === "login"
+                          ? "bg-[#11120D] text-white"
+                          : "bg-[#E2E8F0] text-[#64748B]",
+                      )}
+                    >
+                      {loginTotal}
+                    </span>
+                  )}
+                </button>
+              </div>
+
+              {/* Mobile Filter Button (opens bottom sheet) */}
+              <div className="hidden sm:block lg:hidden ml-3">
                 <MobileFilterButton
                   activeCount={mobileSecurityFilterCount}
                   onClick={openMobileSecurityFilters}
-                  className="ml-auto lg:hidden"
                 />
               </div>
-              <div className="hidden grid-cols-1 gap-4 p-5 sm:grid-cols-2 lg:grid xl:grid-cols-12">
-                <label className="xl:col-span-3">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    From Date
-                  </span>
-                  <ProjectDateInput
-                    value={securityDateDraft.from}
-                    onChange={(event) =>
-                      setSecurityDateDraft((current) => ({
-                        ...current,
-                        from: event.target.value,
-                      }))
-                    }
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  />
-                </label>
-                <label className="xl:col-span-3">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    To Date
-                  </span>
-                  <ProjectDateInput
-                    value={securityDateDraft.to}
-                    onChange={(event) =>
-                      setSecurityDateDraft((current) => ({
-                        ...current,
-                        to: event.target.value,
-                      }))
-                    }
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  />
-                </label>
-                <label className="xl:col-span-3">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    Audit action
-                  </span>
-                  <input
-                    value={securityAuditActionDraft}
-                    onChange={(event) =>
-                      setSecurityAuditActionDraft(event.target.value)
-                    }
-                    placeholder="e.g. INVOICE"
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  />
-                </label>
-                <label className="xl:col-span-3">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    Entity type
-                  </span>
-                  <input
-                    value={securityEntityDraft}
-                    onChange={(event) =>
-                      setSecurityEntityDraft(event.target.value)
-                    }
-                    placeholder="Invoice, Product..."
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  />
-                </label>
-                <label className="xl:col-span-4">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    Login account
-                  </span>
-                  <input
-                    type="text"
-                    value={securityLoginEmailDraft}
-                    onChange={(event) =>
-                      setSecurityLoginEmailDraft(event.target.value)
-                    }
-                    placeholder="Phone or email"
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  />
-                </label>
-                <label className="xl:col-span-3">
-                  <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                    Login status
-                  </span>
-                  <ProjectSelect
-                    value={securityLoginStatusDraft}
-                    onChange={(event) =>
-                      setSecurityLoginStatusDraft(
-                        event.target.value as "ALL" | "SUCCESS" | "FAILED",
-                      )
-                    }
-                    className="mt-2 h-10 w-full rounded-[8px] border border-slate-200 bg-white px-3 text-[13px] font-semibold outline-none focus:border-blue-600"
-                  >
-                    <option value="ALL">All attempts</option>
-                    <option value="SUCCESS">Successful</option>
-                    <option value="FAILED">Failed</option>
-                  </ProjectSelect>
-                </label>
-                <div className="flex gap-2 sm:col-span-2 xl:col-span-5 xl:items-end xl:justify-end">
+            </div>
+
+            {/* Mobile Filter Bar Row (Mobile only) */}
+            <div className="flex items-center justify-between gap-2.5 border-b border-[#E5E7EB] bg-[#F8FAFC] px-3.5 py-2.5 sm:hidden">
+              <span className="text-[12px] font-bold text-[#64748B]">
+                {securitySubTab === "audit"
+                  ? `${auditTotal} audit events`
+                  : `${loginTotal} login attempts`}
+              </span>
+              <MobileFilterButton
+                activeCount={mobileSecurityFilterCount}
+                onClick={openMobileSecurityFilters}
+              />
+            </div>
+
+            {/* Desktop Inline Filter Toolbar */}
+            <div className="hidden border-b border-[#E5E7EB] bg-[#F8FAFC] p-4 lg:block">
+              <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
+                {securitySubTab === "audit" ? (
+                  <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        From Date
+                      </span>
+                      <ProjectDateInput
+                        value={securityDateDraft.from}
+                        onChange={(event) =>
+                          setSecurityDateDraft((current) => ({
+                            ...current,
+                            from: event.target.value,
+                          }))
+                        }
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        To Date
+                      </span>
+                      <ProjectDateInput
+                        value={securityDateDraft.to}
+                        onChange={(event) =>
+                          setSecurityDateDraft((current) => ({
+                            ...current,
+                            to: event.target.value,
+                          }))
+                        }
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        Audit Action
+                      </span>
+                      <input
+                        value={securityAuditActionDraft}
+                        onChange={(event) =>
+                          setSecurityAuditActionDraft(event.target.value)
+                        }
+                        placeholder="e.g. INVOICE, PRODUCT"
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        Entity Type
+                      </span>
+                      <input
+                        value={securityEntityDraft}
+                        onChange={(event) =>
+                          setSecurityEntityDraft(event.target.value)
+                        }
+                        placeholder="Invoice, Product, Brand..."
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      />
+                    </label>
+                  </div>
+                ) : (
+                  <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        Date Range
+                      </span>
+                      <div className="grid grid-cols-2 gap-2">
+                        <ProjectDateInput
+                          value={securityDateDraft.from}
+                          onChange={(event) =>
+                            setSecurityDateDraft((current) => ({
+                              ...current,
+                              from: event.target.value,
+                            }))
+                          }
+                          className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                        />
+                        <ProjectDateInput
+                          value={securityDateDraft.to}
+                          onChange={(event) =>
+                            setSecurityDateDraft((current) => ({
+                              ...current,
+                              to: event.target.value,
+                            }))
+                          }
+                          className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                        />
+                      </div>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        Login Account
+                      </span>
+                      <input
+                        type="text"
+                        value={securityLoginEmailDraft}
+                        onChange={(event) =>
+                          setSecurityLoginEmailDraft(event.target.value)
+                        }
+                        placeholder="Phone or email"
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                        Login Status
+                      </span>
+                      <ProjectSelect
+                        value={securityLoginStatusDraft}
+                        onChange={(event) =>
+                          setSecurityLoginStatusDraft(
+                            event.target.value as "ALL" | "SUCCESS" | "FAILED",
+                          )
+                        }
+                        className="h-9.5 w-full rounded-[8px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120D] outline-none focus:border-[#11120D]"
+                      >
+                        <option value="ALL">All attempts</option>
+                        <option value="SUCCESS">Successful</option>
+                        <option value="FAILED">Failed</option>
+                      </ProjectSelect>
+                    </label>
+                  </div>
+                )}
+
+                <div className="flex items-center gap-2 self-end sm:self-auto shrink-0 pt-1 lg:pt-5">
                   <button
                     type="button"
                     onClick={clearSecurityFilters}
-                    className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] border border-slate-300 bg-white px-4 text-[13px] font-extrabold text-slate-700 transition hover:bg-slate-100 sm:flex-none"
+                    className="inline-flex h-9.5 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white px-3.5 text-[12px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
                   >
-                    <Icon name="restart_alt" sizePx={17} />
-                    Clear filters
+                    Reset
                   </button>
                   <button
                     type="button"
                     onClick={applySecurityFilters}
-                    className="inline-flex h-10 flex-1 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-5 text-[13px] font-extrabold text-white transition hover:bg-slate-800 sm:flex-none"
+                    className="inline-flex h-9.5 items-center justify-center gap-1.5 rounded-[8px] bg-[#11120D] px-4 text-[12px] font-extrabold text-white shadow-2xs transition hover:bg-[#2A2C27]"
                   >
-                    <Icon name="filter_alt" sizePx={17} />
-                    Apply filters
+                    <Icon name="filter_alt" sizePx={15} />
+                    <span>Apply Filters</span>
                   </button>
                 </div>
               </div>
+
               {securityFilterError ? (
-                <div className="mx-5 mb-5 hidden rounded-[8px] border border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700 lg:block">
+                <div className="mt-3 rounded-[8px] border border-rose-200 bg-rose-50 px-3.5 py-2 text-[12px] font-bold text-rose-700">
                   {securityFilterError}
                 </div>
               ) : null}
-              <ActiveFilterChips
-                items={mobileSecurityFilterChips}
-                className="px-5 py-4 lg:hidden"
-              />
             </div>
 
+            {/* Active Chips Bar */}
+            {mobileSecurityFilterChips.length > 0 ? (
+              <div className="border-b border-[#E5E7EB] bg-white px-4 py-2.5">
+                <ActiveFilterChips
+                  items={mobileSecurityFilterChips}
+                />
+              </div>
+            ) : null}
+
+            {/* Mobile Filter Drawer */}
             <MobileFilterSheet
               open={mobileSecurityFiltersOpen}
               onClose={closeMobileSecurityFilters}
@@ -3579,10 +3912,36 @@ export default function SettingsPage() {
               }}
               footerMessage={securityFilterError}
             >
-              <div className="space-y-5">
+              <div className="space-y-4">
+                <div className="space-y-2">
+                  <span className="text-[11.5px] font-extrabold uppercase tracking-wide text-slate-500">
+                    Quick Date Presets
+                  </span>
+                  <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                    {[
+                      { key: "today" as const, label: "Today" },
+                      { key: "7d" as const, label: "Last 7 Days" },
+                      { key: "30d" as const, label: "Last 30 Days" },
+                      { key: "thisMonth" as const, label: "This Month" },
+                    ].map((preset) => (
+                      <button
+                        key={preset.key}
+                        type="button"
+                        onClick={() => {
+                          setSecurityDateDraft(getPresetDateRange(preset.key));
+                          setSecurityFilterError("");
+                        }}
+                        className="rounded-[8px] border border-slate-200 bg-slate-50 px-3 py-2 text-[12px] font-extrabold text-slate-700 transition hover:bg-slate-100 active:scale-95"
+                      >
+                        {preset.label}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+
                 <div className="grid grid-cols-2 gap-3">
-                  <label className="space-y-2">
-                    <span className="text-[13px] font-bold">From date</span>
+                  <label className="space-y-1.5">
+                    <span className="text-[12px] font-bold text-slate-700">From date</span>
                     <ProjectDateInput
                       value={securityDateDraft.from}
                       max={securityDateDraft.to || undefined}
@@ -3594,8 +3953,8 @@ export default function SettingsPage() {
                       }
                     />
                   </label>
-                  <label className="space-y-2">
-                    <span className="text-[13px] font-bold">To date</span>
+                  <label className="space-y-1.5">
+                    <span className="text-[12px] font-bold text-slate-700">To date</span>
                     <ProjectDateInput
                       value={securityDateDraft.to}
                       min={securityDateDraft.from || undefined}
@@ -3608,91 +3967,94 @@ export default function SettingsPage() {
                     />
                   </label>
                 </div>
-                <label className="block space-y-2">
-                  <span className="text-[13px] font-bold">Audit action</span>
-                  <input
-                    value={securityAuditActionDraft}
-                    onChange={(event) =>
-                      setSecurityAuditActionDraft(event.target.value)
-                    }
-                    placeholder="e.g. INVOICE"
-                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
-                  />
-                </label>
-                <label className="block space-y-2">
-                  <span className="text-[13px] font-bold">Entity type</span>
-                  <input
-                    value={securityEntityDraft}
-                    onChange={(event) =>
-                      setSecurityEntityDraft(event.target.value)
-                    }
-                    placeholder="Invoice, Product..."
-                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
-                  />
-                </label>
-                <label className="block space-y-2">
-                  <span className="text-[13px] font-bold">Login account</span>
-                  <input
-                    type="text"
-                    value={securityLoginEmailDraft}
-                    onChange={(event) =>
-                      setSecurityLoginEmailDraft(event.target.value)
-                    }
-                    placeholder="Phone or email"
-                    className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
-                  />
-                </label>
-                <label className="block space-y-2">
-                  <span className="text-[13px] font-bold">Login status</span>
-                  <ProjectSelect
-                    value={securityLoginStatusDraft}
-                    onChange={(event) =>
-                      setSecurityLoginStatusDraft(
-                        event.target.value as "ALL" | "SUCCESS" | "FAILED",
-                      )
-                    }
-                  >
-                    <option value="ALL">All attempts</option>
-                    <option value="SUCCESS">Successful</option>
-                    <option value="FAILED">Failed</option>
-                  </ProjectSelect>
-                </label>
+
+                {securitySubTab === "audit" ? (
+                  <>
+                    <label className="block space-y-1.5">
+                      <span className="text-[12px] font-bold text-slate-700">Audit action</span>
+                      <input
+                        value={securityAuditActionDraft}
+                        onChange={(event) =>
+                          setSecurityAuditActionDraft(event.target.value)
+                        }
+                        placeholder="e.g. INVOICE, PRODUCT"
+                        className="h-10 w-full rounded-[10px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                      />
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-[12px] font-bold text-slate-700">Entity type</span>
+                      <input
+                        value={securityEntityDraft}
+                        onChange={(event) =>
+                          setSecurityEntityDraft(event.target.value)
+                        }
+                        placeholder="Invoice, Product, Brand..."
+                        className="h-10 w-full rounded-[10px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                      />
+                    </label>
+                  </>
+                ) : (
+                  <>
+                    <label className="block space-y-1.5">
+                      <span className="text-[12px] font-bold text-slate-700">Login account</span>
+                      <input
+                        type="text"
+                        value={securityLoginEmailDraft}
+                        onChange={(event) =>
+                          setSecurityLoginEmailDraft(event.target.value)
+                        }
+                        placeholder="Phone or email"
+                        className="h-10 w-full rounded-[10px] border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900"
+                      />
+                    </label>
+                    <label className="block space-y-1.5">
+                      <span className="text-[12px] font-bold text-slate-700">Login status</span>
+                      <ProjectSelect
+                        value={securityLoginStatusDraft}
+                        onChange={(event) =>
+                          setSecurityLoginStatusDraft(
+                            event.target.value as "ALL" | "SUCCESS" | "FAILED",
+                          )
+                        }
+                      >
+                        <option value="ALL">All attempts</option>
+                        <option value="SUCCESS">Successful</option>
+                        <option value="FAILED">Failed</option>
+                      </ProjectSelect>
+                    </label>
+                  </>
+                )}
               </div>
             </MobileFilterSheet>
 
-            <div className="grid grid-cols-1 items-stretch gap-5 xl:grid-cols-[minmax(0,1.05fr)_minmax(0,0.95fr)]">
-              <div className="flex min-h-[400px] flex-col overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm xl:h-[560px]">
-                <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                  <h2 className="text-[17px] font-extrabold">Audit Logs</h2>
-                  <span className="rounded-[6px] bg-slate-100 px-3 py-1.5 text-[11px] font-extrabold text-slate-600">
-                    {auditTotal} total
-                  </span>
-                </div>
-                <div className="hidden min-h-0 flex-1 overflow-auto md:block">
-                  <table className="w-full min-w-[500px] border-collapse text-left">
+            {/* Tab 1: Full-Width Audit Logs Table */}
+            {securitySubTab === "audit" ? (
+              <div>
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full min-w-[700px] border-collapse text-left">
                     <thead className="bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                       <tr>
-                        <th className="px-4 py-3">Action</th>
-                        <th className="px-4 py-3">Entity</th>
-                        <th className="px-4 py-3">Actor</th>
-                        <th className="px-4 py-3 text-right">Time</th>
+                        <th className="px-5 py-3">Action</th>
+                        <th className="px-5 py-3">Entity</th>
+                        <th className="px-5 py-3">Entity Type</th>
+                        <th className="px-5 py-3">Actor</th>
+                        <th className="px-5 py-3 text-right">Time</th>
                       </tr>
                     </thead>
                     <tbody>
                       {auditLogs.length === 0 ? (
                         <tr>
-                          <td colSpan={4} className="px-5 py-14 text-center">
+                          <td colSpan={5} className="px-5 py-14 text-center">
                             <Icon
                               name="history"
-                              sizePx={22}
+                              sizePx={24}
                               className="mx-auto text-slate-300"
                             />
-                            <div className="mt-3 text-[13px] font-extrabold text-slate-700">
+                            <div className="mt-2 text-[13px] font-extrabold text-[#11120D]">
                               No audit activity matches these filters
                             </div>
-                            <div className="mt-1 text-[12px] font-medium text-slate-500">
-                              Change the filters or clear them to review earlier
-                              activity.
+                            <div className="mt-0.5 text-[12px] font-medium text-[#64748B]">
+                              Change or clear your filter criteria to inspect earlier events.
                             </div>
                           </td>
                         </tr>
@@ -3702,25 +4064,30 @@ export default function SettingsPage() {
                           key={log.id}
                           className="border-b border-[#E5E7EB] transition-colors hover:bg-[#ECEFF3] last:border-0"
                         >
-                          <td className="px-4 py-3 text-[13px] font-extrabold text-slate-900">
+                          <td className="px-5 py-3.5 text-[13px] font-black text-[#11120D]">
                             {log.action}
                           </td>
-                          <td className="px-4 py-3">
-                            <div className="text-[13px] font-semibold text-slate-900">
+                          <td className="px-5 py-3.5">
+                            <div className="text-[13px] font-bold text-[#11120D]">
                               {String(log.meta?.invoiceNo || log.entityType)}
                             </div>
-                            <div className="mt-1 text-[12px] text-slate-500">
+                            <div className="mt-0.5 font-mono text-[11px] text-[#64748B]">
                               ID: {log.entityId}
                             </div>
                           </td>
-                          <td className="px-4 py-3 text-[13px] font-semibold text-slate-900">
+                          <td className="px-5 py-3.5">
+                            <span className="rounded-[6px] border border-[#D4D7DC] bg-[#F8FAFC] px-2 py-0.5 text-[11px] font-bold text-[#374151]">
+                              {log.entityType}
+                            </span>
+                          </td>
+                          <td className="px-5 py-3.5 text-[13px] font-semibold text-[#11120D]">
                             {log.actor?.name || "System"}
                           </td>
-                          <td className="px-4 py-3 text-right">
-                            <div className="text-[13px] font-extrabold text-slate-900">
+                          <td className="px-5 py-3.5 text-right">
+                            <div className="text-[12.5px] font-bold text-[#11120D]">
                               {formatRelativeTime(log.createdAt)}
                             </div>
-                            <div className="mt-1 text-[12px] text-slate-500">
+                            <div className="mt-0.5 text-[11px] font-medium text-[#64748B]">
                               {formatDateTime(log.createdAt)}
                             </div>
                           </td>
@@ -3729,15 +4096,17 @@ export default function SettingsPage() {
                     </tbody>
                   </table>
                 </div>
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 md:hidden">
+
+                {/* Mobile Cards for Audit Logs */}
+                <div className="space-y-3 p-4 md:hidden">
                   {auditLogs.length === 0 ? (
-                    <div className="py-12 text-center">
+                    <div className="py-10 text-center">
                       <Icon
                         name="history"
                         sizePx={22}
                         className="mx-auto text-slate-300"
                       />
-                      <div className="mt-3 text-[13px] font-extrabold text-slate-700">
+                      <div className="mt-2 text-[13px] font-extrabold text-[#11120D]">
                         No audit activity matches these filters
                       </div>
                     </div>
@@ -3745,31 +4114,29 @@ export default function SettingsPage() {
                   {auditLogs.map((log) => (
                     <div
                       key={log.id}
-                      className="rounded-[8px] border border-slate-200 bg-white p-4"
+                      className="rounded-[12px] border border-[#E5E7EB] bg-white p-3.5 shadow-2xs"
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <div className="break-words text-[15px] font-extrabold leading-snug text-slate-950" style={{ overflowWrap: "anywhere" }}>
+                          <div className="text-[13.5px] font-black text-[#11120D]">
                             {log.action}
                           </div>
-                          <div className="mt-1 text-[12px] font-semibold text-slate-500">
+                          <div className="mt-1 text-[12px] font-semibold text-[#64748B]">
                             {String(log.meta?.invoiceNo || log.entityType)}
                           </div>
                         </div>
-                        <div className="shrink-0 whitespace-nowrap text-right text-[12px] font-extrabold text-slate-500">
+                        <span className="shrink-0 text-right text-[11px] font-extrabold text-[#64748B]">
                           {formatRelativeTime(log.createdAt)}
-                        </div>
-                      </div>
-                      <div className="mt-3 grid grid-cols-2 gap-2 text-[12px] font-semibold text-slate-500">
-                        <span>Actor: {log.actor?.name || "System"}</span>
-                        <span className="truncate">ID: {log.entityId}</span>
-                        <span className="col-span-2">
-                          {formatDateTime(log.createdAt)}
                         </span>
+                      </div>
+                      <div className="mt-3 flex flex-wrap items-center justify-between gap-2 border-t border-[#F1F3F5] pt-2.5 text-[11.5px] font-semibold text-[#64748B]">
+                        <span>Actor: <strong className="text-[#11120D]">{log.actor?.name || "System"}</strong></span>
+                        <span className="font-mono text-[10.5px]">ID: {log.entityId.slice(0, 12)}…</span>
                       </div>
                     </div>
                   ))}
                 </div>
+
                 <PaginationBar
                   variant="classic"
                   page={auditPageClamped}
@@ -3784,27 +4151,20 @@ export default function SettingsPage() {
                     setAuditPageSize(nextPageSize);
                     setAuditPage(1);
                   }}
-                  className="rounded-none border-x-0 border-b-0 border-slate-200"
+                  className="rounded-none border-x-0 border-b-0 border-[#E5E7EB]"
                 />
               </div>
-
-              <div className="flex min-h-[400px] flex-col overflow-hidden rounded-[8px] border border-slate-200 bg-white shadow-sm xl:h-[560px]">
-                <div className="flex items-center justify-between border-b border-slate-200 px-5 py-4">
-                  <h2 className="text-[17px] font-extrabold">Login Activity</h2>
-                  {failedLoginCount > 0 ? (
-                    <span className="rounded-[6px] bg-rose-50 px-3 py-2 text-[12px] font-extrabold uppercase text-rose-600">
-                      {failedLoginCount} failed
-                    </span>
-                  ) : null}
-                </div>
-                <div className="hidden min-h-0 flex-1 overflow-auto md:block">
-                  <table className="w-full min-w-[500px] border-collapse text-left">
+            ) : (
+              /* Tab 2: Full-Width Login Activity Table */
+              <div>
+                <div className="hidden overflow-x-auto md:block">
+                  <table className="w-full min-w-[700px] border-collapse text-left">
                     <thead className="bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                       <tr>
-                        <th className="px-4 py-3">Account</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3">IP</th>
-                        <th className="px-4 py-3 text-right">Time</th>
+                        <th className="px-5 py-3">Account / User</th>
+                        <th className="px-5 py-3">Status</th>
+                        <th className="px-5 py-3">IP Address</th>
+                        <th className="px-5 py-3 text-right">Time</th>
                       </tr>
                     </thead>
                     <tbody>
@@ -3813,14 +4173,14 @@ export default function SettingsPage() {
                           <td colSpan={4} className="px-5 py-14 text-center">
                             <Icon
                               name="login"
-                              sizePx={22}
+                              sizePx={24}
                               className="mx-auto text-slate-300"
                             />
-                            <div className="mt-3 text-[13px] font-extrabold text-slate-700">
+                            <div className="mt-2 text-[13px] font-extrabold text-[#11120D]">
                               No login activity matches these filters
                             </div>
-                            <div className="mt-1 text-[12px] font-medium text-slate-500">
-                              Try another account, status, or date range.
+                            <div className="mt-0.5 text-[12px] font-medium text-[#64748B]">
+                              Try adjusting your account search or date parameters.
                             </div>
                           </td>
                         </tr>
@@ -3830,41 +4190,48 @@ export default function SettingsPage() {
                           key={attempt.id}
                           className="border-b border-[#E5E7EB] transition-colors hover:bg-[#ECEFF3] last:border-0"
                         >
-                          <td className="px-4 py-3 text-[13px] font-semibold text-slate-900">
+                          <td className="px-5 py-3.5 text-[13px] font-bold text-[#11120D]">
                             {attempt.email}
                           </td>
-                          <td className="px-4 py-3">
+                          <td className="px-5 py-3.5">
                             <span
                               className={cn(
-                                "text-[13px] font-extrabold",
+                                "inline-flex items-center rounded-full px-2.5 py-0.5 text-[11px] font-extrabold",
                                 attempt.success
-                                  ? "text-emerald-600"
-                                  : "text-rose-600",
+                                  ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                                  : "bg-rose-50 text-rose-800 border border-rose-200",
                               )}
                             >
                               {attempt.success ? "Success" : "Failed"}
                             </span>
                           </td>
-                          <td className="px-4 py-3 font-mono text-[12px] text-slate-400">
-                            {attempt.ip || "Unavailable"}
+                          <td className="px-5 py-3.5 font-mono text-[12px] text-[#64748B]">
+                            {attempt.ip || "127.0.0.1"}
                           </td>
-                          <td className="px-4 py-3 text-right text-[13px] font-extrabold text-slate-900">
-                            {formatRelativeTime(attempt.createdAt)}
+                          <td className="px-5 py-3.5 text-right">
+                            <div className="text-[12.5px] font-bold text-[#11120D]">
+                              {formatRelativeTime(attempt.createdAt)}
+                            </div>
+                            <div className="mt-0.5 text-[11px] font-medium text-[#64748B]">
+                              {formatDateTime(attempt.createdAt)}
+                            </div>
                           </td>
                         </tr>
                       ))}
                     </tbody>
                   </table>
                 </div>
-                <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-4 md:hidden">
+
+                {/* Mobile Cards for Login Activity */}
+                <div className="space-y-3 p-4 md:hidden">
                   {loginAttempts.length === 0 ? (
-                    <div className="py-12 text-center">
+                    <div className="py-10 text-center">
                       <Icon
                         name="login"
                         sizePx={22}
                         className="mx-auto text-slate-300"
                       />
-                      <div className="mt-3 text-[13px] font-extrabold text-slate-700">
+                      <div className="mt-2 text-[13px] font-extrabold text-[#11120D]">
                         No login activity matches these filters
                       </div>
                     </div>
@@ -3872,35 +4239,35 @@ export default function SettingsPage() {
                   {loginAttempts.map((attempt) => (
                     <div
                       key={attempt.id}
-                      className="rounded-[8px] border border-slate-200 bg-white p-4"
+                      className="rounded-[12px] border border-[#E5E7EB] bg-white p-3.5 shadow-2xs"
                     >
-                      <div className="flex items-start justify-between gap-4">
+                      <div className="flex items-start justify-between gap-3">
                         <div>
-                          <div className="text-[15px] font-extrabold text-slate-950">
+                          <div className="text-[13.5px] font-bold text-[#11120D]">
                             {attempt.email}
                           </div>
-                          <div className="mt-1 font-mono text-[12px] text-slate-400">
-                            {attempt.ip || "Unavailable"}
+                          <div className="mt-0.5 font-mono text-[11px] text-[#64748B]">
+                            {attempt.ip || "127.0.0.1"}
                           </div>
                         </div>
                         <span
                           className={cn(
-                            "text-[13px] font-extrabold",
+                            "inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-extrabold",
                             attempt.success
-                              ? "text-emerald-600"
-                              : "text-rose-600",
+                              ? "bg-emerald-50 text-emerald-800 border border-emerald-200"
+                              : "bg-rose-50 text-rose-800 border border-rose-200",
                           )}
                         >
                           {attempt.success ? "Success" : "Failed"}
                         </span>
                       </div>
-                      <div className="mt-3 text-[12px] font-semibold text-slate-500">
-                        {formatRelativeTime(attempt.createdAt)} |{" "}
-                        {formatDateTime(attempt.createdAt)}
+                      <div className="mt-2.5 border-t border-[#F1F3F5] pt-2 text-[11.5px] font-semibold text-[#64748B]">
+                        {formatRelativeTime(attempt.createdAt)} ({formatDateTime(attempt.createdAt)})
                       </div>
                     </div>
                   ))}
                 </div>
+
                 <PaginationBar
                   variant="classic"
                   page={loginPageClamped}
@@ -3915,10 +4282,10 @@ export default function SettingsPage() {
                     setLoginPageSize(nextPageSize);
                     setLoginPage(1);
                   }}
-                  className="rounded-none border-x-0 border-b-0 border-slate-200"
+                  className="rounded-none border-x-0 border-b-0 border-[#E5E7EB]"
                 />
               </div>
-            </div>
+            )}
           </section>
         ) : null}
 
@@ -4143,7 +4510,7 @@ export default function SettingsPage() {
                         </td>
                         <td className="px-4 py-3 text-right">
                           {backup.type === "BACKUP" &&
-                          backup.status === "SUCCESS" ? (
+                            backup.status === "SUCCESS" ? (
                             <button
                               type="button"
                               onClick={() => requestRestoreBackup(backup)}
@@ -4185,7 +4552,7 @@ export default function SettingsPage() {
                         {backup.type === "BACKUP" ? "Export" : "Restore"}
                       </span>
                       {backup.type === "BACKUP" &&
-                      backup.status === "SUCCESS" ? (
+                        backup.status === "SUCCESS" ? (
                         <button
                           type="button"
                           onClick={() => requestRestoreBackup(backup)}
@@ -4241,8 +4608,8 @@ export default function SettingsPage() {
           description={
             drawerAction === "close"
               ? `Expected balance is Rs. ${Number(
-                  currentDrawer?.expectedTotal || 0,
-                ).toLocaleString()}. Enter counted cash.`
+                currentDrawer?.expectedTotal || 0,
+              ).toLocaleString()}. Enter counted cash.`
               : "Enter the required cash drawer details."
           }
           maxWidthClass="max-w-[560px]"
@@ -4484,8 +4851,8 @@ export default function SettingsPage() {
 
       <ConfirmDialog
         open={!!pendingBrandDeactivation}
-        title="Deactivate this brand?"
-        message="This brand will be marked inactive. Products linked to this brand will also be deactivated and removed from active selling flows."
+        title="Deactivate this unused brand?"
+        message="This only hides the brand from active choices. It does not change any products. Brands with active products cannot be deactivated."
         confirmLabel="Deactivate Brand"
         onConfirm={confirmBrandDeactivation}
         onClose={() => {
@@ -4496,14 +4863,8 @@ export default function SettingsPage() {
           pendingBrandDeactivation ? (
             <div className="space-y-2">
               <div className="font-semibold text-slate-700">
-                {
-                  products.filter(
-                    (product) =>
-                      product.brandId === pendingBrandDeactivation.id &&
-                      product.active,
-                  ).length
-                }{" "}
-                active product(s) will be affected.
+                {pendingBrandDeactivation.activeProductCount} active product(s)
+                currently use this brand.
               </div>
             </div>
           ) : null
@@ -4537,29 +4898,32 @@ export default function SettingsPage() {
           </div>
         }
       >
-        <div className="space-y-3">
-          <div className="rounded-[12px] border border-slate-200 bg-slate-50 p-4">
-            <div className="text-[11px] font-black uppercase tracking-wide text-slate-500">
-              Shop access
+        <div className="space-y-3.5">
+          <div className="rounded-[14px] border border-[#D8DBE0] bg-[#F8FAFC] p-4 shadow-2xs">
+            <div className="text-[10.5px] font-black uppercase tracking-[0.06em] text-[#64748B]">
+              Capability Mode Transition
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2 text-[15px] font-extrabold text-slate-950">
-              <span>{formatBusinessMode(capabilities.businessMode)}</span>
-              <Icon name="arrow_forward" sizePx={18} className="text-slate-400" />
-              <span>{formatBusinessMode(modeDraft)}</span>
+            <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[15px] font-black text-[#11120D]">
+              <span className="rounded-[8px] bg-white px-2.5 py-1 border border-[#D8DBE0]">{formatBusinessMode(capabilities.businessMode)}</span>
+              <Icon name="arrow_forward" sizePx={16} className="text-[#64748B]" />
+              <span className="rounded-[8px] bg-[#11120D] text-white px-2.5 py-1">{formatBusinessMode(modeDraft)}</span>
             </div>
-            <div className="mt-3 text-[12px] font-bold text-slate-600">
-              Staff billing draft requests: {effectiveStaffDraftsDraft ? "On" : "Off"}
-            </div>
-          </div>
-          <div className="rounded-[12px] border border-slate-200 bg-white p-4">
-            <div className="text-[11px] font-black uppercase tracking-wide text-slate-500">
-              Reason
-            </div>
-            <div className="mt-2 text-[13px] font-semibold leading-6 text-slate-700">
-              {modeReason.trim()}
+            <div className="mt-3 flex items-center gap-2 text-[12px] font-bold text-[#64748B]">
+              <span>Staff billing draft requests:</span>
+              <span className={cn("rounded-full px-2 py-0.5 text-[11px] font-extrabold", effectiveStaffDraftsDraft ? "bg-emerald-100 text-emerald-800" : "bg-slate-200 text-slate-700")}>
+                {effectiveStaffDraftsDraft ? "Enabled" : "Disabled"}
+              </span>
             </div>
           </div>
-          <div className="rounded-[12px] border border-blue-200 bg-blue-50 p-4 text-[12px] font-bold leading-5 text-blue-900">
+          <div className="rounded-[14px] border border-[#D8DBE0] bg-white p-4 shadow-2xs">
+            <div className="text-[10.5px] font-black uppercase tracking-[0.06em] text-[#64748B]">
+              Audit Trail Reason
+            </div>
+            <div className="mt-1.5 text-[13px] font-bold leading-relaxed text-[#11120D]">
+              "{modeReason.trim()}"
+            </div>
+          </div>
+          <div className="rounded-[14px] border border-blue-200 bg-blue-50/80 p-4 text-[12px] font-semibold leading-relaxed text-blue-950">
             {modeDraft === "CATALOG_ONLY"
               ? "Product, import, price and lookup workflows remain available. Inventory and all POS workflows turn off."
               : modeDraft === "INVENTORY_ONLY"
@@ -4709,7 +5073,7 @@ export default function SettingsPage() {
                 disabled={
                   restoreBusy ||
                   restoreConfirmation.trim() !==
-                    `RESTORE ${restoreTarget.filename}`
+                  `RESTORE ${restoreTarget.filename}`
                 }
               >
                 {restoreBusy ? "Restoring..." : "Restore Now"}

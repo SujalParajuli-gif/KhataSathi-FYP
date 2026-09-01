@@ -1,13 +1,24 @@
 import { useRef, type PointerEvent as ReactPointerEvent } from "react";
 
 const DEFAULT_IGNORED_TARGETS = [
+  "button",
+  "a",
   "input",
+  "label",
   "textarea",
   "select",
+  "[role='button']",
+  "[role='switch']",
   "[contenteditable='true']",
   "[data-horizontal-gesture='ignore']",
   "[data-horizontal-scroll]",
 ].join(",");
+
+export function isHorizontalGestureInteractiveTarget(
+  target: Pick<HTMLElement, "closest">,
+) {
+  return Boolean(target.closest(DEFAULT_IGNORED_TARGETS));
+}
 
 type HorizontalGestureOptions = {
   enabled?: boolean;
@@ -66,7 +77,7 @@ export function useHorizontalGesture<T extends HTMLElement>({
     ) return;
 
     const target = event.target as HTMLElement;
-    if (ignoreInteractive && target.closest(DEFAULT_IGNORED_TARGETS)) return;
+    if (ignoreInteractive && isHorizontalGestureInteractiveTarget(target)) return;
 
     gestureRef.current = {
       pointerId: event.pointerId,

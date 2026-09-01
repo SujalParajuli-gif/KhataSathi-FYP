@@ -8,14 +8,14 @@ import {
 
 function validBundle() {
   const bytes = Buffer.from("profile-image");
-  const roles = ["ADMIN", "MANAGER", "CASHIER", "STAFF"] as const;
+  const roles = ["ADMIN", "MANAGER", "CASHIER", "STAFF", "STAFF"] as const;
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
     accounts: roles.map((role, index) => ({
       id: `user-${index}`,
       name: role,
-      email: `${role.toLowerCase()}@example.com`,
+      email: `${role.toLowerCase()}-${index}@example.com`,
       phone: `980000000${index}`,
       gender: null,
       address: null,
@@ -46,9 +46,10 @@ function validBundle() {
   };
 }
 
-test("clean pilot bundle accepts exactly one account for each pilot role", () => {
+test("clean pilot bundle accepts one privileged account per role and multiple staff", () => {
   const bundle = validateCleanPilotBundle(validBundle());
-  assert.equal(bundle.accounts.length, 4);
+  assert.equal(bundle.accounts.length, 5);
+  assert.equal(bundle.accounts.filter((account) => account.role === "STAFF").length, 2);
 });
 
 test("clean pilot bundle rejects duplicate contact identities", () => {
@@ -63,7 +64,7 @@ test("clean pilot bundle verifies transferred profile image integrity", () => {
   assert.throws(() => validateCleanPilotBundle(input), /integrity/i);
 });
 
-test("identity arguments require all four roles", () => {
+test("identity arguments require all roles and retain repeated staff references", () => {
   assert.throws(
     () => readIdentityArguments(["--admin", "Admin"]),
     /manager.*cashier.*staff/i,
@@ -73,8 +74,21 @@ test("identity arguments require all four roles", () => {
       "--admin=Admin",
       "--manager=Manager",
       "--cashier=Cashier",
-      "--staff=Staff",
+      "--staff=Staff One",
+      "--staff",
+      "Staff Two",
     ]),
-    { admin: "Admin", manager: "Manager", cashier: "Cashier", staff: "Staff" },
+    {
+      admin: "Admin",
+      manager: "Manager",
+      cashier: "Cashier",
+      staff: ["Staff One", "Staff Two"],
+    },
   );
+});
+
+test("clean pilot bundle rejects a second privileged account", () => {
+  const input = validBundle();
+  input.accounts[4].role = "ADMIN";
+  assert.throws(() => validateCleanPilotBundle(input), /exactly one active Admin/i);
 });

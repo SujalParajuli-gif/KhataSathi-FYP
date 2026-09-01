@@ -326,13 +326,23 @@ export default function ProductsFiltersCard({
               </Button>
             ) : null}
             {onTogglePurchaseCost ? (
-              <Button
-                icon={purchaseCostVisible ? "visibility" : "visibility_off"}
+              <button
+                type="button"
                 onClick={onTogglePurchaseCost}
-                ariaPressed={purchaseCostVisible}
+                aria-pressed={purchaseCostVisible}
+                className={cn(
+                  "inline-flex items-center justify-center gap-[8px] rounded-[12px] px-[14px] py-[10px] text-[13px] font-semibold border active:scale-[0.98] transition",
+                  purchaseCostVisible
+                    ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                    : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
+                )}
               >
-                {purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
-              </Button>
+                <GoogleIcon
+                  name={purchaseCostVisible ? "visibility" : "visibility_off"}
+                  className={purchaseCostVisible ? "text-emerald-700 text-[18px]" : "text-inherit text-[18px]"}
+                />
+                <span>{purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}</span>
+              </button>
             ) : null}
 
           </div>

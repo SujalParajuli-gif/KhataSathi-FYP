@@ -10,7 +10,8 @@ export type StorageOwnerType =
   | "PRODUCT_THUMBNAIL"
   | "PROFILE_IMAGE"
   | "DOCUMENT_ORIGINAL"
-  | "DOCUMENT_THUMBNAIL";
+  | "DOCUMENT_THUMBNAIL"
+  | "PRODUCT_IMPORT_SOURCE";
 
 export type StorageReference = {
   storage: StorageArea;
@@ -293,7 +294,7 @@ export async function scanStorageIntegrity(input: {
 }
 
 export async function buildStorageIntegrityReport() {
-  const [products, users, documents] = await Promise.all([
+  const [products, users, documents, importBatches] = await Promise.all([
     prisma.product.findMany({
       select: { id: true, name: true, sku: true, isActive: true, imageUrl: true, thumbnailUrl: true },
     }),
@@ -308,6 +309,16 @@ export async function buildStorageIntegrityReport() {
         storedPath: true,
         storedFileName: true,
         thumbnailFileName: true,
+        deletedAt: true,
+      },
+    }),
+    prisma.productImportBatch.findMany({
+      select: {
+        id: true,
+        fileName: true,
+        sourceType: true,
+        sourceStoredPath: true,
+        sourceStoredFileName: true,
         deletedAt: true,
       },
     }),
@@ -377,6 +388,22 @@ export async function buildStorageIntegrityReport() {
         relativePath: thumbnailPath,
       });
     }
+  }
+
+  for (const batch of importBatches) {
+    const sourcePath = documentRelativePath(
+      batch.sourceStoredPath,
+      batch.sourceStoredFileName,
+    );
+    if (!sourcePath) continue;
+    references.push({
+      storage: "DOCUMENTS",
+      ownerType: "PRODUCT_IMPORT_SOURCE",
+      ownerId: batch.id,
+      ownerLabel: batch.fileName || `${batch.sourceType} import review`,
+      ownerDeleted: Boolean(batch.deletedAt),
+      relativePath: sourcePath,
+    });
   }
 
   return scanStorageIntegrity({

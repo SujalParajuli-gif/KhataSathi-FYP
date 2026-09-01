@@ -5,7 +5,25 @@ import { rebuildProductSearchDocumentsForBrand } from "../products/searchAliasSe
 // sorted alphabetically by name for consistent display in the frontend dropdown
 export async function listBrands(activeOnly?: boolean) {
     const where = activeOnly ? { isActive: true } : {};
-    return prisma.brand.findMany({ where, orderBy: { name: "asc" } });
+    const [brands, groupedCounts] = await prisma.$transaction([
+        prisma.brand.findMany({ where, orderBy: { name: "asc" } }),
+        prisma.product.groupBy({
+            by: ["brandId", "isActive"],
+            _count: { _all: true },
+        }),
+    ]);
+    const counts = new Map<string, { total: number; active: number }>();
+    for (const group of groupedCounts) {
+        const current = counts.get(group.brandId) || { total: 0, active: 0 };
+        current.total += group._count._all;
+        if (group.isActive) current.active += group._count._all;
+        counts.set(group.brandId, current);
+    }
+    return brands.map((brand) => ({
+        ...brand,
+        productCount: counts.get(brand.id)?.total || 0,
+        activeProductCount: counts.get(brand.id)?.active || 0,
+    }));
 }
 
 // fetching a single brand by ID along with its linked products
@@ -51,6 +69,20 @@ export async function updateBrand(
 
         if (!existing) {
             throw Object.assign(new Error("Brand not found"), { code: "P2025" });
+        }
+
+        if (data.isActive === false && existing.isActive) {
+            const activeProductCount = await tx.product.count({
+                where: { brandId: id, isActive: true },
+            });
+            if (activeProductCount > 0) {
+                throw Object.assign(
+                    new Error(
+                        `This brand still has ${activeProductCount} active product${activeProductCount === 1 ? "" : "s"}. Reassign or deactivate those products first.`,
+                    ),
+                    { code: "BRAND_HAS_ACTIVE_PRODUCTS", activeProductCount },
+                );
+            }
         }
 
         const updated = await tx.brand.update({

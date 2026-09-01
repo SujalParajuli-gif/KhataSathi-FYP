@@ -108,6 +108,22 @@ function isQuantityStepAligned(qty: number, step?: number | null) {
 }
 
 function assertProductQuantityAllowed(product: any, qty: number) {
+  if (product.availabilityStatus === "COMING_SOON") {
+    throw new Error(
+      `"${product.name}" is marked price coming soon and cannot be billed. Add the supplier and selling prices, then mark it catalog listed first.`,
+    );
+  }
+  if (
+    product.sellingPriceStatus === "PENDING" ||
+    !Number.isFinite(Number(product.retailPrice)) ||
+    Number(product.retailPrice) <= 0 ||
+    !Number.isFinite(Number(product.wholesalePrice)) ||
+    Number(product.wholesalePrice) <= 0
+  ) {
+    throw new Error(
+      `"${product.name}" has no approved selling price and cannot be billed. Set its retail and wholesale prices first.`,
+    );
+  }
   if (!product.allowFractionalQty && !Number.isInteger(qty)) {
     throw new Error(`Quantity for "${product.name}" must be a whole number.`);
   }
@@ -2629,8 +2645,8 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
     const product = await tx.product.findUnique({ where: { id: productId } });
     if (!product) throw new Error("Product not found");
     if (!product.isActive) throw new Error("Product is inactive");
-    if (product.stock <= 0) throw new Error("Product is out of stock");
     assertProductQuantityAllowed(product, normalizedQty);
+    if (product.stock <= 0) throw new Error("Product is out of stock");
 
     // checking if this product is already in the invoice — if so, we merge the quantities
     const existing = await tx.invoiceItem.findFirst({ where: { invoiceId, productId } });

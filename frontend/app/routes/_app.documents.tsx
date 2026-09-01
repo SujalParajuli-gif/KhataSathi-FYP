@@ -84,6 +84,37 @@ function dateInputValue(value?: string | null) {
   return new Date(value).toISOString().slice(0, 10);
 }
 
+function getPresetDateRange(preset: "today" | "last7" | "last30" | "thisMonth") {
+  const now = new Date();
+  const format = (d: Date) => {
+    const year = d.getFullYear();
+    const month = String(d.getMonth() + 1).padStart(2, "0");
+    const day = String(d.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
+
+  const todayStr = format(now);
+
+  if (preset === "today") {
+    return { from: todayStr, to: todayStr };
+  }
+  if (preset === "last7") {
+    const start = new Date(now);
+    start.setDate(start.getDate() - 6);
+    return { from: format(start), to: todayStr };
+  }
+  if (preset === "last30") {
+    const start = new Date(now);
+    start.setDate(start.getDate() - 29);
+    return { from: format(start), to: todayStr };
+  }
+  if (preset === "thisMonth") {
+    const start = new Date(now.getFullYear(), now.getMonth(), 1);
+    return { from: format(start), to: todayStr };
+  }
+  return { from: "", to: "" };
+}
+
 function formatBytes(bytes: number, decimals = 1) {
   if (!Number(bytes)) return "0 Bytes";
   const k = 1024;
@@ -1869,11 +1900,11 @@ function DocumentTouchViewer({
   }
 
   return (
-    <div className="-mx-2 flex min-h-full flex-col bg-white px-1 pb-6 pt-4 text-[#11120d] md:mx-0 md:rounded-[28px] md:p-6">
-      <div className="mb-8 hidden flex-col gap-4 md:flex md:flex-row md:items-center md:justify-between">
+    <div className="-mx-2 flex min-h-full flex-col bg-white px-1 pb-6 pt-3 text-[#11120d] md:mx-0 md:rounded-[28px] md:p-6">
+      <div className="mb-4 hidden flex-col gap-3 md:flex md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-bold tracking-tight text-[#11120d] md:text-3xl">Documents</h1>
-          <p className="mt-1 text-sm font-medium text-[#8C8889] md:text-base">
+          <h1 className="text-2xl font-black tracking-tight text-[#11120d]">Documents</h1>
+          <p className="mt-0.5 text-[13px] font-medium text-[#64748B]">
             Upload bills, find files, preview details, and stage documents for stock or import work.
           </p>
         </div>
@@ -1882,10 +1913,10 @@ function DocumentTouchViewer({
             <button
               type="button"
               onClick={() => openUploadWorkspace()}
-              className="inline-flex h-[40px] items-center gap-2 rounded-[12px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27]"
+              className="inline-flex h-9.5 items-center gap-1.5 rounded-[10px] bg-[#11120d] px-3.5 text-[12px] font-extrabold text-white shadow-2xs transition active:scale-98 hover:bg-[#2a2c27]"
             >
-              <Icon name="upload_file" sizePx={17} />
-              Upload Document
+              <Icon name="upload_file" sizePx={16} />
+              <span>Upload Document</span>
             </button>
           ) : null}
         </div>
@@ -1893,61 +1924,65 @@ function DocumentTouchViewer({
 
       <div className="flex min-h-0 flex-1 flex-col w-full">
         <main className="flex min-h-0 flex-col w-full">
-          <div className="mb-8 hidden grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3 md:grid">
+          {/* Desktop Stat Cards */}
+          <div className="mb-4 hidden grid-cols-4 gap-3 md:grid">
             {[
-              { label: "Visible documents", value: total, icon: "folder_open", tone: "text-[#2F67D8]" },
-              { label: "Linked on page", value: processedCount, icon: "link", tone: "text-[#179B4D]" },
-              { label: "Unprocessed on page", value: unprocessedCount, icon: "pending_actions", tone: "text-[#B7791F]" },
-              { label: "Storage used", value: storageInfo ? formatBytes(storageInfo.totalSizeBytes) : "-", icon: "database", tone: "text-[#565449]" },
+              { label: "Visible documents", value: total, icon: "folder_open", tone: "text-[#2F67D8]", bgTone: "bg-blue-50" },
+              { label: "Linked on page", value: processedCount, icon: "link", tone: "text-[#179B4D]", bgTone: "bg-emerald-50" },
+              { label: "Unprocessed on page", value: unprocessedCount, icon: "pending_actions", tone: "text-[#B7791F]", bgTone: "bg-amber-50" },
+              { label: "Storage used", value: storageInfo ? formatBytes(storageInfo.totalSizeBytes) : "-", icon: "database", tone: "text-[#565449]", bgTone: "bg-slate-100" },
             ].map((card) => (
               <div
                 key={card.label}
-                className="min-h-[108px] rounded-[16px] border border-[#DADDE3] bg-white p-4 shadow-sm [container-type:inline-size]"
+                className="rounded-[14px] border border-[#D8DBE0] bg-white p-3.5 shadow-2xs"
               >
                 <div className="flex items-center gap-2">
-                  <div className={cn("flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-[#F3F4F6]", card.tone)}>
-                    <Icon name={card.icon} sizePx={16} />
+                  <div className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px]", card.bgTone, card.tone)}>
+                    <Icon name={card.icon} sizePx={14} />
                   </div>
-                  <div className="min-w-0 flex-1 truncate text-[10px] font-extrabold uppercase leading-snug tracking-[0.08em] text-[#64748B]">
+                  <div className="min-w-0 flex-1 truncate text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
                     {card.label}
                   </div>
                 </div>
-                <div className="mt-3 truncate font-mono text-[clamp(20px,12cqi,32px)] font-extrabold leading-none tracking-tight text-[#11120d]" title={String(card.value)}>
+                <div className="mt-2 truncate font-mono text-[22px] font-black tracking-tight text-[#11120d]" title={String(card.value)}>
                   {card.value}
                 </div>
               </div>
             ))}
           </div>
 
-          <div className="mb-4 grid grid-cols-3 divide-x divide-[#E5E7EB] rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] py-3 md:hidden">
+          {/* Mobile Stat Banner */}
+          <div className="mb-3 grid grid-cols-3 divide-x divide-[#E2E4E8] rounded-[12px] border border-[#D8DBE0] bg-[#F8FAFC] py-2.5 shadow-2xs md:hidden">
             <div className="px-2 text-center">
-              <div className="font-mono text-[18px] font-extrabold text-[#11120d]">{total}</div>
-              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">Documents</div>
+              <div className="font-mono text-[17px] font-black text-[#11120d]">{total}</div>
+              <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Documents</div>
             </div>
             <div className="px-2 text-center">
-              <div className="font-mono text-[18px] font-extrabold text-[#B7791F]">{unprocessedCount}</div>
-              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">To review here</div>
+              <div className="font-mono text-[17px] font-black text-[#B7791F]">{unprocessedCount}</div>
+              <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">To review</div>
             </div>
             <div className="min-w-0 px-2 text-center">
-              <div className="truncate font-mono text-[18px] font-extrabold text-[#11120d]">
+              <div className="truncate font-mono text-[17px] font-black text-[#11120d]">
                 {storageInfo ? formatBytes(storageInfo.totalSizeBytes) : processedCount}
               </div>
-              <div className="mt-1 text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">
-                {storageInfo ? "Storage" : "Linked here"}
+              <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                {storageInfo ? "Storage" : "Linked"}
               </div>
             </div>
           </div>
 
-          <div className="mb-4 bg-white md:mb-6 md:rounded-[18px] md:border md:border-[#CFCFD3] md:p-4 md:shadow-sm">
-            <div className="space-y-3 lg:hidden">
-              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-                <div className="flex h-[48px] min-w-0 items-center gap-2 rounded-[13px] border border-[#CFCFD3] bg-white px-3 focus-within:border-[#11120d]">
-                  <Icon name="search" sizePx={18} className="shrink-0 text-[#8C8889]" />
+          {/* Filters Container */}
+          <div className="mb-3 bg-white md:mb-5 md:rounded-[16px] md:border md:border-[#D8DBE0] md:p-3.5 md:shadow-2xs">
+            {/* Mobile Controls */}
+            <div className="space-y-2.5 lg:hidden">
+              <div className="flex items-center gap-2">
+                <div className="relative min-w-0 flex-1">
+                  <Icon name="search" sizePx={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]" />
                   <input
                     value={documentQuery}
                     onChange={(event) => setDocumentQuery(event.target.value)}
                     placeholder="Title, filename, supplier or bill…"
-                    className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold text-[#11120d] outline-none"
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
                   />
                 </div>
                 <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} />
@@ -1956,46 +1991,267 @@ function DocumentTouchViewer({
                 <button
                   type="button"
                   onClick={() => openUploadWorkspace()}
-                  className="inline-flex h-[48px] w-full items-center justify-center gap-2 rounded-[13px] bg-[#11120d] px-4 text-[13px] font-extrabold text-white active:bg-[#2a2c27]"
+                  className="inline-flex h-10 w-full items-center justify-center gap-1.5 rounded-[10px] bg-[#11120d] px-4 text-[12.5px] font-extrabold text-white shadow-2xs active:scale-98"
                 >
-                  <Icon name="upload_file" sizePx={19} />
-                  Upload Document
+                  <Icon name="upload_file" sizePx={17} />
+                  <span>Upload Document</span>
                 </button>
               ) : null}
               <ActiveFilterChips items={mobileFilterChips} />
             </div>
 
-            <div className="hidden space-y-4 lg:block">
-              <div className="grid grid-cols-[minmax(0,1fr)_auto_auto] items-end gap-3">
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Search documents</span><div className="flex h-11 min-w-0 items-center gap-2 rounded-xl border border-[#CFCFD3] px-3 focus-within:border-[#11120d]"><Icon name="search" sizePx={18} className="text-[#8C8889]" /><input value={documentQuery} onChange={(event) => setDocumentQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Title, filename or supplier" className="min-w-0 flex-1 bg-transparent text-[13px] font-semibold outline-none" /><input value={billSearch} onChange={(event) => setBillSearch(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") { setPage(1); void loadDocuments(); } }} placeholder="Bill number" className="w-[170px] border-l border-[#E5E7EB] bg-transparent pl-3 text-[13px] font-semibold outline-none" /></div></label>
-                <button type="button" onClick={() => { setPage(1); void loadDocuments(); }} className="h-11 rounded-xl bg-[#11120d] px-5 text-[12px] font-extrabold text-white">Search</button>
-                <button type="button" onClick={clearFilters} disabled={!activeFilters} className="h-11 rounded-xl border border-[#CFCFD3] bg-white px-5 text-[12px] font-extrabold text-[#565449] disabled:cursor-not-allowed disabled:opacity-40">Clear</button>
+            {/* Desktop Controls */}
+            <div className="hidden space-y-3 lg:block">
+              <div className="flex items-center gap-2.5">
+                <div className="flex h-9.5 min-w-0 flex-1 items-center rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 transition focus-within:border-[#11120d]">
+                  <Icon name="search" sizePx={16} className="shrink-0 text-[#7A7F89]" />
+                  <input
+                    value={documentQuery}
+                    onChange={(event) => setDocumentQuery(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        setPage(1);
+                        void loadDocuments();
+                      }
+                    }}
+                    placeholder="Title, filename or supplier..."
+                    className="min-w-0 flex-1 bg-transparent px-2 text-[12.5px] font-semibold text-[#11120d] outline-none placeholder:text-[#7A7F89]"
+                  />
+                  <div className="h-4 w-px bg-[#E5E7EB]" />
+                  <input
+                    value={billSearch}
+                    onChange={(event) => setBillSearch(event.target.value)}
+                    onKeyDown={(event) => {
+                      if (event.key === "Enter") {
+                        setPage(1);
+                        void loadDocuments();
+                      }
+                    }}
+                    placeholder="Bill number"
+                    className="w-[140px] bg-transparent pl-2.5 text-[12.5px] font-semibold text-[#11120d] outline-none placeholder:text-[#7A7F89]"
+                  />
+                </div>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setPage(1);
+                    void loadDocuments();
+                  }}
+                  className="inline-flex h-9.5 items-center justify-center rounded-[10px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white shadow-2xs transition active:scale-98 hover:bg-[#2a2c27]"
+                >
+                  Search
+                </button>
+                {activeFilters ? (
+                  <button
+                    type="button"
+                    onClick={clearFilters}
+                    className="inline-flex h-9.5 items-center justify-center gap-1 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[11px] font-extrabold text-[#374151] shadow-2xs transition hover:bg-[#F3F4F6]"
+                  >
+                    <Icon name="close" sizePx={14} />
+                    <span>Clear</span>
+                  </button>
+                ) : null}
               </div>
-              <div className={cn("grid gap-3", isAdmin ? "grid-cols-3 2xl:grid-cols-5" : "grid-cols-2 2xl:grid-cols-4")}>
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Document type</span><ProjectSelect value={typeFilter} onChange={(event) => { setTypeFilter(event.target.value as DocumentType | "ALL"); setPage(1); }}><option value="ALL">All types</option>{DOCUMENT_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</ProjectSelect></label>
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Processing</span><ProjectSelect value={processingStatusFilter} onChange={(event) => { setProcessingStatusFilter(event.target.value as ProcessingStatusFilter); setPage(1); }}><option value="ALL">All statuses</option><option value="UNPROCESSED">Unprocessed</option><option value="PROCESSED">Linked</option></ProjectSelect></label>
-                {isAdmin ? <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">Visibility</span><ProjectSelect value={visibilityFilter} onChange={(event) => { setVisibilityFilter(event.target.value as VisibilityFilter); setPage(1); }}><option value="ALL">All visibility</option>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</ProjectSelect></label> : null}
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">From date</span><ProjectDateInput value={dateFrom} max={dateTo || undefined} onChange={(event) => { setDateFrom(event.target.value); setPage(1); }} /></label>
-                <label className="space-y-1.5"><span className="text-[10px] font-extrabold uppercase tracking-wide text-[#64748B]">To date</span><ProjectDateInput value={dateTo} min={dateFrom || undefined} onChange={(event) => { setDateTo(event.target.value); setPage(1); }} /></label>
+
+              <div className={cn("grid gap-2.5", isAdmin ? "grid-cols-5" : "grid-cols-4")}>
+                <label className="space-y-1">
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Document type</div>
+                  <ProjectSelect
+                    value={typeFilter}
+                    onChange={(event) => {
+                      setTypeFilter(event.target.value as DocumentType | "ALL");
+                      setPage(1);
+                    }}
+                    className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  >
+                    <option value="ALL">All types</option>
+                    {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </ProjectSelect>
+                </label>
+
+                <label className="space-y-1">
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Processing</div>
+                  <ProjectSelect
+                    value={processingStatusFilter}
+                    onChange={(event) => {
+                      setProcessingStatusFilter(event.target.value as ProcessingStatusFilter);
+                      setPage(1);
+                    }}
+                    className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  >
+                    <option value="ALL">All statuses</option>
+                    <option value="UNPROCESSED">Unprocessed</option>
+                    <option value="PROCESSED">Linked</option>
+                  </ProjectSelect>
+                </label>
+
+                {isAdmin ? (
+                  <label className="space-y-1">
+                    <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Visibility</div>
+                    <ProjectSelect
+                      value={visibilityFilter}
+                      onChange={(event) => {
+                        setVisibilityFilter(event.target.value as VisibilityFilter);
+                        setPage(1);
+                      }}
+                      className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                    >
+                      <option value="ALL">All visibility</option>
+                      {VISIBILITY_OPTIONS.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </ProjectSelect>
+                  </label>
+                ) : null}
+
+                <label className="space-y-1">
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">From date</div>
+                  <ProjectDateInput
+                    value={dateFrom}
+                    max={dateTo || undefined}
+                    onChange={(event) => {
+                      setDateFrom(event.target.value);
+                      setPage(1);
+                    }}
+                    className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  />
+                </label>
+
+                <label className="space-y-1">
+                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">To date</div>
+                  <ProjectDateInput
+                    value={dateTo}
+                    min={dateFrom || undefined}
+                    onChange={(event) => {
+                      setDateTo(event.target.value);
+                      setPage(1);
+                    }}
+                    className="h-9.5 w-full rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  />
+                </label>
               </div>
             </div>
           </div>
 
+          {/* Mobile Filter Sheet */}
           <MobileFilterSheet
             open={mobileFiltersOpen}
             onClose={() => setMobileFiltersOpen(false)}
-            onClear={() => { setDraftBillSearch(""); setDraftTypeFilter("ALL"); setDraftProcessingStatusFilter("ALL"); setDraftVisibilityFilter("ALL"); setDraftDateFrom(""); setDraftDateTo(""); }}
+            onClear={() => {
+              setDraftBillSearch("");
+              setDraftTypeFilter("ALL");
+              setDraftProcessingStatusFilter("ALL");
+              setDraftVisibilityFilter("ALL");
+              setDraftDateFrom("");
+              setDraftDateTo("");
+            }}
             onApply={applyMobileFilters}
           >
-            <div className="space-y-5">
-              <label className="block space-y-2"><span className="text-[13px] font-bold">Bill number</span><input value={draftBillSearch} onChange={(event) => setDraftBillSearch(event.target.value)} placeholder="Enter bill number" className="h-11 w-full rounded-xl border border-slate-200 px-3 text-[13px] font-semibold outline-none focus:border-slate-900" /></label>
-              <label className="block space-y-2"><span className="text-[13px] font-bold">Document type</span><ProjectSelect value={draftTypeFilter} onChange={(event) => setDraftTypeFilter(event.target.value as DocumentType | "ALL")}><option value="ALL">All types</option>{DOCUMENT_TYPE_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</ProjectSelect></label>
-              <label className="block space-y-2"><span className="text-[13px] font-bold">Processing status</span><ProjectSelect value={draftProcessingStatusFilter} onChange={(event) => setDraftProcessingStatusFilter(event.target.value as ProcessingStatusFilter)}><option value="ALL">All status</option><option value="UNPROCESSED">Unprocessed</option><option value="PROCESSED">Linked</option></ProjectSelect></label>
-              {isAdmin ? <label className="block space-y-2"><span className="text-[13px] font-bold">Visibility</span><ProjectSelect value={draftVisibilityFilter} onChange={(event) => setDraftVisibilityFilter(event.target.value as VisibilityFilter)}><option value="ALL">All visibility</option>{VISIBILITY_OPTIONS.map((option) => <option key={option.value} value={option.value}>{option.label}</option>)}</ProjectSelect></label> : null}
-              <div className="grid grid-cols-2 gap-3">
-                <label className="space-y-2"><span className="text-[13px] font-bold">From date</span><ProjectDateInput value={draftDateFrom} max={draftDateTo || undefined} onChange={(event) => setDraftDateFrom(event.target.value)} /></label>
-                <label className="space-y-2"><span className="text-[13px] font-bold">To date</span><ProjectDateInput value={draftDateTo} min={draftDateFrom || undefined} onChange={(event) => setDraftDateTo(event.target.value)} /></label>
+            <div className="space-y-4">
+              {/* Quick Date Presets */}
+              <div className="space-y-1.5">
+                <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Quick Range</span>
+                <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                  {[
+                    { label: "Today", preset: "today" as const },
+                    { label: "Last 7 Days", preset: "last7" as const },
+                    { label: "Last 30 Days", preset: "last30" as const },
+                    { label: "This Month", preset: "thisMonth" as const },
+                  ].map(({ label, preset }) => (
+                    <button
+                      key={preset}
+                      type="button"
+                      onClick={() => {
+                        const range = getPresetDateRange(preset);
+                        setDraftDateFrom(range.from);
+                        setDraftDateTo(range.to);
+                      }}
+                      className="flex h-9 items-center justify-center rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 text-[11.5px] font-bold text-[#11120d] transition active:scale-95 hover:bg-[#EDF2F7]"
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
               </div>
+
+              <div className="grid grid-cols-2 gap-3">
+                <label className="space-y-1.5">
+                  <span className="text-[12px] font-extrabold text-[#11120d]">From date</span>
+                  <ProjectDateInput
+                    value={draftDateFrom}
+                    max={draftDateTo || undefined}
+                    onChange={(event) => setDraftDateFrom(event.target.value)}
+                  />
+                </label>
+                <label className="space-y-1.5">
+                  <span className="text-[12px] font-extrabold text-[#11120d]">To date</span>
+                  <ProjectDateInput
+                    value={draftDateTo}
+                    min={draftDateFrom || undefined}
+                    onChange={(event) => setDraftDateTo(event.target.value)}
+                  />
+                </label>
+              </div>
+
+              <label className="block space-y-1.5">
+                <span className="text-[12px] font-extrabold text-[#11120d]">Bill number</span>
+                <input
+                  value={draftBillSearch}
+                  onChange={(event) => setDraftBillSearch(event.target.value)}
+                  placeholder="Enter bill number"
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
+                />
+              </label>
+
+              <label className="block space-y-1.5">
+                <span className="text-[12px] font-extrabold text-[#11120d]">Document type</span>
+                <ProjectSelect
+                  value={draftTypeFilter}
+                  onChange={(event) => setDraftTypeFilter(event.target.value as DocumentType | "ALL")}
+                >
+                  <option value="ALL">All types</option>
+                  {DOCUMENT_TYPE_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
+              </label>
+
+              <label className="block space-y-1.5">
+                <span className="text-[12px] font-extrabold text-[#11120d]">Processing status</span>
+                <ProjectSelect
+                  value={draftProcessingStatusFilter}
+                  onChange={(event) => setDraftProcessingStatusFilter(event.target.value as ProcessingStatusFilter)}
+                >
+                  <option value="ALL">All status</option>
+                  <option value="UNPROCESSED">Unprocessed</option>
+                  <option value="PROCESSED">Linked</option>
+                </ProjectSelect>
+              </label>
+
+              {isAdmin ? (
+                <label className="block space-y-1.5">
+                  <span className="text-[12px] font-extrabold text-[#11120d]">Visibility</span>
+                  <ProjectSelect
+                    value={draftVisibilityFilter}
+                    onChange={(event) => setDraftVisibilityFilter(event.target.value as VisibilityFilter)}
+                  >
+                    <option value="ALL">All visibility</option>
+                    {VISIBILITY_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </ProjectSelect>
+                </label>
+              ) : null}
             </div>
           </MobileFilterSheet>
 

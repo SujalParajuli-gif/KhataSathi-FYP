@@ -281,6 +281,22 @@ function assertProductQuantityAllowed(product: any, qty: number) {
   if (!product.isActive) {
     throw new Error(`"${product.name}" is inactive and cannot be requested.`);
   }
+  if (product.availabilityStatus === "COMING_SOON") {
+    throw new Error(
+      `"${product.name}" is marked price coming soon and cannot be requested for billing.`,
+    );
+  }
+  if (
+    product.sellingPriceStatus === "PENDING" ||
+    !Number.isFinite(Number(product.retailPrice)) ||
+    Number(product.retailPrice) <= 0 ||
+    !Number.isFinite(Number(product.wholesalePrice)) ||
+    Number(product.wholesalePrice) <= 0
+  ) {
+    throw new Error(
+      `"${product.name}" has no approved selling price and cannot be requested for billing.`,
+    );
+  }
   if (!product.allowFractionalQty && !Number.isInteger(qty)) {
     throw new Error(`Quantity for "${product.name}" must be a whole number.`);
   }
@@ -335,6 +351,10 @@ async function buildDraftItemCreates(tx: any, rawItems: DraftItemInput[]) {
       id: true,
       name: true,
       isActive: true,
+      sellingPriceStatus: true,
+      availabilityStatus: true,
+      retailPrice: true,
+      wholesalePrice: true,
       allowFractionalQty: true,
       quantityStep: true,
     },

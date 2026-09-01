@@ -19,8 +19,10 @@ test("signed session tokens accept authentic values and reject tampering", () =>
 test("production cookies keep the session HttpOnly and both cookies SameSite/Secure", () => {
   const previousNodeEnv = process.env.NODE_ENV;
   const previousSecret = process.env.SESSION_SECRET;
+  const previousFrontendBaseUrl = process.env.FRONTEND_BASE_URL;
   process.env.NODE_ENV = "production";
   process.env.SESSION_SECRET = "test-production-session-secret-at-least-32-chars";
+  process.env.FRONTEND_BASE_URL = "https://khatasathi.example";
   const writes: Array<{ name: string; value: string; options: CookieOptions }> = [];
   const response = {
     cookie(name: string, value: string, options: CookieOptions) {
@@ -40,6 +42,8 @@ test("production cookies keep the session HttpOnly and both cookies SameSite/Sec
     else process.env.NODE_ENV = previousNodeEnv;
     if (previousSecret === undefined) delete process.env.SESSION_SECRET;
     else process.env.SESSION_SECRET = previousSecret;
+    if (previousFrontendBaseUrl === undefined) delete process.env.FRONTEND_BASE_URL;
+    else process.env.FRONTEND_BASE_URL = previousFrontendBaseUrl;
   }
 
   const session = writes.find((write) => write.name === SESSION_COOKIE_NAME)!;

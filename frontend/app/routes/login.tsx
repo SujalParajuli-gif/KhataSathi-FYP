@@ -6,14 +6,18 @@ import navData from "~/config/ui.nav.json";
 import type { AuthUser, UserRole } from "~/lib/auth";
 import { getDefaultRoute } from "~/lib/routeAccess";
 import { getAuthUser, isLoggedIn, setAuthUser } from "~/lib/auth";
-import { getBusinessCapabilitiesApi, getMeApi, loginApi } from "~/lib/api/endpoints";
+import {
+  getBusinessCapabilitiesApi,
+  getMeApi,
+  loginApi,
+} from "~/lib/api/endpoints";
 
-// helper function to join CSS class names without adding random 'undefined' or 'false' strings to the DOM
+// helper function to join CSS class names
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
 }
 
-// we use this small wrapper to keep label spacing and field layout the same across the login form
+// desktop form field wrapper
 function Field({
   label,
   children,
@@ -26,7 +30,7 @@ function Field({
   return (
     <div className={className}>
       {label ? (
-        <div className="mb-2 text-[11px] font-extrabold uppercase  text-[#8C8889]">
+        <div className="mb-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
           {label}
         </div>
       ) : null}
@@ -35,8 +39,7 @@ function Field({
   );
 }
 
-// this renders the shared text input style used by both email and password fields
-// we added support for left and right slots so icons and the password toggle can reuse the same base input
+// desktop text input
 function TextInput({
   value,
   onChange,
@@ -59,7 +62,7 @@ function TextInput({
   return (
     <div
       className={cn(
-        "flex h-[52px] items-center gap-3 rounded-[14px] border-2 bg-white px-[16px] transition-all duration-200 ",
+        "flex h-[52px] items-center gap-3 rounded-[14px] border-2 bg-white px-[16px] transition-all duration-200",
         hasError
           ? "border-rose-300"
           : "border-[#CFCFD3] focus-within:border-[#000000] hover:border-[#8C8889]",
@@ -72,7 +75,6 @@ function TextInput({
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
         onKeyDown={(e) => {
-          // this handles when the user presses Enter inside the input instead of clicking the button
           if (e.key === "Enter" && onEnter) onEnter();
         }}
         className="h-full w-full bg-transparent text-[13px] font-bold text-[#000000] outline-none placeholder:font-medium placeholder:text-[#8C8889]"
@@ -82,7 +84,7 @@ function TextInput({
   );
 }
 
-// this keeps the page buttons visually consistent without repeating the same class setup for each variant
+// desktop button
 function Button({
   children,
   variant = "primary",
@@ -100,10 +102,9 @@ function Button({
 }) {
   const baseClass =
     "h-[52px] rounded-[14px] border-2 px-6 text-[13px] font-extrabold transition flex items-center justify-center gap-2 active:scale-95";
-  // storing the variant classes in one object makes it easier to swap button looks without duplicating markup
   const variants = {
     primary:
-      "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937]  ",
+      "border-[#000000] bg-[#000000] text-white hover:bg-[#1F2937] hover:border-[#1F2937]",
     outline:
       "border-[#CFCFD3] bg-white text-[#000000] hover:bg-[#F8FAFC] hover:border-[#8C8889]",
     ghost:
@@ -127,12 +128,11 @@ function Button({
   );
 }
 
-// this is the main login screen shown to users when they aren't authenticated
 export default function LoginPage() {
   const navigate = useNavigate();
-  const [showPw, setShowPw] = useState(false); // toggling password visibility
-  const [loading, setLoading] = useState(false); // stops double submits while the login request is running
-  const [errorMsg, setErrorMsg] = useState<string | null>(null); // stores the latest top-level login error to show above the form
+  const [showPw, setShowPw] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [formData, setFormData] = useState({ identifier: "", password: "" });
   const [touched, setTouched] = useState({ identifier: false, password: false });
 
@@ -140,11 +140,10 @@ export default function LoginPage() {
   const identifierError =
     touched.identifier && !identifierValue ? "Phone or email is required." : "";
   const passwordError =
-    touched.password && !formData.password ? "Password is required." : ""; // password only needs a required check on this screen
+    touched.password && !formData.password ? "Password is required." : "";
 
-  // automatically redirect to the correct dashboard if the user is already logged in securely
+  // automatically redirect to the correct dashboard if user is already logged in
   React.useEffect(() => {
-    // this handles when someone manually opens the login page even though a valid session is already stored
     if (!isLoggedIn()) return;
     const cachedUser = getAuthUser();
     if (cachedUser?.mustChangePassword) {
@@ -166,8 +165,6 @@ export default function LoginPage() {
     };
   }, [navigate]);
 
-  // only enabling submit when the form is valid and no request is currently in progress
-  // without this, users could click early or submit multiple times while the request is still running
   const canSubmit = useMemo(() => {
     return (
       identifierValue.length > 0 &&
@@ -176,23 +173,19 @@ export default function LoginPage() {
     );
   }, [identifierValue, formData.password, loading]);
 
-  // firing the login request to our API endpoint
   async function onLogin(e?: React.FormEvent) {
     e?.preventDefault();
     setErrorMsg(null);
     setTouched({ identifier: true, password: true });
 
-    // final double check of validation rules incase they bypassed the UI state
     if (!identifierValue) return setErrorMsg("Please enter your phone number or email.");
     if (!formData.password) return setErrorMsg("Please enter your password.");
 
     setLoading(true);
 
     try {
-      // The backend establishes an HttpOnly session and returns a safe user profile.
       const data = await loginApi(identifierValue, formData.password);
 
-      // storing the normalized auth user shape the rest of the frontend already expects
       const user: AuthUser = {
         id: data.user.id,
         name: data.user.name,
@@ -209,167 +202,324 @@ export default function LoginPage() {
         return;
       }
 
-      // sending each role to its own starting page right after login succeeds
-      // Resolve the server-owned shop mode before choosing a landing page so
-      // a catalog cashier never flashes the disabled billing screen.
       const capabilities = await getBusinessCapabilitiesApi();
       navigate(getDefaultRoute(user.role, capabilities));
     } catch (err: any) {
-      // this handles when the API rejects the login or the network request fails
-      // we prefer the backend message first so the user sees the real reason when one is available
       const msg =
         err.response?.data?.error ||
         "Login failed. Please check your credentials.";
       setErrorMsg(msg);
     } finally {
-      // re-enabling the form no matter whether the request succeeded or failed
       setLoading(false);
     }
   }
 
   return (
-    <div className="min-h-screen w-full overflow-hidden bg-[#EEF2F6] font-sans">
-      {/* this full-screen wrapper gives the login page its soft background and keeps overflow effects clipped inside the viewport */}
-      <div className="relative flex min-h-screen items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
-        {/* these blurred background shapes keep the login screen from feeling too flat without distracting from the form */}
+    <>
+      {/* ========================================================================= */}
+      {/* 📱 MOBILE VIEW ONLY (< lg) - Rich, fulfilling native-style mobile layout  */}
+      {/* ========================================================================= */}
+      <div className="relative flex min-h-screen w-full flex-col justify-between overflow-hidden bg-gradient-to-b from-slate-50 via-[#f8fafc] to-slate-100/90 px-4 py-8 font-sans text-slate-900 antialiased selection:bg-slate-900 selection:text-white sm:px-6 sm:py-12 lg:hidden">
+        {/* Subtle ambient light gradient in background */}
         <div className="pointer-events-none absolute inset-0 overflow-hidden">
-          <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.95),rgba(238,242,246,0.9)_34%,rgba(226,232,240,0.95)_100%)]" />
-          <div className="absolute left-[-8%] top-[-10%] h-[420px] w-[420px] rounded-full bg-white/70 blur-3xl" />
-          <div className="absolute bottom-[-18%] right-[-8%] h-[420px] w-[420px] rounded-full bg-slate-200/50 blur-3xl" />
-
-          <div className="absolute inset-0 flex items-center justify-center opacity-5">
-            <img
-              src="/assets/images/Login.png"
-              alt=""
-              aria-hidden="true"
-              className="w-full max-w-[2000px] object-contain"
-            />
-          </div>
+          <div className="absolute -top-24 left-1/2 -translate-x-1/2 h-72 w-96 rounded-full bg-slate-200/40 blur-3xl" />
+          <div className="absolute -bottom-24 right-0 h-64 w-64 rounded-full bg-slate-200/30 blur-3xl" />
         </div>
 
-        {/* this is the main login card, with a tighter form column and a wider visual column on large screens */}
-        <div className="relative z-10 w-full max-w-[1240px] overflow-hidden rounded-[28px] border border-[#D9DDE3] bg-white">
-          <div className="grid min-h-[720px] lg:grid-cols-[420px_520px] xl:grid-cols-[420px_820px]">
-            <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">
-              <div className="w-full max-w-[318px]">
-                <div className="mb-10 space-y-4">
-                  <div className="inline-flex py-1.5 text-[11px] ">
-                    <BrandLogo className="h-12 w-[252px]" />
-                  </div>
+        <div />
 
-                  <div className="space-y-2">
-                    <h2 className="text-[38px] font-extrabold leading-none text-[#2B5563] sm:text-[32px]">
-                      Login
-                    </h2>
-                    <p className="text-[15px] font-medium text-[#4B5563]">
-                      Welcome to {navData.brand.name}
-                    </p>
-                  </div>
+        {/* Centered Main Form Card */}
+        <div className="relative z-10 mx-auto w-full max-w-[400px] rounded-3xl border border-slate-200/80 bg-white/95 p-6 shadow-[0_16px_48px_rgba(0,0,0,0.06),0_2px_8px_rgba(0,0,0,0.03)] backdrop-blur-md sm:p-8">
+          {/* Top Logo Container */}
+          <div className="mb-6 flex justify-center">
+            <BrandLogo
+              variant="full"
+              className="h-16 w-[240px] sm:h-18 sm:w-[260px]"
+              imageClassName="object-contain object-center"
+            />
+          </div>
+
+          {/* Heading and Subtitle */}
+          <div className="mb-7 text-center">
+            <h1 className="text-[26px] font-black tracking-tight text-slate-900 sm:text-[28px]">
+              Welcome back
+            </h1>
+            <p className="mt-1 text-[13.5px] font-medium text-slate-500">
+              Sign in to continue
+            </p>
+          </div>
+
+          {/* Error Alert Message */}
+          {errorMsg ? (
+            <div className="mb-5 flex items-start gap-2.5 rounded-xl border border-rose-200 bg-rose-50/90 p-3 text-[12px] font-semibold text-rose-800 shadow-2xs">
+              <Icon name="error" className="mt-0.5 shrink-0 text-[16px] text-rose-600" />
+              <div className="flex-1 text-left">{errorMsg}</div>
+            </div>
+          ) : null}
+
+          {/* Mobile Login Form */}
+          <form onSubmit={onLogin} className="space-y-4">
+            {/* Phone or Email Input */}
+            <div>
+              <div
+                className={cn(
+                  "group flex h-[54px] items-center gap-3 rounded-2xl border bg-slate-50/60 px-4 transition-all focus-within:bg-white focus-within:ring-4",
+                  identifierError
+                    ? "border-rose-300 ring-4 ring-rose-500/10"
+                    : "border-slate-200/90 hover:border-slate-300 focus-within:border-slate-900 focus-within:ring-slate-900/5 shadow-2xs",
+                )}
+              >
+                <Icon name="person" className="text-[20px] text-slate-400 transition-colors group-focus-within:text-slate-700" />
+                <input
+                  type="text"
+                  value={formData.identifier}
+                  onChange={(e) =>
+                    setFormData((current) => ({
+                      ...current,
+                      identifier: e.target.value,
+                    }))
+                  }
+                  placeholder="Phone or Email"
+                  aria-label="Phone or Email"
+                  className="h-full w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setTouched({ identifier: true, password: true });
+                    }
+                  }}
+                />
+              </div>
+              {identifierError ? (
+                <div className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
+                  {identifierError}
                 </div>
+              ) : null}
+            </div>
 
-                {errorMsg ? (
-                  <div className="mb-5 rounded-[14px] border-2 border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700">
-                    {errorMsg}
+            {/* Password Input */}
+            <div>
+              <div
+                className={cn(
+                  "group flex h-[54px] items-center gap-3 rounded-2xl border bg-slate-50/60 px-4 transition-all focus-within:bg-white focus-within:ring-4",
+                  passwordError
+                    ? "border-rose-300 ring-4 ring-rose-500/10"
+                    : "border-slate-200/90 hover:border-slate-300 focus-within:border-slate-900 focus-within:ring-slate-900/5 shadow-2xs",
+                )}
+              >
+                <Icon name="lock" className="text-[20px] text-slate-400 transition-colors group-focus-within:text-slate-700" />
+                <input
+                  type={showPw ? "text" : "password"}
+                  value={formData.password}
+                  onChange={(e) =>
+                    setFormData((current) => ({
+                      ...current,
+                      password: e.target.value,
+                    }))
+                  }
+                  placeholder="••••••••••••"
+                  aria-label="Password"
+                  className="h-full w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") {
+                      setTouched({ identifier: true, password: true });
+                      if (canSubmit) onLogin();
+                    }
+                  }}
+                />
+                <button
+                  type="button"
+                  onClick={() => setShowPw((v) => !v)}
+                  className="rounded-lg p-1 text-slate-400 transition hover:bg-slate-100 hover:text-slate-800"
+                  title={showPw ? "Hide password" : "Show password"}
+                  aria-label={showPw ? "Hide password" : "Show password"}
+                >
+                  <Icon
+                    name={showPw ? "visibility" : "visibility_off"}
+                    className="text-[20px]"
+                  />
+                </button>
+              </div>
+              {passwordError ? (
+                <div className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
+                  {passwordError}
+                </div>
+              ) : null}
+            </div>
+
+            {/* Primary Sign in Button */}
+            <button
+              type="submit"
+              disabled={loading}
+              className={cn(
+                "mt-2 flex h-[54px] w-full items-center justify-center gap-2 rounded-2xl bg-[#11120d] text-[15px] font-bold text-white shadow-sm transition-all duration-150 hover:bg-black hover:shadow-md active:scale-[0.99] disabled:cursor-not-allowed disabled:opacity-60",
+              )}
+            >
+              {loading ? (
+                <span className="flex items-center gap-2">
+                  <Icon name="progress_activity" className="animate-spin text-[18px]" />
+                  <span>Signing in...</span>
+                </span>
+              ) : (
+                <>
+                  <span>Sign in</span>
+                  <Icon name="arrow_forward" className="text-[17px]" />
+                </>
+              )}
+            </button>
+          </form>
+        </div>
+
+        {/* Mobile Bottom Footer */}
+        <div className="relative z-10 mt-6 flex justify-center">
+          <div className="inline-flex items-center gap-2 rounded-full border border-slate-200/80 bg-white/80 px-4 py-1.5 text-[11.5px] font-semibold text-slate-500 shadow-2xs backdrop-blur-sm">
+            <Icon name="shield" className="text-[14px] text-slate-400" />
+            <span>Encrypted POS session</span>
+          </div>
+        </div>
+      </div>
+
+      {/* ========================================================================= */}
+      {/* 🖥️ DESKTOP VIEW ONLY (>= lg) - Exact original approved desktop layout     */}
+      {/* ========================================================================= */}
+      <div className="hidden min-h-screen w-full overflow-hidden bg-[#EEF2F6] font-sans lg:block">
+        <div className="relative flex min-h-screen items-center justify-center px-4 py-8 sm:px-6 lg:px-8">
+          <div className="pointer-events-none absolute inset-0 overflow-hidden">
+            <div className="absolute inset-0 bg-[radial-gradient(circle_at_top_left,rgba(255,255,255,0.95),rgba(238,242,246,0.9)_34%,rgba(226,232,240,0.95)_100%)]" />
+            <div className="absolute left-[-8%] top-[-10%] h-[420px] w-[420px] rounded-full bg-white/70 blur-3xl" />
+            <div className="absolute bottom-[-18%] right-[-8%] h-[420px] w-[420px] rounded-full bg-slate-200/50 blur-3xl" />
+
+            <div className="absolute inset-0 flex items-center justify-center opacity-5">
+              <img
+                src="/assets/images/Login.png"
+                alt=""
+                aria-hidden="true"
+                className="w-full max-w-[2000px] object-contain"
+              />
+            </div>
+          </div>
+
+          <div className="relative z-10 w-full max-w-[1240px] overflow-hidden rounded-[28px] border border-[#D9DDE3] bg-white">
+            <div className="grid min-h-[720px] lg:grid-cols-[420px_520px] xl:grid-cols-[420px_820px]">
+              <div className="relative flex items-center px-6 py-10 sm:px-10 lg:px-12 xl:px-16">
+                <div className="w-full max-w-[318px]">
+                  <div className="mb-10 space-y-4">
+                    <div className="inline-flex py-1.5 text-[11px]">
+                      <BrandLogo className="h-12 w-[252px]" />
+                    </div>
+
+                    <div className="space-y-2">
+                      <h2 className="text-[38px] font-extrabold leading-none text-[#2B5563] sm:text-[32px]">
+                        Login
+                      </h2>
+                      <p className="text-[15px] font-medium text-[#4B5563]">
+                        Welcome to {navData.brand.name}
+                      </p>
+                    </div>
                   </div>
-                ) : null}
 
-                <form onSubmit={onLogin} className="space-y-5">
-                  <Field label="Phone or email">
-                    <TextInput
-                      value={formData.identifier}
-                      onChange={(value) =>
-                        setFormData((current) => ({ ...current, identifier: value }))
-                      }
-                      placeholder="98XXXXXXXX or name@example.com"
-                      type="text"
-                      left={<Icon name="person" className="text-[#8C8889]" />}
-                      hasError={!!identifierError}
-                      onEnter={() =>
-                        setTouched({ identifier: true, password: true })
-                      }
-                    />
-                    {identifierError ? (
-                      <div className="mt-1 text-[11px] font-semibold text-rose-500">
-                        {identifierError}
-                      </div>
-                    ) : null}
-                  </Field>
+                  {errorMsg ? (
+                    <div className="mb-5 rounded-[14px] border-2 border-rose-200 bg-rose-50 px-4 py-3 text-[13px] font-bold text-rose-700">
+                      {errorMsg}
+                    </div>
+                  ) : null}
 
-                  <div className="space-y-2">
-                    <Field label="Password">
+                  <form onSubmit={onLogin} className="space-y-5">
+                    <Field label="Phone or email">
                       <TextInput
-                        value={formData.password}
+                        value={formData.identifier}
                         onChange={(value) =>
-                          setFormData((current) => ({
-                            ...current,
-                            password: value,
-                          }))
+                          setFormData((current) => ({ ...current, identifier: value }))
                         }
-                        placeholder="password"
-                        type={showPw ? "text" : "password"}
-                        onEnter={() => {
-                          setTouched({ identifier: true, password: true });
-                          if (canSubmit) onLogin();
-                        }}
-                        left={<Icon name="lock" className="text-[#8C8889]" />}
-                        hasError={!!passwordError}
-                        right={
-                          <button
-                            type="button"
-                            onClick={() => setShowPw((value) => !value)}
-                            className="text-[#8C8889] transition hover:text-[#000000]"
-                            title={showPw ? "Hide password" : "Show password"}
-                          >
-                            <Icon
-                              name={showPw ? "visibility" : "visibility_off"}
-                            />
-                          </button>
+                        placeholder="98XXXXXXXX or name@example.com"
+                        type="text"
+                        left={<Icon name="person" className="text-[#8C8889]" />}
+                        hasError={!!identifierError}
+                        onEnter={() =>
+                          setTouched({ identifier: true, password: true })
                         }
                       />
-                      {passwordError ? (
+                      {identifierError ? (
                         <div className="mt-1 text-[11px] font-semibold text-rose-500">
-                          {passwordError}
+                          {identifierError}
                         </div>
                       ) : null}
                     </Field>
+
+                    <div className="space-y-2">
+                      <Field label="Password">
+                        <TextInput
+                          value={formData.password}
+                          onChange={(value) =>
+                            setFormData((current) => ({
+                              ...current,
+                              password: value,
+                            }))
+                          }
+                          placeholder="password"
+                          type={showPw ? "text" : "password"}
+                          onEnter={() => {
+                            setTouched({ identifier: true, password: true });
+                            if (canSubmit) onLogin();
+                          }}
+                          left={<Icon name="lock" className="text-[#8C8889]" />}
+                          hasError={!!passwordError}
+                          right={
+                            <button
+                              type="button"
+                              onClick={() => setShowPw((value) => !value)}
+                              className="text-[#8C8889] transition hover:text-[#000000]"
+                              title={showPw ? "Hide password" : "Show password"}
+                            >
+                              <Icon
+                                name={showPw ? "visibility" : "visibility_off"}
+                              />
+                            </button>
+                          }
+                        />
+                        {passwordError ? (
+                          <div className="mt-1 text-[11px] font-semibold text-rose-500">
+                            {passwordError}
+                          </div>
+                        ) : null}
+                      </Field>
+                    </div>
+
+                    <Button
+                      variant="primary"
+                      className="mt-3 w-full text-[15px]"
+                      type="submit"
+                      disabled={!canSubmit}
+                    >
+                      {loading ? (
+                        <span className="animate-pulse">Processing...</span>
+                      ) : (
+                        <>
+                          <Icon name="login" className="text-white" />
+                          Sign in
+                        </>
+                      )}
+                    </Button>
+                  </form>
+
+                  <div className="pt-6 text-center text-[11px] font-bold text-[#9CA3AF]">
+                    Copyright {new Date().getFullYear()} {navData.brand.name}
                   </div>
-
-                  <Button
-                    variant="primary"
-                    className="mt-3 w-full text-[15px]"
-                    type="submit"
-                    disabled={!canSubmit}
-                  >
-                    {loading ? (
-                      <span className="animate-pulse">Processing...</span>
-                    ) : (
-                      <>
-                        <Icon name="login" className="text-white" />
-                        Sign in
-                      </>
-                    )}
-                  </Button>
-                </form>
-
-                <div className="pt-6 text-center text-[11px] font-bold text-[#9CA3AF]">
-                  Copyright {new Date().getFullYear()} {navData.brand.name}
                 </div>
               </div>
-            </div>
 
-            <div className="relative hidden min-h-[720px] items-center justify-end overflow-hidden lg:flex">
-              <div className="relative  flex h-full w-full items-center justify-end">
-                <img
-                  src="/assets/images/Login.png"
-                  alt="Login visual"
-                  className="h-full w-full object-cover object-center"
-                />
+              <div className="relative hidden min-h-[720px] items-center justify-end overflow-hidden lg:flex">
+                <div className="relative flex h-full w-full items-center justify-end">
+                  <img
+                    src="/assets/images/Login.png"
+                    alt="Login visual"
+                    className="h-full w-full object-cover object-center"
+                  />
+                </div>
               </div>
             </div>
           </div>
         </div>
       </div>
-    </div>
+    </>
   );
 }
-

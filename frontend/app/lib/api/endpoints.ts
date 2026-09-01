@@ -677,6 +677,32 @@ export type ProductImportRow = {
     status: string;
     error?: string | null;
     parsed?: unknown;
+    extracted?: unknown;
+    sourceLocator?: {
+        kind?: "SPREADSHEET" | "CSV" | "PDF" | "IMAGE";
+        sheetName?: string | null;
+        rowNumber?: number;
+        pageNumber?: number;
+        lineNumber?: number;
+        searchText?: string;
+        cells?: Record<string, unknown>;
+        regionAdjusted?: boolean;
+        region?: {
+            top: number;
+            left: number;
+            bottom: number;
+            right: number;
+            scale: number;
+        } | null;
+    } | null;
+    comparisonStatus?: "READY_NEW" | "EXACT_DUPLICATE" | "MATCHED_WITH_CHANGES" | "IDENTIFIER_CONFLICT" | "IN_FILE_DUPLICATE" | "NEEDS_REVIEW" | "FAILED";
+    matchedProductId?: string | null;
+    changeSet?: Array<{
+        field: string;
+        currentValue: string | number | null;
+        incomingValue: string | number | null;
+    }> | null;
+    resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE" | null;
     createdAt: string;
 };
 
@@ -689,10 +715,46 @@ export type ProductImportBatch = {
     totalRows: number;
     importedRows: number;
     failedRows: number;
+    fileFingerprint?: string | null;
+    fileSizeBytes?: number | null;
+    repeatedFromBatchId?: string | null;
+    extractionMeta?: Record<string, unknown> | null;
+    priceMapping?: Record<string, string> | null;
     createdById: string;
     createdBy?: { id: string; name?: string | null; role?: string | null };
     createdAt: string;
     rows: ProductImportRow[];
+    source?: {
+        available: boolean;
+        fileName?: string | null;
+        mimeType?: string | null;
+    };
+};
+
+export type ProductImportReviewPage = {
+    batch: Omit<ProductImportBatch, "rows">;
+    rows: ProductImportRow[];
+    pagination: {
+        page: number;
+        pageSize: number;
+        total: number;
+        totalPages: number;
+    };
+    comparisonCounts: Partial<Record<NonNullable<ProductImportRow["comparisonStatus"]>, number>>;
+    decisionCounts: {
+        create: number;
+        update: number;
+        keep: number;
+        ignore: number;
+        unresolved: number;
+        committed: number;
+    };
+    priceMapping: {
+        required: boolean;
+        complete: boolean;
+        columns: Array<{ key: string; label: string }>;
+        mapping: Record<string, string>;
+    };
 };
 
 export type ImportedProductSummary = {
@@ -710,6 +772,7 @@ export type CsvImportResult = {
     batchId?: string;
     sourceType?: string;
     message?: string;
+    repeatedFile?: boolean;
 };
 
 export type ReviewedPdfImportRowPayload = {
@@ -725,7 +788,7 @@ export type ReviewedPdfImportRowPayload = {
     sizeValue?: number | null;
     sizeUnit?: string;
     ratePerPiece: number | null;
-    packageQuantity: number;
+    packageQuantity: number | null;
     packageUnit: string;
     saleUnit: string;
     allowFractionalQty: boolean;
@@ -733,16 +796,21 @@ export type ReviewedPdfImportRowPayload = {
     wholesaleEligible: boolean;
     sourceCitation?: string;
     searchAliases?: string[];
-    retailPrice: number;
-    wholesalePrice: number;
+    retailPrice: number | null;
+    wholesalePrice: number | null;
     stock: number;
+    resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE" | null;
 };
 
 export type ReviewedPdfImportResult = {
     totalRows: number;
     createdCount: number;
+    updatedCount?: number;
+    keptCount?: number;
+    ignoredCount?: number;
     errorCount: number;
     createdProducts?: ImportedProductSummary[];
+    updatedProducts?: ImportedProductSummary[];
     errors: Array<{ rowNumber: number; sku?: string; name?: string; message: string }>;
     batch: ProductImportBatch;
 };
@@ -750,6 +818,57 @@ export type ReviewedPdfImportResult = {
 export async function getProductImportBatchApi(batchId: string) {
     const res = await api.get(`/api/products/import-batches/${batchId}`);
     return res.data as ProductImportBatch;
+}
+
+export async function getProductImportReviewApi(
+    batchId: string,
+    filters: {
+        page?: number;
+        pageSize?: number;
+        search?: string;
+        comparisonStatus?: ProductImportRow["comparisonStatus"];
+        rowStatus?: string;
+    } = {},
+) {
+    const params = new URLSearchParams();
+    if (filters.page) params.set("page", String(filters.page));
+    if (filters.pageSize) params.set("pageSize", String(filters.pageSize));
+    if (filters.search) params.set("search", filters.search);
+    if (filters.comparisonStatus) params.set("comparisonStatus", filters.comparisonStatus);
+    if (filters.rowStatus) params.set("rowStatus", filters.rowStatus);
+    const query = params.toString();
+    const res = await api.get(`/api/products/import-batches/${batchId}/review${query ? `?${query}` : ""}`);
+    return res.data as ProductImportReviewPage;
+}
+
+export async function getProductImportSourceContextApi(
+    batchId: string,
+    rowId?: string,
+    radius = 10,
+) {
+    const url = rowId
+        ? `/api/products/import-batches/${batchId}/rows/${rowId}/source-context`
+        : `/api/products/import-batches/${batchId}/source-context`;
+    const res = await api.get(url, { params: { radius } });
+    return res.data as {
+        activeRowId: string;
+        rows: Array<Pick<ProductImportRow, "id" | "rowNumber" | "rawText" | "sourceLocator">>;
+    };
+}
+
+export async function fetchProductImportSourceBlobApi(batchId: string) {
+    const res = await api.get(`/api/products/import-batches/${batchId}/source`, {
+        responseType: "blob",
+    });
+    return res.data as Blob;
+}
+
+export async function fetchProductImportSourcePageBlobApi(batchId: string, pageNumber: number) {
+    const res = await api.get(
+        `/api/products/import-batches/${batchId}/source/pages/${pageNumber}`,
+        { responseType: "blob" },
+    );
+    return res.data as Blob;
 }
 
 export async function listProductImportBatchesApi() {
@@ -776,12 +895,47 @@ export async function saveReviewedProductImportRowsApi(
     return res.data as { rows: ProductImportRow[]; savedCount: number };
 }
 
+export async function setProductImportRowResolutionApi(
+    batchId: string,
+    rowId: string,
+    resolution: "KEEP_EXISTING" | "IGNORE",
+) {
+    const res = await api.patch(
+        `/api/products/import-batches/${batchId}/rows/${rowId}/resolution`,
+        { resolution },
+    );
+    return res.data as { row: ProductImportRow };
+}
+
+export async function setProductImportPriceMappingApi(
+    batchId: string,
+    mapping: Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">,
+) {
+    const res = await api.patch(
+        `/api/products/import-batches/${batchId}/price-mapping`,
+        { mapping },
+    );
+    return res.data as ProductImportReviewPage["priceMapping"];
+}
+
+export async function commitSavedProductImportBatchApi(batchId: string, commitToken: string) {
+    const res = await api.post(`/api/products/import-batches/${batchId}/commit`, {
+        approved: true,
+        commitToken,
+    });
+    return res.data as ReviewedPdfImportResult & {
+        commitToken: string;
+        replayed: boolean;
+    };
+}
+
 export async function importReviewedPdfRowsApi(
     batchId: string,
     payload: {
         rows: ReviewedPdfImportRowPayload[];
         ignoredRowIds?: string[];
         approved: true;
+        commitToken?: string;
     },
 ) {
     const res = await api.post(`/api/products/import-batches/${batchId}/import`, payload);
@@ -1541,7 +1695,8 @@ export type StorageIntegrityIssue = {
         | "PRODUCT_THUMBNAIL"
         | "PROFILE_IMAGE"
         | "DOCUMENT_ORIGINAL"
-        | "DOCUMENT_THUMBNAIL";
+        | "DOCUMENT_THUMBNAIL"
+        | "PRODUCT_IMPORT_SOURCE";
     ownerId?: string;
     ownerLabel?: string;
     ownerInactive?: boolean;

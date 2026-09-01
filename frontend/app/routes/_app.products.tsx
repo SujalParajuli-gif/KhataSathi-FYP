@@ -103,6 +103,7 @@ type CsvImportResult = {
   batchId?: string;
   sourceType?: string;
   message?: string;
+  repeatedFile?: boolean;
 };
 
 type BulkActionState =
@@ -271,8 +272,10 @@ export default function ProductsPage() {
       sku: "",
       barcode: "",
       imageUrl: "",
-      brand: brandOptions[1] ?? "CG Foods",
-      category: categoryOptions[1] ?? "Groceries",
+      // Brand and category are user classifications. Starting them with the
+      // first database option silently assigns the wrong taxonomy.
+      brand: "",
+      category: "",
       categoryGroup: "",
       vendorSource: "",
       productCodeVariant: "",
@@ -286,8 +289,10 @@ export default function ProductsPage() {
       quantityStep: 1,
       wholesaleEligible: true,
       sourceCitation: "",
-      retailPrice: 0,
-      wholesalePrice: 0,
+      sellingPriceStatus: "PENDING",
+      availabilityStatus: "CATALOG_LISTED",
+      retailPrice: null,
+      wholesalePrice: null,
       thresholdQty: settings.defaultWholesaleQtyThreshold,
       thresholdQtyMode: "default",
       stock: stockTracked ? settings.defaultInitialStock : 0,
@@ -628,6 +633,8 @@ export default function ProductsPage() {
     setPdfReviewBusy(false);
     setLastImportedProducts([]);
     setLastImportSupplier("");
+    setImportSupplier("");
+    setImportTemplateId("");
   }
 
   // loading product meta and saved business defaults together keeps the filters and form defaults in sync
@@ -705,22 +712,8 @@ export default function ProductsPage() {
   }
 
   async function openImportBatchById(batchId: string) {
-    try {
-      setOpenImport(true);
-      setImportBusy(true);
-      setImportError("");
-      const batch = await getProductImportBatchApi(batchId);
-      setPdfReviewBatch(batch);
-      setImportResult(null);
-    } catch (error: any) {
-      const message =
-        error?.response?.data?.error ||
-        error?.message ||
-        "Failed to open import batch.";
-      setImportError(message);
-    } finally {
-      setImportBusy(false);
-    }
+    setOpenImport(false);
+    navigate(`/products/imports/${encodeURIComponent(batchId)}`);
   }
 
   async function loadProducts(options?: { signal?: AbortSignal }) {
@@ -1373,19 +1366,42 @@ export default function ProductsPage() {
     ) {
       errors.ratePerPiece = "Purchase cost must be greater than 0 or left blank.";
     }
-    if (!Number.isFinite(form.retailPrice) || form.retailPrice <= 0) {
-      errors.retailPrice = "Retail price must be greater than 0.";
+    if (
+      form.retailPrice !== null &&
+      (!Number.isFinite(form.retailPrice) || form.retailPrice <= 0)
+    ) {
+      errors.retailPrice = "Retail price must be greater than 0 or left blank.";
     }
-    if (form.wholesaleEligible && (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0)) {
-      errors.wholesalePrice = "Wholesale price must be greater than 0.";
+    if (
+      form.wholesalePrice !== null &&
+      (!Number.isFinite(form.wholesalePrice) || form.wholesalePrice <= 0)
+    ) {
+      errors.wholesalePrice = "Wholesale price must be greater than 0 or left blank.";
     }
-    if (form.wholesaleEligible && form.wholesalePrice > form.retailPrice) {
+    if (
+      form.wholesalePrice !== null &&
+      form.retailPrice !== null &&
+      form.wholesalePrice > 0 &&
+      form.retailPrice > 0 &&
+      form.wholesalePrice > form.retailPrice
+    ) {
       errors.wholesalePrice = "Wholesale price cannot be higher than retail price.";
     }
-    if (form.ratePerPiece !== null && form.retailPrice > 0 && form.ratePerPiece > form.retailPrice) {
+    if (
+      form.ratePerPiece !== null &&
+      form.retailPrice !== null &&
+      form.retailPrice > 0 &&
+      form.ratePerPiece > form.retailPrice
+    ) {
       errors.retailPrice = "Retail price is below purchase cost. Increase it before saving.";
     }
-    if (form.ratePerPiece !== null && form.wholesaleEligible && form.wholesalePrice > 0 && form.ratePerPiece > form.wholesalePrice) {
+    if (
+      form.ratePerPiece !== null &&
+      form.wholesaleEligible &&
+      form.wholesalePrice !== null &&
+      form.wholesalePrice > 0 &&
+      form.ratePerPiece > form.wholesalePrice
+    ) {
       errors.wholesalePrice = "Wholesale price is below purchase cost. Increase it before saving.";
     }
     if (
@@ -1403,7 +1419,10 @@ export default function ProductsPage() {
     ) {
       errors.lowStockThreshold = "Stock alert threshold cannot be negative.";
     }
-    if (!Number.isFinite(form.packageQuantity) || form.packageQuantity <= 0) {
+    if (
+      form.packageQuantity !== null &&
+      (!Number.isFinite(form.packageQuantity) || form.packageQuantity <= 0)
+    ) {
       errors.packageQuantity = "Package quantity must be greater than 0.";
     }
     if (!Number.isFinite(form.quantityStep) || form.quantityStep <= 0) {
@@ -1795,13 +1814,13 @@ export default function ProductsPage() {
       clearBulkSelection();
 
       if (result.batchId) {
-        const batch = await getProductImportBatchApi(result.batchId);
-        setPdfReviewBatch(batch);
         await loadImportBatches();
         toastMsg(
-          result.errorCount > 0 ? "info" : "success",
+          result.repeatedFile || result.errorCount > 0 ? "info" : "success",
           result.message || "Import review is ready.",
         );
+        setOpenImport(false);
+        navigate(`/products/imports/${encodeURIComponent(result.batchId)}`);
       } else {
         setImportError(result.message || "No import review was created.");
       }
@@ -1829,14 +1848,14 @@ export default function ProductsPage() {
       clearBulkSelection();
 
       if (result.batchId) {
-        const batch = await getProductImportBatchApi(result.batchId);
-        setPdfReviewBatch(batch);
         await loadImportBatches();
         await loadImportDocuments();
         toastMsg(
-          result.errorCount > 0 ? "info" : "success",
+          result.repeatedFile || result.errorCount > 0 ? "info" : "success",
           result.message || "Import review is ready.",
         );
+        setOpenImport(false);
+        navigate(`/products/imports/${encodeURIComponent(result.batchId)}`);
       } else {
         setImportError(result.message || "No import review was created.");
       }
@@ -2137,6 +2156,8 @@ export default function ProductsPage() {
         quantityStep: saleUnit === "PIECE" ? 1 : 0.001,
         wholesaleEligible: true,
         sourceCitation: "",
+        sellingPriceStatus: "READY",
+        availabilityStatus: "CATALOG_LISTED",
         retailPrice,
         wholesalePrice,
         thresholdQty: businessDefaults.defaultWholesaleQtyThreshold,
@@ -2200,8 +2221,8 @@ export default function ProductsPage() {
       selectedProducts.forEach((product) => {
           if (!priceMarginTargetIds[product.id]) return;
           const row = next[product.id] || {
-            retailPrice: String(product.retailPrice),
-            wholesalePrice: String(product.wholesalePrice),
+            retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+            wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
             ratePerPiece:
               product.ratePerPiece === null ? "" : String(product.ratePerPiece),
           };
@@ -3054,7 +3075,9 @@ export default function ProductsPage() {
                   <div className="truncate text-[14px] font-extrabold text-[#11120d]">{product.name}</div>
                   <div className="mt-1 truncate font-mono text-[11px] text-[#6B7280]">SKU: {product.sku || "-"}</div>
                 </div>
-                <div className="shrink-0 text-right text-[12px] font-bold text-[#565449]">NPR {product.retailPrice}</div>
+                <div className="shrink-0 text-right text-[12px] font-bold text-[#565449]">
+                  {product.retailPrice === null ? "Retail pending" : `NPR ${product.retailPrice}`}
+                </div>
                 <button
                   type="button"
                   onClick={() => toggleOne(product.id, false)}
@@ -4106,8 +4129,8 @@ export default function ProductsPage() {
           <div className="space-y-3 lg:hidden">
             {visibleBulkPriceProducts.map((product) => {
               const row = priceRows[product.id] || {
-                retailPrice: String(product.retailPrice),
-                wholesalePrice: String(product.wholesalePrice),
+                retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+                wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
                 ratePerPiece:
                   product.ratePerPiece === null ? "" : String(product.ratePerPiece),
               };
@@ -4121,7 +4144,12 @@ export default function ProductsPage() {
                       <div className="mt-1 font-mono text-[11px] text-[#8C8889]">SKU: {product.sku || "-"}</div>
                       </div>
                     </div>
-                    <div className="rounded-[9px] bg-[#F3F4F6] px-2.5 py-1.5 text-right text-[11px] font-bold text-[#565449]">Current retail<br /><span className="text-[13px] text-[#11120d]">NPR {product.retailPrice}</span></div>
+                    <div className="rounded-[9px] bg-[#F3F4F6] px-2.5 py-1.5 text-right text-[11px] font-bold text-[#565449]">
+                      Current retail<br />
+                      <span className="text-[13px] text-[#11120d]">
+                        {product.retailPrice === null ? "Not entered" : `NPR ${product.retailPrice}`}
+                      </span>
+                    </div>
                   </div>
                   <div className="mt-3 grid gap-3">
                     {([
@@ -4181,8 +4209,8 @@ export default function ProductsPage() {
               <tbody className="divide-y divide-[#E5E7EB]">
                 {visibleBulkPriceProducts.map((product) => {
                   const row = priceRows[product.id] || {
-                    retailPrice: String(product.retailPrice),
-                    wholesalePrice: String(product.wholesalePrice),
+                    retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+                    wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
                     ratePerPiece:
                       product.ratePerPiece === null ? "" : String(product.ratePerPiece),
                   };
@@ -4197,10 +4225,10 @@ export default function ProductsPage() {
                         {product.ratePerPiece === null ? "Not entered" : product.ratePerPiece}
                       </td>
                       <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50">
-                        {product.wholesalePrice}
+                        {product.wholesalePrice === null ? "Not entered" : product.wholesalePrice}
                       </td>
                       <td className="py-[12px] px-[12px] text-center font-semibold text-[#565449] bg-slate-50/50 border-r border-[#E5E7EB]">
-                        {product.retailPrice}
+                        {product.retailPrice === null ? "Not entered" : product.retailPrice}
                       </td>
                       {(["ratePerPiece", "wholesalePrice", "retailPrice"] as const).map((key) => (
                         <td key={key} className="py-[12px] px-[12px] text-center w-[120px]">

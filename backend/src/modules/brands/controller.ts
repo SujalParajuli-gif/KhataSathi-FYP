@@ -70,6 +70,13 @@ export async function update(req: Request, res: Response) {
             res.status(409).json({ error: "Brand name already exists" });
             return;
         }
+        if (err.code === "BRAND_HAS_ACTIVE_PRODUCTS") {
+            res.status(409).json({
+                error: err.message,
+                activeProductCount: err.activeProductCount,
+            });
+            return;
+        }
         console.error("Update brand error:", err);
         res.status(500).json({ error: "Internal server error" });
     }
@@ -83,6 +90,13 @@ export async function deactivate(req: Request, res: Response) {
     } catch (err: any) {
         if (err.code === "P2025") {
             res.status(404).json({ error: "Brand not found" });
+            return;
+        }
+        if (err.code === "BRAND_HAS_ACTIVE_PRODUCTS") {
+            res.status(409).json({
+                error: err.message,
+                activeProductCount: err.activeProductCount,
+            });
             return;
         }
         console.error("Deactivate brand error:", err);

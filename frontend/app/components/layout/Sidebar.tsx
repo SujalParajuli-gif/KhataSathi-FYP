@@ -194,6 +194,10 @@ export default function Sidebar({
       settleTargetRef.current ?? ((drawerProgressRef.current ?? 0) >= 0.5 ? 1 : 0),
     ),
   });
+  const {
+    style: openDrawerGestureStyle,
+    ...openDrawerGestureProps
+  } = openDrawerGesture;
 
   const effectiveDrawerProgress = drawerProgress ?? (isMobileOpen ? 1 : 0);
   const drawerIsVisible = effectiveDrawerProgress > 0 || isDraggingDrawer;
@@ -259,8 +263,8 @@ export default function Sidebar({
         <div
           aria-hidden="true"
           className="fixed bottom-0 left-0 top-[68px] z-[100] w-9 touch-pan-y lg:hidden"
-          style={{ overscrollBehaviorX: "none" }}
-          {...openDrawerGesture}
+          style={{ ...openDrawerGestureStyle, overscrollBehaviorX: "none" }}
+          {...openDrawerGestureProps}
         />
       ) : null}
 

@@ -19,6 +19,7 @@ import {
   parseProductSpreadsheet,
   SpreadsheetImportError,
 } from "./spreadsheetImport";
+import { extractPdfTextLineRegions } from "./pdfTextLocations";
 
 // validating that a required text field is present and not just whitespace
 function parseRequiredText(value: unknown, label: string) {
@@ -386,10 +387,10 @@ export async function create(req: Request, res: Response) {
       }),
       wholesaleEligible: parseOptionalBoolean(req.body.wholesaleEligible),
       sourceCitation: parseOptionalText(req.body.sourceCitation),
-      retailPrice: parseRequiredNumber(req.body.retailPrice, "retailPrice", {
-        min: 0.01, // price must be at least 0.01
+      retailPrice: parseNullableNumber(req.body.retailPrice, "retailPrice", {
+        min: 0.01,
       }),
-      wholesalePrice: parseRequiredNumber(
+      wholesalePrice: parseNullableNumber(
         req.body.wholesalePrice,
         "wholesalePrice",
         {
@@ -526,12 +527,12 @@ export async function update(req: Request, res: Response) {
       data.sourceCitation = parseOptionalText(body.sourceCitation) || null;
     }
     if (body.retailPrice !== undefined) {
-      data.retailPrice = parseOptionalNumber(body.retailPrice, "retailPrice", {
+      data.retailPrice = parseNullableNumber(body.retailPrice, "retailPrice", {
         min: 0.01,
       });
     }
     if (body.wholesalePrice !== undefined) {
-      data.wholesalePrice = parseOptionalNumber(
+      data.wholesalePrice = parseNullableNumber(
         body.wholesalePrice,
         "wholesalePrice",
         { min: 0.01 },
@@ -688,6 +689,57 @@ export async function categories(req: Request, res: Response) {
 
 // handling bulk product import from a CSV or modern Excel workbook
 // the file is uploaded in memory and converted into a review batch before any products are inserted
+async function inspectRepeatedImportUpload(file: Express.Multer.File, processAgain: unknown) {
+  const fileFingerprint = productService.fingerprintImportFile(file.buffer);
+  const previousBatch = await productService.findRepeatedProductImportBatch(fileFingerprint);
+  return {
+    fileFingerprint,
+    fileSizeBytes: file.buffer.byteLength,
+    previousBatch,
+    shouldReuse: !!previousBatch && processAgain !== true && processAgain !== "true",
+  };
+}
+
+function repeatedImportResponse(previousBatch: NonNullable<Awaited<ReturnType<typeof productService.findRepeatedProductImportBatch>>>) {
+  return {
+    batchId: previousBatch.id,
+    sourceType: previousBatch.sourceType,
+    totalRows: previousBatch.totalRows,
+    createdCount: 0,
+    errorCount: previousBatch.failedRows,
+    repeatedFile: true,
+    previousBatch,
+    message: "This exact file was uploaded before. The existing review was reopened; no duplicate review batch or products were created.",
+  };
+}
+
+async function attachUploadedSource(
+  result: { batchId?: string },
+  file: Express.Multer.File,
+) {
+  if (!result.batchId) return;
+  await productService.attachProductImportSource({
+    batchId: result.batchId,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    buffer: file.buffer,
+  });
+}
+
+async function reopenRepeatedImportWithSource(
+  previousBatch: NonNullable<Awaited<ReturnType<typeof productService.findRepeatedProductImportBatch>>>,
+  file: Express.Multer.File,
+) {
+  await productService.attachProductImportSource({
+    batchId: previousBatch.id,
+    originalName: file.originalname,
+    mimeType: file.mimetype,
+    buffer: file.buffer,
+  });
+  await productService.backfillProductImportSourceLocators(previousBatch.id);
+  return repeatedImportResponse(previousBatch);
+}
+
 export async function importCsv(req: Request, res: Response) {
   try {
     const file = req.file;
@@ -710,6 +762,11 @@ export async function importCsv(req: Request, res: Response) {
     const expectedHeaders = Object.values(fieldMap || {}).flatMap((value) =>
       Array.isArray(value) ? value : [value],
     );
+    const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
+    if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch) {
+      res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
+      return;
+    }
     const spreadsheet = await parseProductSpreadsheet({
       buffer: file.buffer,
       fileName: file.originalname,
@@ -722,12 +779,17 @@ export async function importCsv(req: Request, res: Response) {
       rows: spreadsheet.rows,
       rowNumbers: spreadsheet.rowNumbers,
       sourceType: spreadsheet.sourceType,
+      sheetName: spreadsheet.sheetName,
       createdById: req.user!.id,
       supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
       templateId: typeof req.body?.templateId === "string" ? req.body.templateId : undefined,
       fieldMap,
       defaults: parseJsonField(req.body?.defaults),
+      fileFingerprint: repeatedUpload.fileFingerprint,
+      fileSizeBytes: repeatedUpload.fileSizeBytes,
+      repeatedFromBatchId: repeatedUpload.previousBatch?.id,
     });
+    await attachUploadedSource(result, file);
     res.json(result);
   } catch (err: any) {
     if (err instanceof SpreadsheetImportError) {
@@ -821,12 +883,22 @@ export async function importImage(req: Request, res: Response) {
       return;
     }
 
+    const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
+    if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch) {
+      res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
+      return;
+    }
+
     const result = await productService.createImageImportPreview({
       fileName: file.originalname,
       mimeType: file.mimetype || "image/png",
       buffer: file.buffer,
       createdById: req.user!.id,
+      fileFingerprint: repeatedUpload.fileFingerprint,
+      fileSizeBytes: repeatedUpload.fileSizeBytes,
+      repeatedFromBatchId: repeatedUpload.previousBatch?.id,
     });
+    await attachUploadedSource(result, file);
     res.json(result);
   } catch (err: any) {
     console.error("Import image error:", err);
@@ -834,11 +906,62 @@ export async function importImage(req: Request, res: Response) {
   }
 }
 
-// handling supplier PDF import previews
-// text-based PDFs are extracted into ProductImportBatch/ProductImportRow records for later review/mapping
-export async function importPdf(req: Request, res: Response) {
-  let parser: PDFParse | null = null;
+async function createPdfProductImportPreview(input: {
+  fileName: string;
+  buffer: Buffer;
+  createdById: string;
+  fileFingerprint: string;
+  fileSizeBytes: number;
+  repeatedFromBatchId?: string;
+}) {
+  const parser = new PDFParse({ data: input.buffer });
+  try {
+    const parsed = await parser.getText();
+    const hasMeaningfulText = parsed.pages.some(
+      (page) => String(page.text || "").replace(/\s+/g, " ").trim().length >= 20,
+    );
+    if (hasMeaningfulText) {
+      const locatedPages = await extractPdfTextLineRegions(input.buffer).catch(() => []);
+      return productService.createPdfImportPreview({
+        fileName: input.fileName,
+        text: parsed.text || "",
+        pages: parsed.pages.map((page) => ({
+          pageNumber: page.num,
+          text: page.text || "",
+          lines: locatedPages.find((located) => located.pageNumber === page.num)?.lines || [],
+        })),
+        createdById: input.createdById,
+        fileFingerprint: input.fileFingerprint,
+        fileSizeBytes: input.fileSizeBytes,
+        repeatedFromBatchId: input.repeatedFromBatchId,
+      });
+    }
 
+    const screenshots = await parser.getScreenshot({
+      desiredWidth: 1800,
+      imageBuffer: true,
+      imageDataUrl: false,
+    });
+    return productService.createScannedPdfImportPreview({
+      fileName: input.fileName,
+      pages: screenshots.pages.map((page) => ({
+        pageNumber: page.pageNumber,
+        mimeType: "image/png",
+        buffer: Buffer.from(page.data),
+      })),
+      createdById: input.createdById,
+      fileFingerprint: input.fileFingerprint,
+      fileSizeBytes: input.fileSizeBytes,
+      repeatedFromBatchId: input.repeatedFromBatchId,
+    });
+  } finally {
+    await parser.destroy().catch(() => undefined);
+  }
+}
+
+// Text PDFs use deterministic extraction. Scanned PDFs are rendered page by
+// page and sent to the configured AI parser to create the same review workflow.
+export async function importPdf(req: Request, res: Response) {
   try {
     const file = req.file;
     if (!file) {
@@ -854,26 +977,37 @@ export async function importPdf(req: Request, res: Response) {
       return;
     }
 
-    parser = new PDFParse({ data: file.buffer });
-    const parsed = await parser.getText();
-    const result = await productService.createPdfImportPreview({
+    const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
+    const previousMeta = repeatedUpload.previousBatch?.extractionMeta;
+    const previousParser = previousMeta && typeof previousMeta === "object" && !Array.isArray(previousMeta)
+      ? String((previousMeta as any).parser || "")
+      : "";
+    const previousUsesCurrentPdfParser = repeatedUpload.previousBatch?.sourceType !== "PDF"
+      || previousParser === "TEXT_TABLE_V2";
+    if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch && previousUsesCurrentPdfParser) {
+      res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
+      return;
+    }
+
+    const result = await createPdfProductImportPreview({
       fileName: file.originalname,
-      text: parsed.text || "",
+      buffer: file.buffer,
       createdById: req.user!.id,
+      fileFingerprint: repeatedUpload.fileFingerprint,
+      fileSizeBytes: repeatedUpload.fileSizeBytes,
+      repeatedFromBatchId: repeatedUpload.previousBatch?.id,
     });
+
+    await attachUploadedSource(result, file);
 
     res.json(result);
   } catch (err: any) {
     console.error("Import PDF error:", err);
     res.status(500).json({ error: err?.message || "Internal server error" });
-  } finally {
-    await parser?.destroy().catch(() => undefined);
   }
 }
 
 export async function importFromDocument(req: Request, res: Response) {
-  let parser: PDFParse | null = null;
-
   try {
     const documentId = String(req.params.documentId || "");
     if (!documentId) {
@@ -901,26 +1035,34 @@ export async function importFromDocument(req: Request, res: Response) {
     }
 
     const buffer = await fs.readFile(filePath);
+    const fileFingerprint = productService.fingerprintImportFile(buffer);
+    const previousBatch = await productService.findRepeatedProductImportBatch(fileFingerprint);
     const lowerName = (document.fileName || "").toLowerCase();
     const isPdf = document.mimeType === "application/pdf" || lowerName.endsWith(".pdf");
     const isImage = document.mimeType.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(lowerName);
 
     let result: any;
     if (isPdf) {
-      parser = new PDFParse({ data: buffer });
-      const parsed = await parser.getText();
-      result = await productService.createPdfImportPreview({
-        fileName: document.fileName,
-        text: parsed.text || "",
-        createdById: req.user!.id,
-      });
+      result = previousBatch
+        ? repeatedImportResponse(previousBatch)
+        : await createPdfProductImportPreview({
+            fileName: document.fileName,
+            buffer,
+            createdById: req.user!.id,
+            fileFingerprint,
+            fileSizeBytes: buffer.byteLength,
+          });
     } else if (isImage) {
-      result = await productService.createImageImportPreview({
-        fileName: document.fileName,
-        mimeType: document.mimeType || "image/png",
-        buffer,
-        createdById: req.user!.id,
-      });
+      result = previousBatch
+        ? repeatedImportResponse(previousBatch)
+        : await productService.createImageImportPreview({
+            fileName: document.fileName,
+            mimeType: document.mimeType || "image/png",
+            buffer,
+            createdById: req.user!.id,
+            fileFingerprint,
+            fileSizeBytes: buffer.byteLength,
+          });
     } else {
       res.status(400).json({ error: "Only PDF or image product import documents can open an import review." });
       return;
@@ -942,13 +1084,18 @@ export async function importFromDocument(req: Request, res: Response) {
           remarks: document.remarks || undefined,
         },
       });
+      await productService.attachProductImportSource({
+        batchId: result.batchId,
+        originalName: document.fileName,
+        mimeType: document.mimeType,
+        buffer,
+      });
+      await productService.backfillProductImportSourceLocators(result.batchId);
     }
 
     res.json(result);
   } catch (err: any) {
     res.status(400).json({ error: err?.message || "Failed to open import document" });
-  } finally {
-    await parser?.destroy().catch(() => undefined);
   }
 }
 
@@ -960,6 +1107,104 @@ export async function getImportBatch(req: Request, res: Response) {
     res.json(batch);
   } catch (err: any) {
     res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+export async function getImportBatchReview(req: Request, res: Response) {
+  try {
+    const result = await productService.getProductImportReview({
+      batchId: String(req.params.batchId),
+      page: req.query.page ? Number(req.query.page) : undefined,
+      pageSize: req.query.pageSize ? Number(req.query.pageSize) : undefined,
+      search: typeof req.query.search === "string" ? req.query.search : undefined,
+      comparisonStatus:
+        typeof req.query.comparisonStatus === "string"
+          ? req.query.comparisonStatus
+          : undefined,
+      rowStatus: typeof req.query.rowStatus === "string" ? req.query.rowStatus : undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+export async function getImportBatchSource(req: Request, res: Response) {
+  try {
+    const source = await productService.getProductImportSource(String(req.params.batchId));
+    res.setHeader("Content-Type", source.mimeType);
+    const inline = source.mimeType === "application/pdf" || source.mimeType.startsWith("image/");
+    const disposition = req.query.download === "true" || !inline ? "attachment" : "inline";
+    res.setHeader(
+      "Content-Disposition",
+      `${disposition}; filename="${encodeURIComponent(source.fileName)}"`,
+    );
+    res.setHeader("Cache-Control", "private, max-age=300, must-revalidate");
+    res.sendFile(source.filePath);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import source not found" });
+  }
+}
+
+export async function getImportBatchSourcePage(req: Request, res: Response) {
+  let parser: PDFParse | null = null;
+  try {
+    const pageNumber = Number(req.params.pageNumber);
+    if (!Number.isInteger(pageNumber) || pageNumber < 1 || pageNumber > 500) {
+      res.status(400).json({ error: "A valid PDF page number is required" });
+      return;
+    }
+    const source = await productService.getProductImportSource(String(req.params.batchId));
+    if (source.mimeType !== "application/pdf" && !source.fileName.toLowerCase().endsWith(".pdf")) {
+      res.status(400).json({ error: "The import source is not a PDF" });
+      return;
+    }
+    const buffer = await fs.readFile(source.filePath);
+    parser = new PDFParse({ data: buffer });
+    const screenshot = await parser.getScreenshot({
+      partial: [pageNumber],
+      desiredWidth: 1600,
+      imageBuffer: true,
+      imageDataUrl: false,
+    });
+    const page = screenshot.pages[0];
+    if (!page) {
+      res.status(404).json({ error: "PDF page not found" });
+      return;
+    }
+    res.setHeader("Content-Type", "image/png");
+    res.setHeader("Cache-Control", "private, max-age=300, must-revalidate");
+    res.send(Buffer.from(page.data));
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "PDF page could not be rendered" });
+  } finally {
+    await parser?.destroy().catch(() => undefined);
+  }
+}
+
+export async function getImportRowSourceContext(req: Request, res: Response) {
+  try {
+    const result = await productService.getProductImportSourceContext({
+      batchId: String(req.params.batchId),
+      rowId: req.params.rowId ? String(req.params.rowId) : (req.query.rowId ? String(req.query.rowId) : undefined),
+      radius: req.query.radius ? Number(req.query.radius) : undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import source row not found" });
+  }
+}
+
+export async function getImportBatchSourceContext(req: Request, res: Response) {
+  try {
+    const result = await productService.getProductImportSourceContext({
+      batchId: String(req.params.batchId),
+      rowId: req.query.rowId ? String(req.query.rowId) : undefined,
+      radius: req.query.radius ? Number(req.query.radius) : undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(404).json({ error: err?.message || "Import source rows not found" });
   }
 }
 
@@ -1007,6 +1252,61 @@ export async function saveReviewedBatchRows(req: Request, res: Response) {
   }
 }
 
+export async function setReviewedBatchRowResolution(req: Request, res: Response) {
+  try {
+    const resolution = req.body?.resolution;
+    if (resolution !== "KEEP_EXISTING" && resolution !== "IGNORE") {
+      res.status(400).json({ error: "Choose Keep existing or Ignore for this row." });
+      return;
+    }
+    const result = await productService.setProductImportRowResolution({
+      batchId: String(req.params.batchId),
+      rowId: String(req.params.rowId),
+      resolution,
+      actorId: req.user!.id,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to save row decision" });
+  }
+}
+
+export async function setImportBatchPriceMapping(req: Request, res: Response) {
+  try {
+    const mapping = req.body?.mapping;
+    if (!mapping || typeof mapping !== "object" || Array.isArray(mapping)) {
+      res.status(400).json({ error: "Price mapping is required." });
+      return;
+    }
+    const result = await productService.setProductImportPriceMapping({
+      batchId: String(req.params.batchId),
+      mapping,
+      actorId: req.user!.id,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to save extracted price mapping" });
+  }
+}
+
+export async function commitSavedImportBatch(req: Request, res: Response) {
+  try {
+    if (req.body?.approved !== true) {
+      res.status(400).json({ error: "Final import approval is required." });
+      return;
+    }
+    const result = await productService.importSavedProductImportBatch({
+      batchId: String(req.params.batchId),
+      actorId: req.user!.id,
+      approved: true,
+      commitToken: typeof req.body?.commitToken === "string" ? req.body.commitToken : undefined,
+    });
+    res.json(result);
+  } catch (err: any) {
+    res.status(400).json({ error: err?.message || "Failed to commit import batch" });
+  }
+}
+
 // importing only the PDF rows the admin reviewed and selected
 export async function importReviewedBatchRows(req: Request, res: Response) {
   try {
@@ -1024,6 +1324,7 @@ export async function importReviewedBatchRows(req: Request, res: Response) {
         : [],
       actorId: req.user!.id,
       approved: true,
+      commitToken: typeof req.body?.commitToken === "string" ? req.body.commitToken : undefined,
     });
     res.json(result);
   } catch (err: any) {

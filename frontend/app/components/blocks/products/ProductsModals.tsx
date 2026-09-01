@@ -87,6 +87,8 @@ type PdfReviewDraft = ReviewedPdfImportRowPayload & {
   rowNumber: number;
   status: string;
   error?: string | null;
+  comparisonStatus?: ProductImportBatch["rows"][number]["comparisonStatus"];
+  changeSet?: NonNullable<ProductImportBatch["rows"][number]["changeSet"]>;
 };
 
 function toReviewedImportRowPayload(
@@ -116,11 +118,30 @@ function toReviewedImportRowPayload(
     retailPrice: row.retailPrice,
     wholesalePrice: row.wholesalePrice,
     stock: row.stock,
+    resolution: row.resolution,
   };
 }
 
 function reviewedImportRowFingerprint(row: PdfReviewDraft) {
   return JSON.stringify(toReviewedImportRowPayload(row));
+}
+
+function isFinishedImportReviewStatus(status: string) {
+  return ["IMPORTED", "UPDATED", "KEPT_EXISTING", "IGNORED"].includes(status);
+}
+
+function defaultImportResolution(row: ProductImportBatch["rows"][number]) {
+  if (row.resolution) return row.resolution;
+  if (row.status === "IGNORED") return "IGNORE" as const;
+  if (row.comparisonStatus === "READY_NEW") return "CREATE_NEW" as const;
+  if (row.comparisonStatus === "EXACT_DUPLICATE") return "KEEP_EXISTING" as const;
+  return null;
+}
+
+function restoredDraftResolution(row: PdfReviewDraft) {
+  if (row.comparisonStatus === "READY_NEW") return "CREATE_NEW" as const;
+  if (row.comparisonStatus === "EXACT_DUPLICATE") return "KEEP_EXISTING" as const;
+  return null;
 }
 
 function formatQty(value: number | null) {
@@ -188,6 +209,10 @@ function formatOptionalPurchaseCost(value: number | null) {
   return value === null ? "Not entered" : formatNpr(value);
 }
 
+function formatOptionalSellingPrice(value: number | null) {
+  return value === null ? "Not entered" : formatNpr(value);
+}
+
 function readParsedAliases(parsed: Record<string, unknown>) {
   const value = parsed.searchAliases ?? parsed.search_aliases ?? parsed.aliases;
   const values = Array.isArray(value)
@@ -227,7 +252,8 @@ function formatProductSize(product: Product) {
 }
 
 function formatPackage(product: Product) {
-  return `${formatQty(product.packageQuantity || 1)} ${product.packageUnit || "PIECE"}`;
+  if (product.packageQuantity === null) return "Package unknown";
+  return `${formatQty(product.packageQuantity)} ${product.packageUnit || "PIECE"}`;
 }
 
 function slugPart(value: string) {
@@ -396,19 +422,11 @@ function guessPdfReviewDraft(
     ) !== null
   ) {
     const purchaseCost = readParsedNumber(parsed, ["ratePerPiece"], null);
-    const catalogueRate =
-      readParsedNumber(parsed, ["retailPrice"], null) ??
-      readParsedNumber(parsed, ["wholesalePrice"], 0) ??
-      0;
-    const wholesalePrice =
-      readParsedNumber(parsed, ["wholesalePrice"], null) ??
-      roundReviewCurrency(catalogueRate * 0.82);
-    const retailPrice =
-      readParsedNumber(parsed, ["retailPrice"], null) ??
-      catalogueRate;
+    const wholesalePrice = readParsedNumber(parsed, ["wholesalePrice"], null);
+    const retailPrice = readParsedNumber(parsed, ["retailPrice"], null);
     const parsedName = cleanReviewProductName(
       readParsedString(parsed, ["name", "productName"], rawText),
-      Number(retailPrice || wholesalePrice || 0),
+      Number(purchaseCost || retailPrice || wholesalePrice || 0),
     );
     const sizeUnit = readParsedString(parsed, ["sizeUnit"], "STANDARD");
     const saleUnit = readParsedString(
@@ -416,21 +434,23 @@ function guessPdfReviewDraft(
       ["saleUnit"],
       sizeUnit === "KG" || sizeUnit === "METER" ? sizeUnit : "PIECE",
     );
-    const packageQuantity =
-      readParsedNumber(parsed, ["packageQuantity"], 1) ?? 1;
+    const packageQuantity = readParsedNumber(parsed, ["packageQuantity"], null);
+    const resolution = defaultImportResolution(row);
 
     return {
       rowId: row.id,
       selected:
-        row.status !== "IMPORTED" &&
-        row.status !== "IGNORED" &&
+        !isFinishedImportReviewStatus(row.status) &&
         row.status !== "FAILED" &&
-        row.status !== "DUPLICATE",
-      ignored: row.status === "IGNORED",
+        (resolution === "CREATE_NEW" || resolution === "UPDATE_MATCHED"),
+      ignored: resolution === "IGNORE",
       rawText,
       rowNumber: row.rowNumber,
       status: row.status,
       error: row.error,
+      comparisonStatus: row.comparisonStatus,
+      changeSet: row.changeSet || [],
+      resolution,
       name: parsedName || rawText,
       sku:
         readParsedString(parsed, ["sku"]) ||
@@ -448,9 +468,9 @@ function guessPdfReviewDraft(
       sizeValue: readParsedNumber(parsed, ["sizeValue"], null),
       sizeUnit,
       ratePerPiece: purchaseCost,
-      packageQuantity: Number.isFinite(Number(packageQuantity))
+      packageQuantity: packageQuantity !== null && Number.isFinite(Number(packageQuantity))
         ? Number(packageQuantity)
-        : 1,
+        : null,
       packageUnit: readParsedString(parsed, ["packageUnit"], "PIECE"),
       saleUnit,
       allowFractionalQty: readParsedBoolean(
@@ -471,11 +491,12 @@ function guessPdfReviewDraft(
         parsed,
         ["sourceCitation"],
         batch.fileName ||
-          `${displaySourceType(batch.sourceType)} supplier import`,
+        `${displaySourceType(batch.sourceType)} supplier import`,
       ),
       searchAliases: readParsedAliases(parsed),
-      retailPrice: Number(retailPrice || 0),
-      wholesalePrice: Number(wholesalePrice || 0),
+      retailPrice: Number(retailPrice || 0) > 0 ? Number(retailPrice) : null,
+      wholesalePrice:
+        Number(wholesalePrice || 0) > 0 ? Number(wholesalePrice) : null,
       stock: readParsedNumber(parsed, ["stock"], 0) ?? 0,
     };
   }
@@ -485,7 +506,7 @@ function guessPdfReviewDraft(
   const packageMatch = rawText.match(
     /\b(\d+)\s*(?:pcs?|pieces?|dozen|dz|box|bundle)\b/i,
   );
-  const packageQuantity = packageMatch ? Number(packageMatch[1]) : 1;
+  const packageQuantity = packageMatch ? Number(packageMatch[1]) : null;
   const packageUnit = /dozen|dz/i.test(rawText)
     ? "DOZEN"
     : /box/i.test(rawText)
@@ -498,19 +519,22 @@ function guessPdfReviewDraft(
   const namePart = slugPart(cleanedName) || `ROW-${row.rowNumber}`;
   const sku = `${skuBase}-${row.rowNumber}-${namePart}`.slice(0, 80);
   const stock = 0;
+  const resolution = defaultImportResolution(row);
 
   return {
     rowId: row.id,
     selected:
-      row.status !== "IMPORTED" &&
-      row.status !== "IGNORED" &&
+      !isFinishedImportReviewStatus(row.status) &&
       row.status !== "FAILED" &&
-      row.status !== "DUPLICATE",
-    ignored: row.status === "IGNORED",
+      (resolution === "CREATE_NEW" || resolution === "UPDATE_MATCHED"),
+    ignored: resolution === "IGNORE",
     rawText,
     rowNumber: row.rowNumber,
     status: row.status,
     error: row.error,
+    comparisonStatus: row.comparisonStatus,
+    changeSet: row.changeSet || [],
+    resolution,
     name: cleanedName,
     sku,
     barcode: "",
@@ -521,8 +545,11 @@ function guessPdfReviewDraft(
     productCodeVariant: "",
     sizeValue: size.sizeValue,
     sizeUnit: size.sizeUnit,
-    ratePerPiece: null,
-    packageQuantity: Number.isFinite(packageQuantity) ? packageQuantity : 1,
+    ratePerPiece: rate > 0 ? rate : null,
+    packageQuantity:
+      packageQuantity !== null && Number.isFinite(packageQuantity)
+        ? packageQuantity
+        : null,
     packageUnit,
     saleUnit:
       size.sizeUnit === "KG" || size.sizeUnit === "METER"
@@ -536,8 +563,8 @@ function guessPdfReviewDraft(
       batch.fileName ||
       `${displaySourceType(batch.sourceType)} supplier import`,
     searchAliases: [],
-    retailPrice: rate,
-    wholesalePrice: roundReviewCurrency(rate * 0.82),
+    retailPrice: null,
+    wholesalePrice: null,
     stock,
   };
 }
@@ -799,14 +826,14 @@ function ModalShell({
       <div className="absolute inset-0 z-10 flex items-end justify-center p-0 lg:items-center lg:p-[12px]">
         <div
           className={cn(
-            "relative z-10 flex h-dvh max-h-dvh w-full flex-col overflow-hidden border-0 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)] lg:h-auto lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
+            "relative z-10 flex h-auto max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[20px] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)] lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
             maxWidthClass || (landscape ? "max-w-[1180px]" : "max-w-[1040px]"),
           )}
         >
-          <div className="shrink-0 flex min-h-[62px] items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[10px] lg:min-h-0">
+          <div className="shrink-0 flex min-h-[58px] items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[10px] lg:min-h-0">
             <div className="flex min-w-0 items-center gap-[10px]">
               {headerLeft}
-              <div className="truncate text-[19px] font-extrabold text-[#000000] lg:text-[15px] lg:font-semibold">
+              <div className="truncate text-[18px] font-extrabold text-[#000000] lg:text-[15px] lg:font-semibold">
                 {title}
               </div>
             </div>
@@ -1047,6 +1074,7 @@ export default function ProductsModals({
   const [pdfReviewRows, setPdfReviewRows] = React.useState<PdfReviewDraft[]>(
     [],
   );
+  const [localImportPreviewUrl, setLocalImportPreviewUrl] = React.useState("");
   const [activeReviewRowId, setActiveReviewRowId] = React.useState<
     string | null
   >(null);
@@ -1069,6 +1097,19 @@ export default function ProductsModals({
     "keep" | "on" | "off"
   >("keep");
   const [bulkStock, setBulkStock] = React.useState(0);
+
+  React.useEffect(() => {
+    if (!importFile ||
+      !(importFile.type === "application/pdf" ||
+        importFile.type.startsWith("image/") ||
+        /\.(pdf|png|jpe?g|webp)$/i.test(importFile.name))) {
+      setLocalImportPreviewUrl("");
+      return undefined;
+    }
+    const url = URL.createObjectURL(importFile);
+    setLocalImportPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [importFile]);
   const [bulkWholesaleMargin, setBulkWholesaleMargin] = React.useState(18);
   const [bulkRetailMargin, setBulkRetailMargin] = React.useState(30);
   const [savedReviewFingerprints, setSavedReviewFingerprints] = React.useState<
@@ -1269,8 +1310,19 @@ export default function ProductsModals({
     return () => window.clearTimeout(timer);
   }, [formErrors, openAddEdit]);
   const selectedReviewRows = pdfReviewRows.filter(
-    (row) => row.selected && !row.ignored && row.status !== "IMPORTED",
+    (row) =>
+      row.selected &&
+      !row.ignored &&
+      !isFinishedImportReviewStatus(row.status) &&
+      (row.resolution === "CREATE_NEW" || row.resolution === "UPDATE_MATCHED"),
   );
+  const keptReviewRows = pdfReviewRows.filter(
+    (row) =>
+      !row.ignored &&
+      !isFinishedImportReviewStatus(row.status) &&
+      row.resolution === "KEEP_EXISTING",
+  );
+  const commitReviewRows = [...selectedReviewRows, ...keptReviewRows];
   const dirtyReviewRows = pdfReviewRows.filter(
     (row) =>
       row.status !== "IMPORTED" &&
@@ -1280,11 +1332,30 @@ export default function ProductsModals({
   const dirtySelectedReviewRows = selectedReviewRows.filter((row) =>
     dirtyReviewRowIds.has(row.rowId),
   );
+  const dirtyCommitReviewRows = commitReviewRows.filter((row) =>
+    dirtyReviewRowIds.has(row.rowId),
+  );
+  const unconfirmedSelectedReviewRows = selectedReviewRows.filter(
+    (row) =>
+      dirtyReviewRowIds.has(row.rowId) ||
+      row.error ||
+      !verifiedReviewRowIds.has(row.rowId),
+  );
   const activeReviewRowDirty = activeReviewRow
     ? dirtyReviewRowIds.has(activeReviewRow.rowId)
     : false;
-  const selectedReviewIssueCount = selectedReviewRows.filter(
-    (row) => row.error || row.status === "DUPLICATE" || row.status === "FAILED",
+  const activeReviewRowNeedsConfirmation = Boolean(
+    activeReviewRow &&
+    (activeReviewRowDirty ||
+      activeReviewRow.error ||
+      !verifiedReviewRowIds.has(activeReviewRow.rowId)),
+  );
+  const selectedReviewIssueCount = commitReviewRows.filter(
+    (row) =>
+      row.error ||
+      row.status === "FAILED" ||
+      row.comparisonStatus === "IDENTIFIER_CONFLICT" ||
+      row.comparisonStatus === "IN_FILE_DUPLICATE",
   ).length;
   const ignoredReviewRows = pdfReviewRows.filter((row) => row.ignored);
   const filteredReviewRows = pdfReviewRows.filter((row) => {
@@ -1298,6 +1369,7 @@ export default function ProductsModals({
         row.category,
         row.brand,
         row.vendorSource,
+        row.sourceCitation,
       ]
         .filter(Boolean)
         .some((value) => String(value).toLowerCase().includes(q));
@@ -1317,9 +1389,12 @@ export default function ProductsModals({
   const selectableFilteredRows = filteredReviewRows.filter(
     (row) =>
       !row.ignored &&
-      row.status !== "IMPORTED" &&
+      !isFinishedImportReviewStatus(row.status) &&
       row.status !== "FAILED" &&
-      row.status !== "DUPLICATE",
+      row.comparisonStatus !== "MATCHED_WITH_CHANGES" &&
+      row.comparisonStatus !== "EXACT_DUPLICATE" &&
+      row.comparisonStatus !== "IDENTIFIER_CONFLICT" &&
+      row.comparisonStatus !== "IN_FILE_DUPLICATE",
   );
   const allVisibleSelected =
     selectableFilteredRows.length > 0 &&
@@ -1460,8 +1535,8 @@ export default function ProductsModals({
     } catch (error: any) {
       setReviewSaveError(
         error?.response?.data?.error ||
-          error?.message ||
-          "Review changes could not be saved.",
+        error?.message ||
+        "Review changes could not be saved.",
       );
     } finally {
       setReviewSaveBusy(false);
@@ -1485,7 +1560,7 @@ export default function ProductsModals({
   }
 
   function confirmSelectedPdfRowsImport() {
-    const rows = selectedReviewRows.map(toReviewedImportRowPayload);
+    const rows = commitReviewRows.map(toReviewedImportRowPayload);
     onImportReviewedPdfRows(
       rows,
       ignoredReviewRows.map((row) => row.rowId),
@@ -1499,7 +1574,7 @@ export default function ProductsModals({
         open={openAddEdit}
         title={activeProductId ? "Edit Product" : "Add Product"}
         onClose={() => { if (!productSaveBusy) setOpenAddEdit(false); }}
-        landscape
+        maxWidthClass="max-w-[760px]"
         footer={
           <div className="flex w-full items-center justify-between gap-2">
             <div>
@@ -1519,8 +1594,8 @@ export default function ProductsModals({
           </div>
         }
       >
-        <div className="border-b border-[#E5E7EB] bg-white px-3 pt-2 md:px-6">
-          <div className="mb-1 text-[11px] font-bold text-[#6B7280]">
+        <div className="border-b border-[#E5E7EB] bg-white px-3 pt-2.5 md:px-6">
+          <div className="mb-1 text-[12px] font-bold text-[#64748B]">
             {activeProductId ? "Edit section" : "Step"} {editorStepIndex + 1} of {productEditorSteps.length}
             {activeProductId ? " · Save from any section" : ""}
           </div>
@@ -1531,136 +1606,152 @@ export default function ProductsModals({
             ariaLabel="Product form steps"
             controllerRef={productEditorTabRailRef}
             railClassName="w-full min-w-full"
-            buttonClassName="h-[52px] min-w-0 flex-1 px-1 text-[13px] font-bold"
+            buttonClassName="h-[48px] min-w-0 flex-1 px-1 text-[14px] font-extrabold"
             activeClassName="text-[#11120D]"
             inactiveClassName="text-[#8C8889] hover:text-[#565449]"
           />
         </div>
-        <div {...productEditorSwipeGesture} data-product-editor className="h-full min-h-0 overflow-y-auto px-[20px] py-[16px]">
-          <div className="flex flex-col gap-[24px]">
-            
-            {/* Top row: Image & Basic Info */}
-            <div className={cn("flex flex-col gap-[18px]", mobileEditorTab !== "basic" && "hidden")}>
-              
-              {/* Product Image - Smaller, more compact */}
-              <div className="order-2 space-y-[10px]">
-                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
-                  PRODUCT IMAGE
-                </h3>
-                <div className="flex min-h-[96px] flex-col items-center justify-center rounded-[12px] border-2 border-dashed border-[#CFCFD3] bg-[#F8FAFC] p-[12px] transition hover:bg-gray-50 md:p-[16px]">
-                  <input
-                    id="product-image-dropzone"
-                    type="file"
-                    accept="image/*"
-                    onChange={(event) => {
-                      onProductImageChange(event.target.files?.[0] || null);
-                      event.currentTarget.value = "";
-                    }}
-                    className="sr-only"
-                  />
-                  {productImagePreview || form.imageUrl ? (
-                    <div className="flex flex-col items-center gap-[8px] w-full">
-                      <PreviewableImage
-                        src={productImagePreview || form.imageUrl}
-                        alt={form.name || "Product preview"}
-                        title={form.name || "Product preview"}
-                        subtitle={form.sku ? `SKU: ${form.sku}` : undefined}
-                        enablePreview="desktop"
-                        imgClassName="h-full w-full object-contain p-2"
-                        className="flex h-[88px] w-full max-w-[180px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#CFCFD3] bg-white shadow-sm md:h-[132px] md:max-w-full"
-                        fallback={
-                          <GoogleIcon
-                            name="inventory_2"
-                            sizePx={36}
-                            className="text-[#8C8889]"
-                          />
-                        }
-                      />
-                      <div className="flex flex-col gap-[6px] w-full mt-[4px]">
-                        <label
-                          htmlFor="product-image-dropzone"
-                          className="inline-flex w-full cursor-pointer items-center justify-center rounded-[8px] bg-[#3B82F6] px-[12px] py-[6px] text-[12px] font-bold text-white transition hover:bg-[#2563EB]"
-                        >
-                          Change
-                        </label>
-                        <button
-                          type="button"
-                          onClick={onClearProductImage}
-                          className="inline-flex w-full items-center justify-center rounded-[8px] border border-[#FECDD3] bg-[#FFF1F2] px-[12px] py-[6px] text-[12px] font-bold text-[#BE123C] transition hover:bg-rose-100"
-                        >
-                          Remove
-                        </button>
+        <div {...productEditorSwipeGesture} data-product-editor className="min-h-0 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+          <div className="flex flex-col gap-4 sm:gap-5">
+
+            {/* Basic Info Tab */}
+            <div className={cn("flex flex-col gap-4", mobileEditorTab !== "basic" && "hidden")}>
+
+              {/* Image uploader stacks on narrow screens so the form does not leave a dead column below it. */}
+              <div className="grid grid-cols-1 items-start gap-3.5 sm:grid-cols-[136px_minmax(0,1fr)] sm:gap-4">
+                {/* Product Image Uploader */}
+                <div className="flex w-full flex-col items-center sm:w-[136px]">
+                  <div className="w-full text-[11px] font-bold uppercase tracking-wider text-[#475569] mb-1.5 self-start">
+                    Product Image
+                  </div>
+                  <div className="relative flex h-[78px] w-full flex-col items-center justify-center overflow-hidden rounded-[14px] border-2 border-dashed border-[#CBD5E1] bg-[#F8FAFC] p-1.5 transition hover:border-[#1E293B] hover:bg-[#F1F5F9] sm:h-[136px] sm:w-[136px]">
+                    <input
+                      id="product-image-dropzone"
+                      type="file"
+                      accept="image/*"
+                      onChange={(event) => {
+                        onProductImageChange(event.target.files?.[0] || null);
+                        event.currentTarget.value = "";
+                      }}
+                      className="sr-only"
+                    />
+                    {productImagePreview || form.imageUrl ? (
+                      <div className="group relative flex h-full w-full items-center justify-center">
+                        <PreviewableImage
+                          src={productImagePreview || form.imageUrl}
+                          alt={form.name || "Product preview"}
+                          title={form.name || "Product preview"}
+                          subtitle={form.sku ? `SKU: ${form.sku}` : undefined}
+                          enablePreview="desktop"
+                          imgClassName="h-full w-full object-contain p-1"
+                          className="flex h-full w-full items-center justify-center overflow-hidden rounded-[10px] bg-white"
+                          fallback={<GoogleIcon name="inventory_2" sizePx={36} className="text-[#8C8889]" />}
+                        />
+                        <div className="absolute inset-0 flex items-center justify-center gap-1.5 rounded-[10px] bg-black/55 opacity-0 backdrop-blur-[1px] transition group-hover:opacity-100">
+                          <label
+                            htmlFor="product-image-dropzone"
+                            className="inline-flex cursor-pointer items-center justify-center rounded-[7px] bg-white/95 px-2 py-1 text-[11px] font-bold text-[#0F172A] shadow-xs hover:bg-white"
+                            title="Change image"
+                          >
+                            <GoogleIcon name="photo_camera" className="text-[14px]" />
+                          </label>
+                          <button
+                            type="button"
+                            onClick={onClearProductImage}
+                            className="inline-flex items-center justify-center rounded-[7px] bg-rose-600 px-2 py-1 text-[11px] font-bold text-white shadow-xs hover:bg-rose-700"
+                            title="Remove image"
+                          >
+                            <GoogleIcon name="delete" className="text-[14px]" />
+                          </button>
+                        </div>
                       </div>
-                    </div>
-                  ) : (
-                    <label
-                      htmlFor="product-image-dropzone"
-                      className="flex flex-col items-center gap-[8px] cursor-pointer text-center w-full py-[16px]"
-                    >
-                      <div className="flex h-[44px] w-[44px] items-center justify-center rounded-full border border-[#CFCFD3] bg-white text-[#565449]">
-                        <GoogleIcon name="cloud_upload" className="text-[22px]" />
-                      </div>
-                      <div className="text-[12px] font-bold text-[#11120d] leading-tight mt-[4px]">
-                        Upload Image
-                      </div>
-                      <div className="text-[10px] font-medium text-[#8C8889] leading-tight">
-                        JPG/PNG &lt; 5MB
-                      </div>
-                    </label>
-                  )}
+                    ) : (
+                      <label
+                        htmlFor="product-image-dropzone"
+                        className="flex h-full w-full cursor-pointer flex-row items-center justify-center gap-2.5 p-2 text-center sm:flex-col sm:gap-1"
+                      >
+                        <div className="flex h-8 w-8 sm:h-9 sm:w-9 items-center justify-center rounded-full bg-[#E2E8F0] text-[#475569]">
+                          <GoogleIcon name="add_a_photo" className="text-[16px] sm:text-[18px]" />
+                        </div>
+                        <div className="text-[11px] sm:text-[11.5px] font-extrabold text-[#0F172A] leading-tight sm:mt-0.5">
+                          Upload Image
+                        </div>
+                        <div className="text-[9px] sm:text-[9.5px] font-semibold text-[#94A3B8]">
+                          JPG, PNG &lt; 5MB
+                        </div>
+                      </label>
+                    )}
+                  </div>
                   {formErrors.image ? (
-                    <div className="mt-[6px] text-[11px] font-semibold text-rose-600 text-center">
+                    <div className="mt-1 text-center text-[10.5px] font-bold text-rose-600">
                       {formErrors.image}
                     </div>
                   ) : null}
+                  {productImagePreview || form.imageUrl ? (
+                    <div className="mt-1.5 flex w-full justify-center gap-2">
+                      <label
+                        htmlFor="product-image-dropzone"
+                        className="cursor-pointer text-[11px] font-bold text-[#2563EB] hover:underline"
+                      >
+                        Change
+                      </label>
+                      <span className="text-[#CBD5E1]">·</span>
+                      <button
+                        type="button"
+                        onClick={onClearProductImage}
+                        className="text-[11px] font-bold text-rose-600 hover:underline"
+                      >
+                        Remove
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+
+                {/* Main: Product Name, Brand & Category */}
+                <div className="flex-1 min-w-0 space-y-3">
+                  <Field label="Product Name" error={formErrors.name}>
+                    <input
+                      data-modal-initial-focus
+                      value={form.name}
+                      aria-invalid={Boolean(formErrors.name)}
+                      onChange={(event) => {
+                        setForm((product) => ({ ...product, name: event.target.value }));
+                        onClearFormError("name");
+                      }}
+                      className={inputClass(formErrors.name)}
+                      placeholder="e.g. Laundry Basket (Big)"
+                    />
+                  </Field>
+
+                  <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                    <Field label="Brand" error={formErrors.brand}>
+                      <CreatableCombobox
+                        value={form.brand}
+                        onChange={(value) => { setForm((product) => ({ ...product, brand: value })); onClearFormError("brand"); }}
+                        options={brands.filter((brand) => brand !== "All Brands")}
+                        placeholder="Search or create brand"
+                        ariaLabel="Brand"
+                        invalid={Boolean(formErrors.brand)}
+                        required
+                      />
+                    </Field>
+                    <Field label="Category" error={formErrors.category}>
+                      <CreatableCombobox
+                        value={form.category}
+                        onChange={(value) => { setForm((product) => ({ ...product, category: value })); onClearFormError("category"); }}
+                        options={categories.filter((category) => category !== "All Categories")}
+                        placeholder="Search or create category"
+                        ariaLabel="Category"
+                        invalid={Boolean(formErrors.category)}
+                        required
+                      />
+                    </Field>
+                  </div>
                 </div>
               </div>
 
-              {/* Basic Information */}
-              <div className="order-1 space-y-[12px]">
-                <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
-                  BASIC INFORMATION
-                </h3>
-                
-                <Field label="Product Name" error={formErrors.name}>
-                  <input
-                    data-modal-initial-focus
-                    value={form.name}
-                    aria-invalid={Boolean(formErrors.name)}
-                    onChange={(event) => {
-                      setForm((product) => ({ ...product, name: event.target.value }));
-                      onClearFormError("name");
-                    }}
-                    className={inputClass(formErrors.name)}
-                    placeholder="e.g. Sauce Bottle"
-                  />
-                </Field>
-
-                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="Brand" error={formErrors.brand}>
-                    <CreatableCombobox
-                      value={form.brand}
-                      onChange={(value) => { setForm((product) => ({ ...product, brand: value })); onClearFormError("brand"); }}
-                      options={brands.filter((brand) => brand !== "All Brands")}
-                      placeholder="Search or create brand"
-                      ariaLabel="Brand"
-                      invalid={Boolean(formErrors.brand)}
-                      required
-                    />
-                  </Field>
-                  <Field label="Category" error={formErrors.category}>
-                    <CreatableCombobox
-                      value={form.category}
-                      onChange={(value) => { setForm((product) => ({ ...product, category: value })); onClearFormError("category"); }}
-                      options={categories.filter((category) => category !== "All Categories")}
-                      placeholder="Search or create category"
-                      ariaLabel="Category"
-                      invalid={Boolean(formErrors.category)}
-                      required
-                    />
-                  </Field>
-                </div>
-
+              {/* Remaining Fields below top row */}
+              <div className="space-y-3 pt-1">
                 {isAdmin ? (
                   <Field label="Search terms (optional)">
                     <div className="rounded-[12px] border border-[#CFCFD3] bg-white p-2.5">
@@ -1724,7 +1815,7 @@ export default function ProductsModals({
                   />
                 </Field>
 
-                <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
+                <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                   <Field label="Barcode (optional)">
                     <input value={form.barcode || ""} onChange={(event) => setForm((product) => ({ ...product, barcode: event.target.value }))} className={compactInputClass} placeholder="Scan or type manufacturer barcode" />
                   </Field>
@@ -1774,7 +1865,7 @@ export default function ProductsModals({
                   <Field label="Item size / capacity (optional)">
                     <input
                       type="number"
-                      min={0}
+                      min={0.01}
                       step="0.001"
                       value={form.sizeValue ?? ""}
                       onChange={(event) =>
@@ -1817,13 +1908,17 @@ export default function ProductsModals({
                       type="number"
                       min={0.001}
                       step="0.001"
-                      value={form.packageQuantity}
+                      value={form.packageQuantity ?? ""}
                       aria-invalid={Boolean(formErrors.packageQuantity)}
                       onChange={(event) => {
-                        setForm((product) => ({ ...product, packageQuantity: Number(event.target.value) }));
+                        setForm((product) => ({
+                          ...product,
+                          packageQuantity: event.target.value === "" ? null : Number(event.target.value),
+                        }));
                         onClearFormError("packageQuantity");
                       }}
                       className={inputClass(formErrors.packageQuantity)}
+                      placeholder="Unknown"
                     />
                   </Field>
                   <Field label="Pack type">
@@ -1885,11 +1980,28 @@ export default function ProductsModals({
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   PRICING
                 </h3>
-                
+
+                <Field label="Catalog availability">
+                  <Select
+                    value={form.availabilityStatus}
+                    onChange={(value) => setForm((product) => ({
+                      ...product,
+                      availabilityStatus: value === "COMING_SOON" ? "COMING_SOON" : "CATALOG_LISTED",
+                    }))}
+                    options={[
+                      { value: "CATALOG_LISTED", label: "Catalog listed" },
+                      { value: "COMING_SOON", label: "Price coming soon" },
+                    ]}
+                  />
+                  <div className="mt-1 text-[10px] font-semibold leading-4 text-slate-500">
+                    Coming-soon products stay searchable but are blocked from billing until prices are entered and this is changed to Catalog listed.
+                  </div>
+                </Field>
+
                 <Field label={`Purchase cost per ${(form.saleUnit || "unit").toLowerCase()} (optional)`} error={formErrors.ratePerPiece}>
                   <input
                     type="number"
-                    min={0}
+                    min={0.01}
                     step="0.01"
                     inputMode="decimal"
                     aria-invalid={Boolean(formErrors.ratePerPiece)}
@@ -1915,51 +2027,57 @@ export default function ProductsModals({
                 </Field>
 
                 <div className="grid grid-cols-1 gap-[10px] md:grid-cols-2">
-                  <Field label="Wholesale price" error={formErrors.wholesalePrice}>
+                  <Field label="Store wholesale price (optional)" error={formErrors.wholesalePrice}>
                     <input
                       type="number"
-                      min={0}
+                      min={0.01}
                       step="0.01"
                       inputMode="decimal"
                       aria-invalid={Boolean(formErrors.wholesalePrice)}
                       value={pricingDraft.wholesale}
-                      placeholder="0.00"
+                      placeholder="Leave blank if unknown"
                       onFocus={(event) => event.currentTarget.select()}
                       onChange={(event) => {
                         const value = event.target.value;
-                        const price = value === "" ? 0 : Number(value);
+                        const price = value === "" ? null : Number(value);
                         setPricingDraft((current) => ({ ...current, wholesale: value }));
                         setForm((product) => ({ ...product, wholesalePrice: price }));
                         onClearFormError("wholesalePrice");
                         const cost = Number(pricingDraft.cost || 0);
-                        setPricingMarkupDraft((current) => ({ ...current, wholesale: cost > 0 && price > 0 ? String(Math.round(((price - cost) / cost) * 10000) / 100) : "" }));
+                        setPricingMarkupDraft((current) => ({ ...current, wholesale: cost > 0 && Number(price) > 0 ? String(Math.round(((Number(price) - cost) / cost) * 10000) / 100) : "" }));
                       }}
                       className={inputClass(formErrors.wholesalePrice)}
                     />
                   </Field>
-                  <Field label="Retail price" error={formErrors.retailPrice}>
+                  <Field label="Retail price (optional)" error={formErrors.retailPrice}>
                     <input
                       type="number"
-                      min={0}
+                      min={0.01}
                       step="0.01"
                       inputMode="decimal"
                       aria-invalid={Boolean(formErrors.retailPrice)}
                       value={pricingDraft.retail}
-                      placeholder="0.00"
+                      placeholder="Leave blank if unknown"
                       onFocus={(event) => event.currentTarget.select()}
                       onChange={(event) => {
                         const value = event.target.value;
-                        const price = value === "" ? 0 : Number(value);
+                        const price = value === "" ? null : Number(value);
                         setPricingDraft((current) => ({ ...current, retail: value }));
                         setForm((product) => ({ ...product, retailPrice: price }));
                         onClearFormError("retailPrice");
                         const cost = Number(pricingDraft.cost || 0);
-                        setPricingMarkupDraft((current) => ({ ...current, retail: cost > 0 && price > 0 ? String(Math.round(((price - cost) / cost) * 10000) / 100) : "" }));
+                        setPricingMarkupDraft((current) => ({ ...current, retail: cost > 0 && Number(price) > 0 ? String(Math.round(((Number(price) - cost) / cost) * 10000) / 100) : "" }));
                       }}
                       className={inputClass(formErrors.retailPrice)}
                     />
                   </Field>
                 </div>
+
+                {!Number(pricingDraft.retail) || !Number(pricingDraft.wholesale) ? (
+                  <div className="rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold leading-4 text-amber-800">
+                    Selling price pending. The product remains available in catalog and lookup, but cannot be billed until both prices are set.
+                  </div>
+                ) : null}
 
                 <div className="grid grid-cols-1 gap-3 rounded-[12px] border border-[#BFDBFE] bg-[#EFF6FF] p-3 md:grid-cols-2">
                   {(["wholesale", "retail"] as const).map((kind) => {
@@ -2009,7 +2127,7 @@ export default function ProductsModals({
                     />
                     Wholesale Eligible
                   </label>
-                  
+
                   {form.wholesaleEligible && (
                     <Field label="Wholesale Threshold" error={formErrors.thresholdQty}>
                       <input
@@ -2037,7 +2155,7 @@ export default function ProductsModals({
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   STOCK & STATUS
                 </h3>
-                
+
                 <Field label="Initial Stock" error={formErrors.stock}>
                   <input
                     type="number"
@@ -2095,62 +2213,196 @@ export default function ProductsModals({
             </div>
 
             {mobileEditorTab === "review" ? (
-              <div className="grid gap-3 md:grid-cols-2">
-                {[
-                  {
-                    title: "Product",
-                    step: "basic" as ProductEditorStep,
-                    lines: [
-                      form.name || "Product name missing",
-                      [form.brand, form.category].filter(Boolean).join(" · ") || "Brand and category missing",
-                      form.vendorSource ? `Supplier: ${form.vendorSource}` : "No supplier entered",
-                    ],
-                  },
-                  {
-                    title: "Units",
-                    step: "units" as ProductEditorStep,
-                    lines: [
-                      `Sold by ${(form.saleUnit || "PIECE").toLowerCase()}`,
-                      form.sizeValue ? `Item size: ${form.sizeValue} ${form.sizeUnit}` : "Standard/unspecified item size",
-                      `Pack contains ${form.packageQuantity || 1} ${(form.saleUnit || "PIECE").toLowerCase()}`,
-                    ],
-                  },
-                  {
-                    title: "Pricing",
-                    step: "pricing" as ProductEditorStep,
-                    lines: [
-                      `Purchase cost: ${formatOptionalPurchaseCost(form.ratePerPiece)}`,
-                      `Wholesale: ${formatNpr(Number(form.wholesalePrice || 0))}`,
-                      `Retail: ${formatNpr(Number(form.retailPrice || 0))}`,
-                    ],
-                  },
-                  ...(stockTracked ? [{
-                    title: "Stock",
-                    step: "stock" as ProductEditorStep,
-                    lines: [
-                      `Initial stock: ${form.stock} ${(form.saleUnit || "PIECE").toLowerCase()}`,
-                      form.stock === businessDefaults.defaultInitialStock ? `Using shop default (${businessDefaults.defaultInitialStock})` : "Custom initial stock",
-                      `Low-stock alert: ${form.lowStockThresholdMode === "default" ? businessDefaults.defaultLowStockThreshold : form.lowStockThreshold}`,
-                    ],
-                  }] : []),
-                ].map((card) => (
-                  <section key={card.title} className="rounded-[14px] border border-[#E5E7EB] bg-white p-4 shadow-sm">
-                    <div className="flex items-center justify-between gap-3">
-                      <h3 className="text-[14px] font-extrabold text-[#11120d]">{card.title}</h3>
-                      <button type="button" onClick={() => setMobileEditorTab(card.step)} className="min-h-10 px-2 text-[12px] font-bold text-[#2563EB]">Edit</button>
+              <div className="space-y-4">
+                {/* 1. Hero Product Summary Header Card */}
+                <div className="flex flex-col gap-3.5 rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs sm:flex-row sm:items-start sm:justify-between sm:p-5">
+                  <div className="flex items-start gap-3.5 min-w-0 flex-1">
+                    {/* Thumbnail Frame */}
+                    <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#CBD5E1] bg-[#F8FAFC]">
+                      {productImagePreview || form.imageUrl ? (
+                        <img
+                          src={productImagePreview || form.imageUrl}
+                          alt={form.name || "Product"}
+                          className="h-full w-full object-contain p-1"
+                        />
+                      ) : (
+                        <GoogleIcon name="inventory_2" sizePx={34} className="text-[#94A3B8]" />
+                      )}
                     </div>
-                    <div className="mt-2 space-y-1 text-[12px] font-medium leading-5 text-[#565449]">
-                      {card.lines.map((line) => <div key={line}>{line}</div>)}
+
+                    {/* Basic Meta Info */}
+                    <div className="min-w-0 flex-1 space-y-1.5">
+                      <div className="text-[18px] sm:text-[20px] font-black leading-snug text-[#0F172A] break-words">
+                        {form.name || "Untitled Product"}
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[12px] font-bold">
+                        <span className="rounded-md bg-[#F1F5F9] px-2.5 py-1 text-[#334155]">
+                          {form.brand || "No Brand"}
+                        </span>
+                        <span className="text-[#CBD5E1]">·</span>
+                        <span className="rounded-md bg-[#F1F5F9] px-2.5 py-1 text-[#334155]">
+                          {form.category || "Uncategorized"}
+                        </span>
+                        {form.vendorSource ? (
+                          <>
+                            <span className="text-[#CBD5E1]">·</span>
+                            <span className="text-[#64748B]">
+                              Supplier: <span className="text-[#0F172A] font-extrabold">{form.vendorSource}</span>
+                            </span>
+                          </>
+                        ) : null}
+                      </div>
+
+                      {/* SKU & Barcode pills */}
+                      <div className="mt-1 flex flex-wrap items-center gap-2 pt-0.5 text-[12px] font-semibold text-[#64748B]">
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-mono text-[#475569]">
+                          <span className="text-[#94A3B8] font-sans">SKU:</span> {form.sku.trim() || "Auto-generated"}
+                        </span>
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-mono text-[#475569]">
+                          <span className="text-[#94A3B8] font-sans">Barcode:</span> {form.barcode?.trim() || "Auto-generated"}
+                        </span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <button
+                    type="button"
+                    onClick={() => setMobileEditorTab("basic")}
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[9px] border border-[#CBD5E1] bg-white px-3 text-[12.5px] font-bold text-[#2563EB] shadow-2xs hover:bg-[#F8FAFC]"
+                  >
+                    <GoogleIcon name="edit" className="text-[14px]" />
+                    <span>Edit Basic</span>
+                  </button>
+                </div>
+
+                {/* 2. Structured Two-Column Summary Grid */}
+                <div className="grid gap-4 sm:grid-cols-2">
+                  {/* Pricing Card */}
+                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs flex flex-col justify-between sm:p-5">
+                    <div>
+                      <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-3">
+                        <div className="flex items-center gap-2 text-[15px] font-black text-[#0F172A]">
+                          <GoogleIcon name="payments" className="text-[18px] text-emerald-600" />
+                          <span>Pricing & Margins</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setMobileEditorTab("pricing")}
+                          className="text-[13px] font-bold text-[#2563EB] hover:underline"
+                        >
+                          Edit
+                        </button>
+                      </div>
+
+                      <div className="mt-3.5 space-y-2 text-[13px]">
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Purchase Cost (खरिद):</span>
+                          <span className="font-mono font-black text-[#0F172A] text-[14px]">
+                            {form.ratePerPiece !== null && Number(form.ratePerPiece) > 0
+                              ? formatNpr(Number(form.ratePerPiece))
+                              : "Not entered"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Retail Price (खुद्रा):</span>
+                          <span className="font-mono font-black text-[#0F172A] text-[15px]">
+                            {formatNpr(Number(form.retailPrice || 0))}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Wholesale Price (थोक):</span>
+                          <span className="font-mono font-black text-[#0F172A] text-[14px]">
+                            {form.wholesaleEligible && form.wholesalePrice
+                              ? formatNpr(Number(form.wholesalePrice))
+                              : "Disabled"}
+                          </span>
+                        </div>
+                        {form.wholesaleEligible && form.thresholdQty ? (
+                          <div className="flex items-center justify-between py-0.5">
+                            <span className="font-semibold text-[#64748B]">Wholesale Threshold:</span>
+                            <span className="font-bold text-[#334155] text-[13.5px]">
+                              {form.thresholdQty} {form.saleUnit || "PIECE"}
+                            </span>
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    {/* Calculated Profit Margin Badge */}
+                    {form.ratePerPiece !== null && Number(form.ratePerPiece) > 0 && Number(form.retailPrice) > Number(form.ratePerPiece) ? (
+                      <div className="mt-3.5 rounded-[10px] bg-emerald-50 border border-emerald-200 p-2.5 text-[12px] text-emerald-900 font-bold flex items-center justify-between">
+                        <span>Gross Markup:</span>
+                        <span>
+                          {(((Number(form.retailPrice) - Number(form.ratePerPiece)) / Number(form.ratePerPiece)) * 100).toFixed(1)}% ({formatNpr(Number(form.retailPrice) - Number(form.ratePerPiece))} / {form.saleUnit || "piece"})
+                        </span>
+                      </div>
+                    ) : null}
+                  </section>
+
+                  {/* Units, Packaging & Stock Card */}
+                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs flex flex-col justify-between sm:p-5">
+                    <div>
+                      <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-3">
+                        <div className="flex items-center gap-2 text-[15px] font-black text-[#0F172A]">
+                          <GoogleIcon name="inventory" className="text-[18px] text-blue-600" />
+                          <span>Units & Packaging</span>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => setMobileEditorTab("units")}
+                          className="text-[13px] font-bold text-[#2563EB] hover:underline"
+                        >
+                          Edit
+                        </button>
+                      </div>
+
+                      <div className="mt-3.5 space-y-2 text-[13px]">
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Base Sale Unit:</span>
+                          <span className="font-black uppercase text-[#0F172A]">
+                            {form.saleUnit || "PIECE"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Physical Size:</span>
+                          <span className="font-bold text-[#334155]">
+                            {form.sizeValue ? `${form.sizeValue} ${form.sizeUnit || ""}` : "Standard / Unspecified"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Package Quantity:</span>
+                          <span className="font-bold text-[#334155]">
+                            {form.packageQuantity ? `${form.packageQuantity} ${form.saleUnit || "PIECE"}` : "1 PIECE"}
+                          </span>
+                        </div>
+                        <div className="flex items-center justify-between py-0.5">
+                          <span className="font-semibold text-[#64748B]">Order Step:</span>
+                          <span className="font-bold text-[#334155]">
+                            {form.quantityStep || 1} {form.saleUnit || "PIECE"}
+                          </span>
+                        </div>
+                      </div>
+                    </div>
+
+                    {/* Stock & Status summary row */}
+                    <div className="mt-3.5 rounded-[10px] bg-[#F8FAFC] border border-[#E2E8F0] p-2.5 flex items-center justify-between text-[12px]">
+                      {stockTracked ? (
+                        <div>
+                          <span className="font-semibold text-[#64748B]">Stock: </span>
+                          <span className="font-extrabold text-[#0F172A]">{form.stock} {form.saleUnit || "PIECE"}</span>
+                        </div>
+                      ) : (
+                        <span className="text-[#64748B] font-medium">Standard tracking</span>
+                      )}
+                      <span className={cn(
+                        "inline-flex rounded-full px-2.5 py-0.5 text-[11px] font-extrabold",
+                        form.status === "Active" ? "bg-emerald-100 text-emerald-800" : "bg-slate-100 text-slate-700"
+                      )}>
+                        {form.status || "Active"}
+                      </span>
                     </div>
                   </section>
-                ))}
-                <section className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 md:col-span-2">
-                  <h3 className="text-[14px] font-extrabold text-[#1D4ED8]">Identifiers</h3>
-                  <div className="mt-2 text-[12px] font-medium leading-5 text-[#1D4ED8]">
-                    <div>SKU: {form.sku.trim() || "KhataSathi will generate one when saved"}</div>
-                    <div>Barcode: {form.barcode?.trim() || "KhataSathi will generate an internal barcode when saved"}</div>
-                  </div>
-                </section>
+                </div>
               </div>
             ) : null}
           </div>
@@ -2189,12 +2441,12 @@ export default function ProductsModals({
             <div className="flex w-full items-center justify-between gap-3">
               <div className="min-w-0 text-[12px] font-semibold text-[#6B7280]">
                 <span className="font-extrabold text-[#11120d]">
-                  {selectedReviewRows.length} selected
+                  {selectedReviewRows.length} create/update
                 </span>
-                <span> · {ignoredReviewRows.length} ignored</span>
-                {dirtySelectedReviewRows.length > 0 ? (
+                <span> · {keptReviewRows.length} keep · {ignoredReviewRows.length} ignored</span>
+                {dirtyCommitReviewRows.length > 0 ? (
                   <span className="block text-amber-700">
-                    {dirtySelectedReviewRows.length} selected row{dirtySelectedReviewRows.length === 1 ? " has" : "s have"} unsaved changes
+                    {dirtyCommitReviewRows.length} decided row{dirtyCommitReviewRows.length === 1 ? " has" : "s have"} unsaved changes
                   </span>
                 ) : null}
               </div>
@@ -2205,15 +2457,15 @@ export default function ProductsModals({
                 disabled={
                   pdfReviewBusy ||
                   reviewSaveBusy ||
-                  selectedReviewRows.length === 0 ||
-                  dirtySelectedReviewRows.length > 0
+                  commitReviewRows.length === 0 ||
+                  dirtyCommitReviewRows.length > 0
                 }
               >
                 {pdfReviewBusy
                   ? "Importing..."
-                  : dirtySelectedReviewRows.length > 0
+                  : dirtyCommitReviewRows.length > 0
                     ? "Save changes first"
-                    : "Import Selected"}
+                    : `Apply ${commitReviewRows.length} decisions`}
               </Button>
             </div>
           ) : (
@@ -2315,101 +2567,101 @@ export default function ProductsModals({
                   const imported = row.status === "IMPORTED";
                   return (
                     <React.Fragment key={row.rowId}>
-                    <div className={cn("border-b border-[#E5E7EB] px-3 py-3 xl:hidden", active ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]" : "bg-white", row.ignored && "bg-[#F8FAFC]")}>
-                      <button type="button" onClick={() => { setActiveReviewRowId(row.rowId); setReviewPanelTab("row"); setMobileReviewView("editor"); }} className={cn("w-full min-w-0 text-left", row.ignored && "opacity-60")}>
-                        <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold text-[#6B7280]">Row {row.rowNumber}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-extrabold", imported ? "bg-emerald-50 text-emerald-700" : row.ignored ? "bg-slate-200 text-slate-700" : dirtyReviewRowIds.has(row.rowId) ? "bg-amber-50 text-amber-800" : verifiedReviewRowIds.has(row.rowId) ? "bg-emerald-50 text-emerald-700" : row.status === "DUPLICATE" ? "bg-amber-50 text-amber-700" : row.error ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-sky-700")}>{row.ignored ? "Ignored" : dirtyReviewRowIds.has(row.rowId) ? "Unsaved" : verifiedReviewRowIds.has(row.rowId) ? "Saved" : row.status}</span></div>
-                        <div className="mt-1 line-clamp-2 text-[13px] font-extrabold leading-[18px] text-[#11120d]">{row.name || row.rawText || "No text captured"}</div>
-                        <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Purchase cost ${row.ratePerPiece === null ? "not entered" : `रु. ${formatQty(row.ratePerPiece)}`}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
-                      </button>
-                      <div className="mt-3 grid grid-cols-2 gap-2">
-                        <button type="button" disabled={imported || row.ignored} onClick={() => updateReviewRow(row.rowId, { selected: !row.selected, ignored: false })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold", row.selected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]", (imported || row.ignored) && "pointer-events-none opacity-45")}><GoogleIcon name={row.selected ? "check_box" : "check_box_outline_blank"} className="text-[19px]" />{row.selected ? "Selected" : "Select row"}</button>
-                        <button type="button" disabled={imported} onClick={() => updateReviewRow(row.rowId, { ignored: !row.ignored, selected: row.ignored })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold disabled:opacity-45", row.ignored ? "border-[#2563EB] bg-[#EEF4FF] text-[#1D4ED8]" : "border-[#CFCFD3] bg-white text-[#8A2C2C]")}><GoogleIcon name={row.ignored ? "undo" : "block"} className="text-[18px]" />{row.ignored ? "Restore row" : "Ignore row"}</button>
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setActiveReviewRowId(row.rowId);
-                        setReviewPanelTab("row");
-                      }}
-                      className={cn(
-                        "hidden min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0 xl:grid",
-                        active
-                          ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]"
-                          : "bg-white hover:bg-[#ECEFF3]",
-                        row.ignored ? "opacity-60" : "",
-                      )}
-                    >
-                      <input
-                        type="checkbox"
-                        checked={row.selected}
-                        disabled={imported || row.ignored}
-                        onChange={(event) => {
-                          event.stopPropagation();
-                          updateReviewRow(row.rowId, {
-                            selected: event.target.checked,
-                            ignored: event.target.checked ? false : row.ignored,
-                          });
-                        }}
-                        onClick={(event) => event.stopPropagation()}
-                      />
-                      <div className="space-y-[3px]">
-                        <div className="text-[10px] font-extrabold text-[#8C8889]">
-                          Row {row.rowNumber}
+                      <div className={cn("border-b border-[#E5E7EB] px-3 py-3 xl:hidden", active ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]" : "bg-white", row.ignored && "bg-[#F8FAFC]")}>
+                        <button type="button" onClick={() => { setActiveReviewRowId(row.rowId); setReviewPanelTab("row"); setMobileReviewView("editor"); }} className={cn("w-full min-w-0 text-left", row.ignored && "opacity-60")}>
+                          <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold text-[#6B7280]">Row {row.rowNumber}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-extrabold", imported ? "bg-emerald-50 text-emerald-700" : row.ignored ? "bg-slate-200 text-slate-700" : dirtyReviewRowIds.has(row.rowId) ? "bg-amber-50 text-amber-800" : verifiedReviewRowIds.has(row.rowId) ? "bg-emerald-50 text-emerald-700" : row.status === "DUPLICATE" ? "bg-amber-50 text-amber-700" : row.error ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-sky-700")}>{row.ignored ? "Ignored" : dirtyReviewRowIds.has(row.rowId) ? "Unsaved" : verifiedReviewRowIds.has(row.rowId) ? "Saved" : row.status}</span></div>
+                          <div className="mt-1 line-clamp-2 text-[13px] font-extrabold leading-[18px] text-[#11120d]">{row.name || row.rawText || "No text captured"}</div>
+                          <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Purchase cost ${row.ratePerPiece === null ? "not entered" : `रु. ${formatQty(row.ratePerPiece)}`}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
+                        </button>
+                        <div className="mt-3 grid grid-cols-2 gap-2">
+                          <button type="button" disabled={imported || row.ignored || row.comparisonStatus === "MATCHED_WITH_CHANGES" || row.comparisonStatus === "EXACT_DUPLICATE"} onClick={() => updateReviewRow(row.rowId, { selected: !row.selected, ignored: false, resolution: "CREATE_NEW" })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold", row.selected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]", (imported || row.ignored || row.comparisonStatus === "MATCHED_WITH_CHANGES" || row.comparisonStatus === "EXACT_DUPLICATE") && "pointer-events-none opacity-45")}><GoogleIcon name={row.selected ? "check_box" : "check_box_outline_blank"} className="text-[19px]" />{row.selected ? "Selected" : "Select row"}</button>
+                          <button type="button" disabled={imported} onClick={() => updateReviewRow(row.rowId, row.ignored ? { ignored: false, selected: restoredDraftResolution(row) === "CREATE_NEW", resolution: restoredDraftResolution(row) } : { ignored: true, selected: false, resolution: "IGNORE" })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold disabled:opacity-45", row.ignored ? "border-[#2563EB] bg-[#EEF4FF] text-[#1D4ED8]" : "border-[#CFCFD3] bg-white text-[#8A2C2C]")}><GoogleIcon name={row.ignored ? "undo" : "block"} className="text-[18px]" />{row.ignored ? "Restore row" : "Ignore row"}</button>
                         </div>
-                        <span
-                          className={cn(
-                            "inline-flex rounded-full px-[7px] py-[2px] text-[9px] font-extrabold",
-                            imported
-                              ? "bg-emerald-50 text-emerald-700"
-                              : row.ignored
-                                ? "bg-slate-100 text-slate-500"
-                                : row.status === "DUPLICATE"
-                                  ? "bg-amber-50 text-amber-700"
-                                  : row.error
-                                    ? "bg-rose-50 text-rose-700"
-                                    : "bg-sky-50 text-sky-700",
-                          )}
-                        >
-                          {row.ignored ? "Ignored" : row.status}
-                        </span>
                       </div>
-                      <div className="min-w-0">
-                        <div className="max-h-[34px] overflow-hidden break-words text-[12px] font-extrabold leading-[17px] text-[#000000]">
-                          {row.rawText || "No text captured"}
-                        </div>
-                        {row.error ? (
-                          <div className="mt-[2px] max-h-[28px] overflow-hidden break-words text-[10px] font-semibold leading-[14px] text-rose-700">
-                            {row.error}
-                          </div>
-                        ) : (
-                          <div className="truncate text-[10px] font-semibold text-[#8C8889]">
-                            {row.ratePerPiece === null
-                              ? "Purchase cost not entered"
-                              : `NPR ${formatQty(row.ratePerPiece)}`}
-                            {stockTracked ? ` | Stock ${formatQty(row.stock)}` : ""}
-                          </div>
-                        )}
-                      </div>
-                      <span
-                        role="button"
-                        tabIndex={-1}
-                        onClick={(event) => {
-                          event.stopPropagation();
-                          updateReviewRow(row.rowId, {
-                            ignored: !row.ignored,
-                            selected: row.ignored,
-                          });
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setActiveReviewRowId(row.rowId);
+                          setReviewPanelTab("row");
                         }}
                         className={cn(
-                          "inline-flex h-[28px] items-center justify-center rounded-[9px] border border-[#CFCFD3] bg-white px-[8px] text-[11px] font-extrabold text-[#565449] hover:bg-[#F3F4F6]",
-                          imported && "pointer-events-none opacity-50",
+                          "hidden min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0 xl:grid",
+                          active
+                            ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]"
+                            : "bg-white hover:bg-[#ECEFF3]",
+                          row.ignored ? "opacity-60" : "",
                         )}
                       >
-                        <GoogleIcon name={row.ignored ? "undo" : "block"} className="mr-1 text-[15px]" />
-                        {row.ignored ? "Restore" : "Ignore"}
-                      </span>
-                    </button>
+                        <input
+                          type="checkbox"
+                          checked={row.selected}
+                          disabled={imported || row.ignored || row.comparisonStatus === "MATCHED_WITH_CHANGES" || row.comparisonStatus === "EXACT_DUPLICATE"}
+                          onChange={(event) => {
+                            event.stopPropagation();
+                            updateReviewRow(row.rowId, {
+                              selected: event.target.checked,
+                              ignored: event.target.checked ? false : row.ignored,
+                              resolution: "CREATE_NEW",
+                            });
+                          }}
+                          onClick={(event) => event.stopPropagation()}
+                        />
+                        <div className="space-y-[3px]">
+                          <div className="text-[10px] font-extrabold text-[#8C8889]">
+                            Row {row.rowNumber}
+                          </div>
+                          <span
+                            className={cn(
+                              "inline-flex rounded-full px-[7px] py-[2px] text-[9px] font-extrabold",
+                              imported
+                                ? "bg-emerald-50 text-emerald-700"
+                                : row.ignored
+                                  ? "bg-slate-100 text-slate-500"
+                                  : row.status === "DUPLICATE"
+                                    ? "bg-amber-50 text-amber-700"
+                                    : row.error
+                                      ? "bg-rose-50 text-rose-700"
+                                      : "bg-sky-50 text-sky-700",
+                            )}
+                          >
+                            {row.ignored ? "Ignored" : row.status}
+                          </span>
+                        </div>
+                        <div className="min-w-0">
+                          <div className="max-h-[34px] overflow-hidden break-words text-[12px] font-extrabold leading-[17px] text-[#000000]">
+                            {row.rawText || "No text captured"}
+                          </div>
+                          {row.error ? (
+                            <div className="mt-[2px] max-h-[28px] overflow-hidden break-words text-[10px] font-semibold leading-[14px] text-rose-700">
+                              {row.error}
+                            </div>
+                          ) : (
+                            <div className="truncate text-[10px] font-semibold text-[#8C8889]">
+                              {row.ratePerPiece === null
+                                ? "Purchase cost not entered"
+                                : `NPR ${formatQty(row.ratePerPiece)}`}
+                              {stockTracked ? ` | Stock ${formatQty(row.stock)}` : ""}
+                            </div>
+                          )}
+                        </div>
+                        <span
+                          role="button"
+                          tabIndex={-1}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            updateReviewRow(row.rowId, row.ignored
+                              ? { ignored: false, selected: restoredDraftResolution(row) === "CREATE_NEW", resolution: restoredDraftResolution(row) }
+                              : { ignored: true, selected: false, resolution: "IGNORE" });
+                          }}
+                          className={cn(
+                            "inline-flex h-[28px] items-center justify-center rounded-[9px] border border-[#CFCFD3] bg-white px-[8px] text-[11px] font-extrabold text-[#565449] hover:bg-[#F3F4F6]",
+                            imported && "pointer-events-none opacity-50",
+                          )}
+                        >
+                          <GoogleIcon name={row.ignored ? "undo" : "block"} className="mr-1 text-[15px]" />
+                          {row.ignored ? "Restore" : "Ignore"}
+                        </span>
+                      </button>
                     </React.Fragment>
                   );
                 })}
@@ -2632,23 +2884,60 @@ export default function ProductsModals({
                       <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3 shadow-[0_-8px_20px_rgba(17,18,13,0.08)]">
                         <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-bold">
                           <span className="text-[#4B5563]">Review changes before import</span>
-                          <span className={dirtySelectedReviewRows.length > 0 ? "text-amber-700" : "text-emerald-700"}>
-                            {dirtySelectedReviewRows.length > 0 ? `${dirtySelectedReviewRows.length} unsaved` : "All selected rows saved"}
+                          <span className={unconfirmedSelectedReviewRows.length > 0 ? "text-amber-700" : "text-emerald-700"}>
+                            {unconfirmedSelectedReviewRows.length > 0 ? `${unconfirmedSelectedReviewRows.length} need confirmation` : "All selected rows confirmed"}
                           </span>
                         </div>
                         <button
                           type="button"
-                          onClick={() => saveReviewDraftRows(dirtySelectedReviewRows)}
-                          disabled={dirtySelectedReviewRows.length === 0 || reviewSaveBusy}
+                          onClick={() => saveReviewDraftRows(unconfirmedSelectedReviewRows)}
+                          disabled={unconfirmedSelectedReviewRows.length === 0 || reviewSaveBusy}
                           className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white disabled:pointer-events-none disabled:opacity-45"
                         >
-                          <GoogleIcon name="save" className="text-[18px]" />
-                          {reviewSaveBusy ? "Saving changes..." : `Save ${dirtySelectedReviewRows.length} changed ${dirtySelectedReviewRows.length === 1 ? "row" : "rows"}`}
+                          <GoogleIcon name="fact_check" className="text-[18px]" />
+                          {reviewSaveBusy ? "Saving review..." : `Confirm ${unconfirmedSelectedReviewRows.length} checked ${unconfirmedSelectedReviewRows.length === 1 ? "row" : "rows"}`}
                         </button>
                       </div>
                     </div>
                   ) : (
                     <>
+                      {localImportPreviewUrl ? (
+                        <div className="overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#F3F4F6]">
+                          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-[#CFCFD3] bg-white px-3 py-2">
+                            <span className="text-[11px] font-extrabold text-[#11120d]">
+                              Original source
+                            </span>
+                            <div className="flex min-w-0 items-center gap-2">
+                              <span className="max-w-[min(52vw,280px)] truncate text-[10px] font-bold text-[#6B7280]">
+                                {activeReviewRow.sourceCitation || importFile?.name}
+                              </span>
+                              <a
+                                href={`${localImportPreviewUrl}#page=${activeReviewRow.sourceCitation?.match(/p\.(\d+)/i)?.[1] || 1}`}
+                                target="_blank"
+                                rel="noreferrer"
+                                className="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 text-[10px] font-extrabold text-[#11120d] hover:bg-[#F3F4F6]"
+                              >
+                                <GoogleIcon name="open_in_new" className="text-[15px]" />
+                                Open source
+                              </a>
+                            </div>
+                          </div>
+                          {importFile?.type.startsWith("image/") ? (
+                            <img
+                              src={localImportPreviewUrl}
+                              alt="Uploaded supplier catalog"
+                              className="max-h-[min(52vh,560px)] min-h-[240px] w-full object-contain sm:min-h-[300px]"
+                            />
+                          ) : (
+                            <iframe
+                              key={`${activeReviewRow.rowId}-${activeReviewRow.sourceCitation || "source"}`}
+                              title="Original supplier PDF"
+                              src={`${localImportPreviewUrl}#page=${activeReviewRow.sourceCitation?.match(/p\.(\d+)/i)?.[1] || 1}&zoom=page-width`}
+                              className="h-[min(48vh,520px)] min-h-[300px] w-full bg-white sm:min-h-[360px]"
+                            />
+                          )}
+                        </div>
+                      ) : null}
                       <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] py-[10px]">
                         <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
                           Extracted line
@@ -2657,6 +2946,70 @@ export default function ProductsModals({
                           {activeReviewRow.rawText}
                         </div>
                       </div>
+
+                      {activeReviewRow.comparisonStatus ? (
+                        <div className={cn(
+                          "rounded-[14px] border px-3 py-2.5",
+                          activeReviewRow.comparisonStatus === "READY_NEW"
+                            ? "border-emerald-200 bg-emerald-50 text-emerald-800"
+                            : activeReviewRow.comparisonStatus === "MATCHED_WITH_CHANGES"
+                              ? "border-amber-200 bg-amber-50 text-amber-900"
+                              : "border-slate-300 bg-slate-50 text-slate-700",
+                        )}>
+                          <div className="text-[11px] font-extrabold uppercase tracking-wide">
+                            {activeReviewRow.comparisonStatus === "READY_NEW"
+                              ? "New catalog product"
+                              : activeReviewRow.comparisonStatus === "MATCHED_WITH_CHANGES"
+                                ? "Existing product has changes"
+                                : activeReviewRow.comparisonStatus.replaceAll("_", " ")}
+                          </div>
+                          {activeReviewRow.changeSet && activeReviewRow.changeSet.length > 0 ? (
+                            <div className="mt-2 grid gap-1.5 text-[11px] font-semibold">
+                              {activeReviewRow.changeSet.map((change) => (
+                                <div key={change.field} className="grid grid-cols-[minmax(90px,0.7fr)_1fr_auto_1fr] items-center gap-2 rounded-lg bg-white/70 px-2 py-1.5">
+                                  <span className="font-extrabold">{change.field.replaceAll(/([A-Z])/g, " $1")}</span>
+                                  <span className="truncate text-slate-600">{change.currentValue ?? "Not entered"}</span>
+                                  <GoogleIcon name="arrow_forward" className="text-[14px]" />
+                                  <span className="truncate font-extrabold">{change.incomingValue ?? "Not entered"}</span>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                          {activeReviewRow.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
+                            <div className="mt-3">
+                              <div className="mb-2 text-[11px] font-bold leading-4">
+                                Choose what this catalog row should do. Nothing is updated until you save the decision and confirm the import.
+                              </div>
+                              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                                <button
+                                  type="button"
+                                  onClick={() => updateReviewRow(activeReviewRow.rowId, { resolution: "KEEP_EXISTING", selected: false, ignored: false })}
+                                  className={cn("min-h-11 rounded-[11px] border px-3 text-[11px] font-extrabold", activeReviewRow.resolution === "KEEP_EXISTING" ? "border-slate-700 bg-slate-800 text-white" : "border-slate-300 bg-white text-slate-800")}
+                                >
+                                  Keep existing
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => updateReviewRow(activeReviewRow.rowId, { resolution: "UPDATE_MATCHED", selected: true, ignored: false })}
+                                  className={cn("min-h-11 rounded-[11px] border px-3 text-[11px] font-extrabold", activeReviewRow.resolution === "UPDATE_MATCHED" ? "border-blue-700 bg-blue-700 text-white" : "border-blue-300 bg-white text-blue-800")}
+                                >
+                                  Apply displayed changes
+                                </button>
+                              </div>
+                            </div>
+                          ) : activeReviewRow.comparisonStatus === "EXACT_DUPLICATE" ? (
+                            <div className="mt-2 rounded-[10px] border border-slate-200 bg-white/80 px-3 py-2 text-[11px] font-bold leading-4">
+                              No supplier fields changed. Decision: keep the existing product unchanged.
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+
+                      {activeReviewRow.ratePerPiece === null ? (
+                        <div className="rounded-[12px] border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] font-bold leading-4 text-sky-900">
+                          Price coming soon. This product can be kept in catalog and search with zero stock, but it cannot be billed until purchase and selling prices are entered and approved.
+                        </div>
+                      ) : null}
 
                       <div className="grid grid-cols-1 gap-[10px] lg:grid-cols-2">
                         <Field label="Product Name">
@@ -2818,12 +3171,16 @@ export default function ProductsModals({
                         <Field label="Package Qty">
                           <input
                             type="number"
-                            value={activeReviewRow.packageQuantity}
+                            value={activeReviewRow.packageQuantity ?? ""}
                             onChange={(event) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                packageQuantity: Number(event.target.value),
+                                packageQuantity:
+                                  event.target.value === ""
+                                    ? null
+                                    : Number(event.target.value),
                               })
                             }
+                            placeholder="Unknown"
                             className={compactInputClass}
                           />
                         </Field>
@@ -2862,25 +3219,29 @@ export default function ProductsModals({
                             className={compactInputClass}
                           />
                         </Field>
-                        <Field label="Retail Price">
+                        <Field label="Retail Price (optional)">
                           <input
                             type="number"
-                            value={activeReviewRow.retailPrice}
+                            value={activeReviewRow.retailPrice ?? ""}
                             onChange={(event) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                retailPrice: Number(event.target.value),
+                                retailPrice: event.target.value
+                                  ? Number(event.target.value)
+                                  : null,
                               })
                             }
                             className={compactInputClass}
                           />
                         </Field>
-                        <Field label="Wholesale">
+                        <Field label="Store Wholesale (optional)">
                           <input
                             type="number"
-                            value={activeReviewRow.wholesalePrice}
+                            value={activeReviewRow.wholesalePrice ?? ""}
                             onChange={(event) =>
                               updateReviewRow(activeReviewRow.rowId, {
-                                wholesalePrice: Number(event.target.value),
+                                wholesalePrice: event.target.value
+                                  ? Number(event.target.value)
+                                  : null,
                               })
                             }
                             className={compactInputClass}
@@ -2899,6 +3260,13 @@ export default function ProductsModals({
                           />
                         </Field> : null}
                       </div>
+
+                      {activeReviewRow.retailPrice === null ||
+                        activeReviewRow.wholesalePrice === null ? (
+                        <div className="rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-bold leading-4 text-amber-800">
+                          Selling prices needed before billing. This product will remain visible in the catalog, but billing is blocked until both retail and store-wholesale prices are entered.
+                        </div>
+                      ) : null}
 
                       <div className="grid grid-cols-1 gap-[10px]">
                         <label className="flex h-[40px] items-center gap-[8px] rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6] px-[10px] text-[12px] font-extrabold text-[#565449]">
@@ -2940,11 +3308,11 @@ export default function ProductsModals({
                       <button
                         type="button"
                         onClick={() => saveReviewDraftRows([activeReviewRow])}
-                        disabled={!activeReviewRowDirty || reviewSaveBusy || activeReviewRow.status === "IMPORTED"}
+                        disabled={!activeReviewRowNeedsConfirmation || reviewSaveBusy || activeReviewRow.status === "IMPORTED"}
                         className="inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white disabled:pointer-events-none disabled:opacity-45"
                       >
                         <GoogleIcon name="save" className="text-[18px]" />
-                        {reviewSaveBusy ? "Saving row..." : activeReviewRowDirty ? "Save row changes" : "Row saved"}
+                        {reviewSaveBusy ? "Saving row..." : activeReviewRowDirty ? "Save row changes" : activeReviewRowNeedsConfirmation ? "Confirm checked row" : "Row confirmed"}
                       </button>
                     </div>
                   ) : null}
@@ -2978,26 +3346,29 @@ export default function ProductsModals({
                 </div>
               )}
             </section>
-          </div>        ) : (
+          </div>) : (
           <div className="flex flex-col h-full bg-[#F8FAFC]">
             {/* Tabs */}
             <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
               <button
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "csv" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                type="button"
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "csv" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("csv")}
               >
                 <Icon name="table_chart" className="text-[18px]" />
                 Spreadsheet
               </button>
               <button
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "pdf" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                type="button"
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "pdf" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("pdf")}
               >
                 <Icon name="picture_as_pdf" className="text-[18px]" />
                 PDF Rate List
               </button>
               <button
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "image" ? "border-[#2563EB] text-[#2563EB]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                type="button"
+                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "image" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("image")}
               >
                 <Icon name="image" className="text-[18px]" />
@@ -3015,17 +3386,17 @@ export default function ProductsModals({
             )}
 
             {/* Tab Content */}
-            <div className="p-[24px] overflow-y-auto space-y-[24px]">
+            <div className="space-y-[20px] p-[20px] sm:p-[24px]">
               {importTab === "csv" && (
-                <div className="space-y-[24px]">
+                <div className="space-y-[20px]">
                   {/* Spreadsheet Upload */}
-                  <div className="border-2 border-dashed border-[#CFCFD3] rounded-[16px] p-[32px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative bg-white">
-                    <div className="w-[48px] h-[48px] rounded-[12px] bg-[#F1F5F9] border border-[#E2E8F0] flex items-center justify-center mx-auto mb-[16px] group-hover:scale-110 transition-transform">
-                      <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#3B82F6]" />
+                  <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[28px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[32px]">
+                    <div className="mx-auto mb-[14px] flex h-[48px] w-[48px] items-center justify-center rounded-[12px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
+                      <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#11120d]" />
                     </div>
-                    <h4 className="text-[14px] font-bold text-[#1E293B] mb-[6px]">Upload spreadsheet rate list</h4>
-                    <p className="text-[12px] text-[#64748B] mb-[16px]">Supports .csv and modern Excel .xlsx workbooks</p>
-                    <label htmlFor="csv-upload" className="inline-flex cursor-pointer bg-[#F1F5F9] text-[#0F172A] font-bold px-[20px] py-[8px] rounded-[8px] text-[12px] border border-[#E2E8F0] shadow-sm hover:bg-[#E2E8F0] transition">
+                    <h4 className="mb-[4px] text-[14px] font-bold text-[#1E293B]">Upload spreadsheet rate list</h4>
+                    <p className="mb-[14px] text-[12px] text-[#64748B]">Supports .csv and modern Excel .xlsx workbooks</p>
+                    <label htmlFor="csv-upload" className="inline-flex cursor-pointer rounded-[8px] bg-[#11120d] px-[20px] py-[8px] text-[12px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
                       {importFile ? "Change spreadsheet" : "Choose spreadsheet"}
                     </label>
                     <input
@@ -3036,33 +3407,33 @@ export default function ProductsModals({
                       id="csv-upload"
                     />
                     {importFile && (
-                      <div className="mt-[12px] text-[12px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                      <div className="mt-[12px] flex items-center justify-center gap-[6px] text-[12px] font-bold text-emerald-800">
                         <Icon name="check_circle" className="text-[14px]" /> {importFile.name}
                       </div>
                     )}
                   </div>
 
                   {/* Spreadsheet Field Mapping & Template Settings */}
-                  <div className="bg-white border border-[#E5E7EB] rounded-[16px] p-[20px] shadow-sm">
-                    <div className="flex flex-wrap items-center justify-between gap-[12px] mb-[16px]">
+                  <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[18px] shadow-xs sm:p-[20px]">
+                    <div className="mb-[14px] flex flex-wrap items-center justify-between gap-[12px]">
                       <div>
                         <h4 className="text-[14px] font-bold text-[#11120d]">Spreadsheet Column Mapping</h4>
-                        <p className="text-[12px] text-[#8C8889] mt-[2px]">Map supplier columns to KhataSathi fields</p>
+                        <p className="mt-[2px] text-[12px] text-[#8C8889]">Map supplier columns to KhataSathi fields</p>
                       </div>
                       <div className="flex gap-[8px]">
-                        <button type="button" onClick={saveImportTemplateWithValidation} className="text-[12px] font-bold bg-[#F3F4F6] text-[#565449] px-[12px] py-[6px] rounded-[8px] hover:bg-[#E5E7EB] transition">Save Template</button>
+                        <button type="button" onClick={saveImportTemplateWithValidation} className="rounded-[8px] bg-[#F3F4F6] px-[12px] py-[6px] text-[12px] font-bold text-[#565449] transition hover:bg-[#E5E7EB]">Save Template</button>
                         {importTemplateId && (
-                          <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="text-[12px] font-bold bg-[#FEF2F2] text-[#DC2626] px-[12px] py-[6px] rounded-[8px] hover:bg-[#FEE2E2] transition">Delete</button>
+                          <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="rounded-[8px] bg-[#FEF2F2] px-[12px] py-[6px] text-[12px] font-bold text-[#DC2626] transition hover:bg-[#FEE2E2]">Delete</button>
                         )}
                       </div>
                     </div>
 
-                    <div className="space-y-[16px]">
-                      <div className="grid grid-cols-1 md:grid-cols-2 gap-[12px]">
+                    <div className="space-y-[14px]">
+                      <div className="grid grid-cols-1 gap-[12px] md:grid-cols-2">
                         <ProjectSelect
                           value={importTemplateId}
                           onChange={(event) => setImportTemplateId(event.target.value)}
-                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold outline-none focus:border-[#3B82F6]"
+                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold outline-none focus:border-[#11120d]"
                         >
                           <option value="">No template</option>
                           {importTemplates.map((t) => <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>)}
@@ -3078,23 +3449,23 @@ export default function ProductsModals({
                               setImportSupplierError("");
                             }}
                             placeholder="Supplier / Brand Name"
-                            className={cn("h-[40px] w-full rounded-[10px] bg-white px-[12px] text-[13px] font-semibold outline-none focus:ring-2", importSupplierError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#3B82F6] focus:ring-blue-100")}
+                            className={cn("h-[40px] w-full rounded-[10px] bg-white px-[12px] text-[13px] font-semibold outline-none focus:ring-2", importSupplierError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
                           />
                           {importSupplierError ? <span id="import-supplier-error" role="alert" className="mt-1 block text-[11px] font-semibold text-[#BE123C]">{importSupplierError}</span> : null}
                         </label>
                       </div>
 
-                      <div className="grid grid-cols-2 md:grid-cols-4 gap-[12px] p-[16px] bg-[#F8FAFC] rounded-[12px] border border-[#E5E7EB]">
+                      <div className="grid grid-cols-2 gap-[10px] rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-[14px] sm:grid-cols-3 md:grid-cols-4">
                         {[
                           ["productName", "Name Col"], ["serial", "SKU/Serial"], ["variant", "Variant"],
                           ["packageQuantity", "Pack Qty"], ["retailPrice", "MRP Col"], ["wholesalePrice", "Rate Col"], ["stock", "Stock"]
                         ].filter(([key]) => stockTracked || key !== "stock").map(([key, label]) => (
-                          <div key={key} className="space-y-[6px]">
-                            <label className="text-[11px] font-bold text-[#8C8889] uppercase tracking-wider">{label}</label>
+                          <div key={key} className="space-y-[4px]">
+                            <label className="text-[10px] font-extrabold uppercase tracking-wider text-[#8C8889]">{label}</label>
                             <input
                               value={importFieldMap[key] || ""}
-                              onChange={(event) => setImportFieldMap((current) => ({...current, [key]: event.target.value}))}
-                              className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold outline-none focus:border-[#3B82F6] focus:ring-1 focus:ring-[#3B82F6]"
+                              onChange={(event) => setImportFieldMap((current) => ({ ...current, [key]: event.target.value }))}
+                              className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold outline-none transition focus:border-[#11120d] focus:ring-1 focus:ring-[#11120d]"
                               placeholder="Header name"
                             />
                           </div>
@@ -3104,33 +3475,33 @@ export default function ProductsModals({
                   </div>
 
                   {/* Import History */}
-                  <div className="bg-white border border-[#E5E7EB] rounded-[16px] overflow-hidden shadow-sm">
-                    <div className="px-[20px] py-[16px] border-b border-[#E5E7EB] bg-[#F8FAFC]">
+                  <div className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white shadow-xs">
+                    <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-[20px] py-[14px]">
                       <h4 className="text-[14px] font-bold text-[#11120d]">Recent Import History</h4>
                     </div>
                     {importBatches.length > 0 ? (
                       <div className="divide-y divide-[#E5E7EB]">
                         {importBatches.map((batch) => (
-                          <div key={batch.id} className="flex min-w-0 items-center justify-between gap-3 p-[16px] transition-colors hover:bg-[#ECEFF3]">
+                          <div key={batch.id} className="flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors hover:bg-[#ECEFF3] sm:p-[16px]">
                             <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
-                              <div className="h-[40px] w-[40px] shrink-0 rounded-[10px] bg-[#F1F5F9] flex items-center justify-center border border-[#E2E8F0]">
+                              <div className="flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[10px] border border-[#E2E8F0] bg-[#F1F5F9]">
                                 <Icon name={["CSV", "XLSX"].includes(String(batch.sourceType || "").toUpperCase()) ? "table_chart" : String(batch.sourceType || "").toUpperCase() === "PDF" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#64748B]" />
                               </div>
                               <div className="min-w-0 flex-1">
                                 <div className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">{batch.fileName || "Supplier import"}</div>
-                                <div className="text-[11px] font-medium text-[#64748B] mt-[2px]">{batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""} • {displaySourceType(batch.sourceType)}</div>
+                                <div className="mt-[2px] text-[11px] font-medium text-[#64748B]">{batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""} • {displaySourceType(batch.sourceType)}</div>
                               </div>
                             </div>
-                            <div className="flex shrink-0 items-center gap-2 sm:gap-[24px]">
-                              <div className="text-right hidden sm:block">
+                            <div className="flex shrink-0 items-center gap-2 sm:gap-[20px]">
+                              <div className="hidden text-right sm:block">
                                 <div className="text-[12px] font-bold text-[#334155]">{batch.totalRows} Rows</div>
-                                <div className="text-[11px] font-medium text-[#10B981] mt-[2px]">{batch.importedRows} Processed</div>
+                                <div className="mt-[2px] text-[11px] font-semibold text-[#64748B]">{batch.importedRows} Processed</div>
                               </div>
                               <div className="flex shrink-0 items-center gap-[8px]">
-                                <button onClick={() => setDeleteImportBatchId(batch.id)} className="w-[32px] h-[32px] flex items-center justify-center rounded-[8px] text-[#64748B] hover:text-[#EF4444] hover:bg-[#FEE2E2] transition">
+                                <button type="button" onClick={() => setDeleteImportBatchId(batch.id)} className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#64748B] transition hover:bg-[#FEE2E2] hover:text-[#EF4444]" title="Delete import review" aria-label={`Delete import ${batch.fileName || "file"}`}>
                                   <Icon name="delete" className="text-[18px]" />
                                 </button>
-                                <button onClick={() => onOpenImportBatch(batch.id)} className="px-[16px] h-[32px] flex items-center justify-center rounded-[8px] text-[12px] font-bold bg-[#F1F5F9] text-[#0F172A] hover:bg-[#E2E8F0] transition">
+                                <button type="button" onClick={() => onOpenImportBatch(batch.id)} className="flex h-[32px] items-center justify-center rounded-[8px] bg-[#11120d] px-[14px] text-[12px] font-bold text-white transition hover:bg-[#2a2c27]">
                                   Open
                                 </button>
                               </div>
@@ -3139,10 +3510,10 @@ export default function ProductsModals({
                         ))}
                       </div>
                     ) : (
-                      <div className="p-[40px] text-center">
-                        <Icon name="history" className="text-[40px] text-[#CBD5E1] mx-auto mb-[12px]" />
+                      <div className="p-[36px] text-center">
+                        <Icon name="history" className="mx-auto mb-[10px] text-[36px] text-[#CBD5E1]" />
                         <div className="text-[14px] font-bold text-[#475569]">No Recent Imports</div>
-                        <div className="text-[13px] text-[#64748B] mt-[4px]">Your imported rate lists and history will appear here.</div>
+                        <div className="mt-[4px] text-[12px] text-[#64748B]">Your imported rate lists and history will appear here.</div>
                       </div>
                     )}
                   </div>
@@ -3150,13 +3521,13 @@ export default function ProductsModals({
               )}
 
               {importTab === "pdf" && (
-                <div className="border-2 border-dashed border-[#CFCFD3] bg-white rounded-[16px] p-[48px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative">
-                  <div className="w-[64px] h-[64px] rounded-[16px] bg-[#F1F5F9] border border-[#E2E8F0] shadow-sm flex items-center justify-center mx-auto mb-[20px] group-hover:scale-110 transition-transform">
-                    <Icon name="picture_as_pdf" className="text-[32px] text-[#94A3B8] group-hover:text-[#3B82F6]" />
+                <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
+                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] shadow-xs transition-transform group-hover:scale-110">
+                    <Icon name="picture_as_pdf" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
                   </div>
-                  <h4 className="text-[16px] font-bold text-[#1E293B] mb-[8px]">Upload PDF supplier rate list</h4>
-                  <p className="text-[13px] text-[#64748B] mb-[24px]">PDF files up to 10MB — AI will parse and extract product data</p>
-                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer bg-[#2563EB] text-white font-bold px-[24px] py-[10px] rounded-[10px] text-[13px] shadow-sm hover:bg-[#1D4ED8] transition">
+                  <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload PDF supplier rate list</h4>
+                  <p className="mb-[20px] text-[13px] text-[#64748B]">Text or scanned PDF files up to 50 MB. Extracted rows always open in review before import.</p>
+                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
                     {importFile ? "Change PDF File" : "Choose PDF File"}
                   </label>
                   <input
@@ -3167,7 +3538,7 @@ export default function ProductsModals({
                     id="pdf-upload"
                   />
                   {importFile && (
-                    <div className="mt-[16px] text-[13px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                    <div className="mt-[14px] flex items-center justify-center gap-[6px] text-[13px] font-bold text-emerald-800">
                       <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
                     </div>
                   )}
@@ -3175,13 +3546,13 @@ export default function ProductsModals({
               )}
 
               {importTab === "image" && (
-                <div className="border-2 border-dashed border-[#CFCFD3] bg-white rounded-[16px] p-[48px] text-center hover:border-[#3B82F6] hover:bg-[#EFF6FF] transition group relative">
-                  <div className="w-[64px] h-[64px] rounded-[16px] bg-[#F1F5F9] border border-[#E2E8F0] shadow-sm flex items-center justify-center mx-auto mb-[20px] group-hover:scale-110 transition-transform">
-                    <Icon name="image" className="text-[32px] text-[#94A3B8] group-hover:text-[#3B82F6]" />
+                <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
+                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] shadow-xs transition-transform group-hover:scale-110">
+                    <Icon name="image" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
                   </div>
-                  <h4 className="text-[16px] font-bold text-[#1E293B] mb-[8px]">Upload image of printed rate list</h4>
-                  <p className="text-[13px] text-[#64748B] mb-[24px]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
-                  <label htmlFor="img-upload" className="inline-flex cursor-pointer bg-[#2563EB] text-white font-bold px-[24px] py-[10px] rounded-[10px] text-[13px] shadow-sm hover:bg-[#1D4ED8] transition">
+                  <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload image of printed rate list</h4>
+                  <p className="mb-[20px] text-[13px] text-[#64748B]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
+                  <label htmlFor="img-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
                     {importFile ? "Change Image" : "Choose Image"}
                   </label>
                   <input
@@ -3192,7 +3563,7 @@ export default function ProductsModals({
                     id="img-upload"
                   />
                   {importFile && (
-                    <div className="mt-[16px] text-[13px] font-bold text-[#10B981] flex items-center justify-center gap-[6px]">
+                    <div className="mt-[14px] flex items-center justify-center gap-[6px] text-[13px] font-bold text-emerald-800">
                       <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
                     </div>
                   )}
@@ -3207,7 +3578,7 @@ export default function ProductsModals({
       <ModalFrame
         open={confirmImportSelected}
         title="Import reviewed products?"
-        description="This is the final check before new products are inserted into the catalog."
+        description="This is the final check before catalog creates, matched updates, and keep-existing decisions are applied."
         onClose={() => setConfirmImportSelected(false)}
         layer="critical"
         maxWidthClass="max-w-[540px]"
@@ -3215,28 +3586,34 @@ export default function ProductsModals({
         footer={(
           <div className="grid w-full grid-cols-2 gap-3">
             <DialogButton onClick={() => setConfirmImportSelected(false)} disabled={pdfReviewBusy}>Review again</DialogButton>
-            <DialogButton variant="primary" icon="check_circle" onClick={confirmSelectedPdfRowsImport} disabled={pdfReviewBusy || selectedReviewRows.length === 0 || selectedReviewIssueCount > 0}>{pdfReviewBusy ? "Importing..." : selectedReviewIssueCount > 0 ? "Resolve selected issues" : `Import ${selectedReviewRows.length}`}</DialogButton>
+            <DialogButton variant="primary" icon="check_circle" onClick={confirmSelectedPdfRowsImport} disabled={pdfReviewBusy || commitReviewRows.length === 0 || selectedReviewIssueCount > 0}>{pdfReviewBusy ? "Applying..." : selectedReviewIssueCount > 0 ? "Resolve selected issues" : `Apply ${commitReviewRows.length}`}</DialogButton>
           </div>
         )}
       >
         <div className="space-y-3">
-          <div className="grid grid-cols-3 gap-2">
-            <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 p-3 text-center"><div className="text-[20px] font-black text-emerald-800">{selectedReviewRows.length}</div><div className="text-[10px] font-extrabold uppercase text-emerald-700">To import</div></div>
-            <div className="rounded-[12px] border border-slate-200 bg-slate-50 p-3 text-center"><div className="text-[20px] font-black text-slate-800">{ignoredReviewRows.length}</div><div className="text-[10px] font-extrabold uppercase text-slate-600">Ignored</div></div>
-            <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-3 text-center"><div className="text-[20px] font-black text-amber-800">{selectedReviewIssueCount}</div><div className="text-[10px] font-extrabold uppercase text-amber-700">Selected issues</div></div>
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+            <div className="rounded-[12px] border border-emerald-200 bg-emerald-50 p-3 text-center"><div className="text-[20px] font-black text-emerald-800">{selectedReviewRows.filter((row) => row.resolution === "CREATE_NEW").length}</div><div className="text-[10px] font-extrabold uppercase text-emerald-700">Create</div></div>
+            <div className="rounded-[12px] border border-blue-200 bg-blue-50 p-3 text-center"><div className="text-[20px] font-black text-blue-800">{selectedReviewRows.filter((row) => row.resolution === "UPDATE_MATCHED").length}</div><div className="text-[10px] font-extrabold uppercase text-blue-700">Update</div></div>
+            <div className="rounded-[12px] border border-slate-200 bg-slate-50 p-3 text-center"><div className="text-[20px] font-black text-slate-800">{keptReviewRows.length}</div><div className="text-[10px] font-extrabold uppercase text-slate-600">Keep</div></div>
+            <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-3 text-center"><div className="text-[20px] font-black text-amber-800">{selectedReviewIssueCount}</div><div className="text-[10px] font-extrabold uppercase text-amber-700">Issues</div></div>
           </div>
-          <p className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 text-[12px] font-semibold leading-5 text-[#1D4ED8]">Only checked, non-ignored rows will be submitted. Selected duplicates or failed rows must be corrected, ignored, or deselected before import.</p>
+          <p className="rounded-[14px] border border-[#BFDBFE] bg-[#EFF6FF] p-4 text-[12px] font-semibold leading-5 text-[#1D4ED8]">Creates add catalog products. Updates apply only the displayed supplier-field differences to the matched product. Keep leaves the existing product unchanged. Ignored rows are recorded but not applied.</p>
         </div>
       </ModalFrame>
 
-      <ModalShell
+      <ModalFrame
         open={!!deleteImportBatchId}
         title="Delete Import Review"
+        description="Products that were already imported from this review will not be removed from your catalog."
         onClose={() => setDeleteImportBatchId(null)}
+        layer="critical"
+        maxWidthClass="max-w-[460px]"
         footer={
-          <div className="flex w-full items-center justify-end gap-[10px] [&>button]:flex-1 md:[&>button]:flex-none">
-            <Button onClick={() => setDeleteImportBatchId(null)}>Cancel</Button>
-            <Button
+          <div className="grid w-full grid-cols-2 gap-2.5">
+            <DialogButton onClick={() => setDeleteImportBatchId(null)} disabled={importBusy}>
+              Cancel
+            </DialogButton>
+            <DialogButton
               variant="danger"
               icon="delete"
               disabled={importBusy || !deleteImportBatchId}
@@ -3246,43 +3623,43 @@ export default function ProductsModals({
                 setDeleteImportBatchId(null);
               }}
             >
-              Delete Review
-            </Button>
+              {importBusy ? "Deleting..." : "Delete Review"}
+            </DialogButton>
           </div>
         }
       >
-        <div className="space-y-[12px]">
-          <div className="rounded-[14px] border border-rose-200 bg-rose-50 px-[12px] py-[10px] text-[13px] font-semibold leading-5 text-rose-800">
-            Delete this import review history? Products that were already
-            imported from this review will not be removed.
+        <div className="space-y-3">
+          <div className="rounded-[12px] border border-rose-200 bg-rose-50 p-3 text-[12px] font-semibold leading-5 text-rose-800">
+            Delete this import review history? Products that were already imported from this review will not be removed.
           </div>
-          <div className="rounded-[14px] border border-[#CFCFD3] bg-white px-[12px] py-[10px]">
-            <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+          <div className="rounded-[12px] border border-[#D8DBE0] bg-[#F8FAFC] p-3.5">
+            <div className="text-[10px] font-extrabold uppercase tracking-wide text-[#7A7F89]">
               Review
             </div>
-            <div className="mt-[4px] text-[14px] font-extrabold text-[#000000]">
+            <div className="mt-1 truncate text-[14px] font-extrabold text-[#11120d]">
               {deleteImportBatch?.fileName || "Supplier import"}
             </div>
-            <div className="mt-[5px] flex flex-wrap gap-[6px] text-[11px] font-extrabold">
-              <span className="rounded-full bg-[#F3F4F6] px-[8px] py-[4px] text-[#565449]">
+            <div className="mt-2 flex flex-wrap gap-1.5 text-[11px] font-bold">
+              <span className="rounded-full border border-[#D8DBE0] bg-white px-2.5 py-0.5 text-[#4B5563]">
                 {displaySourceType(deleteImportBatch?.sourceType)}
               </span>
-              <span className="rounded-full bg-[#F3F4F6] px-[8px] py-[4px] text-[#565449]">
+              <span className="rounded-full border border-[#D8DBE0] bg-white px-2.5 py-0.5 text-[#4B5563]">
                 {deleteImportBatch?.totalRows || 0} rows
               </span>
-              <span className="rounded-full bg-[#F3F4F6] px-[8px] py-[4px] text-[#565449]">
+              <span className="rounded-full border border-[#D8DBE0] bg-white px-2.5 py-0.5 text-[#4B5563]">
                 {deleteImportBatch?.status || "DRAFT"}
               </span>
             </div>
           </div>
         </div>
-      </ModalShell>
+      </ModalFrame>
 
       <ModalShell
         open={openView}
         title="Product Details"
         onClose={() => setOpenView(false)}
-        contentClassName="bg-white p-[20px]"
+        maxWidthClass="max-w-[700px]"
+        contentClassName="bg-white p-5"
         footer={
           <>
             <div className="w-full md:hidden [&>button]:w-full">
@@ -3297,244 +3674,239 @@ export default function ProductsModals({
       >
         {activeProduct ? (
           <>
-          <div className="space-y-4 md:hidden">
-            <PreviewableImage
-              src={activeProduct.imageUrl}
-              alt={activeProduct.name}
-              title={activeProduct.name}
-              subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
-              enablePreview="desktop"
-              imgClassName="h-full w-full object-contain p-3"
-              className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC]"
-              fallback={<GoogleIcon name="inventory_2" sizePx={70} className="text-[#8C8889]" />}
-            />
-            <div>
-              <h2 className="text-[25px] font-black leading-8 text-[#11120d]">{activeProduct.name}</h2>
-              <div className="mt-2 flex flex-wrap items-center gap-2">
-                <span className="rounded-[8px] bg-[#F3F4F6] px-2.5 py-1.5 font-mono text-[12px] font-bold text-[#6B7280]">{activeProduct.sku || "NO-SKU"}</span>
-                <StatusPill status={activeProduct.status} />
-              </div>
-            </div>
-
-            {([
-              {
-                icon: "badge",
-                title: "Identity",
-                rows: [
-                  ["Brand", activeProduct.brand || "-"],
-                  ["Category", activeProduct.category || "-"],
-                  ["Variant", activeProduct.productCodeVariant || "-"],
-                  ["Barcode", activeProduct.barcode || "-"],
-                  ["Supplier", activeProduct.vendorSource || "-"],
-                ],
-              },
-              {
-                icon: "sell",
-                title: "Pricing",
-                rows: [
-                  ...(purchaseCostVisible
-                    ? [["Purchase cost", formatOptionalPurchaseCost(activeProduct.ratePerPiece)] as const]
-                    : []),
-                  ["Retail Price", formatNpr(activeProduct.retailPrice)],
-                  ["Wholesale Price", formatNpr(activeProduct.wholesalePrice)],
-                  ["Wholesale Threshold", `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}${activeProduct.thresholdQtyMode === "default" ? " (Default)" : ""}`],
-                ],
-              },
-              {
-                icon: "deployed_code",
-                title: "Units & Packaging",
-                rows: [
-                  ["Size", formatProductSize(activeProduct)],
-                  ["Pack", formatPackage(activeProduct)],
-                  ["Sale Unit", activeProduct.saleUnit || "-"],
-                  ["Quantity Step", formatQty(activeProduct.quantityStep)],
-                  ["Fractional quantities", activeProduct.allowFractionalQty ? "Allowed" : "Not allowed"],
-                ],
-              },
-              {
-                icon: "inventory_2",
-                title: "Stock",
-                rows: [
-                  ["Current Stock", `${formatQty(activeProduct.stock)} ${activeProduct.saleUnit || "PIECE"}`],
-                  ["Low-stock Threshold", `${formatQty(activeProduct.lowStockThreshold)}${activeProduct.lowStockThresholdMode === "default" ? " (Default)" : " (Custom)"}`],
-                  ["Availability", getStockFlag(activeProduct)],
-                ],
-              },
-            ] as const)
-              .filter((section) => stockTracked || section.title !== "Stock")
-              .map((section) => (
-              <section key={section.title} className="rounded-[16px] border border-[#E5E7EB] bg-white p-3.5">
-                <div className="flex items-start gap-3">
-                  <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#11120d]"><GoogleIcon name={section.icon} className="text-[22px]" /></span>
-                  <div className="min-w-0 flex-1">
-                    <h3 className="text-[15px] font-extrabold text-[#11120d]">{section.title}</h3>
-                    <dl className="mt-2 space-y-2">
-                      {section.rows.map(([label, value]) => (
-                        <div key={label} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] gap-3 text-[13px]">
-                          <dt className="font-semibold text-[#6B7280]">{label}</dt>
-                          <dd className="break-words text-right font-bold text-[#11120d]">{value}</dd>
-                        </div>
-                      ))}
-                    </dl>
-                  </div>
-                </div>
-              </section>
-            ))}
-          </div>
-
-          <div className="hidden bg-white md:block md:max-h-[85vh] md:overflow-y-auto">
-            <div className="flex flex-col gap-[20px] md:flex-row">
-
-              {/* Left - Image & Quick Actions */}
-              <div className="w-full flex-shrink-0 md:w-[152px] flex flex-col items-center">
-                <PreviewableImage
-                  src={activeProduct.imageUrl}
-                  alt={activeProduct.name}
-                  title={activeProduct.name}
-                  subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
-                  enablePreview="desktop"
-                  imgClassName="h-full w-full object-contain p-2"
-                  className="flex w-full aspect-square items-center justify-center overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-white shadow-sm"
-                  fallback={
-                    <GoogleIcon
-                      name="inventory_2"
-                      sizePx={64}
-                      className="text-[#8C8889]"
-                    />
-                  }
-                />
-                <div className="mt-[12px]">
+            <div className="space-y-4 md:hidden">
+              <PreviewableImage
+                src={activeProduct.imageUrl}
+                alt={activeProduct.name}
+                title={activeProduct.name}
+                subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
+                enablePreview="desktop"
+                imgClassName="h-full w-full object-contain p-3"
+                className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC]"
+                fallback={<GoogleIcon name="inventory_2" sizePx={70} className="text-[#8C8889]" />}
+              />
+              <div>
+                <h2 className="text-[25px] font-black leading-8 text-[#11120d]">{activeProduct.name}</h2>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="rounded-[8px] bg-[#F3F4F6] px-2.5 py-1.5 font-mono text-[12px] font-bold text-[#6B7280]">{activeProduct.sku || "NO-SKU"}</span>
                   <StatusPill status={activeProduct.status} />
                 </div>
               </div>
 
-              {/* Right - Details */}
-              <div className="flex-1 space-y-[16px]">
-                
-                {/* Header Info */}
-                <div>
-                  <h3 className="text-[20px] font-extrabold leading-6 text-[#11120d]">{activeProduct.name}</h3>
-                  <div className="flex items-center gap-[8px] mt-[4px]">
-                    <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[7px] py-[3px] font-mono text-[13px] font-bold text-[#565449]">
-                      {activeProduct.sku || "NO-SKU"}
-                    </span>
-                    {activeProduct.barcode && (
-                      <span className="text-[12px] text-[#565449]">Barcode: {activeProduct.barcode}</span>
-                    )}
-                  </div>
+              {([
+                {
+                  icon: "category",
+                  title: "Classification",
+                  rows: [
+                    ["Brand", activeProduct.brand || "-"],
+                    ["Category", activeProduct.category || "-"],
+                    ["Variant", activeProduct.productCodeVariant || "-"],
+                    ["Barcode", activeProduct.barcode || "-"],
+                    ["Supplier", activeProduct.vendorSource || "-"],
+                  ],
+                },
+                {
+                  icon: "sell",
+                  title: "Pricing",
+                  rows: [
+                    ...(purchaseCostVisible
+                      ? [["Purchase cost", formatOptionalPurchaseCost(activeProduct.ratePerPiece)] as const]
+                      : []),
+                    ["Retail Price", formatOptionalSellingPrice(activeProduct.retailPrice)],
+                    ["Wholesale Price", formatOptionalSellingPrice(activeProduct.wholesalePrice)],
+                    ["Wholesale Threshold", `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}${activeProduct.thresholdQtyMode === "default" ? " (Default)" : ""}`],
+                  ],
+                },
+                {
+                  icon: "deployed_code",
+                  title: "Units & Packaging",
+                  rows: [
+                    ["Size", formatProductSize(activeProduct)],
+                    ["Pack", formatPackage(activeProduct)],
+                    ["Sale Unit", activeProduct.saleUnit || "-"],
+                    ["Quantity Step", formatQty(activeProduct.quantityStep)],
+                    ["Fractional quantities", activeProduct.allowFractionalQty ? "Allowed" : "Not allowed"],
+                  ],
+                },
+                {
+                  icon: "inventory_2",
+                  title: "Stock",
+                  rows: [
+                    ["Current Stock", `${formatQty(activeProduct.stock)} ${activeProduct.saleUnit || "PIECE"}`],
+                    ["Low-stock Threshold", `${formatQty(activeProduct.lowStockThreshold)}${activeProduct.lowStockThresholdMode === "default" ? " (Default)" : " (Custom)"}`],
+                    ["Availability", getStockFlag(activeProduct)],
+                  ],
+                },
+              ] as const)
+                .filter((section) => stockTracked || section.title !== "Stock")
+                .map((section) => (
+                  <section key={section.title} className="rounded-[16px] border border-[#E5E7EB] bg-white p-3.5">
+                    <div className="flex items-start gap-3">
+                      <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#11120d]"><GoogleIcon name={section.icon} className="text-[22px]" /></span>
+                      <div className="min-w-0 flex-1">
+                        <h3 className="text-[15px] font-extrabold text-[#11120d]">{section.title}</h3>
+                        <dl className="mt-2 space-y-2">
+                          {section.rows.map(([label, value]) => (
+                            <div key={label} className="grid grid-cols-[minmax(0,1fr)_minmax(0,1.25fr)] gap-3 text-[13px]">
+                              <dt className="font-semibold text-[#6B7280]">{label}</dt>
+                              <dd className="break-words text-right font-bold text-[#11120d]">{value}</dd>
+                            </div>
+                          ))}
+                        </dl>
+                      </div>
+                    </div>
+                  </section>
+                ))}
+            </div>
+
+            <div className="hidden bg-white md:block md:max-h-[85vh] md:overflow-y-auto">
+              <div className="flex flex-col gap-4 md:flex-row">
+
+                {/* Left - Image & Status */}
+                <div className="flex w-full flex-shrink-0 flex-col items-center gap-2.5 md:w-[124px]">
+                  <PreviewableImage
+                    src={activeProduct.imageUrl}
+                    alt={activeProduct.name}
+                    title={activeProduct.name}
+                    subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
+                    enablePreview="desktop"
+                    imgClassName="h-full w-full object-contain p-2"
+                    className="flex aspect-square w-[124px] h-[124px] items-center justify-center overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] shadow-2xs"
+                    fallback={
+                      <GoogleIcon
+                        name="inventory_2"
+                        sizePx={54}
+                        className="text-[#8C8889]"
+                      />
+                    }
+                  />
+                  <StatusPill status={activeProduct.status} />
                 </div>
 
-                {/* Details Grid */}
-                <div className="grid grid-cols-1 gap-x-[28px] gap-y-[8px] text-[14px] sm:grid-cols-2">
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Brand</span>
-                    <span className="text-right font-extrabold text-[#11120d]">
-                      {activeProduct.brand ? (
-                        <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[8px] py-[2px] text-[12px] uppercase tracking-wider text-[#11120d]">{activeProduct.brand}</span>
-                      ) : "-"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Category</span>
-                    <span className="text-right font-extrabold text-[#11120d]">
-                      {activeProduct.category ? (
-                        <span className="rounded-[6px] border border-[#CFCFD3] bg-white px-[8px] py-[2px] text-[12px] uppercase tracking-wider text-[#11120d]">{activeProduct.category}</span>
-                      ) : "-"}
-                    </span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Variant</span>
-                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.productCodeVariant || "-"}</span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Vendor</span>
-                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.vendorSource || "-"}</span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Size</span>
-                    <span className="text-right font-extrabold text-[#11120d]">{formatProductSize(activeProduct)}</span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Package</span>
-                    <span className="text-right font-extrabold text-[#11120d]">{formatPackage(activeProduct)}</span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Sale Unit</span>
-                    <span className="text-right font-extrabold text-[#11120d]">{activeProduct.saleUnit}</span>
-                  </div>
-                  <div className="flex justify-between gap-[16px] border-b border-[#E5E7EB] py-[6px]">
-                    <span className="text-[#565449]">Fractional Qty</span>
-                    <span className="text-right font-extrabold text-[#11120d]">
-                      {activeProduct.allowFractionalQty ? (
-                        <span className="text-[#16A34A]">Yes (step {activeProduct.quantityStep})</span>
-                      ) : "No"}
-                    </span>
-                  </div>
-                </div>
+                {/* Right - Details */}
+                <div className="flex-1 min-w-0 space-y-3.5">
 
-                <div className={cn("grid grid-cols-1 gap-[14px] pt-[4px]", stockTracked ? "sm:grid-cols-2" : "sm:grid-cols-1")}>
-                  {/* Pricing Card */}
-                  <div className="rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
-                    <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
-                      <GoogleIcon name="sell" className="text-[15px] text-[#565449]" />
-                      Pricing
-                    </h4>
-                    <div className="space-y-[8px] text-[14px]">
-                      {purchaseCostVisible ? (
-                        <div className="flex justify-between">
-                          <span className="text-[#565449]">Purchase cost</span>
-                          <span className="font-extrabold text-[15px] text-[#11120d]">{formatOptionalPurchaseCost(activeProduct.ratePerPiece)}</span>
-                        </div>
+                  {/* Header Info */}
+                  <div>
+                    <h3 className="text-[18px] font-black leading-snug text-[#0F172A]">{activeProduct.name}</h3>
+                    <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]">
+                      <span className="rounded-[6px] border border-[#E2E8F0] bg-[#F1F5F9] px-2 py-0.5 font-mono text-[11.5px] font-bold text-[#334155]">
+                        {activeProduct.sku || "NO-SKU"}
+                      </span>
+                      {activeProduct.barcode ? (
+                        <span className="text-[#64748B]">
+                          Barcode: <span className="font-mono font-semibold text-[#334155]">{activeProduct.barcode}</span>
+                        </span>
                       ) : null}
-                      <div className="flex justify-between">
-                        <span className="text-[#565449]">Retail Price</span>
-                        <span className="font-extrabold text-[15px] text-[#16A34A]">{formatNpr(activeProduct.retailPrice)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#565449]">Wholesale Price</span>
-                        <span className="font-extrabold text-[15px] text-[#11120d]">{formatNpr(activeProduct.wholesalePrice)}</span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#565449]">Wholesale Eligible</span>
-                        <span className="font-bold text-[#11120d]">
-                          {activeProduct.wholesaleEligible ? (
-                            <span className="text-[#16A34A] flex items-center gap-[4px]"><GoogleIcon name="check" className="text-[14px]" /> Yes</span>
-                          ) : "No"}
-                        </span>
-                      </div>
-                      <div className="flex justify-between">
-                        <span className="text-[#565449]">Threshold</span>
-                        <span className="font-medium text-[#8C8889]">
-                          {activeProduct.thresholdQtyMode === "default" ? "Default " : ""}
-                          ({activeProduct.thresholdQty} qty)
-                        </span>
-                      </div>
                     </div>
                   </div>
 
-                  {/* Stock Card */}
-                  {stockTracked ? <div className="flex flex-col justify-between rounded-[14px] border border-[#CFCFD3] bg-white p-[16px]">
-                    <div>
-                      <h4 className="text-[11px] font-extrabold text-[#565449] uppercase tracking-wider mb-[12px] flex items-center gap-[6px]">
-                        <GoogleIcon name="inventory_2" className="text-[15px] text-[#565449]" />
-                        Stock
-                      </h4>
-                      <div className="flex items-center gap-[12px] mb-[12px]">
-                        <div className="flex items-center gap-[8px]">
-                          <span className="text-[38px] font-black leading-none text-[#11120d]">{formatQty(activeProduct.stock)}</span>
-                          <StockPill flag={getStockFlag(activeProduct)} />
+                  {/* Details Grid */}
+                  <div className="grid grid-cols-2 gap-x-5 gap-y-2 rounded-[12px] border border-[#F1F5F9] bg-[#F8FAFC]/80 p-3 text-[12.5px]">
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Brand</span>
+                      <span className="truncate font-bold text-[#0F172A]">
+                        {activeProduct.brand || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Category</span>
+                      <span className="truncate font-bold text-[#0F172A]">
+                        {activeProduct.category || "—"}
+                      </span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Variant</span>
+                      <span className="truncate font-bold text-[#0F172A]">{activeProduct.productCodeVariant || "—"}</span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Vendor</span>
+                      <span className="truncate font-bold text-[#0F172A]">{activeProduct.vendorSource || "—"}</span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Size</span>
+                      <span className="font-bold text-[#0F172A]">{formatProductSize(activeProduct)}</span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Package</span>
+                      <span className="font-bold text-[#0F172A]">{formatPackage(activeProduct)}</span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Sale Unit</span>
+                      <span className="font-bold text-[#0F172A]">{activeProduct.saleUnit || "PIECE"}</span>
+                    </div>
+                    <div className="flex items-baseline justify-between gap-2">
+                      <span className="text-[#64748B]">Fractional Qty</span>
+                      <span className="font-bold text-[#0F172A]">
+                        {activeProduct.allowFractionalQty ? (
+                          <span className="text-[#16A34A]">Yes (step {activeProduct.quantityStep})</span>
+                        ) : "No"}
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Bottom Pricing & Stock Cards */}
+                  <div className={cn("grid gap-3", stockTracked ? "grid-cols-2" : "grid-cols-1")}>
+                    {/* Pricing Card */}
+                    <div className="rounded-[14px] border border-[#E2E8F0] bg-white p-3 shadow-2xs">
+                      <div className="flex items-center gap-1.5 border-b border-[#F1F5F9] pb-2 text-[11px] font-black uppercase tracking-wider text-[#475569]">
+                        <GoogleIcon name="sell" className="text-[14px] text-[#64748B]" />
+                        <span>Pricing</span>
+                      </div>
+                      <div className="mt-2.5 space-y-1.5 text-[12.5px]">
+                        {purchaseCostVisible ? (
+                          <div className="flex items-center justify-between">
+                            <span className="text-[#64748B]">Purchase Cost</span>
+                            <span className="font-bold text-[#0F172A]">{formatOptionalPurchaseCost(activeProduct.ratePerPiece)}</span>
+                          </div>
+                        ) : null}
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#64748B]">Retail Price</span>
+                          <span className="font-black text-[#16A34A] text-[14.5px]">{formatOptionalSellingPrice(activeProduct.retailPrice)}</span>
+                        </div>
+                        <div className="flex items-center justify-between">
+                          <span className="text-[#64748B]">Wholesale Price</span>
+                          <span className="font-bold text-[#0F172A]">{formatOptionalSellingPrice(activeProduct.wholesalePrice)}</span>
+                        </div>
+                        <div className="flex items-center justify-between pt-1 border-t border-[#F8FAFC] text-[11.5px] text-[#64748B]">
+                          <span>Wholesale Threshold</span>
+                          <span className="font-medium text-[#475569]">
+                            {activeProduct.wholesaleEligible
+                              ? `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}`
+                              : "Disabled"}
+                          </span>
                         </div>
                       </div>
                     </div>
-                    <div className="text-[12px] text-[#8C8889] font-medium border-t border-[#E5E7EB] pt-[12px]">
-                      Low Stock Threshold: {activeProduct.lowStockThresholdMode === 'default' ? 'Default ' : ''} ({formatQty(activeProduct.lowStockThreshold)})
-                    </div>
-                  </div> : null}
-                </div>
 
+                    {/* Stock Card */}
+                    {stockTracked ? (
+                      <div className="flex flex-col justify-between rounded-[14px] border border-[#E2E8F0] bg-white p-3 shadow-2xs">
+                        <div>
+                          <div className="flex items-center gap-1.5 border-b border-[#F1F5F9] pb-2 text-[11px] font-black uppercase tracking-wider text-[#475569]">
+                            <GoogleIcon name="inventory_2" className="text-[14px] text-[#64748B]" />
+                            <span>Stock Inventory</span>
+                          </div>
+                          <div className="mt-2.5 flex items-center justify-between">
+                            <div className="text-[24px] font-black leading-none text-[#0F172A]">
+                              {formatQty(activeProduct.stock)}
+                              <span className="ml-1 text-[12px] font-bold text-[#64748B]">
+                                {activeProduct.saleUnit || "PIECE"}
+                              </span>
+                            </div>
+                            <StockPill flag={getStockFlag(activeProduct)} />
+                          </div>
+                        </div>
+                        <div className="mt-2.5 border-t border-[#F1F5F9] pt-2 text-[11.5px] text-[#64748B]">
+                          Low Stock Alert: <span className="font-bold text-[#475569]">{formatQty(activeProduct.lowStockThreshold)} {activeProduct.saleUnit || "PIECE"}</span>
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+
+                </div>
               </div>
             </div>
-          </div>
           </>
         ) : (
           <div className="flex h-full items-center justify-center text-[14px] font-semibold text-[#8C8889]">

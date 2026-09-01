@@ -200,6 +200,8 @@ export default function AppShell({ children, statusBanner }: Props) {
           : "Admin";
   const profileHref = role === "admin" ? "/profile" : "/cashier-profile";
   const isBillingRoute = location.pathname === "/billing";
+  const isImportReviewRoute = location.pathname.startsWith("/products/imports/");
+  const usesFixedWorkspace = isBillingRoute || isImportReviewRoute;
 
   return (
     <AlertsProvider
@@ -247,8 +249,8 @@ export default function AppShell({ children, statusBanner }: Props) {
               data-app-scroll-container
               className={[
                 "min-h-0 flex-1 overscroll-contain bg-white",
-                isBillingRoute
-                  ? "overflow-hidden p-[12px]"
+                usesFixedWorkspace
+                  ? "overflow-hidden p-[12px] sm:p-[16px] lg:p-[18px]"
                   : "overflow-y-auto p-[12px] sm:p-[20px] lg:p-[24px]",
                 isStaff && !isBillingRoute
                   ? "pb-[calc(84px+env(safe-area-inset-bottom))] lg:pb-[24px]"

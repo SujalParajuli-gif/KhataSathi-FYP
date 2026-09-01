@@ -10,13 +10,6 @@ import {
 
 type IdentityReferences = ReturnType<typeof readIdentityArguments>;
 
-const roleReferenceKeys: Array<[CleanPilotRole, keyof IdentityReferences]> = [
-  ["ADMIN", "admin"],
-  ["MANAGER", "manager"],
-  ["CASHIER", "cashier"],
-  ["STAFF", "staff"],
-];
-
 export async function resolvePilotAccounts(references: IdentityReferences) {
   const selected: Array<{
     id: string;
@@ -35,8 +28,13 @@ export async function resolvePilotAccounts(references: IdentityReferences) {
     nagariktaNo: string | null;
     createdAt: Date;
   }> = [];
-  for (const [role, key] of roleReferenceKeys) {
-    const reference = references[key];
+  const requested: Array<[CleanPilotRole, string]> = [
+    ["ADMIN", references.admin],
+    ["MANAGER", references.manager],
+    ["CASHIER", references.cashier],
+    ...references.staff.map((reference): [CleanPilotRole, string] => ["STAFF", reference]),
+  ];
+  for (const [role, reference] of requested) {
     const matches = await prisma.user.findMany({
       where: {
         role,
@@ -56,8 +54,8 @@ export async function resolvePilotAccounts(references: IdentityReferences) {
     }
     selected.push(matches[0]);
   }
-  if (new Set(selected.map((account) => account.id)).size !== 4) {
-    throw new Error("Each pilot role must resolve to a different account.");
+  if (new Set(selected.map((account) => account.id)).size !== requested.length) {
+    throw new Error("Each pilot identity reference must resolve to a different account.");
   }
   return selected;
 }
@@ -136,7 +134,7 @@ export async function createCleanPilotBundle(
   }
 
   return {
-    schemaVersion: 1,
+    schemaVersion: 2,
     exportedAt: new Date().toISOString(),
     accounts: accounts.map((account) => ({
       id: account.id,

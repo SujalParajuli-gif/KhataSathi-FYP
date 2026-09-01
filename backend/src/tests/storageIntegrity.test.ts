@@ -18,10 +18,12 @@ test("storage integrity scan reports missing, orphaned, and stale files without 
 
   await fs.mkdir(path.join(uploadsRoot, "products"), { recursive: true });
   await fs.mkdir(path.join(documentsRoot, "documents", "2026"), { recursive: true });
+  await fs.mkdir(path.join(documentsRoot, "import-sources", "2026"), { recursive: true });
   await fs.mkdir(path.join(documentsRoot, ".temp"), { recursive: true });
   await fs.writeFile(path.join(uploadsRoot, "products", "kept.webp"), "kept");
   await fs.writeFile(path.join(uploadsRoot, "orphan.webp"), "orphan");
   await fs.writeFile(path.join(documentsRoot, "documents", "2026", "bill.pdf"), "bill");
+  await fs.writeFile(path.join(documentsRoot, "import-sources", "2026", "catalog.xlsx"), "catalog");
   await fs.writeFile(path.join(documentsRoot, ".temp", "old.tmp"), "temp");
   await fs.utimes(path.join(documentsRoot, ".temp", "old.tmp"), staleDate, staleDate);
 
@@ -46,6 +48,13 @@ test("storage integrity scan reports missing, orphaned, and stale files without 
       ownerId: "document-1",
       ownerLabel: "Supplier bill",
       relativePath: "documents/2026/bill.pdf",
+    },
+    {
+      storage: "DOCUMENTS",
+      ownerType: "PRODUCT_IMPORT_SOURCE",
+      ownerId: "batch-1",
+      ownerLabel: "Bagmati catalog",
+      relativePath: "import-sources/2026/catalog.xlsx",
     },
   ];
 

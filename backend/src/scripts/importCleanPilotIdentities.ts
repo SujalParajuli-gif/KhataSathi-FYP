@@ -33,9 +33,9 @@ async function assertEmptyTarget() {
 
 async function main() {
   const args = process.argv.slice(2);
-  if (!hasConfirmation(args, "IMPORT-FOUR-PILOT-ACCOUNTS")) {
+  if (!hasConfirmation(args, "IMPORT-APPROVED-PILOT-ACCOUNTS")) {
     throw new Error(
-      "Identity import refused. Supply --confirmation IMPORT-FOUR-PILOT-ACCOUNTS.",
+      "Identity import refused. Supply --confirmation IMPORT-APPROVED-PILOT-ACCOUNTS.",
     );
   }
   const raw = await readStdin();

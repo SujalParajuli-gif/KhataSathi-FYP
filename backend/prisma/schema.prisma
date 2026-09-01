@@ -22,6 +22,39 @@ enum BusinessMode {
   FULL_POS
 }
 
+enum SellingPriceStatus {
+  PENDING
+  READY
+}
+
+enum ProductAvailabilityStatus {
+  CATALOG_LISTED
+  COMING_SOON
+}
+
+enum ProductImportComparisonStatus {
+  READY_NEW
+  EXACT_DUPLICATE
+  MATCHED_WITH_CHANGES
+  IDENTIFIER_CONFLICT
+  IN_FILE_DUPLICATE
+  NEEDS_REVIEW
+  FAILED
+}
+
+enum ProductImportResolution {
+  CREATE_NEW
+  UPDATE_MATCHED
+  KEEP_EXISTING
+  IGNORE
+}
+
+enum ProductImportCommitStatus {
+  IN_PROGRESS
+  COMPLETED
+  FAILED
+}
+
 enum InvoiceStatus {
   DRAFT
   FINALIZED
@@ -169,6 +202,7 @@ model User {
   reviewedReturnRequests      ReturnRequest[]              @relation("ReturnRequestReviewer")
   backupJobs                  BackupJob[]
   productImportBatches        ProductImportBatch[]
+  productImportCommits        ProductImportCommit[]
   productImportTemplates      ProductImportTemplate[]
   cashDrawers                 CashDrawer[]                 @relation("CashDrawerCashier")
   cashDrawerEvents            CashDrawerEvent[]
@@ -243,15 +277,17 @@ model Product {
   sizeValue                        Float?
   sizeUnit                         String   @default("STANDARD")
   ratePerPiece                     Float?
-  packageQuantity                  Float    @default(1)
+  packageQuantity                  Float?
   packageUnit                      String   @default("PIECE")
   saleUnit                         String   @default("PIECE")
   allowFractionalQty               Boolean  @default(false)
   quantityStep                     Float    @default(1)
   wholesaleEligible                Boolean  @default(true)
   sourceCitation                   String?
-  retailPrice                      Float
-  wholesalePrice                   Float
+  sellingPriceStatus               SellingPriceStatus @default(READY)
+  availabilityStatus               ProductAvailabilityStatus @default(CATALOG_LISTED)
+  retailPrice                      Float?
+  wholesalePrice                   Float?
   wholesaleQtyThreshold            Float    @default(1)
   usesDefaultWholesaleQtyThreshold Boolean  @default(false)
   stock                            Float    @default(0)
@@ -273,6 +309,7 @@ model Product {
   searchAliases               ProductSearchAlias[]
   searchDocument              ProductSearchDocument?
   searchSelections            ProductSearchSelection[]
+  matchedImportRows           ProductImportRow[]             @relation("MatchedImportProduct")
 
   @@index([barcode])
   @@index([sku])
@@ -280,6 +317,8 @@ model Product {
   @@index([vendorSource])
   @@index([sizeUnit])
   @@index([packageUnit])
+  @@index([sellingPriceStatus, isActive])
+  @@index([availabilityStatus, isActive])
 }
 
 model ProductSearchSynonym {
@@ -818,6 +857,15 @@ model ProductImportBatch {
   totalRows    Int       @default(0)
   importedRows Int       @default(0)
   failedRows   Int       @default(0)
+  fileFingerprint String? @db.VarChar(64)
+  fileSizeBytes  Int?
+  sourceStoredFileName String?
+  sourceStoredPath String?
+  sourceMimeType String?
+  sourceChecksum String? @db.VarChar(64)
+  extractionMeta Json?
+  priceMapping Json?
+  repeatedFromBatchId String?
   createdById  String
   createdAt    DateTime  @default(now())
   deletedAt    DateTime?
@@ -827,9 +875,14 @@ model ProductImportBatch {
 
   createdBy User               @relation(fields: [createdById], references: [id])
   rows      ProductImportRow[]
+  commits   ProductImportCommit[]
+  repeatedFrom ProductImportBatch?  @relation("RepeatedImportBatch", fields: [repeatedFromBatchId], references: [id], onDelete: SetNull)
+  repeatedBatches ProductImportBatch[] @relation("RepeatedImportBatch")
 
   @@index([sourceType, status, createdAt])
   @@index([createdById])
+  @@index([fileFingerprint, createdAt])
+  @@index([repeatedFromBatchId])
   @@index([deletedAt])
   @@index([purgeAfter])
 }
@@ -860,12 +913,41 @@ model ProductImportRow {
   status    String   @default("READY")
   error     String?  @db.Text
   parsed    Json?
+  extracted Json?
+  sourceLocator Json?
+  comparisonStatus ProductImportComparisonStatus @default(NEEDS_REVIEW)
+  matchedProductId String?
+  changeSet Json?
+  resolution ProductImportResolution?
   createdAt DateTime @default(now())
 
   batch ProductImportBatch @relation(fields: [batchId], references: [id])
+  matchedProduct Product? @relation("MatchedImportProduct", fields: [matchedProductId], references: [id], onDelete: SetNull)
 
   @@index([batchId])
   @@index([status])
+  @@index([comparisonStatus])
+  @@index([matchedProductId])
+}
+
+model ProductImportCommit {
+  id          String                    @id @default(cuid())
+  batchId     String
+  token       String                    @db.VarChar(64)
+  status      ProductImportCommitStatus @default(IN_PROGRESS)
+  requestHash String                    @db.VarChar(64)
+  result      Json?
+  error       String?                   @db.Text
+  actorId     String
+  createdAt   DateTime                  @default(now())
+  completedAt DateTime?
+
+  batch ProductImportBatch @relation(fields: [batchId], references: [id], onDelete: Cascade)
+  actor User               @relation(fields: [actorId], references: [id])
+
+  @@unique([batchId, token])
+  @@index([actorId, createdAt])
+  @@index([status, createdAt])
 }
 
 model StockTransaction {

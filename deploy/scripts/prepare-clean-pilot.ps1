@@ -8,7 +8,7 @@ param(
     [string]$AdminIdentity = "ADMINSujal",
     [string]$ManagerIdentity = "Sujal Manager",
     [string]$CashierIdentity = "Sakshyam Sharma",
-    [string]$StaffIdentity = "Sujalstaff",
+    [string[]]$StaffIdentities = @("Sujalstaff", "Maniram Panthee"),
     [string]$Confirmation = ""
 )
 
@@ -75,9 +75,17 @@ if ($LASTEXITCODE -ne 0) {
 $identityArguments = @(
     "--admin", $AdminIdentity,
     "--manager", $ManagerIdentity,
-    "--cashier", $CashierIdentity,
-    "--staff", $StaffIdentity
+    "--cashier", $CashierIdentity
 )
+foreach ($staffIdentity in $StaffIdentities) {
+    if ([string]::IsNullOrWhiteSpace($staffIdentity)) {
+        throw "StaffIdentities cannot contain an empty value."
+    }
+    $identityArguments += @("--staff", $staffIdentity)
+}
+if ($StaffIdentities.Count -lt 1) {
+    throw "At least one Staff identity is required."
+}
 
 Write-Host "Auditing the source database. No data is being changed..."
 $preflightLines = @(& docker exec $sourceBackendId node /app/dist/scripts/auditCleanPilot.js @identityArguments)
@@ -133,20 +141,20 @@ do {
     Start-Sleep -Seconds 3
 } while ($true)
 
-Write-Host "Transferring only the four approved accounts and verified profile images..."
+Write-Host "Transferring only the approved accounts and verified profile images..."
 $exportArguments = @(
     "/app/dist/scripts/exportCleanPilotIdentities.js"
 ) + $identityArguments + @(
-    "--confirmation", "EXPORT-FOUR-PILOT-ACCOUNTS"
+    "--confirmation", "EXPORT-APPROVED-PILOT-ACCOUNTS"
 )
 $bundleLines = @(& docker exec $sourceBackendId node @exportArguments)
-Assert-LastExitCode "The four-account export failed. The source database was not changed."
+Assert-LastExitCode "The approved-account export failed. The source database was not changed."
 $bundleJson = $bundleLines -join [Environment]::NewLine
 if (-not $bundleJson) {
     throw "The account export returned an empty bundle."
 }
 
-$receiptLines = @($bundleJson | & docker exec -i $targetBackendId node /app/dist/scripts/importCleanPilotIdentities.js --confirmation IMPORT-FOUR-PILOT-ACCOUNTS)
+$receiptLines = @($bundleJson | & docker exec -i $targetBackendId node /app/dist/scripts/importCleanPilotIdentities.js --confirmation IMPORT-APPROVED-PILOT-ACCOUNTS)
 Assert-LastExitCode "The clean-pilot account import failed. The isolated target was retained for diagnosis."
 $receiptJson = $receiptLines -join [Environment]::NewLine
 [System.IO.File]::WriteAllText($receiptPath, $receiptJson, $utf8WithoutBom)
@@ -154,7 +162,7 @@ $receiptJson = $receiptLines -join [Environment]::NewLine
 Write-Host $receiptJson
 Write-Host "Clean pilot database prepared successfully."
 Write-Host "- Source records and files were not modified."
-Write-Host "- Four approved accounts were transferred without their old sessions."
+Write-Host "- $($StaffIdentities.Count + 3) approved accounts were transferred without their old sessions."
 Write-Host "- Catalog Only is active and staff billing requests are off."
 Write-Host "- No products, invoices, documents, import batches, or old audit history were copied."
 Write-Host "- No supplier catalogue was imported."

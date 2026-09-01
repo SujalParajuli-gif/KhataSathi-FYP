@@ -16,6 +16,8 @@ export default function CreatableCombobox({
   inputRef,
   selectOnFocus = false,
   createHelpText,
+  compact = false,
+  showCreateHelp = true,
 }: {
   value: string;
   onChange: (value: string) => void;
@@ -28,6 +30,8 @@ export default function CreatableCombobox({
   inputRef?: React.Ref<HTMLInputElement>;
   selectOnFocus?: boolean;
   createHelpText?: string;
+  compact?: boolean;
+  showCreateHelp?: boolean;
 }) {
   const [open, setOpen] = React.useState(false);
   const [activeIndex, setActiveIndex] = React.useState(-1);
@@ -104,111 +108,113 @@ export default function CreatableCombobox({
   }
 
   return (
-    <div ref={rootRef} className="relative">
-      <input
-        ref={inputRef}
-        role="combobox"
-        aria-label={ariaLabel}
-        aria-expanded={open}
-        aria-controls={listId}
-        aria-activedescendant={
-          open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined
-        }
-        aria-describedby={
-          allowCreate && normalizedValue && !exactMatch ? helpId : undefined
-        }
-        aria-autocomplete="list"
-        aria-required={required}
-        aria-invalid={invalid}
-        value={allowCreate ? value : inputValue}
-        onFocus={(event) => {
-          if (!allowCreate) {
-            setInputValue(value);
-            setSearchTerm("");
+    <div ref={rootRef} className="min-w-0">
+      <div className="relative">
+        <input
+          ref={inputRef}
+          role="combobox"
+          aria-label={ariaLabel}
+          aria-expanded={open}
+          aria-controls={listId}
+          aria-activedescendant={
+            open && activeIndex >= 0 ? `${listId}-option-${activeIndex}` : undefined
           }
-          setOpen(true);
-          if (selectOnFocus) event.currentTarget.select();
-        }}
-        onBlur={(event) => {
-          const nextTarget = event.relatedTarget as Node | null;
-          if (!nextTarget || !rootRef.current?.contains(nextTarget)) {
-            closeAndRestore();
+          aria-describedby={
+            allowCreate && normalizedValue && !exactMatch ? helpId : undefined
           }
-        }}
-        onChange={(event) => {
-          const nextValue = event.target.value;
-          if (allowCreate) onChange(nextValue);
-          else setInputValue(nextValue);
-          setSearchTerm(nextValue);
-          setOpen(true);
-          setActiveIndex(-1);
-        }}
-        onKeyDown={(event) => {
-          if (event.key === "ArrowDown") {
-            event.preventDefault();
+          aria-autocomplete="list"
+          aria-required={required}
+          aria-invalid={invalid}
+          value={allowCreate ? value : inputValue}
+          onFocus={(event) => {
+            if (!allowCreate) {
+              setInputValue(value);
+              setSearchTerm("");
+            }
             setOpen(true);
-            setActiveIndex((index) => Math.min(index + 1, choices.length - 1));
-          } else if (event.key === "ArrowUp") {
-            event.preventDefault();
+            if (selectOnFocus) event.currentTarget.select();
+          }}
+          onBlur={(event) => {
+            const nextTarget = event.relatedTarget as Node | null;
+            if (!nextTarget || !rootRef.current?.contains(nextTarget)) {
+              closeAndRestore();
+            }
+          }}
+          onChange={(event) => {
+            const nextValue = event.target.value;
+            if (allowCreate) onChange(nextValue);
+            else setInputValue(nextValue);
+            setSearchTerm(nextValue);
             setOpen(true);
-            setActiveIndex((index) => index <= 0 ? choices.length - 1 : index - 1);
-          } else if (event.key === "Enter" && open && choices[activeIndex]) {
-            event.preventDefault();
-            selectChoice(choices[activeIndex]);
-          } else if (event.key === "Escape") {
-            closeAndRestore();
-          }
-        }}
-        placeholder={placeholder}
-        className={`h-[44px] w-full rounded-[11px] bg-white px-3 pr-12 text-[13px] font-semibold text-[#11120d] outline-none transition focus:ring-2 ${invalid ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#3B82F6] focus:ring-blue-100"}`}
-      />
-      <button
-        type="button"
-        aria-label={`${open ? "Close" : "Open"} ${ariaLabel.toLocaleLowerCase()} options`}
-        aria-expanded={open}
-        aria-controls={listId}
-        onPointerDown={(event) => event.preventDefault()}
-        onClick={toggleList}
-        className="absolute right-1 top-1/2 inline-flex h-9 w-9 -translate-y-1/2 items-center justify-center rounded-[9px] text-[#6B7280] transition hover:bg-[#F3F4F6] hover:text-[#11120d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#3B82F6] focus-visible:ring-offset-1"
-      >
-        <svg
-          aria-hidden="true"
-          viewBox="0 0 20 20"
-          fill="none"
-          className={`h-5 w-5 transition-transform ${open ? "rotate-180" : ""}`}
+            setActiveIndex(-1);
+          }}
+          onKeyDown={(event) => {
+            if (event.key === "ArrowDown") {
+              event.preventDefault();
+              setOpen(true);
+              setActiveIndex((index) => Math.min(index + 1, choices.length - 1));
+            } else if (event.key === "ArrowUp") {
+              event.preventDefault();
+              setOpen(true);
+              setActiveIndex((index) => index <= 0 ? choices.length - 1 : index - 1);
+            } else if (event.key === "Enter" && open && choices[activeIndex]) {
+              event.preventDefault();
+              selectChoice(choices[activeIndex]);
+            } else if (event.key === "Escape") {
+              closeAndRestore();
+            }
+          }}
+          placeholder={placeholder}
+          className={`${compact ? "h-9 rounded-[9px] px-2.5 pr-10 text-[11px]" : "h-[44px] rounded-[11px] px-3 pr-12 text-[13px]"} block w-full min-w-0 bg-white font-semibold text-[#11120d] outline-none transition focus:ring-2 ${invalid ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#087F83] focus:ring-[#087F83]/15"}`}
+        />
+        <button
+          type="button"
+          aria-label={`${open ? "Close" : "Open"} ${ariaLabel.toLocaleLowerCase()} options`}
+          aria-expanded={open}
+          aria-controls={listId}
+          onPointerDown={(event) => event.preventDefault()}
+          onClick={toggleList}
+          className={`absolute right-1 top-1/2 z-[1] inline-flex -translate-y-1/2 items-center justify-center text-[#6B7280] transition hover:bg-[#F3F4F6] hover:text-[#11120d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-offset-1 ${compact ? "h-7 w-7 rounded-[7px]" : "h-9 w-9 rounded-[9px]"}`}
         >
-          <path
-            d="m6 8 4 4 4-4"
-            stroke="currentColor"
-            strokeWidth="1.8"
-            strokeLinecap="round"
-            strokeLinejoin="round"
-          />
-        </svg>
-      </button>
-      {open ? (
-        <div id={listId} role="listbox" className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-[12px] border border-[#DADDE3] bg-white p-1.5 shadow-xl">
-          {choices.length > 0 ? choices.map((choice, index) => (
-            <button
-              key={`${choice.created ? "new" : "existing"}-${choice.label}`}
-              id={`${listId}-option-${index}`}
-              type="button"
-              role="option"
-              tabIndex={-1}
-              aria-selected={index === activeIndex}
-              onPointerDown={(event) => event.preventDefault()}
-              onClick={() => selectChoice(choice)}
-              className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-[9px] px-3 text-left text-[13px] font-semibold ${index === activeIndex ? "bg-[#EFF6FF] text-[#1D4ED8]" : "text-[#11120d] hover:bg-[#F3F4F6]"}`}
-            >
-              <span className="truncate">{choice.created ? `Create “${choice.label}”` : choice.label}</span>
-              {choice.created ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold uppercase text-blue-700">New</span> : null}
-            </button>
-          )) : (
-            <div className="px-3 py-2 text-[12px] font-medium text-[#8C8889]">No matches</div>
-          )}
-        </div>
-      ) : null}
-      {allowCreate && normalizedValue && !exactMatch ? (
+          <svg
+            aria-hidden="true"
+            viewBox="0 0 20 20"
+            fill="none"
+            className={`${compact ? "h-4 w-4" : "h-5 w-5"} transition-transform ${open ? "rotate-180" : ""}`}
+          >
+            <path
+              d="m6 8 4 4 4-4"
+              stroke="currentColor"
+              strokeWidth="1.8"
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </button>
+        {open ? (
+          <div id={listId} role="listbox" className="absolute inset-x-0 top-[calc(100%+6px)] z-30 max-h-56 overflow-y-auto rounded-[12px] border border-[#DADDE3] bg-white p-1.5 shadow-xl">
+            {choices.length > 0 ? choices.map((choice, index) => (
+              <button
+                key={`${choice.created ? "new" : "existing"}-${choice.label}`}
+                id={`${listId}-option-${index}`}
+                type="button"
+                role="option"
+                tabIndex={-1}
+                aria-selected={index === activeIndex}
+                onPointerDown={(event) => event.preventDefault()}
+                onClick={() => selectChoice(choice)}
+                className={`flex min-h-10 w-full items-center justify-between gap-3 rounded-[9px] px-3 text-left text-[13px] font-semibold ${index === activeIndex ? "bg-[#EFF6FF] text-[#1D4ED8]" : "text-[#11120d] hover:bg-[#F3F4F6]"}`}
+              >
+                <span className="truncate">{choice.created ? `Create “${choice.label}”` : choice.label}</span>
+                {choice.created ? <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold uppercase text-blue-700">New</span> : null}
+              </button>
+            )) : (
+              <div className="px-3 py-2 text-[12px] font-medium text-[#8C8889]">No matches</div>
+            )}
+          </div>
+        ) : null}
+      </div>
+      {showCreateHelp && allowCreate && normalizedValue && !exactMatch ? (
         <div id={helpId} className="mt-1 text-[11px] font-medium text-[#2563EB]">
           {createHelpText || "New value — created only when the product is saved."}
         </div>

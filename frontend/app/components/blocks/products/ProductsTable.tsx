@@ -58,24 +58,112 @@ function StockPill({ flag }: { flag: StockFlag }) {
   );
 }
 
-function IconButton({
-  icon,
-  label,
-  onClick,
+function ProductRowActionMenu({
+  product,
+  onView,
+  onEdit,
+  onDelete,
 }: {
-  icon: string;
-  label: string;
-  onClick?: () => void;
+  product: Product;
+  onView: (p: Product) => void;
+  onEdit: (p: Product) => void;
+  onDelete: (p: Product) => void;
 }) {
+  const [open, setOpen] = React.useState(false);
+  const menuRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    if (!open) return;
+    function handleClickOutside(event: MouseEvent | TouchEvent) {
+      if (menuRef.current && !menuRef.current.contains(event.target as Node)) {
+        setOpen(false);
+      }
+    }
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false);
+    }
+    document.addEventListener("mousedown", handleClickOutside);
+    document.addEventListener("touchstart", handleClickOutside);
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("mousedown", handleClickOutside);
+      document.removeEventListener("touchstart", handleClickOutside);
+      document.removeEventListener("keydown", handleKeyDown);
+    };
+  }, [open]);
+
   return (
-    <button
-      type="button"
-      aria-label={label}
-      onClick={onClick}
-      className="inline-flex h-[40px] w-[40px] items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white hover:bg-[#F3F4F6] active:scale-[0.98]"
-    >
-      <GoogleIcon name={icon} className="text-[#565449]" />
-    </button>
+    <div ref={menuRef} className="relative inline-block text-left">
+      <button
+        type="button"
+        onClick={(e) => {
+          e.stopPropagation();
+          setOpen((curr) => !curr);
+        }}
+        aria-expanded={open}
+        aria-haspopup="true"
+        aria-label={`Actions for ${product.name}`}
+        className={cn(
+          "inline-flex h-9 w-9 items-center justify-center rounded-[10px] border transition active:scale-95",
+          open
+            ? "border-[#11120D] bg-[#11120D] text-white shadow-xs"
+            : "border-[#D4D7DC] bg-white text-[#565449] hover:border-[#8C8889] hover:bg-[#F3F4F6]",
+        )}
+      >
+        <GoogleIcon name="more_vert" className="text-[19px]" />
+      </button>
+
+      {open ? (
+        <div
+          role="menu"
+          className="absolute right-0 z-[70] mt-1.5 w-44 origin-top-right rounded-[14px] border border-[#E2E8F0] bg-white p-1.5 shadow-xl animate-in fade-in zoom-in-95 duration-150"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onView(product);
+            }}
+            className="flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-left text-[12.5px] font-bold text-[#1E293B] transition hover:bg-[#F1F5F9] active:bg-[#E2E8F0]"
+          >
+            <GoogleIcon name="visibility" className="text-[17px] text-[#64748B]" />
+            <span>View details</span>
+          </button>
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onEdit(product);
+            }}
+            className="flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-left text-[12.5px] font-bold text-[#1E293B] transition hover:bg-[#F1F5F9] active:bg-[#E2E8F0]"
+          >
+            <GoogleIcon name="edit" className="text-[17px] text-[#64748B]" />
+            <span>Edit product</span>
+          </button>
+
+          <div className="my-1 border-t border-[#F1F5F9]" />
+
+          <button
+            type="button"
+            role="menuitem"
+            onClick={(e) => {
+              e.stopPropagation();
+              setOpen(false);
+              onDelete(product);
+            }}
+            className="flex w-full items-center gap-2.5 rounded-[10px] px-3 py-2 text-left text-[12.5px] font-bold text-[#BE123C] transition hover:bg-rose-50 active:bg-rose-100"
+          >
+            <GoogleIcon name="delete" className="text-[17px] text-[#BE123C]" />
+            <span>{product.status === "Active" ? "Deactivate" : "Delete options"}</span>
+          </button>
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -90,9 +178,9 @@ function formatSize(product: Product) {
 }
 
 function formatPackage(product: Product) {
-  return `${formatQty(product.packageQuantity || 1)} ${product.packageUnit || "PIECE"}`;
+  if (product.packageQuantity === null) return "Package unknown";
+  return `${formatQty(product.packageQuantity)} ${product.packageUnit || "PIECE"}`;
 }
-
 function buildPaginationItems(page: number, totalPages: number) {
   const items: Array<number | "ellipsis-start" | "ellipsis-end"> = [];
   const safeTotalPages = Math.max(1, totalPages);
@@ -310,46 +398,142 @@ export default function ProductsTableCard({
                 </button>
               ) : null}
 
-              <PreviewableImage
-                src={product.thumbnailUrl || product.imageUrl}
-                fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
-                previewSrc={product.imageUrl}
-                alt={product.name}
-                title={product.name}
-                subtitle={`SKU: ${product.sku}`}
-                enablePreview="desktop"
-                imgClassName="h-full w-full object-contain p-1"
-                className="flex h-[72px] w-[72px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC]"
-                fallback={<GoogleIcon name="inventory_2" sizePx={26} className="text-[#8C8889]" />}
-              />
-
-              <div className="min-w-0 flex-1 pr-7">
-                <div className="line-clamp-2 text-[14px] font-extrabold leading-snug text-[#11120d]">{product.name}</div>
-                <div className="mt-1 truncate font-mono text-[11px] font-semibold text-[#64748B]">SKU: {product.sku}</div>
-                <div className="mt-2 text-[14px] font-extrabold text-[#11120d]">{formatNpr(product.retailPrice)}</div>
-                <div className="mt-2 flex flex-wrap items-center justify-between gap-2">
-                  {stockTracked ? (
-                    <div className="flex items-center gap-1.5 text-[11px] font-semibold text-[#565449]">
-                      <span className={cn("h-2 w-2 rounded-full", flag === "In Stock" ? "bg-emerald-500" : flag === "Low Stock" ? "bg-amber-500" : "bg-red-500")} />
-                      {formatQty(product.stock)} {product.saleUnit || "PIECE"}
-                    </div>
-                  ) : (
-                    <div className="text-[11px] font-semibold text-[#565449]">Sale unit: {product.saleUnit || "PIECE"}</div>
-                  )}
-                  <StatusPill status={product.status} />
+              <div className="flex flex-col items-center shrink-0 w-[72px]">
+                <PreviewableImage
+                  src={product.thumbnailUrl || product.imageUrl}
+                  fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
+                  previewSrc={product.imageUrl}
+                  alt={product.name}
+                  title={product.name}
+                  subtitle={`SKU: ${product.sku}`}
+                  enablePreview="desktop"
+                  imgClassName="h-full w-full object-contain p-1"
+                  className="flex h-[68px] w-[68px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC]"
+                  fallback={<GoogleIcon name="inventory_2" sizePx={26} className="text-[#8C8889]" />}
+                />
+                <div className="mt-1 text-center text-[9.5px] font-bold text-[#64748B] leading-tight">
+                  Sale unit: <span className="uppercase text-[#11120D] font-extrabold">{product.saleUnit || "PIECE"}</span>
                 </div>
               </div>
 
-              {!selectionMode ? (
-                <button
-                  type="button"
-                  onClick={(event) => { event.stopPropagation(); setMobileActionProduct(product); }}
-                  className="absolute right-2 top-2 inline-flex h-9 w-9 items-center justify-center rounded-full text-[#565449] transition hover:bg-[#F3F4F6]"
-                  aria-label={`Actions for ${product.name}`}
-                >
-                  <GoogleIcon name="more_vert" className="text-[20px]" />
-                </button>
-              ) : null}
+              <div className="min-w-0 flex-1">
+                <div className="line-clamp-2 text-[17px] font-black leading-snug text-[#000000]">{product.name}</div>
+                <div className="mt-0.5 truncate text-[11.5px] font-semibold text-[#64748B]">{product.brand || "Unbranded"}</div>
+
+                <div className="mt-1.5 h-[42px] flex flex-col justify-between overflow-hidden">
+                  {purchaseCostVisible ? (
+                    <div className="space-y-0.5 text-[#000000]">
+                      <div className="flex flex-wrap items-center gap-x-2 text-[15.5px] font-black leading-tight">
+                        <span className="inline-flex items-baseline gap-1">
+                          <span className="text-[10.5px] font-bold text-[#64748B]">Purchase:</span>
+                          <span className="text-[15px] font-black text-[#000000]">
+                            {product.ratePerPiece === null ? (
+                              "—"
+                            ) : (
+                              <>
+                                <span className="text-[11px] font-bold text-[#64748B] mr-0.5">रु.</span>
+                                <span>{Number(product.ratePerPiece).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+                              </>
+                            )}
+                          </span>
+                        </span>
+                        <span className="text-[#CBD5E1]">|</span>
+                        <span className="inline-flex items-baseline gap-1">
+                          <span className="text-[10.5px] font-bold text-[#64748B]">Retail:</span>
+                          <span className="text-[15px] font-black text-[#000000]">
+                            {product.retailPrice !== null ? (
+                              <>
+                                <span className="text-[11px] font-bold text-[#64748B] mr-0.5">रु.</span>
+                                <span>{Number(product.retailPrice).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+                              </>
+                            ) : (
+                              "—"
+                            )}
+                          </span>
+                        </span>
+                      </div>
+                      <div className="text-[10.5px] font-bold text-[#64748B] leading-tight">
+                        {product.wholesaleEligible ? (
+                          <span className="inline-flex items-baseline gap-1">
+                            <span>Wholesale:</span>
+                            <span className="text-[14px] font-black text-[#11120D]">
+                              {product.wholesalePrice !== null ? (
+                                <>
+                                  <span className="text-[10.5px] font-bold text-[#64748B] mr-0.5">रु.</span>
+                                  <span>{Number(product.wholesalePrice).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+                                </>
+                              ) : (
+                                "—"
+                              )}
+                            </span>
+                          </span>
+                        ) : (
+                          <span className="font-semibold text-[#8C8889]">Standard retail pricing</span>
+                        )}
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="space-y-0.5">
+                      <div className="h-[20px] flex items-center">
+                        {product.availabilityStatus === "COMING_SOON" ? (
+                          <div className="text-[12.5px] font-semibold italic text-rose-500 leading-none">
+                            Price coming soon
+                          </div>
+                        ) : product.retailPrice === null ? (
+                          <div className="text-[12.5px] font-semibold italic text-rose-500 leading-none">
+                            Retail price pending
+                          </div>
+                        ) : (
+                          <div className="text-[16px] font-black leading-none text-[#000000]">
+                            <span className="text-[12px] font-bold text-[#64748B] mr-0.5">रु.</span>
+                            <span>{Number(product.retailPrice).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+                          </div>
+                        )}
+                      </div>
+                      <div className="h-[18px] flex items-center text-[10.5px] font-bold text-[#64748B]">
+                        {product.wholesaleEligible && product.wholesalePrice !== null ? (
+                          <div className="inline-flex items-baseline gap-1">
+                            <span>Wholesale:</span>
+                            <span className="text-[14px] font-black text-[#11120D]">
+                              <span className="text-[10.5px] font-bold text-[#64748B] mr-0.5">रु.</span>
+                              <span>{Number(product.wholesalePrice).toLocaleString("en-IN", { maximumFractionDigits: 2 })}</span>
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="font-semibold text-[#8C8889]">Standard retail pricing</span>
+                        )}
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {stockTracked ? (
+                  <div className="mt-1 flex items-center gap-1.5 text-[11px] font-semibold text-[#565449]">
+                    <span className={cn("h-2 w-2 rounded-full", flag === "In Stock" ? "bg-emerald-500" : flag === "Low Stock" ? "bg-amber-500" : "bg-red-500")} />
+                    {formatQty(product.stock)} {product.saleUnit || "PIECE"}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="flex flex-col items-end justify-between shrink-0 self-stretch pl-1">
+                {!selectionMode ? (
+                  <button
+                    type="button"
+                    onClick={(event) => { event.stopPropagation(); setMobileActionProduct(product); }}
+                    className="inline-flex h-11 w-11 items-center justify-center rounded-full text-[#565449] transition hover:bg-[#F3F4F6]"
+                    aria-label={`Actions for ${product.name}`}
+                  >
+                    <GoogleIcon name="more_vert" className="text-[20px]" />
+                  </button>
+                ) : (
+                  <div className="h-11 w-11" />
+                )}
+
+                <div className="flex flex-col items-end gap-1 pb-0.5">
+                  <AvailabilityPill product={product} />
+                  <StatusPill status={product.status} />
+                </div>
+              </div>
             </article>
           );
         })}
@@ -370,344 +554,351 @@ export default function ProductsTableCard({
               <button type="button" onClick={() => setMobileActionProduct(null)} className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-[#F3F4F6]" aria-label="Close actions"><GoogleIcon name="close" className="text-[25px]" /></button>
             </div>
             <div className="mt-2 space-y-1">
-            {[
-              { icon: "visibility", label: "View details", action: () => onView(mobileActionProduct) },
-              { icon: "edit", label: "Edit product", action: () => onEdit(mobileActionProduct) },
-              { icon: "do_not_disturb_on", label: mobileActionProduct.status === "Active" ? "Deactivate product" : "Product options", action: () => onDelete(mobileActionProduct), danger: true },
-            ].map((item) => (
-              <button key={item.label} type="button" onClick={() => { setMobileActionProduct(null); item.action(); }} className={cn("flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]", item.danger ? "text-[#BE123C]" : "text-[#11120d]")}><span className={cn("inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]", item.danger ? "bg-rose-50 text-[#BE123C]" : "bg-[#F3F4F6] text-[#565449]")}><GoogleIcon name={item.icon} className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">{item.label}</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
-            ))}
+              {[
+                { icon: "visibility", label: "View details", action: () => onView(mobileActionProduct) },
+                { icon: "edit", label: "Edit product", action: () => onEdit(mobileActionProduct) },
+                { icon: "do_not_disturb_on", label: mobileActionProduct.status === "Active" ? "Deactivate product" : "Product options", action: () => onDelete(mobileActionProduct), danger: true },
+              ].map((item) => (
+                <button key={item.label} type="button" onClick={() => { setMobileActionProduct(null); item.action(); }} className={cn("flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]", item.danger ? "text-[#BE123C]" : "text-[#11120d]")}><span className={cn("inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px]", item.danger ? "bg-rose-50 text-[#BE123C]" : "bg-[#F3F4F6] text-[#565449]")}><GoogleIcon name={item.icon} className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">{item.label}</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
+              ))}
             </div>
           </section>
         </div>
       ) : null}
 
       <div className="hidden lg:block">
-      <Card>
-      <div>
-        <div className="overflow-x-auto">
-          <table
-            className={cn(
-              "w-full border-collapse text-left",
-              stockTracked
-                ? purchaseCostVisible ? "min-w-[1230px]" : "min-w-[1120px]"
-                : purchaseCostVisible ? "min-w-[1120px]" : "min-w-[1010px]",
-            )}
-          >
-            <thead>
-              <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
-                <th className="w-[52px] p-0">
-                  <label className="flex min-h-[48px] cursor-pointer items-center justify-center" title="Select every product on this page">
-                    <input
-                      ref={selectAllRef}
-                      type="checkbox"
-                      checked={rows.length > 0 && rows.every((product) => selected[product.id])}
-                      onChange={(event) => toggleAllOnPage(event.target.checked)}
-                      aria-label="Select all rows on this page"
-                      className="h-5 w-5 cursor-pointer accent-[#11120D]"
-                    />
-                  </label>
-                </th>
-                <th className="px-3 py-3">Product</th>
-                <th className="px-3 py-3">Source</th>
-                <th className="px-3 py-3">Group / Variant</th>
-                <th className="px-3 py-3">Size</th>
-                <th className="px-3 py-3">Package</th>
-                {purchaseCostVisible ? <th className="px-3 py-3">Purchase Cost</th> : null}
-                <th className="px-3 py-3">Retail / खुद्रा</th>
-                <th className="px-3 py-3">Wholesale / थोक</th>
-                {stockTracked ? <th className="px-3 py-3">Stock</th> : null}
-                <th className="px-3 py-3">Status</th>
-                <th className="w-[120px] px-3 py-3 text-right">Action</th>
-              </tr>
-            </thead>
-
-            <tbody className="divide-y divide-[#E5E7EB]">
-              {rows.map((product, productIndex) => {
-                const flag = stockTracked ? getStockFlag(product) : null;
-                const isSelected = !!selected[product.id];
-
-                return (
-                  <tr
-                    key={product.id}
-                    className={cn(
-                      "text-[13px] transition-colors hover:bg-[#ECEFF3]",
-                      isSelected && "bg-[#F3F4F6]/80 hover:bg-[#E4E8EE]",
-                    )}
-                  >
-                    <td className="w-[52px] p-0 align-top">
-                      <label className="flex min-h-[72px] cursor-pointer items-start justify-center pt-4" title={`Select ${product.name}`}>
+        <Card>
+          <div>
+            <div className="overflow-x-auto">
+              <table
+                className={cn(
+                  "w-full border-collapse text-left",
+                  stockTracked ? "min-w-[1230px]" : "min-w-[1120px]",
+                )}
+              >
+                <thead>
+                  <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                    <th className="w-[52px] p-0">
+                      <label className="flex min-h-[48px] cursor-pointer items-center justify-center" title="Select every product on this page">
                         <input
+                          ref={selectAllRef}
                           type="checkbox"
-                          checked={isSelected}
-                          onChange={(event) =>
-                            toggleDesktopRow(
-                              productIndex,
-                              event.target.checked,
-                              (event.nativeEvent as MouseEvent).shiftKey,
-                            )
-                          }
-                          aria-label={`Select ${product.name}`}
+                          checked={rows.length > 0 && rows.every((product) => selected[product.id])}
+                          onChange={(event) => toggleAllOnPage(event.target.checked)}
+                          aria-label="Select all rows on this page"
                           className="h-5 w-5 cursor-pointer accent-[#11120D]"
                         />
                       </label>
-                    </td>
-
-                    <td className="px-3 py-3 align-top">
-                      <div className="flex items-center gap-[12px]">
-                        <PreviewableImage
-                          src={product.thumbnailUrl || product.imageUrl}
-                          fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
-                          previewSrc={product.imageUrl}
-                          alt={product.name}
-                          title={product.name}
-                          subtitle={`SKU: ${product.sku}`}
-                          enablePreview="desktop"
-                          imgClassName="h-full w-full object-contain p-1"
-                          className="flex h-[48px] w-[48px] items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
-                          fallback={
-                            <GoogleIcon
-                              name="inventory_2"
-                              sizePx={24}
-                              className="text-[#8C8889]"
-                            />
-                          }
-                        />
-
-                        <div className="min-w-0">
-                          <div className="max-w-[240px] truncate font-extrabold text-[#000000]">
-                            {product.name}
-                          </div>
-                          <div className="text-[12px] text-[#8C8889]">
-                            SKU: {product.sku}
-                            {product.barcode ? (
-                              <span className="ml-[10px]">Barcode: {product.barcode}</span>
-                            ) : null}
-                          </div>
-                        </div>
-                      </div>
-                    </td>
-
-                    <td className="px-3 py-3 align-top text-[#565449]">
-                      <div className="font-semibold text-[#000000]">
-                        {product.vendorSource || product.brand}
-                      </div>
-                      <div className="mt-[4px] text-[11px] text-[#8C8889]">
-                        {product.category || "Uncategorized"}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-[#565449]">
-                      <div className="max-w-[150px] truncate font-semibold text-[#000000]">
-                        {product.categoryGroup || product.category || "-"}
-                      </div>
-                      <div className="mt-[4px] max-w-[150px] truncate text-[11px] text-[#8C8889]">
-                        {product.productCodeVariant || "No variant"}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-[#565449]">
-                      <div className="font-semibold text-[#000000]">
-                        {formatSize(product)}
-                      </div>
-                      <div className="mt-[4px] text-[11px] text-[#8C8889]">
-                        Sale unit: {product.saleUnit || "PIECE"}
-                      </div>
-                    </td>
-                    <td className="px-3 py-3 align-top text-[#565449]">
-                      <div className="font-semibold text-[#000000]">
-                        {formatPackage(product)}
-                      </div>
-                      <div className="mt-[4px] text-[11px] text-[#8C8889]">
-                        Step {formatQty(product.quantityStep || 1)}
-                      </div>
-                    </td>
-                    {purchaseCostVisible ? (
-                      <td className="px-3 py-3 align-top font-semibold text-[#000000]">
-                        {product.ratePerPiece === null
-                          ? "Not entered"
-                          : formatNpr(product.ratePerPiece)}
-                      </td>
-                    ) : null}
-                    <td className="px-3 py-3 align-top font-semibold text-[#000000]">
-                      {formatNpr(product.retailPrice)}
-                    </td>
-                    <td className="px-3 py-3 align-top text-[#565449]">
-                      <div className="font-semibold text-[#000000]">
-                        {product.wholesaleEligible ? formatNpr(product.wholesalePrice) : "Qty pricing off"}
-                      </div>
-                      <div className="mt-[4px] text-[11px] text-[#8C8889]">
-                        Qty threshold {formatQty(product.thresholdQty)}
-                      </div>
-                    </td>
-
-                    {stockTracked ? <td className="px-3 py-3 align-top">
-                      <div className="flex max-w-[170px] flex-wrap items-center gap-2">
-                        <span
-                          className={cn(
-                            "h-[8px] w-[8px] rounded-full",
-                            flag === "In Stock"
-                              ? "bg-emerald-500"
-                              : flag === "Low Stock"
-                                ? "bg-orange-500"
-                                : "bg-rose-500",
-                          )}
-                          title={`Low stock threshold: ${product.lowStockThreshold}`}
-                        />
-                        <div className="font-semibold text-[#000000]">
-                          {formatQty(product.stock)} {product.saleUnit || "PIECE"}
-                        </div>
-                        <StockPill flag={flag!} />
-                      </div>
-                    </td> : null}
-
-                    <td className="px-3 py-3 align-top">
-                      <StatusPill status={product.status} />
-                    </td>
-
-                    <td className="px-3 py-3 align-top">
-                      <div className="flex items-center justify-end gap-[8px]">
-                        <IconButton
-                          icon="visibility"
-                          label="View product"
-                          onClick={() => onView(product)}
-                        />
-                        <IconButton
-                          icon="edit"
-                          label="Edit product"
-                          onClick={() => onEdit(product)}
-                        />
-                        <IconButton
-                          icon="delete"
-                          label="Delete options"
-                          onClick={() => onDelete(product)}
-                        />
-                      </div>
-                    </td>
+                    </th>
+                    <th className="px-3 py-3">Product</th>
+                    <th className="px-3 py-3">Source</th>
+                    <th className="px-3 py-3">Group / Variant</th>
+                    <th className="px-3 py-3">Size</th>
+                    <th className="px-3 py-3">Package</th>
+                    <th className="px-3 py-3">खरिद / Cost</th>
+                    <th className="px-3 py-3">Retail / खुद्रा</th>
+                    <th className="px-3 py-3">Wholesale / थोक</th>
+                    {stockTracked ? <th className="px-3 py-3">Stock</th> : null}
+                    <th className="px-3 py-3">Status</th>
+                    <th className="w-[80px] px-3 py-3 text-right">Action</th>
                   </tr>
-                );
-              })}
+                </thead>
 
-              {rows.length === 0 && loading ? (
-                <tr>
-                  <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
-                    <div className="flex items-center gap-2">
-                      <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#CFCFD3] border-t-[#11120d]" />
-                      Loading products...
-                    </div>
-                  </td>
-                </tr>
-              ) : null}
+                <tbody className="divide-y divide-[#E5E7EB]">
+                  {rows.map((product, productIndex) => {
+                    const flag = stockTracked ? getStockFlag(product) : null;
+                    const isSelected = !!selected[product.id];
 
-              {rows.length === 0 && !loading ? (
-                <tr>
-                  <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
-                    {loadError || "No products match your filters."}
-                  </td>
-                </tr>
-              ) : null}
-            </tbody>
-          </table>
-        </div>
+                    return (
+                      <tr
+                        key={product.id}
+                        className={cn(
+                          "text-[13px] transition-colors hover:bg-[#ECEFF3]",
+                          isSelected && "bg-[#F3F4F6]/80 hover:bg-[#E4E8EE]",
+                        )}
+                      >
+                        <td className="w-[52px] p-0 align-top">
+                          <label className="flex min-h-[72px] cursor-pointer items-start justify-center pt-4" title={`Select ${product.name}`}>
+                            <input
+                              type="checkbox"
+                              checked={isSelected}
+                              onChange={(event) =>
+                                toggleDesktopRow(
+                                  productIndex,
+                                  event.target.checked,
+                                  (event.nativeEvent as MouseEvent).shiftKey,
+                                )
+                              }
+                              aria-label={`Select ${product.name}`}
+                              className="h-5 w-5 cursor-pointer accent-[#11120D]"
+                            />
+                          </label>
+                        </td>
 
-        <div className="flex flex-col gap-3 border-t border-[#E5E7EB] bg-white px-4 py-3 text-[13px] text-[#565449] lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-x-[12px] gap-y-[8px]">
-            <div>
-              Showing <span className="font-semibold text-[#000000]">{total === 0 ? 0 : start + 1}</span>
-              -<span className="font-semibold text-[#000000]">{end}</span> of{" "}
-              <span className="font-semibold text-[#000000]">{total}</span> products
+                        <td className="px-3 py-3 align-top">
+                          <div className="flex items-center gap-[12px]">
+                            <PreviewableImage
+                              src={product.thumbnailUrl || product.imageUrl}
+                              fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
+                              previewSrc={product.imageUrl}
+                              alt={product.name}
+                              title={product.name}
+                              subtitle={`SKU: ${product.sku}`}
+                              enablePreview="desktop"
+                              imgClassName="h-full w-full object-contain p-1"
+                              className="flex h-[48px] w-[48px] items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
+                              fallback={
+                                <GoogleIcon
+                                  name="inventory_2"
+                                  sizePx={24}
+                                  className="text-[#8C8889]"
+                                />
+                              }
+                            />
+
+                            <div className="min-w-0">
+                              <div className="max-w-[240px] truncate font-extrabold text-[#000000]">
+                                {product.name}
+                              </div>
+                              <div className="mt-0.5 truncate text-[11px] font-semibold text-[#8C8889]">
+                                {product.brand || "Unbranded"}
+                              </div>
+                            </div>
+                          </div>
+                        </td>
+
+                        <td className="px-3 py-3 align-top">
+                          <div className="text-[11.5px] font-bold uppercase tracking-tight text-[#1E293B]">
+                            {product.vendorSource || product.brand}
+                          </div>
+                          <div className="mt-0.5 text-[10px] font-medium text-[#64748B]">
+                            {product.category || "Uncategorized"}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 align-top text-[#565449]">
+                          <div className="max-w-[150px] truncate font-semibold text-[#000000]">
+                            {product.categoryGroup || product.category || "-"}
+                          </div>
+                          <div className="mt-[4px] max-w-[150px] truncate text-[11px] text-[#8C8889]">
+                            {product.productCodeVariant || "No variant"}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 align-top text-[#565449]">
+                          <div className="font-semibold text-[#000000]">
+                            {formatSize(product)}
+                          </div>
+                          <div className="mt-[4px] text-[11px] text-[#8C8889]">
+                            Sale unit: {product.saleUnit || "PIECE"}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 align-top text-[#565449]">
+                          <div className="font-semibold text-[#000000]">
+                            {formatPackage(product)}
+                          </div>
+                          <div className="mt-[4px] text-[11px] text-[#8C8889]">
+                            Step {formatQty(product.quantityStep || 1)}
+                          </div>
+                        </td>
+                        <td className="px-3 py-3 align-top font-semibold text-[#000000]">
+                          {!purchaseCostVisible ? (
+                            <span className="font-mono text-[13px] tracking-widest text-[#94A3B8]">••••</span>
+                          ) : product.ratePerPiece === null ? (
+                            product.availabilityStatus === "COMING_SOON" ? "Coming soon" : "Not entered"
+                          ) : (
+                            formatNpr(product.ratePerPiece)
+                          )}
+                        </td>
+                        <td className="px-3 py-3 align-top font-semibold text-[#000000]">
+                          {product.availabilityStatus === "COMING_SOON"
+                            ? "Coming soon"
+                            : product.retailPrice === null
+                              ? "Not entered"
+                              : formatNpr(product.retailPrice)}
+                        </td>
+                        <td className="px-3 py-3 align-top text-[#565449]">
+                          <div className="font-semibold text-[#000000]">
+                            {product.wholesaleEligible
+                              ? product.wholesalePrice === null
+                                ? "Not entered"
+                                : formatNpr(product.wholesalePrice)
+                              : "Qty pricing off"}
+                          </div>
+                          <div className="mt-[4px] text-[11px] text-[#8C8889]">
+                            Qty threshold {formatQty(product.thresholdQty)}
+                          </div>
+                        </td>
+
+                        {stockTracked ? <td className="px-3 py-3 align-top">
+                          <div className="flex max-w-[170px] flex-wrap items-center gap-2">
+                            <span
+                              className={cn(
+                                "h-[8px] w-[8px] rounded-full",
+                                flag === "In Stock"
+                                  ? "bg-emerald-500"
+                                  : flag === "Low Stock"
+                                    ? "bg-orange-500"
+                                    : "bg-rose-500",
+                              )}
+                              title={`Low stock threshold: ${product.lowStockThreshold}`}
+                            />
+                            <div className="font-semibold text-[#000000]">
+                              {formatQty(product.stock)} {product.saleUnit || "PIECE"}
+                            </div>
+                            <StockPill flag={flag!} />
+                          </div>
+                        </td> : null}
+
+                        <td className="px-3 py-3 align-top">
+                          <div className="flex flex-wrap gap-1.5">
+                            <AvailabilityPill product={product} />
+                            <StatusPill status={product.status} />
+                          </div>
+                        </td>
+
+                        <td className="px-3 py-3 align-top">
+                          <div className="flex items-center justify-end">
+                            <ProductRowActionMenu
+                              product={product}
+                              onView={onView}
+                              onEdit={onEdit}
+                              onDelete={onDelete}
+                            />
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+
+                  {rows.length === 0 && loading ? (
+                    <tr>
+                      <td colSpan={stockTracked ? 12 : 11} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
+                        <div className="flex items-center gap-2">
+                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#CFCFD3] border-t-[#11120d]" />
+                          Loading products...
+                        </div>
+                      </td>
+                    </tr>
+                  ) : null}
+
+                  {rows.length === 0 && !loading ? (
+                    <tr>
+                      <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
+                        {loadError || "No products match your filters."}
+                      </td>
+                    </tr>
+                  ) : null}
+                </tbody>
+              </table>
             </div>
 
-            <label className="flex items-center gap-[8px] text-[12px] font-semibold text-[#8C8889]">
-              Rows
-              <ProjectSelect
-                value={pageSize}
-                onChange={(event) => onPageSizeChange(Number(event.target.value))}
-                className="h-[34px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-bold text-[#565449] outline-none"
-              >
-                {[20, 50, 100].map((value) => (
-                  <option key={value} value={value}>
-                    {value}
-                  </option>
-                ))}
-              </ProjectSelect>
-            </label>
-          </div>
+            <div className="flex flex-col gap-3 border-t border-[#E5E7EB] bg-white px-4 py-3 text-[13px] text-[#565449] lg:flex-row lg:items-center lg:justify-between">
+              <div className="flex flex-wrap items-center gap-x-[12px] gap-y-[8px]">
+                <div>
+                  Showing <span className="font-semibold text-[#000000]">{total === 0 ? 0 : start + 1}</span>
+                  -<span className="font-semibold text-[#000000]">{end}</span> of{" "}
+                  <span className="font-semibold text-[#000000]">{total}</span> products
+                </div>
 
-          <div className="flex flex-wrap items-center justify-center gap-[8px] lg:justify-end">
-            <button
-              type="button"
-              onClick={() => onPageChange(Math.max(1, page - 1))}
-              disabled={page <= 1}
-              className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
-              aria-label="Previous page"
-            >
-              <GoogleIcon name="chevron_left" className="text-inherit" />
-            </button>
-
-            {paginationItems.map((item) => {
-              if (typeof item !== "number") {
-                return (
-                  <span
-                    key={item}
-                    className="inline-flex h-[32px] min-w-[24px] items-center justify-center text-[12px] font-extrabold text-[#8C8889]"
+                <label className="flex items-center gap-[8px] text-[12px] font-semibold text-[#8C8889]">
+                  Rows
+                  <ProjectSelect
+                    value={pageSize}
+                    onChange={(event) => onPageSizeChange(Number(event.target.value))}
+                    className="h-[34px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-bold text-[#565449] outline-none"
                   >
-                    ...
-                  </span>
-                );
-              }
+                    {[20, 50, 100].map((value) => (
+                      <option key={value} value={value}>
+                        {value}
+                      </option>
+                    ))}
+                  </ProjectSelect>
+                </label>
+              </div>
 
-              const active = item === page;
-
-              return (
+              <div className="flex flex-wrap items-center justify-center gap-[8px] lg:justify-end">
                 <button
-                  key={item}
                   type="button"
-                  onClick={() => onPageChange(item)}
-                  className={cn(
-                    "inline-flex h-[32px] min-w-[32px] items-center justify-center rounded-[10px] border px-[8px] text-[12px] font-extrabold transition",
-                    active
-                      ? "border-[#11120d] bg-[#11120d] text-white"
-                      : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
-                  )}
+                  onClick={() => onPageChange(Math.max(1, page - 1))}
+                  disabled={page <= 1}
+                  className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
+                  aria-label="Previous page"
                 >
-                  {item}
+                  <GoogleIcon name="chevron_left" className="text-inherit" />
                 </button>
-              );
-            })}
 
-            <button
-              type="button"
-              onClick={() => onPageChange(Math.min(totalPages, page + 1))}
-              disabled={page >= totalPages}
-              className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
-              aria-label="Next page"
-            >
-              <GoogleIcon name="chevron_right" className="text-inherit" />
-            </button>
-
-            <label className="ml-[4px] flex items-center gap-[8px] text-[12px] font-semibold text-[#8C8889]">
-              Go
-              <input
-                type="number"
-                min={1}
-                max={totalPages}
-                value={page}
-                onChange={(event) => {
-                  const nextPage = Number(event.target.value);
-                  if (Number.isFinite(nextPage)) {
-                    onPageChange(Math.min(totalPages, Math.max(1, nextPage)));
+                {paginationItems.map((item) => {
+                  if (typeof item !== "number") {
+                    return (
+                      <span
+                        key={item}
+                        className="inline-flex h-[32px] min-w-[24px] items-center justify-center text-[12px] font-extrabold text-[#8C8889]"
+                      >
+                        ...
+                      </span>
+                    );
                   }
-                }}
-                className="h-[34px] w-[74px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-center text-[12px] font-bold text-[#565449] outline-none"
-                aria-label="Go to page"
-              />
-              <span>of {totalPages}</span>
-            </label>
+
+                  const active = item === page;
+
+                  return (
+                    <button
+                      key={item}
+                      type="button"
+                      onClick={() => onPageChange(item)}
+                      className={cn(
+                        "inline-flex h-[32px] min-w-[32px] items-center justify-center rounded-[10px] border px-[8px] text-[12px] font-extrabold transition",
+                        active
+                          ? "border-[#11120d] bg-[#11120d] text-white"
+                          : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
+                      )}
+                    >
+                      {item}
+                    </button>
+                  );
+                })}
+
+                <button
+                  type="button"
+                  onClick={() => onPageChange(Math.min(totalPages, page + 1))}
+                  disabled={page >= totalPages}
+                  className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
+                  aria-label="Next page"
+                >
+                  <GoogleIcon name="chevron_right" className="text-inherit" />
+                </button>
+
+                <label className="ml-[4px] flex items-center gap-[8px] text-[12px] font-semibold text-[#8C8889]">
+                  Go
+                  <input
+                    type="number"
+                    min={1}
+                    max={totalPages}
+                    value={page}
+                    onChange={(event) => {
+                      const nextPage = Number(event.target.value);
+                      if (Number.isFinite(nextPage)) {
+                        onPageChange(Math.min(totalPages, Math.max(1, nextPage)));
+                      }
+                    }}
+                    className="h-[34px] w-[74px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-center text-[12px] font-bold text-[#565449] outline-none"
+                    aria-label="Go to page"
+                  />
+                  <span>of {totalPages}</span>
+                </label>
+              </div>
+            </div>
           </div>
-        </div>
-      </div>
-      </Card>
+        </Card>
       </div>
     </>
   );
 }
 
+function AvailabilityPill({ product }: { product: Product }) {
+  if (product.availabilityStatus !== "COMING_SOON") return null;
+  return (
+    <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800">
+      Price coming soon
+    </span>
+  );
+}

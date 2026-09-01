@@ -8,9 +8,9 @@ import { createCleanPilotBundle } from "./cleanPilotSource";
 
 async function main() {
   const args = process.argv.slice(2);
-  if (!hasConfirmation(args, "EXPORT-FOUR-PILOT-ACCOUNTS")) {
+  if (!hasConfirmation(args, "EXPORT-APPROVED-PILOT-ACCOUNTS")) {
     throw new Error(
-      "Identity export refused. Supply --confirmation EXPORT-FOUR-PILOT-ACCOUNTS.",
+      "Identity export refused. Supply --confirmation EXPORT-APPROVED-PILOT-ACCOUNTS.",
     );
   }
   const bundle = validateCleanPilotBundle(

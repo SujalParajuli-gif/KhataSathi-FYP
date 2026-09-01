@@ -108,7 +108,12 @@ function formatSize(product: Product) {
 }
 
 function formatPackage(product: Product) {
-  return `${formatQty(product.packageQuantity || 1)} ${product.packageUnit || "PIECE"}`;
+  if (product.packageQuantity === null) return "Package unknown";
+  return `${formatQty(product.packageQuantity)} ${product.packageUnit || "PIECE"}`;
+}
+
+function formatOptionalSellingPrice(value: number | null) {
+  return value === null ? "Price pending" : formatNpr(value);
 }
 
 function stockLabel(product: Product) {
@@ -325,7 +330,7 @@ type QtyControlProps = {
 function QtyControl({ product, qty, onChange, compact }: QtyControlProps) {
   const step = Math.max(0.001, Number(product.quantityStep || 1));
   const max = Math.max(0, Number(product.stock || 0));
-  const disabled = max <= 0;
+  const disabled = max <= 0 || product.retailPrice === null;
 
   function setNext(value: number) {
     if (!Number.isFinite(value)) return;
@@ -594,7 +599,7 @@ function DraftPanel({
   const itemCount = items.length;
   const totalQty = items.reduce((sum, item) => sum + item.qty, 0);
   const estimate = items.reduce(
-    (sum, item) => sum + item.qty * item.product.retailPrice,
+    (sum, item) => sum + item.qty * (item.product.retailPrice ?? 0),
     0,
   );
   const selectedCashier = cashiers.find(
@@ -862,13 +867,13 @@ function DraftPanel({
                       </div>
                       <div className="mt-1 text-[11px] font-bold text-slate-500">
                         {item.product.sku} ·{" "}
-                        {formatNpr(item.product.retailPrice)}
+                        {formatOptionalSellingPrice(item.product.retailPrice)}
                       </div>
                     </div>
                     <button
                       type="button"
                       onClick={() => onRemoveItem(item.product.id)}
-                      className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
+                      className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-rose-200 bg-rose-50 text-rose-600 transition hover:bg-rose-100"
                       aria-label={`Remove ${item.product.name}`}
                     >
                       <Icon name="delete" sizePx={18} />
@@ -882,7 +887,7 @@ function DraftPanel({
                       compact
                     />
                     <div className="font-mono text-[13px] font-black text-slate-900">
-                      {formatNpr(item.qty * item.product.retailPrice)}
+                      {formatNpr(item.qty * (item.product.retailPrice ?? 0))}
                     </div>
                   </div>
                 </div>
@@ -1049,6 +1054,10 @@ export default function ProductLookupPage() {
   const [canViewWholesalePrice, setCanViewWholesalePrice] = useState(
     restoredLookupSnapshot?.canViewWholesalePrice ?? isAdmin,
   );
+  const [expandedProductIds, setExpandedProductIds] = useState<Record<string, boolean>>({});
+  const toggleProductDetails = (productId: string) => {
+    setExpandedProductIds((prev) => ({ ...prev, [productId]: !prev[productId] }));
+  };
   const [previewProduct, setPreviewProduct] = useState<Product | null>(null);
   const imagePreviewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const productRequestSequenceRef = useRef(0);
@@ -1658,6 +1667,13 @@ export default function ProductLookupPage() {
   }
 
   function updateDraftQty(product: Product, qty: number) {
+    if (qty > 0 && product.retailPrice === null) {
+      showToast(
+        "warning",
+        `"${product.name}" cannot be requested until its retail price is entered.`,
+      );
+      return;
+    }
     if (qty > 0) trackSearchSelection(product, "ADD_TO_DRAFT");
     setDraftItems((current) => {
       const nextQty = Math.round(Math.max(0, qty) * 1000) / 1000;
@@ -1748,7 +1764,7 @@ export default function ProductLookupPage() {
   const draftCount = draftItems.length;
   const draftQty = draftItems.reduce((sum, item) => sum + item.qty, 0);
   const draftEstimate = draftItems.reduce(
-    (sum, item) => sum + item.qty * item.product.retailPrice,
+    (sum, item) => sum + item.qty * (item.product.retailPrice ?? 0),
     0,
   );
   const selectedCashier = cashiers.find(
@@ -1758,77 +1774,161 @@ export default function ProductLookupPage() {
   return (
     <div className="min-h-full bg-white text-[#000000]">
       <div className="w-full space-y-4">
-        <section className="bg-white lg:relative lg:z-20 lg:overflow-visible lg:rounded-[20px] lg:border lg:border-slate-200 lg:shadow-sm">
-          <div
-            className={cn(
-              "grid gap-2.5 bg-white lg:gap-3 lg:border-b lg:border-slate-200 lg:p-3",
-              canViewPurchaseCost
-                ? "grid-cols-[minmax(0,1fr)_auto_auto] lg:grid-cols-[minmax(0,1fr)_auto_180px]"
-                : "grid-cols-[minmax(0,1fr)_auto] lg:grid-cols-[minmax(0,1fr)_180px]",
-            )}
-          >
-            <div className="relative">
+        <section className="rounded-[16px] border border-[#D8DBE0] bg-white shadow-xs lg:relative lg:z-20 lg:overflow-visible xl:rounded-[18px]">
+          {/* Mobile Search & Filter Toolbar */}
+          <div className="p-2 sm:p-3 lg:hidden">
+            <div className="relative flex items-center rounded-[12px] border border-[#D4D7DC] bg-white p-1 shadow-2xs transition-all focus-within:border-[#11120d] focus-within:ring-2 focus-within:ring-[#11120d]/10">
               <Icon
-                name="barcode_scanner"
-                className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400"
-                sizePx={22}
+                name="search"
+                className="pointer-events-none ml-2 shrink-0 text-[#7A7F89]"
+                sizePx={18}
               />
               <input
                 value={query}
                 onChange={(event) => setQuery(event.target.value)}
-                placeholder="Enter name, SKU, barcode, supplier..."
-                className="h-[50px] w-full rounded-[12px] border border-[#CFCFD3] bg-white pl-11 pr-3 text-[14px] font-semibold text-slate-950 outline-none transition placeholder:text-slate-400 focus:border-slate-950 focus:ring-4 focus:ring-slate-100 lg:rounded-[15px] lg:border-2 lg:text-[15px] lg:font-bold"
+                placeholder="Search name, SKU, barcode"
+                className="h-9 min-w-0 flex-1 bg-transparent px-2 text-[11.5px] font-semibold text-[#11120d] outline-none placeholder:text-[13px] placeholder:text-[#8C8889] sm:text-[12.5px] sm:placeholder:text-[12px]"
               />
+              <div className="flex shrink-0 items-center gap-1.5 pr-0.5">
+                {canViewPurchaseCost ? (
+                  <button
+                    type="button"
+                    onClick={togglePurchaseCostVisibility}
+                    className={cn(
+                      "inline-flex h-8.5 w-8.5 items-center justify-center rounded-[8px] border transition shadow-2xs",
+                      purchaseCostVisible
+                        ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                        : "border-[#D4D7DC] bg-[#F8FAFC] text-[#64748B] hover:bg-[#F1F5F9] hover:text-[#11120d]",
+                    )}
+                    aria-label={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                    title={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                    aria-pressed={purchaseCostVisible}
+                  >
+                    <Icon name={purchaseCostVisible ? "visibility" : "visibility_off"} sizePx={17} />
+                  </button>
+                ) : null}
+                <MobileFilterButton
+                  activeCount={mobileFilterCount}
+                  onClick={openMobileFilters}
+                  className="h-8.5 gap-1 rounded-[8px] border-[#D4D7DC] px-2.5 text-[11px] font-extrabold text-[#374151] hover:bg-[#F3F4F6]"
+                />
+              </div>
             </div>
-            {canViewPurchaseCost ? (
-              <button
-                type="button"
-                onClick={togglePurchaseCostVisibility}
-                className="inline-flex h-[50px] min-w-[50px] items-center justify-center rounded-[12px] border border-slate-300 bg-white text-slate-800 transition hover:bg-slate-50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2 lg:rounded-[15px]"
-                aria-label={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
-                title={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
-                aria-pressed={purchaseCostVisible}
-              >
-                <Icon name={purchaseCostVisible ? "visibility" : "visibility_off"} sizePx={21} />
-              </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={clearFilters}
-              disabled={!activeFilters}
-              className="hidden h-[50px] items-center justify-center gap-2 rounded-[15px] border border-slate-300 bg-white px-4 text-[13px] font-black text-slate-600 transition hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-40 lg:flex"
-            >
-              <Icon name="close" sizePx={18} />
-              Clear filters
-            </button>
-            <MobileFilterButton
-              activeCount={mobileFilterCount}
-              onClick={openMobileFilters}
-              className="lg:hidden"
-            />
             <ActiveFilterChips
               items={mobileFilterChips}
-              className={cn(canViewPurchaseCost ? "col-span-3" : "col-span-2", "lg:hidden")}
+              className="mt-2 flex lg:hidden"
             />
           </div>
 
-          <div className="hidden grid-cols-3 gap-3 border-b border-slate-200 bg-slate-50 p-4 lg:grid">
-            <FilterFields
-              brands={brands}
-              categories={categories}
-              brand={brand}
-              category={category}
-              stockStatus={stockStatus}
-              onBrand={applyDesktopBrand}
-              onCategory={applyDesktopCategory}
-              onStock={applyDesktopStock}
-              hideStock={!stockTracked}
+          {/* Desktop Search & Filters in Single Row */}
+          <div className="hidden p-3 lg:block">
+            <div className="flex items-center gap-2.5">
+              {/* Search input with search icon */}
+              <div className="relative min-w-[220px] flex-1">
+                <Icon
+                  name="search"
+                  className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]"
+                  sizePx={18}
+                />
+                <input
+                  value={query}
+                  onChange={(event) => setQuery(event.target.value)}
+                  placeholder="Search name, SKU, barcode..."
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-8 text-[12.5px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10 placeholder:text-[#8C8889]"
+                />
+                {query ? (
+                  <button
+                    type="button"
+                    onClick={() => setQuery("")}
+                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-[#8C8889] hover:text-[#11120d]"
+                    aria-label="Clear search"
+                  >
+                    <Icon name="close" sizePx={15} />
+                  </button>
+                ) : null}
+              </div>
+
+              {/* Brand Filter */}
+              <div className="w-[180px] shrink-0">
+                <CreatableCombobox
+                  value={brand}
+                  onChange={applyDesktopBrand}
+                  options={brands}
+                  placeholder="All Brands"
+                  ariaLabel="Filter by brand"
+                  allowCreate={false}
+                  selectOnFocus
+                />
+              </div>
+
+              {/* Category Filter */}
+              <div className="w-[190px] shrink-0">
+                <CreatableCombobox
+                  value={category}
+                  onChange={applyDesktopCategory}
+                  options={categories}
+                  placeholder="All Categories"
+                  ariaLabel="Filter by category"
+                  allowCreate={false}
+                  selectOnFocus
+                />
+              </div>
+
+              {/* Stock Filter if tracked */}
+              {stockTracked ? (
+                <div className="w-[130px] shrink-0">
+                  <ProjectSelect
+                    value={stockStatus}
+                    onChange={(event) =>
+                      applyDesktopStock(event.target.value as "all" | "in" | "low" | "out")
+                    }
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                  >
+                    <option value="all">All stock</option>
+                    <option value="in">In stock</option>
+                    <option value="low">Low stock</option>
+                    <option value="out">Out of stock</option>
+                  </ProjectSelect>
+                </div>
+              ) : null}
+
+              {/* Eye Button: Bigger with proper border */}
+              {canViewPurchaseCost ? (
+                <button
+                  type="button"
+                  onClick={togglePurchaseCostVisibility}
+                  className={cn(
+                    "flex h-10 shrink-0 items-center gap-1.5 rounded-[10px] border px-3 text-[12px] font-extrabold transition shadow-2xs",
+                    purchaseCostVisible
+                      ? "border-emerald-300 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
+                      : "border-[#D4D7DC] bg-white text-[#565449] hover:bg-[#F8FAFC] hover:text-[#11120d]",
+                  )}
+                  aria-label={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                  title={purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}
+                >
+                  <Icon name={purchaseCostVisible ? "visibility" : "visibility_off"} sizePx={18} />
+                  <span>Cost</span>
+                </button>
+              ) : null}
+
+              {/* Clear button if active */}
+              {activeFilters ? (
+                <button
+                  type="button"
+                  onClick={clearFilters}
+                  className="flex h-10 shrink-0 items-center justify-center gap-1 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F8FAFC]"
+                >
+                  <Icon name="close" sizePx={14} />
+                  <span>Clear</span>
+                </button>
+              ) : null}
+            </div>
+
+            <ActiveFilterChips
+              items={mobileFilterChips}
+              className="mt-2.5 hidden lg:flex"
             />
           </div>
-          <ActiveFilterChips
-            items={mobileFilterChips}
-            className="hidden border-b border-slate-200 bg-white px-4 pb-3 lg:flex"
-          />
         </section>
 
         <MobileFilterSheet
@@ -1918,35 +2018,35 @@ export default function ProductLookupPage() {
           )}
         >
           <main className="min-w-0 space-y-4">
-            <section className="flex min-h-[calc(100dvh-176px)] flex-col lg:min-h-0 lg:block lg:overflow-hidden lg:rounded-[20px] lg:border lg:border-slate-200 lg:bg-white lg:shadow-sm">
+            <section className="flex min-h-[calc(100dvh-176px)] flex-col lg:min-h-0 lg:block lg:overflow-hidden lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:bg-white lg:shadow-xs">
               <div className="hidden overflow-x-auto lg:block">
                 <table className="w-full min-w-[900px] text-left">
                   <thead>
-                    <tr className="border-b border-slate-200 bg-slate-50 text-[12px] font-black uppercase tracking-wide text-slate-500">
-                      <th className="px-4 py-3">Product info</th>
-                      <th className="px-4 py-3">Category / brand</th>
-                      <th className="px-4 py-3">Packaging</th>
+                    <tr className="border-b border-[#CFCFD3] bg-[#F8FAFC] text-[11px] font-black uppercase tracking-wider text-[#565449]">
+                      <th className="px-3.5 py-3">Product</th>
+                      <th className="px-3.5 py-3">Category / Brand</th>
+                      <th className="px-3.5 py-3">Size & Pack</th>
                       {showPurchaseCost ? (
-                        <th className="px-4 py-3 text-right">
-                          Purchase cost / खरिद दर
+                        <th className="px-3.5 py-3 text-right">
+                          खरिद / Cost
                         </th>
                       ) : null}
-                      <th className="px-4 py-3 text-right">Retail</th>
+                      <th className="px-3.5 py-3 text-right">Retail / खुद्रा</th>
                       {canViewWholesalePrice ? (
-                        <th className="px-4 py-3 text-right">Wholesale</th>
+                        <th className="px-3.5 py-3 text-right">Wholesale / थोक</th>
                       ) : null}
                       {stockTracked ? (
-                        <th className="px-4 py-3 text-center">Stock</th>
+                        <th className="px-3.5 py-3 text-center">Stock</th>
                       ) : null}
                       {isAdmin ? (
-                        <th className="px-4 py-3 text-right">Manage</th>
+                        <th className="w-[90px] px-3.5 py-3 text-right">Action</th>
                       ) : null}
                       {isStaff ? (
-                        <th className="px-4 py-3 text-right">Draft qty</th>
+                        <th className="px-3.5 py-3 text-right">Draft Qty</th>
                       ) : null}
                     </tr>
                   </thead>
-                  <tbody className="divide-y divide-slate-100">
+                  <tbody className="divide-y divide-[#E5E7EB]">
                     {loading ? (
                       Array.from({ length: 8 }).map((_, index) => (
                         <tr key={index}>
@@ -1958,9 +2058,9 @@ export default function ProductLookupPage() {
                               (isAdmin ? 1 : 0) +
                               (isStaff ? 1 : 0)
                             }
-                            className="px-4 py-3"
+                            className="px-3.5 py-3"
                           >
-                            <div className="h-[54px] animate-pulse rounded-[12px] bg-slate-100" />
+                            <div className="h-[54px] animate-pulse rounded-[12px] bg-[#F8FAFC]" />
                           </td>
                         </tr>
                       ))
@@ -1974,7 +2074,7 @@ export default function ProductLookupPage() {
                             (isAdmin ? 1 : 0) +
                             (isStaff ? 1 : 0)
                           }
-                          className="px-6 py-14 text-center text-[13px] font-bold text-slate-500"
+                          className="px-6 py-14 text-center text-[13px] font-bold text-[#8C8889]"
                         >
                           Waiting for product data to resume...
                         </td>
@@ -2006,76 +2106,60 @@ export default function ProductLookupPage() {
                         return (
                           <tr
                             key={product.id}
-                            className="transition-colors hover:bg-[#ECEFF3]"
+                            className="transition-colors hover:bg-[#F8FAFC]"
                           >
-                            <td className="px-4 py-4">
+                            <td className="px-3.5 py-3.5">
                               <div className="flex items-start gap-3">
                                 <ProductPreviewThumb
                                   product={product}
                                   priority={index < 6}
-                                  className="flex h-[52px] w-[52px] shrink-0 items-center justify-center overflow-hidden rounded-[14px] border border-slate-200 bg-slate-50"
-                                  iconClassName="text-slate-400"
+                                  className="flex h-11 w-11 shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#CFCFD3] bg-white"
+                                  iconClassName="text-[#8C8889]"
                                   onOpen={openImagePreview}
                                 />
                                 <div className="min-w-0">
-                                  <div className="max-w-[340px] truncate text-[14px] font-black text-slate-950">
+                                  <div className="max-w-[300px] truncate text-[13.5px] font-extrabold text-[#000000]">
                                     {product.name}
                                   </div>
-                                  <div className="mt-1 text-[12px] font-bold text-slate-500">
-                                    SKU: {product.sku}
-                                    {product.barcode
-                                      ? ` · BC: ${product.barcode}`
-                                      : ""}
+                                  <div className="mt-0.5 truncate text-[11px] font-semibold text-[#8C8889]">
+                                    {product.brand || "Unbranded"}
                                   </div>
                                 </div>
                               </div>
                             </td>
-                            <td className="px-4 py-4">
-                              <div className="text-[13px] font-black text-slate-900">
+                            <td className="px-3.5 py-3.5">
+                              <div className="text-[13px] font-bold text-[#000000]">
                                 {categoryBrand.primary}
                               </div>
-                              {categoryBrand.lines.map((line, index) => (
-                                <div
-                                  key={line}
-                                  className={cn(
-                                    "mt-1 max-w-[180px] truncate font-bold",
-                                    index === 0
-                                      ? "text-[12px] text-slate-500"
-                                      : "text-[11px] text-slate-400",
-                                  )}
-                                >
-                                  {line}
-                                </div>
-                              ))}
+                              <div className="mt-0.5 max-w-[180px] truncate text-[11px] text-[#8C8889]">
+                                {categoryBrand.lines.join(" · ") || "-"}
+                              </div>
                             </td>
-                            <td className="px-4 py-4">
-                              <div className="text-[13px] font-black text-slate-900">
+                            <td className="px-3.5 py-3.5">
+                              <div className="text-[13px] font-bold text-[#000000]">
                                 {formatSize(product)}
                               </div>
-                              <div className="mt-1 text-[12px] font-bold text-slate-500">
-                                Pack {formatPackage(product)}
-                              </div>
-                              <div className="mt-1 text-[11px] font-bold text-slate-400">
-                                Step {formatQty(product.quantityStep || 1)}
+                              <div className="mt-0.5 text-[11px] text-[#8C8889]">
+                                Pack {formatPackage(product)} · Step {formatQty(product.quantityStep || 1)}
                               </div>
                             </td>
                             {showPurchaseCost ? (
-                              <td className="px-4 py-4 text-right font-mono text-[15px] font-black text-slate-950">
+                              <td className="px-3.5 py-3.5 text-right font-extrabold text-[#000000] text-[13.5px]">
                                 {product.ratePerPiece === null
                                   ? "Not entered"
                                   : formatNpr(product.ratePerPiece)}
                               </td>
                             ) : null}
-                            <td className="px-4 py-4 text-right font-mono text-[15px] font-black text-slate-950">
-                              {formatNpr(product.retailPrice)}
+                            <td className="px-3.5 py-3.5 text-right font-extrabold text-[#000000] text-[13.5px]">
+                              {formatOptionalSellingPrice(product.retailPrice)}
                             </td>
                             {canViewWholesalePrice ? (
-                              <td className="px-4 py-4 text-right">
+                              <td className="px-3.5 py-3.5 text-right">
                                 <>
-                                  <div className="font-mono text-[15px] font-black text-slate-950">
-                                    {formatNpr(product.wholesalePrice)}
+                                  <div className="font-extrabold text-[#000000] text-[13.5px]">
+                                    {formatOptionalSellingPrice(product.wholesalePrice)}
                                   </div>
-                                  <div className="mt-1 text-[11px] font-bold text-slate-400">
+                                  <div className="mt-0.5 text-[10.5px] text-[#8C8889]">
                                     {product.wholesaleEligible
                                       ? `थोक सीमा ${formatQty(product.thresholdQty)} ${product.saleUnit || "PIECE"}`
                                       : "थोक मूल्य बन्द"}
@@ -2083,42 +2167,46 @@ export default function ProductLookupPage() {
                                 </>
                               </td>
                             ) : null}
-                            {stockTracked ? <td className="px-4 py-4 text-center">
-                              <span
-                                className={cn(
-                                  "inline-flex rounded-full border px-2.5 py-1 text-[11px] font-black",
-                                  stockTone(product),
-                                )}
-                              >
-                                {stockLabel(product)}
-                              </span>
-                              <div className="mt-1 text-[12px] font-black text-slate-700">
-                                {formatQty(product.stock)} {product.saleUnit}
-                              </div>
-                              {Number(product.draftRequestedQty || 0) > 0 ? (
-                                <div className="mt-1 text-[11px] font-black text-amber-600">
-                                  {formatQty(
-                                    Number(product.draftRequestedQty || 0),
-                                  )}{" "}
-                                  requested
+                            {stockTracked ? (
+                              <td className="px-3.5 py-3.5 text-center">
+                                <div className="inline-flex flex-col items-center">
+                                  <span
+                                    className={cn(
+                                      "inline-flex rounded-full border px-2.5 py-0.5 text-[10.5px] font-bold",
+                                      stockTone(product),
+                                    )}
+                                  >
+                                    {stockLabel(product)}
+                                  </span>
+                                  <div className="mt-0.5 text-[12px] font-extrabold text-[#000000]">
+                                    {formatQty(product.stock)} {product.saleUnit}
+                                  </div>
+                                  {Number(product.draftRequestedQty || 0) > 0 ? (
+                                    <div className="mt-0.5 text-[10.5px] font-bold text-amber-600">
+                                      {formatQty(
+                                        Number(product.draftRequestedQty || 0),
+                                      )}{" "}
+                                      requested
+                                    </div>
+                                  ) : null}
                                 </div>
-                              ) : null}
-                            </td> : null}
+                              </td>
+                            ) : null}
                             {isAdmin ? (
-                              <td className="px-4 py-4 text-right">
+                              <td className="w-[90px] px-3.5 py-3.5 text-right">
                                 <button
                                   type="button"
                                   onClick={() => editProductFromLookup(product)}
-                                  className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-[11px] border border-slate-300 bg-white px-3 text-[12px] font-black text-slate-800 transition hover:border-slate-950 hover:bg-slate-950 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
+                                  className="inline-flex h-8 items-center justify-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-3 text-[11.5px] font-bold text-[#11120D] transition hover:bg-[#11120D] hover:text-white shadow-2xs"
                                   aria-label={`Edit ${product.name}`}
                                 >
-                                  <Icon name="edit" sizePx={17} />
-                                  Edit
+                                  <Icon name="edit" sizePx={14} />
+                                  <span>Edit</span>
                                 </button>
                               </td>
                             ) : null}
                             {isStaff ? (
-                              <td className="px-4 py-4 text-right">
+                              <td className="px-3.5 py-3.5 text-right">
                                 <ProductAction
                                   product={product}
                                   draftQty={draftQty}
@@ -2156,177 +2244,190 @@ export default function ProductLookupPage() {
                   products.map((product, index) => {
                     const draftQty = draftByProductId.get(product.id)?.qty || 0;
                     const categoryBrand = getCategoryBrandDisplay(product);
+                    const isExpanded = Boolean(expandedProductIds[product.id]);
                     return (
                       <article
                         key={product.id}
                         data-product-id={product.id}
-                        className="rounded-[16px] border border-[#E5E7EB] bg-white p-3 shadow-sm"
+                        className="rounded-[18px] border border-[#E7ECF3] bg-white p-3 shadow-xs transition hover:border-[#CBD5E1]"
                       >
-                        <div className="grid grid-cols-[68px_minmax(0,1fr)_112px] items-stretch gap-x-2 min-[360px]:grid-cols-[76px_minmax(0,1fr)_124px] min-[360px]:gap-x-2.5 min-[400px]:grid-cols-[84px_minmax(0,1fr)_136px] min-[400px]:gap-x-3">
-                          <div className="flex min-w-0 flex-col items-center justify-center">
+                        <div className="flex gap-3">
+                          {/* Left Column: Neutral Panel + Large Thumbnail + Sale Unit */}
+                          <div className="flex w-[84px] shrink-0 flex-col items-center justify-center rounded-[14px] border border-[#E9ECEF] bg-[#F8F9FA] p-2 text-center">
                             <ProductPreviewThumb
                               product={product}
                               priority={index < 4}
-                              className="flex h-[68px] w-[68px] shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#DDE2E8] bg-[#F8FAFC] min-[360px]:h-[76px] min-[360px]:w-[76px] min-[400px]:h-[84px] min-[400px]:w-[84px]"
+                              className="flex h-[64px] w-[64px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#DDE1E6] bg-white"
                               iconClassName="text-[#8C8889]"
                               onOpen={openImagePreview}
                             />
-                            <div className="mt-2 w-full text-center">
-                              <div className="text-[9px] font-extrabold leading-3 text-slate-700">
-                                बिक्री एकाइ
+                            <div className="mt-1.5 w-full text-center">
+                              <div className="text-[10px] font-bold leading-tight text-[#64748B]">
+                                बिक्री इकाई
                               </div>
-                              <div className="mt-1 flex items-center justify-center gap-1 text-[10px] font-black leading-4 text-[#11120d] min-[400px]:text-[11px]">
-                                {stockTracked ? <span
-                                  className={cn(
-                                    "h-2 w-2 shrink-0 rounded-full",
-                                    stockDot(product),
-                                  )}
-                                /> : null}
-                                <span className="whitespace-nowrap">
-                                  {stockTracked ? `${formatQty(product.stock)} ` : ""}
+                              <div className="mt-0.5 flex items-center justify-center gap-1 text-[11px] font-black text-[#11120d]">
+                                {stockTracked ? (
+                                  <span
+                                    className={cn("h-1.5 w-1.5 shrink-0 rounded-full", stockDot(product))}
+                                  />
+                                ) : null}
+                                <span className="truncate">
                                   {product.saleUnit || "PIECE"}
                                 </span>
                               </div>
                             </div>
                           </div>
-                          <div
-                            className={cn(
-                              "flex min-h-[126px] min-w-0 flex-col py-1",
-                              showPurchaseCost
-                                ? "justify-between"
-                                : "justify-center",
-                            )}
-                          >
-                            <div>
-                              <h2 className="break-words text-[14px] font-black leading-tight text-[#11120d] [overflow-wrap:anywhere] min-[400px]:text-[14px]">
+
+                          {/* Right Column: Title + 3-Grid Prices */}
+                          <div className="min-w-0 flex-1 space-y-2">
+                            {/* Title & Brand Row */}
+                            <div className="min-w-0 pr-1">
+                              <h2 className="line-clamp-2 text-[16px] font-black leading-snug text-[#000000]">
                                 {product.name}
                               </h2>
-                              <div className="mt-1 truncate text-[12px] font-bold leading-4 text-[#4B5563] min-[400px]:text-[13px]">
+                              <div className="mt-0.5 truncate text-[11px] font-bold uppercase tracking-wide text-[#6E8294]">
                                 {product.brand || "Unbranded"}
                               </div>
                             </div>
-                            {showPurchaseCost ? (
-                              <div className="mt-4 border-t border-slate-200 pt-2.5">
-                                <div className="text-[11px] font-black leading-4 text-slate-800 min-[400px]:text-[14px]">
-                                  खरिद दर
+
+                            {/* 3-Column Dual-Tone Price Grid */}
+                            <div className="grid grid-cols-3 gap-1.5 min-[380px]:gap-2">
+                              {/* 1. Purchase / खरिद */}
+                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-white shadow-2xs">
+                                <div className="bg-[#F1F5F9] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#475569] min-[400px]:text-[10.5px]">
+                                  Cost
                                 </div>
-                                <CompactPrice value={product.ratePerPiece} />
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                  {!canViewPurchaseCost || !purchaseCostVisible ? (
+                                    <span className="tracking-widest text-[#94A3B8]">••••</span>
+                                  ) : product.ratePerPiece !== null ? (
+                                    <>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span>{formatPriceNumber(product.ratePerPiece)}</span>
+                                    </>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </div>
                               </div>
-                            ) : null}
-                          </div>
-                          <div
-                            className={cn(
-                              "min-h-[112px] self-stretch overflow-hidden rounded-[12px] border border-slate-200 bg-white",
-                              canViewWholesalePrice
-                                ? "grid grid-rows-2"
-                                : "flex flex-col justify-center border-emerald-200 bg-emerald-50",
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                "flex min-w-0 flex-col justify-center px-2 py-2 min-[400px]:px-2.5",
-                                canViewWholesalePrice &&
-                                "border-b border-slate-200 bg-emerald-50",
-                              )}
-                            >
-                              <div className="text-[10px] font-black uppercase leading-3 tracking-[-0.01em] text-emerald-800">
-                                Retail / खुद्रा
+
+                              {/* 2. Retail / खुद्रा */}
+                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#D7EEDB] bg-white shadow-2xs">
+                                <div className="bg-[#EAF7EE] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#1E6B3D] min-[400px]:text-[10.5px]">
+                                  Retail
+                                </div>
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                  {product.retailPrice !== null ? (
+                                    <>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span>{formatPriceNumber(product.retailPrice)}</span>
+                                    </>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </div>
                               </div>
-                              <CompactPrice
-                                value={product.retailPrice}
-                                tone="retail"
-                              />
+
+                              {/* 3. Wholesale / थोक */}
+                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#DEE7F5] bg-white shadow-2xs">
+                                <div className="bg-[#EEF3FA] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#234A7F] min-[400px]:text-[10.5px]">
+                                  Wholesale
+                                </div>
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                  {!canViewWholesalePrice ? (
+                                    <span className="tracking-widest text-[#94A3B8]">••••</span>
+                                  ) : product.wholesalePrice !== null ? (
+                                    <>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span>{formatPriceNumber(product.wholesalePrice)}</span>
+                                    </>
+                                  ) : (
+                                    "—"
+                                  )}
+                                </div>
+                              </div>
                             </div>
-                            {canViewWholesalePrice ? (
-                              <div className="flex min-w-0 flex-col justify-center bg-slate-50 px-2 py-2 min-[400px]:px-2.5">
-                                <div className="text-[10px] font-black uppercase leading-3 tracking-[-0.01em] text-slate-700">
-                                  Wholesale / थोक
-                                </div>
-                                <CompactPrice
-                                  value={product.wholesalePrice}
-                                  compact
-                                />
-                                <div className="mt-1 text-[9px] font-extrabold leading-3 text-slate-700 min-[400px]:text-[10px]">
-                                  {product.wholesaleEligible
-                                    ? `थोक सीमा ${formatQty(product.thresholdQty)} ${product.saleUnit || "PIECE"}`
-                                    : "थोक मूल्य बन्द"}
-                                </div>
-                              </div>
-                            ) : null}
                           </div>
                         </div>
 
-                        <details
-                          className="group mt-3"
-                          onToggle={(event) => {
-                            if (event.currentTarget.open) {
-                              trackSearchSelection(product, "VIEW_DETAILS");
-                            }
-                          }}
-                        >
-                          <summary className="flex cursor-pointer list-none items-center justify-center gap-1 rounded-[12px] border border-slate-200 bg-slate-50 py-2 text-[12px] font-black text-slate-600">
-                            <span className="group-open:hidden">
-                              View details
-                            </span>
-                            <span className="hidden group-open:inline">
-                              Hide details
-                            </span>
-                            <Icon
-                              name="expand_more"
-                              sizePx={18}
-                              className="transition group-open:rotate-180"
-                            />
-                          </summary>
-                          <div className="mt-3 grid grid-cols-2 gap-3 border-t border-slate-100 pt-3 text-[12px]">
-                            <Info label="SKU" value={product.sku || "-"} />
-                            <Info
-                              label="Barcode"
-                              value={product.barcode || "-"}
-                            />
-                            <Info
-                              label="Category / brand"
-                              value={categoryBrand.primary}
-                            />
-                            <Info
-                              label="Source"
-                              value={categoryBrand.lines.join(" / ") || "-"}
-                            />
-                            <Info
-                              label="Package"
-                              value={formatPackage(product)}
-                            />
-                            <Info label="Size" value={formatSize(product)} />
-                          </div>
-                        </details>
-
-                        {isAdmin ? (
+                        {/* Bottom Action Row (Full width when single button, 50/50 when multiple actions) */}
+                        <div className="mt-2.5 flex items-center justify-between gap-2.5 border-t border-[#F1F4F7] pt-2">
                           <button
                             type="button"
-                            onClick={() => editProductFromLookup(product)}
-                            className="mt-2 inline-flex min-h-11 w-full items-center justify-center gap-2 rounded-[12px] border border-slate-300 bg-white px-4 text-[13px] font-black text-slate-800 transition active:scale-[0.99] active:bg-slate-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-slate-950 focus-visible:ring-offset-2"
-                            aria-label={`Edit ${product.name}`}
+                            onClick={() => {
+                              const next = !isExpanded;
+                              toggleProductDetails(product.id);
+                              if (next) trackSearchSelection(product, "VIEW_DETAILS");
+                            }}
+                            className={cn(
+                              "flex h-10 items-center justify-center gap-1 rounded-[9px] border border-[#D4D7DC] bg-[#F8F9FA] px-3 text-[12px] font-black text-[#1D3E53] transition hover:bg-[#F1F3F5] active:bg-[#E9ECEF]",
+                              isAdmin || isStaff ? "flex-1" : "w-full",
+                            )}
                           >
-                            <Icon name="edit" sizePx={18} />
-                            Edit product
-                          </button>
-                        ) : null}
-
-                        {isStaff ? (
-                          <div className="mt-4 flex items-center justify-between gap-3 rounded-[14px] border border-slate-200 bg-slate-50 p-3">
-                            <div>
-                              <div className="text-[11px] font-black uppercase text-slate-500">
-                                Draft quantity
-                              </div>
-                              <div className="mt-1 text-[12px] font-bold text-slate-400">
-                                Add for cashier request
-                              </div>
-                            </div>
-                            <QtyControl
-                              product={product}
-                              qty={draftQty}
-                              onChange={(qty) => updateDraftQty(product, qty)}
-                              compact
+                            <span>{isExpanded ? "Hide details" : "View details"}</span>
+                            <Icon
+                              name="chevron_right"
+                              sizePx={16}
+                              className={cn(
+                                "text-[#1D3E53] transition-transform duration-200",
+                                isExpanded && "rotate-90",
+                              )}
                             />
+                          </button>
+
+                          {isAdmin || isStaff ? (
+                            <div className="flex flex-1 items-center justify-end">
+                              {isAdmin ? (
+                                <button
+                                  type="button"
+                                  onClick={() => editProductFromLookup(product)}
+                                  className="flex h-10 w-full items-center justify-center gap-1.5 rounded-[9px] border-[1.5px] border-[#1D3E53] bg-white px-3 text-[13px] font-black text-[#1D3E53] shadow-2xs transition hover:bg-[#1D3E53] hover:text-white active:scale-[0.98]"
+                                  aria-label={`Edit ${product.name}`}
+                                >
+                                  <Icon name="edit" sizePx={16} />
+                                  <span>Edit</span>
+                                </button>
+                              ) : null}
+
+                              {isStaff ? (
+                                <div className="flex h-10 w-full items-center justify-end gap-1.5">
+                                  <span className="text-[10px] font-black uppercase text-[#7A7F89]">
+                                    Draft:
+                                  </span>
+                                  <QtyControl
+                                    product={product}
+                                    qty={draftQty}
+                                    onChange={(qty) => updateDraftQty(product, qty)}
+                                    compact
+                                  />
+                                </div>
+                              ) : null}
+                            </div>
+                          ) : null}
+                        </div>
+
+                        {/* Collapsible Info Drawer */}
+                        {isExpanded ? (
+                          <div className="mt-2.5 grid grid-cols-2 gap-2 rounded-[12px] border border-[#E2E4E8] bg-[#F8FAFC] p-3 text-[11px] animate-in fade-in duration-200">
+                            <Info label="SKU" value={product.sku || "-"} />
+                            <Info label="Barcode" value={product.barcode || "-"} />
+                            <Info label="Category" value={categoryBrand.primary} />
+                            <Info label="Package" value={formatPackage(product)} />
+                            <Info label="Size" value={formatSize(product)} />
+                            <Info
+                              label="थोक सीमा"
+                              value={
+                                product.wholesaleEligible
+                                  ? `${formatQty(product.thresholdQty)} ${product.saleUnit || "PIECE"}`
+                                  : "थोक मूल्य बन्द"
+                              }
+                            />
+                            {stockTracked ? (
+                              <Info
+                                label="Stock"
+                                value={`${formatQty(product.stock)} ${product.saleUnit || "PIECE"}`}
+                              />
+                            ) : null}
                           </div>
                         ) : null}
                       </article>

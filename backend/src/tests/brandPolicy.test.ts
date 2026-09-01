@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import prisma from "../db/prisma";
 import { updateBrand } from "../modules/brands/service";
 
-test("updateBrand does not cascade deactivation to products", async () => {
+test("updateBrand deactivates an unused brand without cascading to products", async () => {
   const originalTransaction = prisma.$transaction;
   let productUpdateCalled = false;
   let auditMeta: any;
@@ -22,6 +22,7 @@ test("updateBrand does not cascade deactivation to products", async () => {
       }),
     },
     product: {
+      count: async () => 0,
       updateMany: async () => {
         productUpdateCalled = true;
         return { count: 3 };
@@ -43,6 +44,38 @@ test("updateBrand does not cascade deactivation to products", async () => {
     assert.equal(productUpdateCalled, false);
     assert.equal((result as any).deactivatedProductCount, undefined);
     assert.equal(auditMeta.productCascade, false);
+  } finally {
+    (prisma as any).$transaction = originalTransaction;
+  }
+});
+
+test("updateBrand blocks deactivation while active products use the brand", async () => {
+  const originalTransaction = prisma.$transaction;
+  let brandUpdateCalled = false;
+  const tx = {
+    brand: {
+      findUnique: async () => ({
+        id: "brand-1",
+        name: "Used Brand",
+        isActive: true,
+      }),
+      update: async () => {
+        brandUpdateCalled = true;
+        return {};
+      },
+    },
+    product: { count: async () => 3 },
+  };
+  (prisma as any).$transaction = async (callback: any) => callback(tx);
+
+  try {
+    await assert.rejects(
+      () => updateBrand("brand-1", { isActive: false }, "actor-1"),
+      (error: any) =>
+        error?.code === "BRAND_HAS_ACTIVE_PRODUCTS" &&
+        error?.activeProductCount === 3,
+    );
+    assert.equal(brandUpdateCalled, false);
   } finally {
     (prisma as any).$transaction = originalTransaction;
   }

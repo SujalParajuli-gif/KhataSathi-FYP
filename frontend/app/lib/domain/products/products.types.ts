@@ -26,7 +26,7 @@ export type Product = {
   sizeValue?: number | null;
   sizeUnit: string;
   ratePerPiece: number | null;
-  packageQuantity: number;
+  packageQuantity: number | null;
   packageUnit: string;
   saleUnit: string;
   allowFractionalQty: boolean;
@@ -34,8 +34,10 @@ export type Product = {
   wholesaleEligible: boolean;
   sourceCitation?: string;
 
-  retailPrice: number;
-  wholesalePrice: number;
+  sellingPriceStatus: "PENDING" | "READY";
+  availabilityStatus: "CATALOG_LISTED" | "COMING_SOON";
+  retailPrice: number | null;
+  wholesalePrice: number | null;
   thresholdQty: number; // qty wholesale threshold: above this qty, wholesale pricing kicks in
   thresholdQtyMode: ThresholdMode;
 

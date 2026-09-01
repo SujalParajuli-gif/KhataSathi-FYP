@@ -29,16 +29,16 @@ export function MobileFilterButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative inline-flex h-[46px] shrink-0 items-center justify-center gap-2 rounded-xl border border-slate-200 bg-white px-3 text-[13px] font-bold text-[#11120d] transition-colors hover:border-slate-300 active:bg-slate-50",
+        "relative inline-flex h-[46px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 text-[12px] font-bold text-[#11120d] transition-colors hover:border-slate-300 active:bg-slate-50",
         className,
       )}
       aria-label={`Open ${label.toLowerCase()}${activeCount ? `, ${activeCount} active` : ""}`}
     >
-      <GoogleIcon name="filter_alt" className="text-[20px]" />
+      <GoogleIcon name="filter_alt" className="text-[16px]" />
       <span>{label}</span>
       <span
         className={cn(
-          "inline-flex h-6 min-w-6 items-center justify-center rounded-full px-1.5 text-[11px] font-extrabold text-white",
+          "inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-full px-1 text-[10px] font-extrabold text-white",
           activeCount ? "bg-emerald-600" : "bg-[#565449]",
         )}
       >
@@ -235,7 +235,7 @@ export function MobileFilterSheet({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 py-5">
+        <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain px-4 pt-4 pb-36">
           {children}
         </div>
 

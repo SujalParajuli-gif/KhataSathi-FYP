@@ -41,8 +41,10 @@ type BackendProduct = {
   quantityStep?: number | null;
   wholesaleEligible?: boolean | null;
   sourceCitation?: string | null;
-  retailPrice: number;
-  wholesalePrice: number;
+  sellingPriceStatus?: "PENDING" | "READY";
+  availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
+  retailPrice: number | null;
+  wholesalePrice: number | null;
   wholesaleQtyThreshold?: number;
   usesDefaultWholesaleQtyThreshold?: boolean;
   stock: number;
@@ -84,15 +86,32 @@ function toFrontendProduct(product: BackendProduct): Product {
       product.ratePerPiece === null || product.ratePerPiece === undefined
         ? null
         : Number(product.ratePerPiece),
-    packageQuantity: Number(product.packageQuantity ?? 1),
+    packageQuantity:
+      product.packageQuantity === null || product.packageQuantity === undefined
+        ? null
+        : Number(product.packageQuantity),
     packageUnit: product.packageUnit ?? "PIECE",
     saleUnit: product.saleUnit ?? "PIECE",
     allowFractionalQty: Boolean(product.allowFractionalQty),
     quantityStep: Number(product.quantityStep ?? 1),
     wholesaleEligible: product.wholesaleEligible ?? true,
     sourceCitation: product.sourceCitation ?? "",
-    retailPrice: Number(product.retailPrice ?? 0),
-    wholesalePrice: Number(product.wholesalePrice ?? 0),
+    sellingPriceStatus:
+      product.sellingPriceStatus === "PENDING" ||
+      !Number(product.retailPrice) ||
+      !Number(product.wholesalePrice)
+        ? "PENDING"
+        : "READY",
+    availabilityStatus:
+      product.availabilityStatus === "COMING_SOON" ? "COMING_SOON" : "CATALOG_LISTED",
+    retailPrice:
+      product.retailPrice === null || product.retailPrice === undefined
+        ? null
+        : Number(product.retailPrice),
+    wholesalePrice:
+      product.wholesalePrice === null || product.wholesalePrice === undefined
+        ? null
+        : Number(product.wholesalePrice),
     thresholdQty: Number(product.wholesaleQtyThreshold ?? 1),
     thresholdQtyMode: product.usesDefaultWholesaleQtyThreshold
       ? "default"
@@ -243,15 +262,21 @@ function toBackendPayload(product: Omit<Product, "id">) {
       product.ratePerPiece === null || product.ratePerPiece === undefined
         ? null
         : Number(product.ratePerPiece),
-    packageQuantity: Number(product.packageQuantity || 1),
+    packageQuantity:
+      product.packageQuantity === null || product.packageQuantity === undefined
+        ? null
+        : Number(product.packageQuantity),
     packageUnit: product.packageUnit || "PIECE",
     saleUnit: product.saleUnit || "PIECE",
     allowFractionalQty: Boolean(product.allowFractionalQty),
     quantityStep: Number(product.quantityStep || 1),
     wholesaleEligible: Boolean(product.wholesaleEligible),
     sourceCitation: product.sourceCitation || undefined,
-    retailPrice: Number(product.retailPrice),
-    wholesalePrice: Number(product.wholesalePrice),
+    availabilityStatus: product.availabilityStatus,
+    retailPrice:
+      Number(product.retailPrice) > 0 ? Number(product.retailPrice) : null,
+    wholesalePrice:
+      Number(product.wholesalePrice) > 0 ? Number(product.wholesalePrice) : null,
     wholesaleQtyThreshold: Number(product.thresholdQty ?? 1),
     usesDefaultWholesaleQtyThreshold: product.thresholdQtyMode === "default",
     stock: Number(product.stock ?? 0),

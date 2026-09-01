@@ -339,10 +339,10 @@ export default function AlertsPage() {
       <div className="w-full">
         
         {/* Header Section */}
-        <div className="mb-4 flex flex-col justify-between gap-3 md:mb-8 md:flex-row md:items-center md:gap-4">
+        <div className="mb-3 flex flex-col justify-between gap-2.5 md:mb-6 md:flex-row md:items-center md:gap-4">
           <div className="hidden md:block">
-            <h1 className="text-2xl md:text-3xl font-bold tracking-tight">Alerts</h1>
-            <p className="text-sm md:text-base text-slate-500 mt-1">
+            <h1 className="text-2xl font-black tracking-tight text-[#11120d]">Alerts</h1>
+            <p className="text-[13px] font-medium text-[#64748B] mt-0.5">
               {capabilities.businessMode === "CATALOG_ONLY"
                 ? "Stay updated on catalog, price, product, and essential system changes."
                 : capabilities.posEnabled
@@ -350,38 +350,38 @@ export default function AlertsPage() {
                   : "Stay updated on inventory, stock, price, product, and system changes."}
             </p>
           </div>
-          <div className="flex w-full flex-wrap items-center gap-2 md:w-auto md:gap-3">
+          <div className="flex w-full items-center gap-2 md:w-auto md:gap-2.5">
             <button 
               onClick={() => refreshAlerts(500)}
-              className="inline-flex min-h-12 flex-1 items-center justify-center rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-sm font-extrabold text-[#565449] shadow-sm transition-colors hover:bg-slate-50 md:min-h-0 md:flex-none md:py-2"
+              className="inline-flex h-9.5 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#374151] shadow-2xs transition active:scale-98 hover:bg-[#F3F4F6] md:flex-none md:px-3.5"
             >
-              <Icon name="refresh" className="text-[16px] mr-2" />
-              Refresh
+              <Icon name="refresh" sizePx={15} />
+              <span>Refresh</span>
             </button>
             <button 
               onClick={handleMarkAllRead}
               disabled={unreadCount === 0}
-              className="inline-flex min-h-12 flex-1 items-center justify-center rounded-[13px] border border-[#CFCFD3] bg-white px-4 text-sm font-extrabold text-[#565449] shadow-sm transition-colors hover:bg-slate-50 disabled:pointer-events-none disabled:opacity-50 md:min-h-0 md:flex-none md:py-2"
+              className="inline-flex h-9.5 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#374151] shadow-2xs transition active:scale-98 hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40 md:flex-none md:px-3.5"
             >
-              <Icon name="done_all" className="text-[16px] mr-2" />
-              Mark all read
+              <Icon name="done_all" sizePx={15} />
+              <span>Mark all read</span>
             </button>
           </div>
         </div>
 
         {error ? (
-          <div className="mb-4 flex flex-col gap-3 rounded-[14px] border border-amber-300 bg-amber-50 p-4 text-amber-950 md:mb-6 md:flex-row md:items-center md:justify-between">
-            <div className="flex items-start gap-3">
-              <Icon name="wifi_off" className="mt-0.5 text-[20px] text-amber-700" />
+          <div className="mb-3 flex flex-col gap-2.5 rounded-[14px] border border-amber-300 bg-amber-50 p-3.5 text-amber-950 md:mb-5 md:flex-row md:items-center md:justify-between">
+            <div className="flex items-start gap-2.5">
+              <Icon name="wifi_off" sizePx={18} className="mt-0.5 text-amber-700" />
               <div>
-                <p className="text-[14px] font-extrabold">Unable to refresh alerts</p>
-                <p className="mt-0.5 text-[13px] font-medium text-amber-800">{error}</p>
+                <p className="text-[13px] font-extrabold">Unable to refresh alerts</p>
+                <p className="mt-0.5 text-[12px] font-medium text-amber-800">{error}</p>
               </div>
             </div>
             <button
               type="button"
               onClick={() => refreshAlerts(500)}
-              className="min-h-11 rounded-[11px] bg-[#11120d] px-4 text-[13px] font-extrabold text-white"
+              className="h-9 rounded-[9px] bg-[#11120d] px-3.5 text-[12px] font-extrabold text-white active:scale-95"
             >
               Try again
             </button>
@@ -389,37 +389,35 @@ export default function AlertsPage() {
         ) : null}
 
         {/* Global Stats Banner */}
-        <div className="mb-4 rounded-[16px] border border-[#CFCFD3] bg-[#F8FAFC] p-4 shadow-sm md:mb-8 md:rounded-[18px] md:bg-white md:p-6">
-          <div className="grid grid-cols-2 gap-4 md:grid-cols-4 md:gap-6">
-            <div className="flex flex-col">
-              <span className="text-xl md:text-2xl font-extrabold">
-                {globalStats.total} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Total</span>
-              </span>
-              <div className="h-1 w-12 bg-slate-200 mt-2 rounded-full"></div>
+        <div className="mb-3 grid grid-cols-4 divide-x divide-[#E2E4E8] rounded-[14px] border border-[#D8DBE0] bg-[#F8FAFC] py-2.5 shadow-2xs md:mb-5 md:grid-cols-4 md:divide-x-0 md:gap-3 md:border-0 md:bg-transparent md:p-0 md:shadow-none">
+          <div className="px-1 text-center md:rounded-[14px] md:border md:border-[#D8DBE0] md:bg-white md:p-3.5 md:text-left md:shadow-2xs">
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Total</div>
+            <div className="mt-0.5 font-mono text-[17px] font-black text-[#11120d] md:mt-1 md:text-[22px]">
+              {globalStats.total}
             </div>
-            <div className="flex flex-col">
-              <span className="text-xl md:text-2xl font-extrabold text-blue-600">
-                {globalStats.unread} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Unread</span>
-              </span>
-              <div className="h-1 w-12 bg-blue-500 mt-2 rounded-full"></div>
+          </div>
+          <div className="px-1 text-center md:rounded-[14px] md:border md:border-[#D8DBE0] md:bg-white md:p-3.5 md:text-left md:shadow-2xs">
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Unread</div>
+            <div className={cn("mt-0.5 font-mono text-[17px] font-black md:mt-1 md:text-[22px]", globalStats.unread > 0 ? "text-blue-600" : "text-[#11120d]")}>
+              {globalStats.unread}
             </div>
-            <div className="flex flex-col">
-              <span className="text-xl md:text-2xl font-extrabold text-rose-600">
-                {globalStats.critical} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Critical</span>
-              </span>
-              <div className="h-1 w-12 bg-rose-500 mt-2 rounded-full"></div>
+          </div>
+          <div className="px-1 text-center md:rounded-[14px] md:border md:border-[#D8DBE0] md:bg-white md:p-3.5 md:text-left md:shadow-2xs">
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Critical</div>
+            <div className={cn("mt-0.5 font-mono text-[17px] font-black md:mt-1 md:text-[22px]", globalStats.critical > 0 ? "text-rose-600" : "text-[#11120d]")}>
+              {globalStats.critical}
             </div>
-            <div className="flex flex-col">
-              <span className="text-xl md:text-2xl font-extrabold text-emerald-600">
-                {globalStats.resolved} <span className="text-xs md:text-sm font-semibold text-slate-400 ml-1 uppercase tracking-wider">Resolved</span>
-              </span>
-              <div className="h-1 w-12 bg-emerald-500 mt-2 rounded-full"></div>
+          </div>
+          <div className="px-1 text-center md:rounded-[14px] md:border md:border-[#D8DBE0] md:bg-white md:p-3.5 md:text-left md:shadow-2xs">
+            <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Resolved</div>
+            <div className={cn("mt-0.5 font-mono text-[17px] font-black md:mt-1 md:text-[22px]", globalStats.resolved > 0 ? "text-emerald-600" : "text-[#11120d]")}>
+              {globalStats.resolved}
             </div>
           </div>
         </div>
 
-        {/* Filters and Search */}
-        <div className="mb-4 flex flex-col justify-between gap-3 md:mb-6 md:gap-6 xl:flex-row xl:items-center">
+        {/* Filters and Search Bar */}
+        <div className="mb-3 flex flex-col gap-2.5 md:mb-5 xl:flex-row xl:items-center xl:justify-between">
           <MobileFilterTabs
             className="lg:hidden"
             ariaLabel="Alert type"
@@ -427,43 +425,43 @@ export default function AlertsPage() {
             onChange={setFilterType}
             items={[{ value: "all" as const, label: "All", count: alerts.length }, ...typeFilters.map((type) => ({ value: type, label: type, count: typeCounts[type] }))]}
           />
-          <div className="hidden overflow-x-auto pb-1 -mx-4 px-4 sm:mx-0 sm:px-0 sm:pb-0 sm:flex-wrap gap-2 hide-scrollbar w-full xl:w-auto lg:flex">
+          <div className="hidden items-center gap-1.5 lg:flex">
             <button 
               onClick={() => setFilterType("all")}
               className={cn(
-                "flex-shrink-0 px-4 py-1.5 rounded-full text-[13px] font-extrabold shadow-sm transition-colors",
-                filterType === "all" ? "bg-[#11120d] text-white" : "bg-white border border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"
+                "h-8.5 rounded-full px-3.5 text-[12px] font-extrabold shadow-2xs transition",
+                filterType === "all" ? "bg-[#11120d] text-white" : "border border-[#D4D7DC] bg-white text-[#565449] hover:bg-[#F3F4F6]"
               )}
             >
-              All <span className={cn("ml-1 rounded-full px-2 py-0.5 text-[11px]", filterType === "all" ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600")}>{alerts.length}</span>
+              All <span className={cn("ml-1 rounded-full px-1.5 py-0.2 text-[10.5px]", filterType === "all" ? "bg-white/20 text-white" : "bg-[#F1F3F5] text-[#64748B]")}>{alerts.length}</span>
             </button>
             {typeFilters.map((type) => (
               <button 
                 key={type}
                 onClick={() => setFilterType(type)}
                 className={cn(
-                  "flex-shrink-0 px-4 py-1.5 rounded-full text-[13px] font-extrabold shadow-sm transition-colors",
-                  filterType === type ? "bg-[#11120d] text-white" : "bg-white border border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"
+                  "h-8.5 rounded-full px-3.5 text-[12px] font-extrabold shadow-2xs transition",
+                  filterType === type ? "bg-[#11120d] text-white" : "border border-[#D4D7DC] bg-white text-[#565449] hover:bg-[#F3F4F6]"
                 )}
               >
-                {type} <span className={cn("ml-1 rounded-full px-2 py-0.5 text-[11px]", filterType === type ? "bg-white/15 text-white" : "bg-slate-100 text-slate-600")}>{typeCounts[type]}</span>
+                {type} <span className={cn("ml-1 rounded-full px-1.5 py-0.2 text-[10.5px]", filterType === type ? "bg-white/20 text-white" : "bg-[#F1F3F5] text-[#64748B]")}>{typeCounts[type]}</span>
               </button>
             ))}
           </div>
           
-          <div className="flex w-full flex-col items-stretch gap-3 sm:flex-row sm:items-center xl:w-auto">
-            <div className="relative flex-1 sm:min-w-[240px]">
-              <Icon name="search" className="absolute left-3 top-1/2 -translate-y-1/2 text-[16px] text-slate-400" />
+          <div className="flex items-center gap-2">
+            <div className="relative min-w-0 flex-1 sm:w-[260px] sm:flex-none">
+              <Icon name="search" sizePx={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]" />
               <input 
                 type="text" 
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder="Search alerts..." 
-                className="h-12 w-full rounded-[14px] border border-[#CFCFD3] bg-white pl-9 pr-4 text-[16px] font-medium transition-all focus:border-[#11120d] focus:outline-none md:h-auto md:py-2 md:text-[13px]"
+                className="h-9.5 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
               />
             </div>
-            <label className="flex items-center justify-between sm:justify-start gap-3 cursor-pointer group bg-white sm:bg-transparent border border-[#CFCFD3] sm:border-0 rounded-[14px] px-4 py-2 sm:p-0">
-              <span className="text-[13px] font-extrabold text-[#565449] group-hover:text-[#11120d] transition-colors">Unread only</span>
+            <label className="flex h-9.5 shrink-0 cursor-pointer select-none items-center gap-2 rounded-[10px] border border-[#D4D7DC] bg-white px-3 shadow-2xs transition hover:bg-[#F8FAFC]">
+              <span className="text-[11.5px] font-bold text-[#4B5563]">Unread only</span>
               <div className="relative">
                 <input 
                   type="checkbox" 
@@ -471,8 +469,8 @@ export default function AlertsPage() {
                   checked={showUnreadOnly}
                   onChange={() => setShowUnreadOnly(!showUnreadOnly)}
                 />
-                <div className={cn("flex h-6 w-11 items-center rounded-full border p-1 transition", showUnreadOnly ? "border-[#11120d] bg-[#11120d]" : "border-[#CFCFD3] bg-[#F3F4F6]")}>
-                  <div className={cn("h-4 w-4 rounded-full bg-white transition", showUnreadOnly ? "translate-x-5" : "translate-x-0")} />
+                <div className={cn("flex h-5 w-9 items-center rounded-full p-0.5 transition", showUnreadOnly ? "bg-[#11120d]" : "bg-[#D4D7DC]")}>
+                  <div className={cn("h-4 w-4 rounded-full bg-white shadow-xs transition", showUnreadOnly ? "translate-x-4" : "translate-x-0")} />
                 </div>
               </div>
             </label>

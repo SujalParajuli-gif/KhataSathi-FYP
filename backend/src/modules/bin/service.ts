@@ -1,5 +1,14 @@
 import prisma from "../../db/prisma";
 import { permanentlyDeleteDocument, restoreDocument } from "../documents/service";
+import { removeImportSource } from "../products/importSourceStorage";
+
+async function removeStoredBatchSource(batchId: string) {
+  const source = await prisma.productImportBatch.findUnique({
+    where: { id: batchId },
+    select: { sourceStoredPath: true, sourceStoredFileName: true },
+  });
+  if (source) await removeImportSource(source);
+}
 
 const AUTO_PURGE_ENTITY_TYPES = ["Document", "ProductImportBatch"];
 
@@ -105,6 +114,7 @@ export async function permanentlyDeleteBinRecord(id: string, actorId: string) {
   if (record.entityType === "Document") {
     await permanentlyDeleteDocument(record.entityId);
   } else if (record.entityType === "ProductImportBatch") {
+    await removeStoredBatchSource(record.entityId);
     await prisma.$transaction([
       prisma.productImportRow.deleteMany({ where: { batchId: record.entityId } }),
       prisma.productImportBatch.deleteMany({ where: { id: record.entityId } }),
@@ -169,6 +179,7 @@ export async function runDueBinPurge(now = new Date()) {
         });
         result.documents += 1;
       } else if (record.entityType === "ProductImportBatch") {
+        await removeStoredBatchSource(record.entityId);
         await prisma.$transaction([
           prisma.productImportRow.deleteMany({ where: { batchId: record.entityId } }),
           prisma.productImportBatch.deleteMany({ where: { id: record.entityId } }),
