@@ -24,7 +24,6 @@ import {
 import {
     compareImportRowsToCatalog,
     fingerprintImportFile,
-    resolveProductAvailability,
     type ComparableImportRow,
 } from "./importComparison";
 import {
@@ -82,6 +81,7 @@ type CsvImportRow = {
     searchAliases?: string[];
     retailPrice: number | null;
     wholesalePrice: number | null;
+    availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
     stock?: number;
 };
 
@@ -116,6 +116,7 @@ type ReviewedPdfImportRowInput = {
     searchAliases?: string[] | string;
     retailPrice?: number | string | null;
     wholesalePrice?: number | string | null;
+    availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
     stock?: number | string;
     resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE";
 };
@@ -183,9 +184,17 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
     const rowId = reviewedDraftText(input.rowId, "Import row", true)!;
     const name = reviewedDraftText(input.name, "Product name", true)!;
     const sku = reviewedDraftText(input.sku, "SKU", true)!;
-    const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Purchase cost", {
+    const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Rate", {
         min: 0.01,
     }) ?? null;
+    const availabilityStatus: "CATALOG_LISTED" | "COMING_SOON" = input.availabilityStatus === "COMING_SOON"
+        ? "COMING_SOON"
+        : "CATALOG_LISTED";
+    if (availabilityStatus !== "COMING_SOON" && ratePerPiece === null) {
+        throw new ReviewedImportRowValidationError(
+            "Enter a Rate or mark this product as Coming soon.",
+        );
+    }
     const packageQuantity = reviewedDraftNumber(
         input.packageQuantity,
         "Package quantity",
@@ -237,6 +246,7 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
         searchAliases: reviewedSearchAliases(input.searchAliases),
         retailPrice,
         wholesalePrice,
+        availabilityStatus,
         stock,
         resolution: reviewedImportResolution(input.resolution),
     };
@@ -252,7 +262,6 @@ type ProductImportDefaults = {
     packageUnit?: string;
     saleUnit?: string;
     stock?: number;
-    retailMarginPercent?: number;
     wholesaleEligible?: boolean;
 };
 
@@ -329,6 +338,23 @@ function parseBooleanCsvValue(value: unknown, fallback: boolean) {
     if (["true", "yes", "y", "1"].includes(normalized)) return true;
     if (["false", "no", "n", "0"].includes(normalized)) return false;
     return fallback;
+}
+
+function parseAvailabilityCsvValue(
+    availabilityValue: unknown,
+    comingSoonValue: unknown,
+): "CATALOG_LISTED" | "COMING_SOON" {
+    const availability = normalizeCsvText(availabilityValue)
+        .toLowerCase()
+        .replace(/[\s-]+/g, "_");
+    if (["coming_soon", "comingsoon"].includes(availability)) return "COMING_SOON";
+    if (["catalog_listed", "cataloglisted", "normal", "available"].includes(availability)) {
+        return "CATALOG_LISTED";
+    }
+
+    return parseBooleanCsvValue(comingSoonValue, false)
+        ? "COMING_SOON"
+        : "CATALOG_LISTED";
 }
 
 function parseCsvSearchAliases(value: unknown) {
@@ -587,6 +613,25 @@ export function normalizeCsvImportRow(
             "category group",
         ),
     );
+    const availabilityStatus = parseAvailabilityCsvValue(
+        getMappedCsvCell(
+            normalizedRow,
+            options.fieldMap,
+            "availabilityStatus",
+            "availability_status",
+            "availability status",
+            "availabilitystatus",
+            "availability",
+        ),
+        getMappedCsvCell(
+            normalizedRow,
+            options.fieldMap,
+            "comingSoon",
+            "coming_soon",
+            "coming soon",
+            "comingsoon",
+        ),
+    );
 
     if (supplierProductName || vendorSource) {
         let fullName = supplierProductName;
@@ -651,9 +696,6 @@ export function normalizeCsvImportRow(
                 "wholesalePrice",
                 "wholesaleprice",
                 "wholesale_price",
-                "wsp",
-                "dealer price",
-                "dealer_price",
                 "storewholesaleprice",
                 "store_wholesale_price",
                 "store wholesale price",
@@ -669,9 +711,6 @@ export function normalizeCsvImportRow(
                 "retailPrice",
                 "retailprice",
                 "retail_price",
-                "mrp",
-                "maximum retail price",
-                "price",
             ),
             "Retail price",
             rowNumber,
@@ -691,13 +730,21 @@ export function normalizeCsvImportRow(
                 "purchase rate",
                 "supplier rate",
                 "supplier_rate",
+                "wholesale rate",
+                "wholesale_rate",
+                "wsp",
+                "dealer price",
+                "dealer_price",
+                "mrp",
+                "maximum retail price",
+                "price",
                 "cost price",
                 "cost_price",
                 "rate",
                 "base price",
                 "base_price",
             ),
-            "Purchase cost",
+            "Rate",
             rowNumber,
             { min: 0.01, allowBlank: true },
         );
@@ -802,6 +849,12 @@ export function normalizeCsvImportRow(
             ),
             retailPrice: retailCsvPrice ?? null,
             wholesalePrice: wholesaleCsvPrice ?? null,
+            availabilityStatus:
+                availabilityStatus === "COMING_SOON"
+                    ? "COMING_SOON"
+                    : purchaseCostCsv || retailCsvPrice || wholesaleCsvPrice
+                        ? "CATALOG_LISTED"
+                        : "COMING_SOON",
             stock:
                 parseCsvNumber(
                     getMappedCsvCell(normalizedRow, options.fieldMap, "stock", "stock", "qty in stock"),
@@ -822,6 +875,25 @@ export function normalizeCsvImportRow(
     if (!sku) {
         throw new Error(`Row ${rowNumber}: sku is required.`);
     }
+
+    const normalizedRate = parseCsvNumber(
+        getCsvCell(normalizedRow, "rateperpiece", "rate_per_piece", "rate"),
+        "Rate",
+        rowNumber,
+        { min: 0.01, allowBlank: true },
+    ) ?? null;
+    const normalizedRetailPrice = parseCsvNumber(
+        getCsvCell(normalizedRow, "retailprice", "retail_price"),
+        "retailPrice",
+        rowNumber,
+        { min: 0.01, allowBlank: true },
+    ) ?? null;
+    const normalizedWholesalePrice = parseCsvNumber(
+        getCsvCell(normalizedRow, "wholesaleprice", "wholesale_price"),
+        "wholesalePrice",
+        rowNumber,
+        { min: 0.01, allowBlank: true },
+    ) ?? null;
 
     return {
         name,
@@ -849,12 +921,7 @@ export function normalizeCsvImportRow(
             { min: 0, allowBlank: true },
         ),
         sizeUnit: normalizeUnitLabel(getCsvCell(normalizedRow, "sizeunit", "size_unit"), "STANDARD"),
-        ratePerPiece: parseCsvNumber(
-            getCsvCell(normalizedRow, "rateperpiece", "rate_per_piece"),
-            "ratePerPiece",
-            rowNumber,
-            { min: 0.01, allowBlank: true },
-        ) ?? null,
+        ratePerPiece: normalizedRate,
         packageQuantity:
             parseCsvNumber(
                 getCsvCell(normalizedRow, "packagequantity", "package_quantity"),
@@ -894,18 +961,14 @@ export function normalizeCsvImportRow(
                 "aliases",
             ),
         ),
-        retailPrice: parseCsvNumber(
-            getCsvCell(normalizedRow, "retailprice", "retail_price"),
-            "retailPrice",
-            rowNumber,
-            { min: 0.01, allowBlank: true },
-        ) ?? null,
-        wholesalePrice: parseCsvNumber(
-            getCsvCell(normalizedRow, "wholesaleprice", "wholesale_price"),
-            "wholesalePrice",
-            rowNumber,
-            { min: 0.01, allowBlank: true },
-        ) ?? null,
+        retailPrice: normalizedRetailPrice,
+        wholesalePrice: normalizedWholesalePrice,
+        availabilityStatus:
+            availabilityStatus === "COMING_SOON"
+                ? "COMING_SOON"
+                : normalizedRate || normalizedRetailPrice || normalizedWholesalePrice
+                    ? "CATALOG_LISTED"
+                    : "COMING_SOON",
         stock:
             parseCsvNumber(getCsvCell(normalizedRow, "stock"), "stock", rowNumber, { min: 0, allowBlank: true }) ??
             Number(defaults.stock ?? 0),
@@ -1034,11 +1097,7 @@ export async function importProductsFromCsv(
                             row.retailPrice,
                             row.wholesalePrice,
                         ),
-                        availabilityStatus: resolveProductAvailability(
-                            row.ratePerPiece,
-                            row.retailPrice,
-                            row.wholesalePrice,
-                        ),
+                        availabilityStatus: row.availabilityStatus,
                         retailPrice: normalizeSellingPrice(row.retailPrice),
                         wholesalePrice: normalizeSellingPrice(row.wholesalePrice),
                         wholesaleQtyThreshold: settings.defaultWholesaleQtyThreshold,
@@ -1126,6 +1185,7 @@ function csvImportRowToParsedProduct(row: CsvImportRow) {
         sourceCitation: row.sourceCitation || "",
         retailPrice: row.retailPrice,
         wholesalePrice: row.wholesalePrice,
+        availabilityStatus: row.availabilityStatus || "CATALOG_LISTED",
         stock: row.stock ?? 0,
     };
 }
@@ -1151,6 +1211,9 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
             ratePerPiece: typeof parsed.ratePerPiece === "number" ? parsed.ratePerPiece : null,
             retailPrice: typeof parsed.retailPrice === "number" ? parsed.retailPrice : null,
             wholesalePrice: typeof parsed.wholesalePrice === "number" ? parsed.wholesalePrice : null,
+            availabilityStatus: parsed.availabilityStatus === "COMING_SOON"
+                ? "COMING_SOON"
+                : "CATALOG_LISTED",
         });
     });
 
@@ -1372,7 +1435,18 @@ function parseJsonFromAiText(text: string) {
             : firstBracket >= 0 && lastBracket > firstBracket
                 ? cleaned.slice(firstBracket, lastBracket + 1)
                 : cleaned;
-    return JSON.parse(candidate);
+    try {
+        return JSON.parse(candidate);
+    } catch {
+        // Some model responses contain a trailing comma even when JSON mode is
+        // requested. Repair only that harmless, unambiguous formatting error.
+        const withoutTrailingCommas = candidate.replace(/,\s*([}\]])/g, "$1");
+        try {
+            return JSON.parse(withoutTrailingCommas);
+        } catch {
+            throw new Error("The image reader returned incomplete data. Try the import again.");
+        }
+    }
 }
 
 function summarizeAiImportRow(item: Record<string, unknown>) {
@@ -1408,34 +1482,11 @@ function normalizedSourceRegion(value: unknown) {
 }
 
 export function normalizedImageSourceRegions(items: Array<Record<string, unknown>>) {
-    const regions = items.map((item) => normalizedSourceRegion(item.boundingBox));
-    const available = regions.filter((region): region is NonNullable<typeof region> => Boolean(region));
-    if (available.length < 3) return regions;
-
-    const heights = available.map((region) => region.bottom - region.top).sort((a, b) => a - b);
-    const medianHeight = heights[Math.floor(heights.length / 2)];
-    const fullWidthShare = available.filter((region) => region.right - region.left >= 700).length / available.length;
-    const regularHeightShare = available.filter((region) =>
-        Math.abs((region.bottom - region.top) - medianHeight) <= medianHeight * 0.35,
-    ).length / available.length;
-
-    // Gemini commonly returns a perfectly regular one-column row grid one
-    // visual row too low. That is exactly what causes selecting MOP 10 to
-    // highlight MOP 12. Restrict the correction to wide, regular,
-    // single-column tables so split-page catalogs keep their original boxes.
-    const hasSingleColumnRowLag =
-        fullWidthShare >= 0.8
-        && regularHeightShare >= 0.8
-        && medianHeight >= 15
-        && medianHeight <= 60;
-    if (!hasSingleColumnRowLag) return regions;
-
-    const upwardAdjustment = medianHeight * 1.25;
-    return regions.map((region) => region ? {
-        ...region,
-        top: Math.max(0, Math.round(region.top - upwardAdjustment)),
-        bottom: Math.max(1, Math.round(region.bottom - upwardAdjustment)),
-    } : null);
+    // Keep the source evidence exactly where the extractor placed it. A
+    // previous global "one row up" correction fixed one catalogue but moved
+    // already-correct tables onto the preceding product. Format-wide review
+    // must never guess a positional offset from row height alone.
+    return items.map((item) => normalizedSourceRegion(item.boundingBox));
 }
 
 function normalizeImportedCatalogUnit(value: unknown, fallback: string) {
@@ -1508,7 +1559,7 @@ Rules:
 - saleUnit is the printed unit such as PIECE, SET, DOZEN, KG or LITER; empty if absent.
 - The null and empty values in the JSON schema are not defaults. Leave optional fields null/empty whenever that field is absent in the source row.
 - Never invent stock or a shop selling price.
-- Treat MRP as a possible retail price. Treat supplier WSP/Rate/Base Price as the shop's purchase cost, not the shop's wholesale price.
+- Treat MRP as a possible retail price. Treat supplier WSP/Rate/Base Price as a neutral Rate unless the source clearly labels it Retail or Wholesale.
 - Do not put price numbers inside productName.
 - Keep section/category headings separate from productName.
 - boundingBox is [top, left, bottom, right] for the complete source row on a 0-1000 image coordinate scale.
@@ -1638,7 +1689,7 @@ Return strict JSON only:
   ]
 }
 Rules:
-- The rightmost rate/WSP/wholesale-price column is the shop's PURCHASE COST from this supplier. Put it only in supplierRate.
+- Put the source's generic price, rate, WSP, or MRP column in supplierRate. This is a neutral extracted value; do not classify it as the shop's Rate, Retail, or Wholesale price here.
 - Do not calculate or invent retail price, store wholesale price, stock, code, package quantity, category, or missing words.
 - Preserve the full product name. Numbers and sizes distinguish real variants.
 - pageNumber must match the page label supplied immediately before each image.
@@ -1833,6 +1884,7 @@ export async function createScannedPdfImportPreview(input: {
             sourceCitation: `${input.fileName || "Scanned supplier PDF"} p.${pageNumber}`,
             retailPrice: null,
             wholesalePrice: null,
+            availabilityStatus: validPurchaseRate ? "CATALOG_LISTED" : "COMING_SOON",
             stock: 0,
         };
         previewRows.push({
@@ -1843,7 +1895,7 @@ export async function createScannedPdfImportPreview(input: {
                 productName,
                 code ? `Code ${code}` : "",
                 parsedProduct.packageQuantity ? `Pack ${parsedProduct.packageQuantity}` : "Pack unknown",
-                parsedProduct.ratePerPiece ? `Purchase NPR ${parsedProduct.ratePerPiece}` : "Price coming soon",
+                parsedProduct.ratePerPiece ? `Rate NPR ${parsedProduct.ratePerPiece}` : "Price coming soon",
             ].filter(Boolean).join(" | "),
             sourceLocator: {
                 kind: "PDF",
@@ -1979,8 +2031,8 @@ export async function createImageImportPreview(input: {
         const code = extractedCode.toLocaleLowerCase("en-US") === rawProductName.toLocaleLowerCase("en-US")
             ? ""
             : extractedCode;
-        const purchaseCostInput = Number(item.wsp ?? item.WSP ?? item.rate ?? item.Rate ?? 0);
-        const retailInput = Number(item.mrp ?? item.MRP ?? item.price ?? 0);
+        const supplierRateInput = Number(item.wsp ?? item.WSP ?? item.rate ?? item.Rate ?? item.mrp ?? item.MRP ?? item.price ?? 0);
+        const retailInput = Number(item.mrp ?? item.MRP ?? 0);
         const sourceRegion = imageSourceRegions[index] || null;
         const packageInput = item.packageQty ?? item.pkg ?? item.packageQuantity;
         const packageQuantity = packageInput === null || packageInput === undefined || packageInput === ""
@@ -1995,7 +2047,7 @@ export async function createImageImportPreview(input: {
             rows.push({
                 rowNumber: index + 1,
                 rawText: summarizeAiImportRow(item),
-                sourceLocator: { kind: "IMAGE", region: sourceRegion, regionAdjusted: Boolean(sourceRegion) },
+                sourceLocator: { kind: "IMAGE", region: sourceRegion, regionAdjusted: true },
                 status: "FAILED",
                 error: "AI row did not include a product name.",
                 parsed: { sourceType: "IMAGE_AI_ROW", raw: item },
@@ -2010,10 +2062,12 @@ export async function createImageImportPreview(input: {
             : parsedSize.sizeValue;
         const sizeUnit = normalizeImportedCatalogUnit(item.sizeUnit ?? item.size_unit, parsedSize.sizeUnit || "STANDARD");
         const saleUnit = normalizeImportedCatalogUnit(item.saleUnit ?? item.unit, "PIECE");
-        const purchaseCost = purchaseCostInput > 0
-            ? roundCurrency(purchaseCostInput)
+        const supplierRate = supplierRateInput > 0
+            ? roundCurrency(supplierRateInput)
             : null;
-        const retailPrice = retailInput > 0 ? roundCurrency(retailInput) : null;
+        const retailPrice = retailInput > 0 && roundCurrency(retailInput) !== supplierRate
+            ? roundCurrency(retailInput)
+            : null;
         const parsedProduct = {
             name: productName,
             productName,
@@ -2026,7 +2080,7 @@ export async function createImageImportPreview(input: {
             productCodeVariant: code,
             sizeValue,
             sizeUnit,
-            ratePerPiece: purchaseCost,
+            ratePerPiece: supplierRate,
             packageQuantity:
                 packageQuantity !== null && Number.isFinite(packageQuantity) && packageQuantity > 0
                     ? packageQuantity
@@ -2041,12 +2095,13 @@ export async function createImageImportPreview(input: {
             sourceCitation: input.fileName || "AI image import",
             retailPrice,
             wholesalePrice: null,
+            availabilityStatus: supplierRate || retailPrice ? "CATALOG_LISTED" : "COMING_SOON",
             stock: 0,
         };
         rows.push({
             rowNumber: index + 1,
             rawText: summarizeAiImportRow(item),
-            sourceLocator: { kind: "IMAGE", region: sourceRegion, regionAdjusted: Boolean(sourceRegion) },
+            sourceLocator: { kind: "IMAGE", region: sourceRegion, regionAdjusted: true },
             status: "READY",
             error: null,
             parsed: { sourceType: "IMAGE_AI_ROW", sourceProductName: rawProductName, sourceSizeText: sizeText, ...parsedProduct },
@@ -2130,9 +2185,18 @@ export async function createPdfImportPreview(input: {
     const sourceName = fileSourceName;
     const structured = parsePdfTextCatalogPages(sourcePages);
     if (structured.rows.length > 0) {
+        const defaultPriceColumn = structured.priceColumns.length === 1
+            ? structured.priceColumns[0]
+            : null;
+        const defaultPriceMapping = defaultPriceColumn
+            ? { [defaultPriceColumn.key]: "ratePerPiece" }
+            : {};
         const previewRows: ProductImportPreviewRowDraft[] = structured.rows.map((row, index) => {
             const productName = cleanImportedProductName(row.productName);
             const parsedSize = parseProductSize(productName);
+            const defaultRate = defaultPriceColumn
+                ? row.extractedPrices.find((price) => price.key === defaultPriceColumn.key)?.value ?? null
+                : null;
             const locatedLine = sourcePages
                 .find((page) => page.pageNumber === row.pageNumber)
                 ?.lines?.find((line) => {
@@ -2168,7 +2232,7 @@ export async function createPdfImportPreview(input: {
                     productCodeVariant: row.productCodeVariant,
                     sizeValue: parsedSize.sizeValue,
                     sizeUnit: parsedSize.sizeUnit,
-                    ratePerPiece: null,
+                    ratePerPiece: defaultRate,
                     packageQuantity: row.packageQuantity,
                     packageUnit: row.packageUnit,
                     saleUnit:
@@ -2183,6 +2247,7 @@ export async function createPdfImportPreview(input: {
                     sourceCitation: `${input.fileName || "Supplier PDF"} p.${row.pageNumber}`,
                     retailPrice: null,
                     wholesalePrice: null,
+                    availabilityStatus: row.extractedPrices.length > 0 ? "CATALOG_LISTED" : "COMING_SOON",
                     stock: 0,
                     extractedPrices: row.extractedPrices,
                 },
@@ -2202,7 +2267,7 @@ export async function createPdfImportPreview(input: {
                     parser: "TEXT_TABLE_V2",
                     priceColumns: structured.priceColumns,
                 },
-                priceMapping: {},
+                priceMapping: defaultPriceMapping,
                 fileFingerprint: input.fileFingerprint || null,
                 fileSizeBytes: input.fileSizeBytes ?? null,
                 repeatedFromBatchId: input.repeatedFromBatchId || null,
@@ -2218,7 +2283,9 @@ export async function createPdfImportPreview(input: {
             createdCount: 0,
             errorCount: 0,
             errors: [],
-            message: `PDF table extracted into an import review (${batch.totalRows} product row${batch.totalRows === 1 ? "" : "s"} captured). Map the extracted price column before final import.`,
+            message: defaultPriceColumn
+                ? `PDF table extracted into an import review (${batch.totalRows} product row${batch.totalRows === 1 ? "" : "s"} captured). The extracted price was placed in Rate.`
+                : `PDF table extracted into an import review (${batch.totalRows} product row${batch.totalRows === 1 ? "" : "s"} captured). Review the extracted price columns before final import.`,
         };
     }
 
@@ -2469,7 +2536,16 @@ export async function getProductImportBatch(batchId: string) {
         throw new Error("Product import batch was not found.");
     }
 
-    return omitPrivateImportStorage(batch);
+    const priceMapping = getImportPriceMappingState(batch);
+    return omitPrivateImportStorage({
+        ...batch,
+        rows: priceMapping.complete
+            ? batch.rows.map((row) => ({
+                ...row,
+                parsed: parsedWithImportPriceMapping(row.parsed, priceMapping.mapping) as Prisma.JsonValue,
+            }))
+            : batch.rows,
+    });
 }
 
 export async function getProductImportReview(input: {
@@ -2487,6 +2563,14 @@ export async function getProductImportReview(input: {
         include: { createdBy: { select: { id: true, name: true, role: true } } },
     });
     if (!batch) throw new Error("Product import batch was not found.");
+    const extractionMeta = batch.extractionMeta && typeof batch.extractionMeta === "object" && !Array.isArray(batch.extractionMeta)
+        ? batch.extractionMeta as Record<string, unknown>
+        : {};
+    const hasPriceColumnMetadata = Array.isArray(extractionMeta.priceColumns)
+        && extractionMeta.priceColumns.some((column) => {
+            if (!column || typeof column !== "object" || Array.isArray(column)) return false;
+            return Boolean(normalizeCsvText((column as any).key) && normalizeCsvText((column as any).label));
+        });
 
     const where: Prisma.ProductImportRowWhereInput = { batchId: input.batchId };
     if (input.comparisonStatus) {
@@ -2501,7 +2585,7 @@ export async function getProductImportReview(input: {
         ];
     }
 
-    const [rows, total, grouped, decisionRows] = await Promise.all([
+    const [rows, total, grouped, decisionGroups, priceInferenceRows] = await Promise.all([
         prisma.productImportRow.findMany({
             where,
             orderBy: { rowNumber: "asc" },
@@ -2514,10 +2598,17 @@ export async function getProductImportReview(input: {
             where: { batchId: input.batchId },
             _count: { _all: true },
         }),
-        prisma.productImportRow.findMany({
+        prisma.productImportRow.groupBy({
+            by: ["resolution", "status"],
             where: { batchId: input.batchId },
-            select: { resolution: true, status: true, parsed: true },
+            _count: { _all: true },
         }),
+        hasPriceColumnMetadata
+            ? Promise.resolve([] as Array<{ parsed: Prisma.JsonValue | null }>)
+            : prisma.productImportRow.findMany({
+                where: { batchId: input.batchId },
+                select: { parsed: true },
+            }),
     ]);
 
     const decisionCounts = {
@@ -2528,19 +2619,28 @@ export async function getProductImportReview(input: {
         unresolved: 0,
         committed: 0,
     };
-    for (const row of decisionRows) {
-        if (["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status)) {
-            decisionCounts.committed += 1;
-        } else if (row.resolution === "CREATE_NEW") decisionCounts.create += 1;
-        else if (row.resolution === "UPDATE_MATCHED") decisionCounts.update += 1;
-        else if (row.resolution === "KEEP_EXISTING") decisionCounts.keep += 1;
-        else if (row.resolution === "IGNORE" || row.status === "IGNORED") decisionCounts.ignore += 1;
-        else decisionCounts.unresolved += 1;
+    for (const group of decisionGroups) {
+        const count = group._count._all;
+        if (["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(group.status)) {
+            decisionCounts.committed += count;
+        } else if (group.resolution === "CREATE_NEW") decisionCounts.create += count;
+        else if (group.resolution === "UPDATE_MATCHED") decisionCounts.update += count;
+        else if (group.resolution === "KEEP_EXISTING") decisionCounts.keep += count;
+        else if (group.resolution === "IGNORE" || group.status === "IGNORED") decisionCounts.ignore += count;
+        else decisionCounts.unresolved += count;
     }
+
+    const priceMapping = getImportPriceMappingState({ ...batch, rows: priceInferenceRows });
+    const displayRows = priceMapping.complete
+        ? rows.map((row) => ({
+            ...row,
+            parsed: parsedWithImportPriceMapping(row.parsed, priceMapping.mapping) as Prisma.JsonValue,
+        }))
+        : rows;
 
     return {
         batch: omitPrivateImportStorage(batch),
-        rows,
+        rows: displayRows,
         pagination: {
             page,
             pageSize,
@@ -2551,7 +2651,7 @@ export async function getProductImportReview(input: {
             grouped.map((item) => [item.comparisonStatus, item._count._all]),
         ),
         decisionCounts,
-        priceMapping: getImportPriceMappingState({ ...batch, rows: decisionRows }),
+        priceMapping,
     };
 }
 
@@ -2569,7 +2669,7 @@ function standardImportPriceCandidates(parsed: Record<string, unknown>) {
         key: string;
         label: string;
     }> = [
-        { field: "ratePerPiece", key: "sourceRatePerPiece", label: "Extracted purchase rate" },
+        { field: "ratePerPiece", key: "sourceRatePerPiece", label: "Extracted Rate" },
         { field: "retailPrice", key: "sourceRetailPrice", label: "Extracted retail price" },
         { field: "wholesalePrice", key: "sourceWholesalePrice", label: "Extracted wholesale price" },
     ];
@@ -2599,10 +2699,16 @@ function importPriceCandidates(parsedValue: unknown): StoredImportPriceCandidate
     return extracted.length > 0 ? extracted : standardImportPriceCandidates(parsed);
 }
 
-function defaultImportPriceDestination(key: string): ImportPriceDestination | "" {
+function defaultImportPriceDestination(
+    key: string,
+    columnCount: number,
+): ImportPriceDestination | "" {
     if (key === "sourceRatePerPiece") return "ratePerPiece";
     if (key === "sourceRetailPrice") return "retailPrice";
     if (key === "sourceWholesalePrice") return "wholesalePrice";
+    // A single price in a supplier catalog is the neutral Rate by default.
+    // Multiple source price columns still require an explicit classification.
+    if (columnCount === 1) return "ratePerPiece";
     return "";
 }
 
@@ -2649,7 +2755,7 @@ export function getImportPriceMappingState(batch: {
         const storedDestination = typeof stored[column.key] === "string"
             ? String(stored[column.key])
             : "";
-        return [column.key, storedDestination || defaultImportPriceDestination(column.key)];
+        return [column.key, storedDestination || defaultImportPriceDestination(column.key, columns.length)];
     }));
     const destinations = Object.values(mapping).filter(Boolean);
     return {
@@ -2662,10 +2768,38 @@ export function getImportPriceMappingState(batch: {
     };
 }
 
+function parsedWithImportPriceMapping(
+    parsedValue: unknown,
+    mapping: Record<string, unknown>,
+) {
+    const parsed = parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue)
+        ? { ...(parsedValue as Record<string, unknown>) }
+        : {};
+    if (parsed.sourceType === "REVIEWED_ROW_DRAFT") {
+        return parsed;
+    }
+    const candidates = importPriceCandidates(parsed);
+    for (const candidate of candidates) {
+        const destination = String(mapping[candidate.key] || "") as ImportPriceDestination;
+        if (["ratePerPiece", "retailPrice", "wholesalePrice"].includes(destination)) {
+            parsed[destination] = candidate.value;
+        }
+    }
+    const hasMappedPrice = [parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice]
+        .some((value) => Number(value) > 0);
+    const isAutomaticallyClassifiedSource = ["PDF_TEXT_TABLE_ROW", "PDF_SCANNED_AI_ROW", "IMAGE_AI_ROW"]
+        .includes(String(parsed.sourceType || ""));
+    if (isAutomaticallyClassifiedSource) {
+        parsed.availabilityStatus = hasMappedPrice ? "CATALOG_LISTED" : "COMING_SOON";
+    }
+    return parsed;
+}
+
 export async function setProductImportPriceMapping(input: {
     batchId: string;
     mapping: Record<string, unknown>;
     actorId: string;
+    rowIds?: string[];
 }) {
     const batch = await prisma.productImportBatch.findFirst({
         where: { id: input.batchId, deletedAt: null },
@@ -2684,7 +2818,7 @@ export async function setProductImportPriceMapping(input: {
     for (const column of state.columns) {
         const destination = String(input.mapping?.[column.key] || "") as ImportPriceDestination;
         if (!allowed.has(destination)) {
-            throw new Error(`Choose Purchase rate, Retail price or Wholesale price for “${column.label}”.`);
+            throw new Error(`Choose Rate, Retail price or Wholesale price for “${column.label}”.`);
         }
         mapping[column.key] = destination;
     }
@@ -2692,7 +2826,12 @@ export async function setProductImportPriceMapping(input: {
         throw new Error("Each extracted price column must map to a different KhataSathi price field.");
     }
 
-    const drafts: ProductImportPreviewRowDraft[] = batch.rows.map((row) => {
+    const targetRowIdSet = input.rowIds && input.rowIds.length > 0 ? new Set(input.rowIds) : null;
+    const rowsToProcess = targetRowIdSet
+        ? batch.rows.filter((row) => targetRowIdSet.has(row.id))
+        : batch.rows;
+
+    const drafts: ProductImportPreviewRowDraft[] = rowsToProcess.map((row) => {
         const parsed = row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed)
             ? { ...(row.parsed as Record<string, unknown>) }
             : {};
@@ -2709,13 +2848,14 @@ export async function setProductImportPriceMapping(input: {
             const destination = mapping[key];
             if (destination && Number.isFinite(value) && value > 0) parsed[destination] = roundCurrency(value);
         }
+        const mappedParsed = parsedWithImportPriceMapping(parsed, mapping);
         return {
             rowNumber: row.rowNumber,
             rawText: row.rawText,
             sourceLocator: row.sourceLocator || undefined,
             status: row.status,
             error: row.error,
-            parsed: parsed as Prisma.InputJsonValue,
+            parsed: mappedParsed as Prisma.InputJsonValue,
             extracted: row.extracted || undefined,
             comparisonStatus: row.comparisonStatus,
             matchedProductId: row.matchedProductId,
@@ -2730,7 +2870,7 @@ export async function setProductImportPriceMapping(input: {
             where: { id: batch.id },
             data: { priceMapping: mapping },
         }),
-        ...batch.rows.map((row, index) => prisma.productImportRow.update({
+        ...rowsToProcess.map((row, index) => prisma.productImportRow.update({
             where: { id: row.id },
             data: {
                 parsed: drafts[index].parsed || Prisma.DbNull,
@@ -2749,7 +2889,7 @@ export async function setProductImportPriceMapping(input: {
                 action: "PRODUCT_IMPORT_PRICE_MAPPING_UPDATED",
                 entityType: "ProductImportBatch",
                 entityId: batch.id,
-                meta: { mapping },
+                meta: { mapping, targetRowIds: input.rowIds || "all" },
             },
         }),
     ]);
@@ -2765,6 +2905,7 @@ export async function getProductImportSourceContext(input: {
     rowId?: string;
     radius?: number;
 }) {
+    const radius = Math.max(2, Math.min(50, Number(input.radius || 10)));
     const active = input.rowId
         ? await prisma.productImportRow.findFirst({
             where: { id: input.rowId, batchId: input.batchId },
@@ -2772,9 +2913,14 @@ export async function getProductImportSourceContext(input: {
         : null;
 
     const rows = await prisma.productImportRow.findMany({
-        where: { batchId: input.batchId },
+        where: {
+            batchId: input.batchId,
+            ...(active
+                ? { rowNumber: { gte: Math.max(1, active.rowNumber - radius), lte: active.rowNumber + radius } }
+                : {}),
+        },
         orderBy: { rowNumber: "asc" },
-        take: 500,
+        take: active ? radius * 2 + 1 : 500,
         select: { id: true, rowNumber: true, rawText: true, sourceLocator: true },
     });
 
@@ -3133,7 +3279,7 @@ export async function deleteProductImportTemplate(id: string) {
     return { deleted: true, template };
 }
 
-function reviewedPdfRowToCsvRow(input: ReviewedPdfImportRowInput) {
+export function reviewedImportRowToCsvRow(input: ReviewedPdfImportRowInput) {
     return {
         name: input.name,
         sku: input.sku,
@@ -3156,6 +3302,9 @@ function reviewedPdfRowToCsvRow(input: ReviewedPdfImportRowInput) {
         searchAliases: input.searchAliases,
         retailPrice: input.retailPrice,
         wholesalePrice: input.wholesalePrice,
+        availabilityStatus: input.availabilityStatus === "COMING_SOON"
+            ? "COMING_SOON"
+            : "CATALOG_LISTED",
         stock: input.stock ?? 0,
     };
 }
@@ -3222,11 +3371,7 @@ async function updateMatchedProductFromImport(input: {
             data.wholesalePrice = input.row.wholesalePrice;
         }
         if (allowedChanges.has("availabilityStatus")) {
-            data.availabilityStatus = resolveProductAvailability(
-                input.row.ratePerPiece,
-                input.row.retailPrice,
-                input.row.wholesalePrice,
-            );
+            data.availabilityStatus = input.row.availabilityStatus;
         }
         if (allowedChanges.has("retailPrice") || allowedChanges.has("wholesalePrice")) {
             data.sellingPriceStatus = resolveSellingPriceStatus(
@@ -3411,7 +3556,7 @@ async function executeReviewedPdfRows(
     );
     const createResult = createDecisions.length > 0
         ? await importProductsFromCsv(
-            createDecisions.map((decision) => reviewedPdfRowToCsvRow(decision.row)),
+            createDecisions.map((decision) => reviewedImportRowToCsvRow(decision.row)),
             { actorId: input.actorId },
         )
         : {
@@ -3640,7 +3785,7 @@ export async function importSavedProductImportBatch(input: {
     const priceMapping = getImportPriceMappingState(batch);
     if (priceMapping.required && !priceMapping.complete) {
         throw new Error(
-            "Map every extracted price column to Purchase rate, Retail price or Wholesale price before final import.",
+            "Map every extracted price column to Rate, Retail price or Wholesale price before final import.",
         );
     }
 
@@ -3663,9 +3808,7 @@ export async function importSavedProductImportBatch(input: {
                 row.resolution !== "IGNORE",
         )
         .map((row) => ({
-            ...((row.parsed && typeof row.parsed === "object"
-                ? row.parsed
-                : {}) as Record<string, unknown>),
+            ...parsedWithImportPriceMapping(row.parsed, priceMapping.mapping),
             rowId: row.id,
             resolution: row.resolution,
         })) as ReviewedPdfImportRowInput[];

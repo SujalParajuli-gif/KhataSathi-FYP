@@ -257,12 +257,12 @@ function getEventHighlights(event: HistoryEventRow, category: HistoryCategory) {
 
     if (meta.before?.ratePerPiece !== undefined && meta.after?.ratePerPiece !== undefined) {
       add(
-        "Cost",
+        "Rate",
         `${formatMetaMoney(meta.before.ratePerPiece) || "—"} → ${formatMetaMoney(meta.after.ratePerPiece) || "—"}`,
         "text-emerald-800 font-extrabold",
       );
     } else if (meta.after?.ratePerPiece !== undefined) {
-      addMoney("Cost after", meta.after?.ratePerPiece, "text-emerald-800");
+      addMoney("Rate after", meta.after?.ratePerPiece, "text-emerald-800");
     }
 
     add("Reason", meta.reason);

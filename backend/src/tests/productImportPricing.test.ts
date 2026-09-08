@@ -24,12 +24,12 @@ test("recognized spreadsheet and image prices still expose universal price reass
   assert.equal(state.required, true);
   assert.equal(state.complete, true);
   assert.deepEqual(state.columns, [
-    { key: "sourceRatePerPiece", label: "Extracted purchase rate" },
+    { key: "sourceRatePerPiece", label: "Extracted Rate" },
   ]);
   assert.deepEqual(state.mapping, { sourceRatePerPiece: "ratePerPiece" });
 });
 
-test("unclassified PDF price columns remain blocked until the user assigns them", () => {
+test("a single extracted supplier price defaults to the neutral Rate", () => {
   const state = getImportPriceMappingState({
     extractionMeta: {
       priceColumns: [{ key: "rate", label: "Rate rs." }],
@@ -44,11 +44,29 @@ test("unclassified PDF price columns remain blocked until the user assigns them"
   });
 
   assert.equal(state.required, true);
-  assert.equal(state.complete, false);
-  assert.deepEqual(state.mapping, { rate: "" });
+  assert.equal(state.complete, true);
+  assert.deepEqual(state.mapping, { rate: "ratePerPiece" });
 });
 
-test("regular single-column image regions are corrected when Gemini points one row too low", () => {
+test("multiple extracted supplier price columns still require an explicit mapping", () => {
+  const state = getImportPriceMappingState({
+    extractionMeta: {
+      priceColumns: [
+        { key: "priceOne", label: "Price 1" },
+        { key: "priceTwo", label: "Price 2" },
+      ],
+    },
+    rows: [{ parsed: { extractedPrices: [
+      { key: "priceOne", label: "Price 1", value: 10 },
+      { key: "priceTwo", label: "Price 2", value: 12 },
+    ] } }],
+  });
+
+  assert.equal(state.complete, false);
+  assert.deepEqual(state.mapping, { priceOne: "", priceTwo: "" });
+});
+
+test("image source regions keep the extractor's exact row coordinates", () => {
   const regions = normalizedImageSourceRegions([
     { boundingBox: [482, 80, 512, 920] },
     { boundingBox: [512, 80, 542, 920] },
@@ -56,9 +74,9 @@ test("regular single-column image regions are corrected when Gemini points one r
   ]);
 
   assert.deepEqual(regions[1], {
-    top: 475,
+    top: 512,
     left: 80,
-    bottom: 505,
+    bottom: 542,
     right: 920,
     scale: 1000,
   });
@@ -80,7 +98,7 @@ test("two-column image regions are not shifted by the single-column correction",
   });
 });
 
-test("a bare supplier Rate becomes purchase cost without invented selling prices", () => {
+test("a bare supplier Rate stays neutral without invented selling prices", () => {
   const row = normalizeCsvImportRow(
     {
       Product_Name: "BUCKET 13 LTR",
@@ -178,6 +196,34 @@ test("a named supplier row can be saved as coming soon without price or package 
   assert.equal(row.packageQuantity, null);
   assert.equal(row.retailPrice, null);
   assert.equal(row.wholesalePrice, null);
+  assert.equal(row.availabilityStatus, "COMING_SOON");
+});
+
+test("spreadsheet imports preserve an explicit Coming soon choice", () => {
+  const row = normalizeCsvImportRow(
+    {
+      Product_Name: "ROYAL PLANTER BIG",
+      Supplier: "Bagmati",
+      Rate: "",
+      Coming_Soon: "Yes",
+    },
+    2,
+  );
+
+  assert.equal(row.availabilityStatus, "COMING_SOON");
+});
+
+test("spreadsheet rows without an availability choice remain normal products", () => {
+  const row = normalizeCsvImportRow(
+    {
+      Product_Name: "BUCKET 13 LTR",
+      Supplier: "Bagmati",
+      Rate: "172",
+    },
+    2,
+  );
+
+  assert.equal(row.availabilityStatus, "CATALOG_LISTED");
 });
 
 test("the approved Bagmati catalog headers map to their intended fields", () => {

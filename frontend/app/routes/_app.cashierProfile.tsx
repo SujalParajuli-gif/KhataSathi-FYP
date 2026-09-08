@@ -141,15 +141,15 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] px-6 text-sm font-bold transition-all shadow-2xs active:scale-[0.99]",
+        "inline-flex h-11 w-full sm:w-auto items-center justify-center gap-1.5 sm:gap-2 rounded-[12px] px-2.5 sm:px-6 text-xs sm:text-sm font-bold transition-all shadow-2xs active:scale-[0.99] whitespace-nowrap",
         disabled ? "cursor-not-allowed opacity-50" : "",
         primary
           ? "bg-[#11120d] text-white hover:bg-black shadow-xs focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
           : "bg-white text-slate-700 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
       )}
     >
-      <Icon name={icon} className="text-[18px]" />
-      <span>{label}</span>
+      <Icon name={icon} className="text-[17px] sm:text-[18px] shrink-0" />
+      <span className="truncate">{label}</span>
     </button>
   );
 }
@@ -824,7 +824,7 @@ export default function CashierProfileSection() {
                   )}
                 </div>
 
-                <div className="mt-8 flex flex-col-reverse gap-2.5 border-t border-slate-100 pt-5 sm:flex-row sm:items-center sm:justify-end sm:gap-3">
+                <div className="mt-8 grid grid-cols-2 gap-2.5 border-t border-slate-100 pt-5 sm:flex sm:items-center sm:justify-end sm:gap-3">
                   <ActionButton
                     icon="restart_alt"
                     label="Discard Changes"

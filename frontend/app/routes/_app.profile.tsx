@@ -624,15 +624,15 @@ function ProfileActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex items-center gap-2 px-6 py-2.5 rounded-lg font-semibold text-sm transition-all",
+        "inline-flex h-11 w-full sm:w-auto items-center justify-center gap-1.5 sm:gap-2 px-2.5 sm:px-6 rounded-[12px] font-bold text-xs sm:text-sm transition-all whitespace-nowrap",
         disabled ? "cursor-not-allowed opacity-50" : "",
         primary
           ? "bg-[#11120d] text-white hover:bg-black shadow-sm focus:ring-2 focus:ring-slate-900 focus:ring-offset-2"
           : "bg-white text-slate-600 border border-slate-200 hover:bg-slate-50 focus:ring-2 focus:ring-slate-200 focus:ring-offset-2",
       )}
     >
-      {icon && <GIcon name={icon} sizePx={18} />}
-      {label}
+      {icon && <GIcon name={icon} sizePx={18} className="shrink-0" />}
+      <span className="truncate">{label}</span>
     </button>
   );
 }
@@ -1845,7 +1845,7 @@ export default function ProfilePage() {
                   )}
                 </div>
 
-                <div className="mt-8 flex flex-wrap items-center justify-end gap-3 border-t border-slate-100 pt-5">
+                <div className="mt-8 grid grid-cols-2 gap-2.5 border-t border-slate-100 pt-5 sm:flex sm:items-center sm:justify-end sm:gap-3">
                   <ProfileActionButton
                     icon="restart_alt"
                     label="Discard Changes"

@@ -43,6 +43,7 @@ export type ComparableImportRow = {
   ratePerPiece?: number | null;
   retailPrice?: number | null;
   wholesalePrice?: number | null;
+  availabilityStatus?: ProductAvailabilityValue | null;
 };
 
 export type ComparedImportRow = {
@@ -121,11 +122,9 @@ export function importRowIdentityKey(row: ComparableImportRow) {
 
 function collectChanges(row: ComparableImportRow, product: ComparableCatalogProduct) {
   const changes: ImportFieldChange[] = [];
-  const availabilityStatus = resolveProductAvailability(
-    row.ratePerPiece,
-    row.retailPrice,
-    row.wholesalePrice,
-  );
+  const availabilityStatus = row.availabilityStatus === "COMING_SOON"
+    ? "COMING_SOON"
+    : "CATALOG_LISTED";
   const currentAvailability = product.availabilityStatus ||
     resolveProductAvailability(product.ratePerPiece, product.retailPrice, product.wholesalePrice);
 
@@ -190,6 +189,9 @@ export function compareImportRowToCatalog(
       message: "Brand must be reviewed before catalog comparison.",
     };
   }
+  const availabilityStatus = row.availabilityStatus === "COMING_SOON"
+    ? "COMING_SOON"
+    : "CATALOG_LISTED";
 
   const barcode = normalizeImportIdentity(row.barcode);
   let matches = barcode
@@ -203,7 +205,32 @@ export function compareImportRowToCatalog(
     matches = products.filter((product) => brandCodeMatches(row, product));
     matchedByCodeOnly = matches.length > 0;
   }
-  const availabilityStatus = resolveProductAvailability(row.ratePerPiece, row.retailPrice, row.wholesalePrice);
+  if (matches.length > 1) {
+    return {
+      comparisonStatus: "IDENTIFIER_CONFLICT",
+      availabilityStatus,
+      matchedProductId: null,
+      changes: [],
+      message: `The import identity matches ${matches.length} catalog products.`,
+    };
+  }
+  const incomingRate = comparableNumber(row.ratePerPiece);
+  const matchedRate = matches.length === 1
+    ? comparableNumber(matches[0].ratePerPiece)
+    : null;
+  if (
+    availabilityStatus !== "COMING_SOON"
+    && (incomingRate === null || incomingRate <= 0)
+    && (matchedRate === null || matchedRate <= 0)
+  ) {
+    return {
+      comparisonStatus: "NEEDS_REVIEW",
+      availabilityStatus,
+      matchedProductId: matches.length === 1 ? matches[0].id : null,
+      changes: [],
+      message: "Enter a Rate or mark this product as Coming soon.",
+    };
+  }
   if (matches.length === 0) {
     return {
       comparisonStatus: "READY_NEW",
@@ -215,16 +242,6 @@ export function compareImportRowToCatalog(
         : "New catalog product.",
     };
   }
-  if (matches.length > 1) {
-    return {
-      comparisonStatus: "IDENTIFIER_CONFLICT",
-      availabilityStatus,
-      matchedProductId: null,
-      changes: [],
-      message: `The import identity matches ${matches.length} catalog products.`,
-    };
-  }
-
   const matched = matches[0];
   const changes = collectChanges(row, matched);
   return {

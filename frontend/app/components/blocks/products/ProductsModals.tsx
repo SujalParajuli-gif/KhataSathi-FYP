@@ -3,6 +3,7 @@ import GoogleIcon from "~/components/ui/GIcon";
 import Icon from "~/components/ui/Icon";
 import PreviewableImage from "~/components/ui/PreviewableImage";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import Switch from "~/components/ui/Switch";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
 import { DialogButton, ModalFrame } from "~/components/ui/Modal";
@@ -16,6 +17,12 @@ import type {
   ProductImportBatch,
   ReviewedPdfImportRowPayload,
 } from "~/lib/api/endpoints";
+import {
+  CANONICAL_IMPORT_FIELDS,
+  extractSpreadsheetPreview,
+  type DetectedSpreadsheetColumn,
+  type SpreadsheetPreviewResult,
+} from "~/lib/spreadsheetParser";
 import type {
   Product,
   ProductStatus,
@@ -117,6 +124,7 @@ function toReviewedImportRowPayload(
     searchAliases: row.searchAliases || [],
     retailPrice: row.retailPrice,
     wholesalePrice: row.wholesalePrice,
+    availabilityStatus: row.availabilityStatus,
     stock: row.stock,
     resolution: row.resolution,
   };
@@ -156,12 +164,12 @@ function roundReviewCurrency(value: number) {
   return Math.round(Number(value || 0) * 100) / 100;
 }
 
-function applyRetailMargin(basePrice: number, marginPercent = 18) {
+function priceFromIncrease(basePrice: number, increasePercent = 18) {
   const base = Number(basePrice || 0);
-  const margin = Number(marginPercent);
+  const increase = Number(increasePercent);
   if (!Number.isFinite(base) || base <= 0) return 0;
-  if (!Number.isFinite(margin) || margin <= 0) return roundReviewCurrency(base);
-  return roundReviewCurrency(base * (1 + margin / 100));
+  if (!Number.isFinite(increase) || increase <= 0) return roundReviewCurrency(base);
+  return roundReviewCurrency(base * (1 + increase / 100));
 }
 
 function readParsedString(
@@ -497,6 +505,9 @@ function guessPdfReviewDraft(
       retailPrice: Number(retailPrice || 0) > 0 ? Number(retailPrice) : null,
       wholesalePrice:
         Number(wholesalePrice || 0) > 0 ? Number(wholesalePrice) : null,
+      availabilityStatus: parsed.availabilityStatus === "COMING_SOON"
+        ? "COMING_SOON"
+        : "CATALOG_LISTED",
       stock: readParsedNumber(parsed, ["stock"], 0) ?? 0,
     };
   }
@@ -565,6 +576,7 @@ function guessPdfReviewDraft(
     searchAliases: [],
     retailPrice: null,
     wholesalePrice: null,
+    availabilityStatus: "CATALOG_LISTED",
     stock,
   };
 }
@@ -826,7 +838,7 @@ function ModalShell({
       <div className="absolute inset-0 z-10 flex items-end justify-center p-0 lg:items-center lg:p-[12px]">
         <div
           className={cn(
-            "relative z-10 flex h-auto max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[20px] bg-white shadow-[0_24px_80px_rgba(15,23,42,0.28)] lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
+            "relative z-10 flex h-auto max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[20px] bg-white border border-[#CFCFD3] lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
             maxWidthClass || (landscape ? "max-w-[1180px]" : "max-w-[1040px]"),
           )}
         >
@@ -1078,7 +1090,6 @@ export default function ProductsModals({
   const [activeReviewRowId, setActiveReviewRowId] = React.useState<
     string | null
   >(null);
-  const reviewMarginPercent = 18;
   const [reviewPanelTab, setReviewPanelTab] = React.useState<"row" | "bulk">(
     "row",
   );
@@ -1110,8 +1121,10 @@ export default function ProductsModals({
     setLocalImportPreviewUrl(url);
     return () => URL.revokeObjectURL(url);
   }, [importFile]);
-  const [bulkWholesaleMargin, setBulkWholesaleMargin] = React.useState(18);
-  const [bulkRetailMargin, setBulkRetailMargin] = React.useState(30);
+  const [bulkWholesaleIncrease, setBulkWholesaleIncrease] = React.useState(18);
+  const [bulkRetailIncrease, setBulkRetailIncrease] = React.useState(30);
+  const [bulkImportPricePolicy, setBulkImportPricePolicy] = React.useState<"FILL_EMPTY" | "REPLACE">("FILL_EMPTY");
+  const [bulkImportPriceNotice, setBulkImportPriceNotice] = React.useState("");
   const [savedReviewFingerprints, setSavedReviewFingerprints] = React.useState<
     Record<string, string>
   >({});
@@ -1199,7 +1212,7 @@ export default function ProductsModals({
       "Supplier",
       "Variant / code",
       "Search terms",
-      "Purchase cost",
+      "Rate",
       "Wholesale price",
       "Retail price",
       "Package quantity",
@@ -1248,9 +1261,108 @@ export default function ProductsModals({
     URL.revokeObjectURL(objectUrl);
   }
 
+  const [spreadsheetPreview, setSpreadsheetPreview] = React.useState<SpreadsheetPreviewResult | null>(null);
+  const [previewLoading, setPreviewLoading] = React.useState(false);
+  const [showAdvancedTemplates, setShowAdvancedTemplates] = React.useState(false);
+
   React.useEffect(() => {
-    if (!openImport) setImportSupplierError("");
+    if (!openImport) {
+      setImportSupplierError("");
+      setSpreadsheetPreview(null);
+      setPreviewLoading(false);
+      setShowAdvancedTemplates(false);
+    }
   }, [openImport]);
+
+  React.useEffect(() => {
+    if (!importFile) {
+      setSpreadsheetPreview(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    const isSpreadsheet =
+      importFile.name.endsWith(".csv") ||
+      importFile.name.endsWith(".xlsx") ||
+      importFile.type.includes("sheet") ||
+      importFile.type.includes("csv");
+
+    if (!isSpreadsheet) {
+      setSpreadsheetPreview(null);
+      setPreviewLoading(false);
+      return;
+    }
+
+    let cancelled = false;
+    setPreviewLoading(true);
+
+    extractSpreadsheetPreview(importFile)
+      .then((preview) => {
+        if (cancelled) return;
+        setSpreadsheetPreview(preview);
+        if (preview?.columns.length) {
+          setImportFieldMap((current) => {
+            const next = { ...current };
+            preview.columns.forEach((col) => {
+              if (col.autoMatchedField && !next[col.autoMatchedField]) {
+                next[col.autoMatchedField] = col.header;
+              }
+            });
+            return next;
+          });
+        }
+      })
+      .catch((err) => {
+        console.warn("Spreadsheet preview extraction failed:", err);
+        if (!cancelled) setSpreadsheetPreview(null);
+      })
+      .finally(() => {
+        if (!cancelled) setPreviewLoading(false);
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [importFile, setImportFieldMap]);
+
+  function handleColumnMappingChange(colHeader: string, newFieldKey: string) {
+    setImportFieldMap((prev) => {
+      const next = { ...prev };
+      Object.keys(next).forEach((key) => {
+        if (next[key] === colHeader) {
+          next[key] = "";
+        }
+      });
+      if (newFieldKey) {
+        next[newFieldKey] = colHeader;
+      }
+      return next;
+    });
+  }
+
+  function resetToAutoMatch() {
+    if (!spreadsheetPreview?.columns.length) return;
+    const next: Record<string, string> = {
+      productName: "",
+      sku: "",
+      barcode: "",
+      brand: "",
+      category: "",
+      variant: "",
+      packageQuantity: "",
+      saleUnit: "",
+      wholesalePrice: "",
+      retailPrice: "",
+      ratePerPiece: "",
+      stock: "",
+    };
+    spreadsheetPreview.columns.forEach((col) => {
+      if (col.autoMatchedField) {
+        next[col.autoMatchedField] = col.header;
+      }
+    });
+    setImportFieldMap(next);
+  }
 
   function saveImportTemplateWithValidation() {
     if (!importSupplier.trim()) {
@@ -1431,6 +1543,8 @@ export default function ProductsModals({
     setBulkSaleUnit("PIECE");
     setBulkWholesaleEligible("keep");
     setBulkStock(0);
+    setBulkImportPricePolicy("FILL_EMPTY");
+    setBulkImportPriceNotice("");
   }, [pdfReviewBatch?.id, brands, categories]);
 
   function updateReviewRow(rowId: string, patch: Partial<PdfReviewDraft>) {
@@ -1462,18 +1576,45 @@ export default function ProductsModals({
   }
 
   function applyBulkPricingToSelectedRows() {
-    setPdfReviewRows((rows) =>
-      rows.map((row) => {
+    const percentagesValid =
+      Number.isFinite(bulkWholesaleIncrease) && bulkWholesaleIncrease > 0 && bulkWholesaleIncrease <= 100 &&
+      Number.isFinite(bulkRetailIncrease) && bulkRetailIncrease > 0 && bulkRetailIncrease <= 100;
+    if (!percentagesValid) {
+      setBulkImportPriceNotice("Enter percentage increases above 0 and up to 100.");
+      return;
+    }
+    let changedCount = 0;
+    let missingRateCount = 0;
+    const nextRows = pdfReviewRows.map((row) => {
         if (!row.selected || row.ignored || row.status === "IMPORTED")
           return row;
-        if (row.ratePerPiece === null) return row;
+        if (!(Number(row.ratePerPiece) > 0)) {
+          missingRateCount += 1;
+          return row;
+        }
         const rate = Number(row.ratePerPiece);
+        const nextWholesale = priceFromIncrease(rate, bulkWholesaleIncrease);
+        const nextRetail = priceFromIncrease(rate, bulkRetailIncrease);
+        const wholesalePrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.wholesalePrice) > 0)
+          ? nextWholesale
+          : row.wholesalePrice;
+        const retailPrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.retailPrice) > 0)
+          ? nextRetail
+          : row.retailPrice;
+        if (wholesalePrice !== row.wholesalePrice || retailPrice !== row.retailPrice) changedCount += 1;
         return {
           ...row,
-          wholesalePrice: applyRetailMargin(rate, bulkWholesaleMargin),
-          retailPrice: applyRetailMargin(rate, bulkRetailMargin),
+          wholesalePrice,
+          retailPrice,
         };
-      }),
+      });
+    setPdfReviewRows(nextRows);
+    setBulkImportPriceNotice(
+      changedCount > 0
+        ? `${changedCount} draft product${changedCount === 1 ? "" : "s"} updated${missingRateCount ? `; ${missingRateCount} skipped because Rate is missing` : ""}. Review before importing.`
+        : missingRateCount
+          ? `Nothing changed. ${missingRateCount} selected product${missingRateCount === 1 ? " has" : "s have"} no Rate.`
+          : "Nothing changed. The selected prices are already filled.",
     );
   }
 
@@ -1650,7 +1791,7 @@ export default function ProductsModals({
                         <div className="absolute inset-0 flex items-center justify-center gap-1.5 rounded-[10px] bg-black/55 opacity-0 backdrop-blur-[1px] transition group-hover:opacity-100">
                           <label
                             htmlFor="product-image-dropzone"
-                            className="inline-flex cursor-pointer items-center justify-center rounded-[7px] bg-white/95 px-2 py-1 text-[11px] font-bold text-[#0F172A] shadow-xs hover:bg-white"
+                            className="inline-flex cursor-pointer items-center justify-center rounded-[7px] bg-white/95 px-2 py-1 text-[11px] font-bold text-[#0F172A] hover:bg-white"
                             title="Change image"
                           >
                             <GoogleIcon name="photo_camera" className="text-[14px]" />
@@ -1658,7 +1799,7 @@ export default function ProductsModals({
                           <button
                             type="button"
                             onClick={onClearProductImage}
-                            className="inline-flex items-center justify-center rounded-[7px] bg-rose-600 px-2 py-1 text-[11px] font-bold text-white shadow-xs hover:bg-rose-700"
+                            className="inline-flex items-center justify-center rounded-[7px] bg-rose-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-rose-700"
                             title="Remove image"
                           >
                             <GoogleIcon name="delete" className="text-[14px]" />
@@ -1981,24 +2122,27 @@ export default function ProductsModals({
                   PRICING
                 </h3>
 
-                <Field label="Catalog availability">
-                  <Select
-                    value={form.availabilityStatus}
-                    onChange={(value) => setForm((product) => ({
-                      ...product,
-                      availabilityStatus: value === "COMING_SOON" ? "COMING_SOON" : "CATALOG_LISTED",
-                    }))}
-                    options={[
-                      { value: "CATALOG_LISTED", label: "Catalog listed" },
-                      { value: "COMING_SOON", label: "Price coming soon" },
-                    ]}
+                <label className="flex items-center justify-between gap-4 rounded-[12px] border border-[#CFCFD3] bg-[#F8FAFC] px-3 py-2.5">
+                  <span className="min-w-0">
+                    <span className="block text-[12px] font-extrabold text-[#11120d]">Coming soon</span>
+                    <span className="mt-0.5 block text-[10px] font-semibold leading-4 text-slate-500">
+                      Price can be added later. This product cannot be sold yet.
+                    </span>
+                  </span>
+                  <Switch
+                    checked={form.availabilityStatus === "COMING_SOON"}
+                    onChange={(checked) => {
+                      setForm((product) => ({
+                        ...product,
+                        availabilityStatus: checked ? "COMING_SOON" : "CATALOG_LISTED",
+                      }));
+                      onClearFormError("ratePerPiece");
+                    }}
+                    ariaLabel="Coming soon"
                   />
-                  <div className="mt-1 text-[10px] font-semibold leading-4 text-slate-500">
-                    Coming-soon products stay searchable but are blocked from billing until prices are entered and this is changed to Catalog listed.
-                  </div>
-                </Field>
+                </label>
 
-                <Field label={`Purchase cost per ${(form.saleUnit || "unit").toLowerCase()} (optional)`} error={formErrors.ratePerPiece}>
+                <Field label={`Rate per ${(form.saleUnit || "unit").toLowerCase()}`} error={formErrors.ratePerPiece}>
                   <input
                     type="number"
                     min={0.01}
@@ -2006,7 +2150,7 @@ export default function ProductsModals({
                     inputMode="decimal"
                     aria-invalid={Boolean(formErrors.ratePerPiece)}
                     value={pricingDraft.cost}
-                    placeholder="Leave blank if unknown"
+                    placeholder={form.availabilityStatus === "COMING_SOON" ? "Can be added later" : "Enter Rate"}
                     onFocus={(event) => event.currentTarget.select()}
                     onChange={(event) => {
                       const value = event.target.value;
@@ -2082,11 +2226,10 @@ export default function ProductsModals({
                 <div className="grid grid-cols-1 gap-3 rounded-[12px] border border-[#BFDBFE] bg-[#EFF6FF] p-3 md:grid-cols-2">
                   {(["wholesale", "retail"] as const).map((kind) => {
                     const sellingPrice = Number(pricingDraft[kind] || 0);
-                    const cost = Number(pricingDraft.cost || 0);
-                    const profit = sellingPrice - cost;
-                    const grossMargin = sellingPrice > 0 ? (profit / sellingPrice) * 100 : 0;
+                    const rate = Number(pricingDraft.cost || 0);
+                    const difference = sellingPrice - rate;
                     return (
-                      <Field key={kind} label={`${kind === "wholesale" ? "Wholesale" : "Retail"} markup on cost %`}>
+                      <Field key={kind} label={`${kind === "wholesale" ? "Wholesale" : "Retail"} increase from Rate %`}>
                         <input
                           type="number"
                           step="0.01"
@@ -2098,7 +2241,7 @@ export default function ProductsModals({
                           onChange={(event) => {
                             const value = event.target.value;
                             const markup = Number(value || 0);
-                            const nextPrice = cost > 0 && Number.isFinite(markup) ? Math.round(cost * (1 + markup / 100) * 100) / 100 : 0;
+                            const nextPrice = rate > 0 && Number.isFinite(markup) ? Math.round(rate * (1 + markup / 100) * 100) / 100 : 0;
                             setPricingMarkupDraft((current) => ({ ...current, [kind]: value }));
                             setPricingDraft((current) => ({ ...current, [kind]: nextPrice > 0 ? String(nextPrice) : "" }));
                             setForm((product) => ({ ...product, [kind === "wholesale" ? "wholesalePrice" : "retailPrice"]: nextPrice }));
@@ -2106,9 +2249,9 @@ export default function ProductsModals({
                           className={`${compactInputClass} disabled:cursor-not-allowed disabled:bg-slate-100 disabled:text-slate-400`}
                         />
                         <div className="mt-1 text-[11px] font-semibold text-[#1D4ED8]">
-                          {cost > 0
-                            ? `Profit ${formatNpr(profit)} · Gross margin ${Number.isFinite(grossMargin) ? grossMargin.toFixed(1) : "0.0"}%`
-                            : "Enter purchase cost to calculate markup and profit."}
+                          {rate > 0
+                            ? `${formatNpr(rate)} → ${formatNpr(sellingPrice)} · difference ${formatNpr(difference)}`
+                            : "Enter Rate to calculate a selling price."}
                         </div>
                       </Field>
                     );
@@ -2215,7 +2358,7 @@ export default function ProductsModals({
             {mobileEditorTab === "review" ? (
               <div className="space-y-4">
                 {/* 1. Hero Product Summary Header Card */}
-                <div className="flex flex-col gap-3.5 rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs sm:flex-row sm:items-start sm:justify-between sm:p-5">
+                <div className="flex flex-col gap-3.5 rounded-[16px] border border-[#E2E8F0] bg-white p-4 sm:flex-row sm:items-start sm:justify-between sm:p-5">
                   <div className="flex items-start gap-3.5 min-w-0 flex-1">
                     {/* Thumbnail Frame */}
                     <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#CBD5E1] bg-[#F8FAFC]">
@@ -2255,11 +2398,11 @@ export default function ProductsModals({
 
                       {/* SKU & Barcode pills */}
                       <div className="mt-1 flex flex-wrap items-center gap-2 pt-0.5 text-[12px] font-semibold text-[#64748B]">
-                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-mono text-[#475569]">
-                          <span className="text-[#94A3B8] font-sans">SKU:</span> {form.sku.trim() || "Auto-generated"}
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-bold text-[#475569]">
+                          <span className="text-[#94A3B8]">SKU:</span> {form.sku.trim() || "Auto-generated"}
                         </span>
-                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-mono text-[#475569]">
-                          <span className="text-[#94A3B8] font-sans">Barcode:</span> {form.barcode?.trim() || "Auto-generated"}
+                        <span className="inline-flex items-center gap-1 rounded-[6px] bg-[#F8FAFC] border border-[#E2E8F0] px-2.5 py-1 font-bold text-[#475569]">
+                          <span className="text-[#94A3B8]">Barcode:</span> {form.barcode?.trim() || "Auto-generated"}
                         </span>
                       </div>
                     </div>
@@ -2268,7 +2411,7 @@ export default function ProductsModals({
                   <button
                     type="button"
                     onClick={() => setMobileEditorTab("basic")}
-                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[9px] border border-[#CBD5E1] bg-white px-3 text-[12.5px] font-bold text-[#2563EB] shadow-2xs hover:bg-[#F8FAFC]"
+                    className="inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[9px] border border-[#CBD5E1] bg-white px-3 text-[12.5px] font-bold text-[#2563EB] hover:bg-[#F8FAFC]"
                   >
                     <GoogleIcon name="edit" className="text-[14px]" />
                     <span>Edit Basic</span>
@@ -2278,12 +2421,12 @@ export default function ProductsModals({
                 {/* 2. Structured Two-Column Summary Grid */}
                 <div className="grid gap-4 sm:grid-cols-2">
                   {/* Pricing Card */}
-                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs flex flex-col justify-between sm:p-5">
+                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 flex flex-col justify-between sm:p-5">
                     <div>
                       <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-3">
                         <div className="flex items-center gap-2 text-[15px] font-black text-[#0F172A]">
                           <GoogleIcon name="payments" className="text-[18px] text-emerald-600" />
-                          <span>Pricing & Margins</span>
+                          <span>Pricing</span>
                         </div>
                         <button
                           type="button"
@@ -2296,8 +2439,8 @@ export default function ProductsModals({
 
                       <div className="mt-3.5 space-y-2 text-[13px]">
                         <div className="flex items-center justify-between py-0.5">
-                          <span className="font-semibold text-[#64748B]">Purchase Cost (खरिद):</span>
-                          <span className="font-mono font-black text-[#0F172A] text-[14px]">
+                          <span className="font-semibold text-[#64748B]">Rate:</span>
+                          <span className="font-extrabold tabular-nums text-[#0F172A] text-[14px]">
                             {form.ratePerPiece !== null && Number(form.ratePerPiece) > 0
                               ? formatNpr(Number(form.ratePerPiece))
                               : "Not entered"}
@@ -2305,13 +2448,13 @@ export default function ProductsModals({
                         </div>
                         <div className="flex items-center justify-between py-0.5">
                           <span className="font-semibold text-[#64748B]">Retail Price (खुद्रा):</span>
-                          <span className="font-mono font-black text-[#0F172A] text-[15px]">
+                          <span className="font-extrabold tabular-nums text-[#0F172A] text-[15px]">
                             {formatNpr(Number(form.retailPrice || 0))}
                           </span>
                         </div>
                         <div className="flex items-center justify-between py-0.5">
                           <span className="font-semibold text-[#64748B]">Wholesale Price (थोक):</span>
-                          <span className="font-mono font-black text-[#0F172A] text-[14px]">
+                          <span className="font-extrabold tabular-nums text-[#0F172A] text-[14px]">
                             {form.wholesaleEligible && form.wholesalePrice
                               ? formatNpr(Number(form.wholesalePrice))
                               : "Disabled"}
@@ -2328,10 +2471,10 @@ export default function ProductsModals({
                       </div>
                     </div>
 
-                    {/* Calculated Profit Margin Badge */}
+                    {/* Difference from the neutral Rate; this is not a cost/profit claim. */}
                     {form.ratePerPiece !== null && Number(form.ratePerPiece) > 0 && Number(form.retailPrice) > Number(form.ratePerPiece) ? (
                       <div className="mt-3.5 rounded-[10px] bg-emerald-50 border border-emerald-200 p-2.5 text-[12px] text-emerald-900 font-bold flex items-center justify-between">
-                        <span>Gross Markup:</span>
+                        <span>Retail above Rate:</span>
                         <span>
                           {(((Number(form.retailPrice) - Number(form.ratePerPiece)) / Number(form.ratePerPiece)) * 100).toFixed(1)}% ({formatNpr(Number(form.retailPrice) - Number(form.ratePerPiece))} / {form.saleUnit || "piece"})
                         </span>
@@ -2340,7 +2483,7 @@ export default function ProductsModals({
                   </section>
 
                   {/* Units, Packaging & Stock Card */}
-                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 shadow-2xs flex flex-col justify-between sm:p-5">
+                  <section className="rounded-[16px] border border-[#E2E8F0] bg-white p-4 flex flex-col justify-between sm:p-5">
                     <div>
                       <div className="flex items-center justify-between border-b border-[#F1F5F9] pb-3">
                         <div className="flex items-center gap-2 text-[15px] font-black text-[#0F172A]">
@@ -2567,11 +2710,11 @@ export default function ProductsModals({
                   const imported = row.status === "IMPORTED";
                   return (
                     <React.Fragment key={row.rowId}>
-                      <div className={cn("border-b border-[#E5E7EB] px-3 py-3 xl:hidden", active ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]" : "bg-white", row.ignored && "bg-[#F8FAFC]")}>
+                      <div className={cn("border-b border-[#E5E7EB] px-3 py-3 xl:hidden", active ? "bg-[#EEF4FF] border-l-4 border-l-[#11120d]" : "bg-white", row.ignored && "bg-[#F8FAFC]")}>
                         <button type="button" onClick={() => { setActiveReviewRowId(row.rowId); setReviewPanelTab("row"); setMobileReviewView("editor"); }} className={cn("w-full min-w-0 text-left", row.ignored && "opacity-60")}>
                           <div className="flex items-center gap-2"><span className="text-[10px] font-extrabold text-[#6B7280]">Row {row.rowNumber}</span><span className={cn("rounded-full px-2 py-0.5 text-[9px] font-extrabold", imported ? "bg-emerald-50 text-emerald-700" : row.ignored ? "bg-slate-200 text-slate-700" : dirtyReviewRowIds.has(row.rowId) ? "bg-amber-50 text-amber-800" : verifiedReviewRowIds.has(row.rowId) ? "bg-emerald-50 text-emerald-700" : row.status === "DUPLICATE" ? "bg-amber-50 text-amber-700" : row.error ? "bg-rose-50 text-rose-700" : "bg-sky-50 text-sky-700")}>{row.ignored ? "Ignored" : dirtyReviewRowIds.has(row.rowId) ? "Unsaved" : verifiedReviewRowIds.has(row.rowId) ? "Saved" : row.status}</span></div>
                           <div className="mt-1 line-clamp-2 text-[13px] font-extrabold leading-[18px] text-[#11120d]">{row.name || row.rawText || "No text captured"}</div>
-                          <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Purchase cost ${row.ratePerPiece === null ? "not entered" : `रु. ${formatQty(row.ratePerPiece)}`}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
+                          <div className={cn("mt-1 truncate text-[10px] font-semibold", row.error ? "text-rose-700" : "text-[#4B5563]")}>{row.error || `Rate ${row.ratePerPiece === null ? "not entered" : `रु. ${formatQty(row.ratePerPiece)}`}${stockTracked ? ` · Stock ${formatQty(row.stock)}` : ""}`}</div>
                         </button>
                         <div className="mt-3 grid grid-cols-2 gap-2">
                           <button type="button" disabled={imported || row.ignored || row.comparisonStatus === "MATCHED_WITH_CHANGES" || row.comparisonStatus === "EXACT_DUPLICATE"} onClick={() => updateReviewRow(row.rowId, { selected: !row.selected, ignored: false, resolution: "CREATE_NEW" })} className={cn("inline-flex min-h-11 items-center justify-center gap-2 rounded-[11px] border px-3 text-[11px] font-extrabold", row.selected ? "border-[#179B4D] bg-[#EAF8EF] text-[#11763A]" : "border-[#CFCFD3] bg-white text-[#11120d]", (imported || row.ignored || row.comparisonStatus === "MATCHED_WITH_CHANGES" || row.comparisonStatus === "EXACT_DUPLICATE") && "pointer-events-none opacity-45")}><GoogleIcon name={row.selected ? "check_box" : "check_box_outline_blank"} className="text-[19px]" />{row.selected ? "Selected" : "Select row"}</button>
@@ -2587,7 +2730,7 @@ export default function ProductsModals({
                         className={cn(
                           "hidden min-h-[42px] w-full grid-cols-[26px_72px_minmax(0,1fr)_64px] items-center gap-[8px] border-b border-[#E5E7EB] px-[10px] py-[7px] text-left transition last:border-b-0 xl:grid",
                           active
-                            ? "bg-[#EEF4FF] shadow-[inset_3px_0_0_#11120d]"
+                            ? "bg-[#EEF4FF] border-l-4 border-l-[#11120d]"
                             : "bg-white hover:bg-[#ECEFF3]",
                           row.ignored ? "opacity-60" : "",
                         )}
@@ -2638,7 +2781,7 @@ export default function ProductsModals({
                           ) : (
                             <div className="truncate text-[10px] font-semibold text-[#8C8889]">
                               {row.ratePerPiece === null
-                                ? "Purchase cost not entered"
+                                ? "Rate not entered"
                                 : `NPR ${formatQty(row.ratePerPiece)}`}
                               {stockTracked ? ` | Stock ${formatQty(row.stock)}` : ""}
                             </div>
@@ -2767,27 +2910,35 @@ export default function ProductsModals({
                           Pricing
                         </div>
                         <div className="grid grid-cols-1 gap-[8px] lg:grid-cols-[1fr_1fr_auto] lg:items-end">
-                          <Field label="Wholesale margin / थोक मार्जिन %">
+                          <Field label="Wholesale increase from Rate %">
                             <input
                               type="number"
-                              value={bulkWholesaleMargin}
-                              onChange={(event) =>
-                                setBulkWholesaleMargin(
+                              min={0.01}
+                              max={100}
+                              step={0.01}
+                              value={bulkWholesaleIncrease}
+                              onChange={(event) => {
+                                setBulkWholesaleIncrease(
                                   Number(event.target.value) || 0,
-                                )
-                              }
+                                );
+                                setBulkImportPriceNotice("");
+                              }}
                               className={compactInputClass}
                             />
                           </Field>
-                          <Field label="Retail margin / खुद्रा मार्जिन %">
+                          <Field label="Retail increase from Rate %">
                             <input
                               type="number"
-                              value={bulkRetailMargin}
-                              onChange={(event) =>
-                                setBulkRetailMargin(
+                              min={0.01}
+                              max={100}
+                              step={0.01}
+                              value={bulkRetailIncrease}
+                              onChange={(event) => {
+                                setBulkRetailIncrease(
                                   Number(event.target.value) || 0,
-                                )
-                              }
+                                );
+                                setBulkImportPriceNotice("");
+                              }}
                               className={compactInputClass}
                             />
                           </Field>
@@ -2796,9 +2947,42 @@ export default function ProductsModals({
                             onClick={applyBulkPricingToSelectedRows}
                             disabled={selectedReviewRows.length === 0}
                           >
-                            Apply margins to draft
+                            Calculate draft prices
                           </Button>
                         </div>
+                        <div className="mt-2.5 grid gap-2 sm:grid-cols-2">
+                          <button
+                            type="button"
+                            onClick={() => { setBulkImportPricePolicy("FILL_EMPTY"); setBulkImportPriceNotice(""); }}
+                            className={cn(
+                              "min-h-10 rounded-[9px] border px-3 text-left text-[11px] font-bold",
+                              bulkImportPricePolicy === "FILL_EMPTY"
+                                ? "border-emerald-300 bg-emerald-50 text-emerald-800"
+                                : "border-[#CFCFD3] bg-white text-[#565449]",
+                            )}
+                          >
+                            Fill empty prices only
+                            <span className="mt-0.5 block text-[10px] font-medium">Keep prices already entered.</span>
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => { setBulkImportPricePolicy("REPLACE"); setBulkImportPriceNotice(""); }}
+                            className={cn(
+                              "min-h-10 rounded-[9px] border px-3 text-left text-[11px] font-bold",
+                              bulkImportPricePolicy === "REPLACE"
+                                ? "border-amber-300 bg-amber-50 text-amber-800"
+                                : "border-[#CFCFD3] bg-white text-[#565449]",
+                            )}
+                          >
+                            Replace current prices
+                            <span className="mt-0.5 block text-[10px] font-medium">Overwrite draft Wholesale and Retail prices.</span>
+                          </button>
+                        </div>
+                        {bulkImportPriceNotice ? (
+                          <div className="mt-2.5 rounded-[9px] border border-[#D8DBE0] bg-white px-3 py-2 text-[11px] font-semibold leading-4 text-[#565449]" role="status">
+                            {bulkImportPriceNotice}
+                          </div>
+                        ) : null}
                       </div>
 
                       {stockTracked ? <div className="rounded-[14px] border border-[#CFCFD3] bg-[#F8FAFC] p-[12px]">
@@ -2881,7 +3065,7 @@ export default function ProductsModals({
                           </Button>
                         </div>
                       </div>
-                      <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3 shadow-[0_-8px_20px_rgba(17,18,13,0.08)]">
+                      <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3">
                         <div className="mb-2 flex items-center justify-between gap-3 text-[11px] font-bold">
                           <span className="text-[#4B5563]">Review changes before import</span>
                           <span className={unconfirmedSelectedReviewRows.length > 0 ? "text-amber-700" : "text-emerald-700"}>
@@ -3007,7 +3191,7 @@ export default function ProductsModals({
 
                       {activeReviewRow.ratePerPiece === null ? (
                         <div className="rounded-[12px] border border-sky-200 bg-sky-50 px-3 py-2 text-[11px] font-bold leading-4 text-sky-900">
-                          Price coming soon. This product can be kept in catalog and search with zero stock, but it cannot be billed until purchase and selling prices are entered and approved.
+                          Price coming soon. This product stays searchable, but it cannot be sold until Rate and selling prices are ready.
                         </div>
                       ) : null}
 
@@ -3204,7 +3388,7 @@ export default function ProductsModals({
                       </div>
 
                       <div className="grid grid-cols-2 gap-[10px] lg:grid-cols-4">
-                        <Field label="Purchase cost (optional)">
+                        <Field label="Rate">
                           <input
                             type="number"
                             value={activeReviewRow.ratePerPiece ?? ""}
@@ -3292,7 +3476,7 @@ export default function ProductsModals({
                   ) : null}
 
                   {reviewPanelTab === "row" ? (
-                    <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3 shadow-[0_-8px_20px_rgba(17,18,13,0.08)]">
+                    <div className="sticky bottom-0 rounded-[14px] border border-[#D9DCE1] bg-white p-3">
                       <div className="mb-2 flex items-center justify-between gap-3">
                         <div className="text-[11px] font-bold text-[#4B5563]">
                           {activeReviewRowDirty
@@ -3389,93 +3573,295 @@ export default function ProductsModals({
             <div className="space-y-[20px] p-[20px] sm:p-[24px]">
               {importTab === "csv" && (
                 <div className="space-y-[20px]">
-                  {/* Spreadsheet Upload */}
-                  <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[28px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[32px]">
-                    <div className="mx-auto mb-[14px] flex h-[48px] w-[48px] items-center justify-center rounded-[12px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
-                      <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#11120d]" />
-                    </div>
-                    <h4 className="mb-[4px] text-[14px] font-bold text-[#1E293B]">Upload spreadsheet rate list</h4>
-                    <p className="mb-[14px] text-[12px] text-[#64748B]">Supports .csv and modern Excel .xlsx workbooks</p>
-                    <label htmlFor="csv-upload" className="inline-flex cursor-pointer rounded-[8px] bg-[#11120d] px-[20px] py-[8px] text-[12px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
-                      {importFile ? "Change spreadsheet" : "Choose spreadsheet"}
-                    </label>
-                    <input
-                      type="file"
-                      accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-                      onChange={(event) => setImportFile(event.target.files?.[0] || null)}
-                      className="hidden"
-                      id="csv-upload"
-                    />
-                    {importFile && (
-                      <div className="mt-[12px] flex items-center justify-center gap-[6px] text-[12px] font-bold text-emerald-800">
-                        <Icon name="check_circle" className="text-[14px]" /> {importFile.name}
-                      </div>
-                    )}
-                  </div>
-
-                  {/* Spreadsheet Field Mapping & Template Settings */}
-                  <div className="rounded-[16px] border border-[#E5E7EB] bg-white p-[18px] shadow-xs sm:p-[20px]">
-                    <div className="mb-[14px] flex flex-wrap items-center justify-between gap-[12px]">
-                      <div>
-                        <h4 className="text-[14px] font-bold text-[#11120d]">Spreadsheet Column Mapping</h4>
-                        <p className="mt-[2px] text-[12px] text-[#8C8889]">Map supplier columns to KhataSathi fields</p>
-                      </div>
-                      <div className="flex gap-[8px]">
-                        <button type="button" onClick={saveImportTemplateWithValidation} className="rounded-[8px] bg-[#F3F4F6] px-[12px] py-[6px] text-[12px] font-bold text-[#565449] transition hover:bg-[#E5E7EB]">Save Template</button>
-                        {importTemplateId && (
-                          <button onClick={() => onDeleteImportTemplate(importTemplateId)} className="rounded-[8px] bg-[#FEF2F2] px-[12px] py-[6px] text-[12px] font-bold text-[#DC2626] transition hover:bg-[#FEE2E2]">Delete</button>
-                        )}
-                      </div>
-                    </div>
-
-                    <div className="space-y-[14px]">
-                      <div className="grid grid-cols-1 gap-[12px] md:grid-cols-2">
-                        <ProjectSelect
-                          value={importTemplateId}
-                          onChange={(event) => setImportTemplateId(event.target.value)}
-                          className="h-[40px] w-full rounded-[10px] border border-[#CFCFD3] bg-[#F8FAFC] px-[12px] text-[13px] font-bold outline-none focus:border-[#11120d]"
-                        >
-                          <option value="">No template</option>
-                          {importTemplates.map((t) => <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>)}
-                        </ProjectSelect>
-                        <label className="block">
-                          <input
-                            ref={importSupplierRef}
-                            value={importSupplier}
-                            aria-invalid={Boolean(importSupplierError)}
-                            aria-describedby={importSupplierError ? "import-supplier-error" : undefined}
-                            onChange={(event) => {
-                              setImportSupplier(event.target.value);
-                              setImportSupplierError("");
-                            }}
-                            placeholder="Supplier / Brand Name"
-                            className={cn("h-[40px] w-full rounded-[10px] bg-white px-[12px] text-[13px] font-semibold outline-none focus:ring-2", importSupplierError ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100")}
-                          />
-                          {importSupplierError ? <span id="import-supplier-error" role="alert" className="mt-1 block text-[11px] font-semibold text-[#BE123C]">{importSupplierError}</span> : null}
+                  {/* Spreadsheet Upload Zone */}
+                  {!importFile ? (
+                    <div className="space-y-3">
+                      <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[26px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[32px]">
+                        <div className="mx-auto mb-[12px] flex h-[48px] w-[48px] items-center justify-center rounded-[12px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
+                          <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#11120d]" />
+                        </div>
+                        <h4 className="mb-[4px] text-[15px] font-bold text-[#1E293B]">Upload spreadsheet rate list</h4>
+                        <p className="mb-[14px] text-[12px] text-[#64748B]">Supports .csv and modern Excel .xlsx workbooks</p>
+                        <label htmlFor="csv-upload" className="inline-flex cursor-pointer rounded-[9px] bg-[#11120d] px-[22px] py-[9px] text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] active:scale-[0.98]">
+                          Choose spreadsheet
                         </label>
+                        <input
+                          type="file"
+                          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                          onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+                          className="hidden"
+                          id="csv-upload"
+                        />
                       </div>
 
-                      <div className="grid grid-cols-2 gap-[10px] rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-[14px] sm:grid-cols-3 md:grid-cols-4">
-                        {[
-                          ["productName", "Name Col"], ["serial", "SKU/Serial"], ["variant", "Variant"],
-                          ["packageQuantity", "Pack Qty"], ["retailPrice", "MRP Col"], ["wholesalePrice", "Rate Col"], ["stock", "Stock"]
-                        ].filter(([key]) => stockTracked || key !== "stock").map(([key, label]) => (
-                          <div key={key} className="space-y-[4px]">
-                            <label className="text-[10px] font-extrabold uppercase tracking-wider text-[#8C8889]">{label}</label>
+                      {/* Optional Pre-Upload Template Chooser (Collapsed by default to keep modal compact) */}
+                      <div className="flex items-center justify-between px-1">
+                        <button
+                          type="button"
+                          onClick={() => setShowAdvancedTemplates((v) => !v)}
+                          className="inline-flex items-center gap-1.5 text-[12px] font-semibold text-[#64748B] hover:text-[#11120d] transition"
+                        >
+                          <Icon name="tune" sizePx={15} />
+                          <span>Supplier Template & Presets</span>
+                          <Icon name={showAdvancedTemplates ? "expand_less" : "expand_more"} sizePx={16} />
+                        </button>
+                        {importTemplateId ? (
+                          <span className="rounded-full bg-slate-100 px-2.5 py-0.5 text-[11px] font-bold text-slate-700">
+                            Template active
+                          </span>
+                        ) : null}
+                      </div>
+
+                      {showAdvancedTemplates ? (
+                        <div className="rounded-[14px] border border-[#E5E7EB] bg-white p-3.5 space-y-3">
+                          <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+                            <ProjectSelect
+                              value={importTemplateId}
+                              onChange={(event) => setImportTemplateId(event.target.value)}
+                              className="h-[38px] w-full rounded-[9px] border border-[#CFCFD3] bg-[#F8FAFC] px-3 text-[12px] font-bold outline-none focus:border-[#11120d]"
+                            >
+                              <option value="">No template (Default)</option>
+                              {importTemplates.map((t) => (
+                                <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>
+                              ))}
+                            </ProjectSelect>
                             <input
-                              value={importFieldMap[key] || ""}
-                              onChange={(event) => setImportFieldMap((current) => ({ ...current, [key]: event.target.value }))}
-                              className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-semibold outline-none transition focus:border-[#11120d] focus:ring-1 focus:ring-[#11120d]"
-                              placeholder="Header name"
+                              ref={importSupplierRef}
+                              value={importSupplier}
+                              onChange={(event) => {
+                                setImportSupplier(event.target.value);
+                                setImportSupplierError("");
+                              }}
+                              placeholder="Supplier / Brand Name"
+                              className="h-[38px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-semibold outline-none focus:border-[#11120d]"
                             />
                           </div>
-                        ))}
+                          {importTemplateId ? (
+                            <div className="flex justify-end">
+                              <button
+                                type="button"
+                                onClick={() => onDeleteImportTemplate(importTemplateId)}
+                                className="rounded-[7px] bg-[#FEF2F2] px-3 py-1 text-[11px] font-bold text-[#DC2626] hover:bg-[#FEE2E2] transition"
+                              >
+                                Delete this template
+                              </button>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    /* Selected File Banner & Interactive Column Mapping */
+                    <div className="space-y-4">
+                      {/* Compact File Pill */}
+                      <div className="flex items-center justify-between rounded-[14px] border border-emerald-200 bg-emerald-50/60 p-3">
+                        <div className="flex items-center gap-3 min-w-0">
+                          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] bg-emerald-600 text-white">
+                            <Icon name="table_chart" className="text-[20px]" />
+                          </div>
+                          <div className="min-w-0">
+                            <div className="truncate text-[13px] font-bold text-slate-900">{importFile.name}</div>
+                            <div className="text-[11px] font-medium text-emerald-800">
+                              {(importFile.size / 1024).toFixed(1)} KB • {spreadsheetPreview ? `${spreadsheetPreview.columns.length} columns detected` : "Reading columns…"}
+                            </div>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-2 shrink-0">
+                          <label htmlFor="csv-upload" className="cursor-pointer rounded-[8px] border border-slate-200 bg-white px-3 py-1.5 text-[11.5px] font-bold text-slate-700 hover:bg-slate-50 transition">
+                            Change file
+                          </label>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setImportFile(null);
+                              setSpreadsheetPreview(null);
+                            }}
+                            className="flex h-8 w-8 items-center justify-center rounded-[8px] text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition"
+                            aria-label="Remove selected file"
+                          >
+                            <Icon name="close" sizePx={18} />
+                          </button>
+                          <input
+                            type="file"
+                            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            onChange={(event) => setImportFile(event.target.files?.[0] || null)}
+                            className="hidden"
+                            id="csv-upload"
+                          />
+                        </div>
+                      </div>
+
+                      {/* Interactive Column Mapping Card */}
+                      <div className="rounded-[16px] border border-[#E5E7EB] bg-white overflow-hidden">
+                        <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3">
+                          <div>
+                            <div className="flex items-center gap-2">
+                              <h4 className="text-[13.5px] font-bold text-[#11120d]">Spreadsheet Column Mapping</h4>
+                              {spreadsheetPreview?.columns.length ? (
+                                <span className="rounded-full bg-emerald-100 text-emerald-800 px-2 py-0.5 text-[10px] font-extrabold">
+                                  {spreadsheetPreview.columns.length} Columns
+                                </span>
+                              ) : null}
+                            </div>
+                            <p className="mt-0.5 text-[11.5px] text-[#64748B]">
+                              Match each spreadsheet column to its KhataSathi field before review.
+                            </p>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={saveImportTemplateWithValidation}
+                              className="inline-flex items-center gap-1.5 rounded-[8px] bg-white border border-[#CFCFD3] px-2.5 py-1 text-[11px] font-bold text-[#334155] transition hover:bg-[#F3F4F6]"
+                              title="Save this column layout as a template"
+                            >
+                              <Icon name="bookmark_add" sizePx={14} />
+                              Save Template
+                            </button>
+                            <button
+                              type="button"
+                              onClick={resetToAutoMatch}
+                              className="inline-flex items-center gap-1.5 rounded-[8px] bg-white border border-[#CFCFD3] px-2.5 py-1 text-[11px] font-bold text-[#64748B] transition hover:bg-[#F3F4F6]"
+                              title="Reset mapping to automatic matches"
+                            >
+                              <Icon name="restart_alt" sizePx={14} />
+                              Auto-Match
+                            </button>
+                          </div>
+                        </div>
+
+                        {/* Supplier & Preset Template Bar */}
+                        <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3.5 bg-slate-50/70 border-b border-slate-100">
+                          <ProjectSelect
+                            value={importTemplateId}
+                            onChange={(event) => setImportTemplateId(event.target.value)}
+                            className="h-[36px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold outline-none focus:border-[#11120d]"
+                          >
+                            <option value="">No template (Manual / Auto-detect)</option>
+                            {importTemplates.map((t) => (
+                              <option key={t.id} value={t.id}>{t.supplier} - {t.name}</option>
+                            ))}
+                          </ProjectSelect>
+                          <label className="block">
+                            <input
+                              ref={importSupplierRef}
+                              value={importSupplier}
+                              aria-invalid={Boolean(importSupplierError)}
+                              aria-describedby={importSupplierError ? "import-supplier-error" : undefined}
+                              onChange={(event) => {
+                                setImportSupplier(event.target.value);
+                                setImportSupplierError("");
+                              }}
+                              placeholder="Supplier / Brand Name (e.g. United Plastic)"
+                              className={cn(
+                                "h-[36px] w-full rounded-[9px] bg-white px-3 text-[12px] font-semibold outline-none focus:ring-2",
+                                importSupplierError
+                                  ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100"
+                                  : "border border-[#CFCFD3] focus:border-[#11120d] focus:ring-slate-100",
+                              )}
+                            />
+                            {importSupplierError ? (
+                              <span id="import-supplier-error" role="alert" className="mt-1 block text-[11px] font-semibold text-[#BE123C]">
+                                {importSupplierError}
+                              </span>
+                            ) : null}
+                          </label>
+                        </div>
+
+                        {/* Column Mapping Rows */}
+                        <div className="divide-y divide-[#F1F5F9] max-h-[300px] overflow-y-auto">
+                          {previewLoading ? (
+                            <div className="flex flex-col items-center justify-center p-8 text-center text-[#64748B]">
+                              <Icon name="progress_activity" className="text-[24px] animate-spin text-slate-400 mb-2" />
+                              <div className="text-[13px] font-bold">Scanning spreadsheet columns…</div>
+                              <div className="text-[11px] text-slate-400 mt-0.5">Detecting headers and sample rows</div>
+                            </div>
+                          ) : spreadsheetPreview && spreadsheetPreview.columns.length > 0 ? (
+                            spreadsheetPreview.columns.map((col) => {
+                              const mappedFieldKey =
+                                Object.entries(importFieldMap).find(([, val]) => val === col.header)?.[0] || "";
+
+                              return (
+                                <div
+                                  key={col.index}
+                                  className="flex flex-col sm:flex-row sm:items-center justify-between gap-2.5 p-3 hover:bg-[#F8FAFC] transition"
+                                >
+                                  <div className="flex items-center gap-2.5 min-w-0 flex-1">
+                                    <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md bg-[#F1F5F9] text-[11px] font-extrabold text-[#475569] border border-[#E2E8F0]">
+                                      {col.colLetter}
+                                    </span>
+                                    <div className="min-w-0 flex-1">
+                                      <div className="flex items-center gap-2">
+                                        <span className="truncate text-[12.5px] font-bold text-[#1E293B]">
+                                          {col.header}
+                                        </span>
+                                        {mappedFieldKey === "productName" ? (
+                                          <span className="text-[9.5px] font-extrabold text-emerald-800 bg-emerald-50 border border-emerald-200 rounded px-1.5 py-0.5">
+                                            Required
+                                          </span>
+                                        ) : null}
+                                      </div>
+                                      {col.sampleValue ? (
+                                        <div className="mt-0.5 truncate text-[11px] text-[#64748B]">
+                                          Sample: <span className="font-semibold text-[#1E293B]">“{col.sampleValue}”</span>
+                                        </div>
+                                      ) : (
+                                        <div className="mt-0.5 text-[11px] text-slate-400 italic">
+                                          (No sample value)
+                                        </div>
+                                      )}
+                                    </div>
+                                  </div>
+
+                                  <div className="w-full sm:w-[260px] shrink-0">
+                                    <ProjectSelect
+                                      value={mappedFieldKey}
+                                      onChange={(event) =>
+                                        handleColumnMappingChange(col.header, event.target.value)
+                                      }
+                                      className={cn(
+                                        "h-[34px] w-full rounded-[8px] px-2.5 text-[11.5px] font-bold border outline-none transition",
+                                        mappedFieldKey
+                                          ? "border-slate-300 bg-white text-[#11120d]"
+                                          : "border-dashed border-slate-300 bg-slate-50/80 text-slate-400 font-medium",
+                                      )}
+                                    >
+                                      <option value="">⛔ Ignore this column</option>
+                                      {CANONICAL_IMPORT_FIELDS.filter(
+                                        (field) => stockTracked || field.key !== "stock",
+                                      ).map((field) => (
+                                        <option key={field.key} value={field.key}>
+                                          {field.label} {field.required ? "(Required)" : ""}
+                                        </option>
+                                      ))}
+                                    </ProjectSelect>
+                                  </div>
+                                </div>
+                              );
+                            })
+                          ) : (
+                            /* Fallback if no columns could be parsed automatically */
+                            <div className="p-6 text-center text-[#64748B]">
+                              <div className="text-[13px] font-bold">Standard Column Mapping</div>
+                              <div className="mt-1 text-[11.5px] text-slate-500">
+                                Default column names will be used during review. You can also reassign columns in the review sheet.
+                              </div>
+                            </div>
+                          )}
+                        </div>
+
+                        {/* Mapping validation hint */}
+                        {!importFieldMap.productName ? (
+                          <div className="flex items-center gap-2 border-t border-amber-200 bg-amber-50 px-4 py-2 text-[11.5px] font-bold text-amber-800">
+                            <Icon name="info" sizePx={15} />
+                            <span>Recommended: Map at least one column to “Product Name (Required)” for best results.</span>
+                          </div>
+                        ) : null}
                       </div>
                     </div>
-                  </div>
+                  )}
 
                   {/* Import History */}
-                  <div className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white shadow-xs">
+                  <div className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white">
                     <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-[20px] py-[14px]">
                       <h4 className="text-[14px] font-bold text-[#11120d]">Recent Import History</h4>
                     </div>
@@ -3522,12 +3908,12 @@ export default function ProductsModals({
 
               {importTab === "pdf" && (
                 <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
-                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] shadow-xs transition-transform group-hover:scale-110">
+                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
                     <Icon name="picture_as_pdf" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
                   </div>
                   <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload PDF supplier rate list</h4>
                   <p className="mb-[20px] text-[13px] text-[#64748B]">Text or scanned PDF files up to 50 MB. Extracted rows always open in review before import.</p>
-                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
+                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
                     {importFile ? "Change PDF File" : "Choose PDF File"}
                   </label>
                   <input
@@ -3547,12 +3933,12 @@ export default function ProductsModals({
 
               {importTab === "image" && (
                 <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
-                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] shadow-xs transition-transform group-hover:scale-110">
+                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
                     <Icon name="image" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
                   </div>
                   <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload image of printed rate list</h4>
                   <p className="mb-[20px] text-[13px] text-[#64748B]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
-                  <label htmlFor="img-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white shadow-xs transition hover:bg-[#2a2c27]">
+                  <label htmlFor="img-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
                     {importFile ? "Change Image" : "Choose Image"}
                   </label>
                   <input
@@ -3688,7 +4074,7 @@ export default function ProductsModals({
               <div>
                 <h2 className="text-[25px] font-black leading-8 text-[#11120d]">{activeProduct.name}</h2>
                 <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="rounded-[8px] bg-[#F3F4F6] px-2.5 py-1.5 font-mono text-[12px] font-bold text-[#6B7280]">{activeProduct.sku || "NO-SKU"}</span>
+                  <span className="rounded-[8px] bg-[#F3F4F6] px-2.5 py-1.5 text-[12px] font-bold text-[#6B7280]">{activeProduct.sku || "NO-SKU"}</span>
                   <StatusPill status={activeProduct.status} />
                 </div>
               </div>
@@ -3710,7 +4096,7 @@ export default function ProductsModals({
                   title: "Pricing",
                   rows: [
                     ...(purchaseCostVisible
-                      ? [["Purchase cost", formatOptionalPurchaseCost(activeProduct.ratePerPiece)] as const]
+                      ? [["Rate", formatOptionalPurchaseCost(activeProduct.ratePerPiece)] as const]
                       : []),
                     ["Retail Price", formatOptionalSellingPrice(activeProduct.retailPrice)],
                     ["Wholesale Price", formatOptionalSellingPrice(activeProduct.wholesalePrice)],
@@ -3771,7 +4157,7 @@ export default function ProductsModals({
                     subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
                     enablePreview="desktop"
                     imgClassName="h-full w-full object-contain p-2"
-                    className="flex aspect-square w-[124px] h-[124px] items-center justify-center overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC] shadow-2xs"
+                    className="flex aspect-square w-[124px] h-[124px] items-center justify-center overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC]"
                     fallback={
                       <GoogleIcon
                         name="inventory_2"
@@ -3790,12 +4176,12 @@ export default function ProductsModals({
                   <div>
                     <h3 className="text-[18px] font-black leading-snug text-[#0F172A]">{activeProduct.name}</h3>
                     <div className="mt-1 flex flex-wrap items-center gap-2 text-[12px]">
-                      <span className="rounded-[6px] border border-[#E2E8F0] bg-[#F1F5F9] px-2 py-0.5 font-mono text-[11.5px] font-bold text-[#334155]">
+                      <span className="rounded-[6px] border border-[#E2E8F0] bg-[#F1F5F9] px-2 py-0.5 text-[11.5px] font-bold text-[#334155]">
                         {activeProduct.sku || "NO-SKU"}
                       </span>
                       {activeProduct.barcode ? (
                         <span className="text-[#64748B]">
-                          Barcode: <span className="font-mono font-semibold text-[#334155]">{activeProduct.barcode}</span>
+                          Barcode: <span className="font-semibold tabular-nums text-[#334155]">{activeProduct.barcode}</span>
                         </span>
                       ) : null}
                     </div>
@@ -3848,7 +4234,7 @@ export default function ProductsModals({
                   {/* Bottom Pricing & Stock Cards */}
                   <div className={cn("grid gap-3", stockTracked ? "grid-cols-2" : "grid-cols-1")}>
                     {/* Pricing Card */}
-                    <div className="rounded-[14px] border border-[#E2E8F0] bg-white p-3 shadow-2xs">
+                    <div className="rounded-[14px] border border-[#E2E8F0] bg-white p-3">
                       <div className="flex items-center gap-1.5 border-b border-[#F1F5F9] pb-2 text-[11px] font-black uppercase tracking-wider text-[#475569]">
                         <GoogleIcon name="sell" className="text-[14px] text-[#64748B]" />
                         <span>Pricing</span>
@@ -3856,7 +4242,7 @@ export default function ProductsModals({
                       <div className="mt-2.5 space-y-1.5 text-[12.5px]">
                         {purchaseCostVisible ? (
                           <div className="flex items-center justify-between">
-                            <span className="text-[#64748B]">Purchase Cost</span>
+                            <span className="text-[#64748B]">Rate</span>
                             <span className="font-bold text-[#0F172A]">{formatOptionalPurchaseCost(activeProduct.ratePerPiece)}</span>
                           </div>
                         ) : null}
@@ -3881,7 +4267,7 @@ export default function ProductsModals({
 
                     {/* Stock Card */}
                     {stockTracked ? (
-                      <div className="flex flex-col justify-between rounded-[14px] border border-[#E2E8F0] bg-white p-3 shadow-2xs">
+                      <div className="flex flex-col justify-between rounded-[14px] border border-[#E2E8F0] bg-white p-3">
                         <div>
                           <div className="flex items-center gap-1.5 border-b border-[#F1F5F9] pb-2 text-[11px] font-black uppercase tracking-wider text-[#475569]">
                             <GoogleIcon name="inventory_2" className="text-[14px] text-[#64748B]" />
@@ -3918,7 +4304,7 @@ export default function ProductsModals({
       {openConfirmDelete && (
         <div className="fixed inset-0 z-[120] flex items-end justify-center p-0 sm:items-center sm:p-[16px]">
           <div className="absolute inset-0 bg-[#0F172A]/45 backdrop-blur-[2px]" onClick={() => setOpenConfirmDelete(false)} />
-          <div role="dialog" aria-modal="true" aria-labelledby="single-product-delete-title" className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] bg-white px-[20px] pb-[max(20px,env(safe-area-inset-bottom))] pt-[20px] text-center shadow-2xl sm:max-w-[560px] sm:rounded-[24px] sm:p-[32px]">
+          <div role="dialog" aria-modal="true" aria-labelledby="single-product-delete-title" className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] border border-slate-200 bg-white px-[20px] pb-[max(20px,env(safe-area-inset-bottom))] pt-[20px] text-center sm:max-w-[560px] sm:rounded-[24px] sm:p-[32px]">
             <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
             <div className="w-[56px] h-[56px] rounded-full bg-red-50 flex items-center justify-center mx-auto mb-[20px]">
               <GoogleIcon name="warning" className="text-[28px] text-red-600" />
@@ -3935,7 +4321,7 @@ export default function ProductsModals({
             <div className="text-[14px] text-slate-500 mb-[28px] leading-relaxed">
               <div className="mb-[16px] flex items-center gap-3 rounded-[14px] border border-[#E5E7EB] bg-white p-3 text-left">
                 <PreviewableImage src={activeProduct?.thumbnailUrl || activeProduct?.imageUrl || ""} previewSrc={activeProduct?.imageUrl} alt={activeProduct?.name || "Selected product"} title={activeProduct?.name || "Selected product"} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 shrink-0 items-center justify-center overflow-hidden rounded-[11px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
-                <div className="min-w-0"><div className="truncate text-[15px] font-extrabold text-[#11120d]">{activeProduct?.name || "Selected product"}</div><div className="mt-1 truncate font-mono text-[11px] text-[#8C8889]">SKU: {activeProduct?.sku || "-"}</div></div>
+                <div className="min-w-0"><div className="truncate text-[15px] font-extrabold text-[#11120d]">{activeProduct?.name || "Selected product"}</div><div className="mt-1 truncate text-[11px] font-semibold text-[#8C8889]">SKU: {activeProduct?.sku || "-"}</div></div>
               </div>
 
               {deleteSafetyLoading ? (
@@ -4010,7 +4396,7 @@ export default function ProductsModals({
             className="absolute inset-0 bg-slate-900/40 backdrop-blur-sm transition-opacity"
             onClick={onCloseBulkAction}
           ></div>
-          <div role="dialog" aria-modal="true" aria-labelledby="bulk-inactive-title" className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[26px] border border-slate-100 bg-white text-left shadow-2xl transition-all sm:max-w-[520px] sm:rounded-[24px]">
+          <div role="dialog" aria-modal="true" aria-labelledby="bulk-inactive-title" className="relative flex max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[26px] border border-slate-200 bg-white text-left transition-all sm:max-w-[520px] sm:rounded-[24px]">
             <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
             <header className="flex items-start gap-3 border-b border-[#E5E7EB] px-5 pb-4 sm:px-6 sm:pt-6">
               <span className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[13px] bg-[#FFF7E8] text-[#B7791F]"><Icon name="do_not_disturb_on" className="text-[23px]" /></span>
@@ -4025,7 +4411,7 @@ export default function ProductsModals({
                   {bulkProducts.map((product) => (
                     <div key={product.id} className="flex min-h-[64px] items-center gap-3 px-3 py-2.5">
                       <PreviewableImage src={product.thumbnailUrl || product.imageUrl} fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined} previewSrc={product.imageUrl} alt={product.name} title={product.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-10 w-10 shrink-0 items-center justify-center overflow-hidden rounded-[9px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
-                      <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate font-mono text-[10px] text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
+                      <div className="min-w-0 flex-1"><div className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</div><div className="mt-0.5 truncate text-[10px] font-semibold text-[#8C8889]">SKU: {product.sku || "-"}</div></div>
                       <button type="button" onClick={() => onRemoveBulkProduct(product.id)} className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[#BE123C] transition hover:bg-[#FFF1F2]" aria-label={`Remove ${product.name} from selection`}><Icon name="close" className="text-[20px]" /></button>
                     </div>
                   ))}

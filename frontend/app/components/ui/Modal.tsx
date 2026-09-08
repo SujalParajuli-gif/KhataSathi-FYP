@@ -24,6 +24,9 @@ type ModalFrameProps = {
   mobileFullScreen?: boolean;
   mobileBottomSheet?: boolean;
   layer?: "modal" | "critical";
+  dialogClassName?: string;
+  bodyClassName?: string;
+  descriptionClassName?: string;
 };
 
 // the base modal frame — provides the overlay, centered positioning, header with title, and close button
@@ -41,6 +44,9 @@ export function ModalFrame({
   mobileFullScreen = false,
   mobileBottomSheet = false,
   layer = "modal",
+  dialogClassName,
+  bodyClassName,
+  descriptionClassName,
 }: ModalFrameProps) {
   useBodyScrollLock(open);
   const dialogRef = useRef<HTMLDivElement>(null);
@@ -141,11 +147,12 @@ export function ModalFrame({
           className={cn(
             "relative flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF] sm:max-h-[calc(100dvh-32px)]",
             mobileFullScreen
-              ? "flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:h-auto lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
+              ? cn("flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border", !dialogClassName?.includes("h-") && "lg:h-auto")
               : mobileBottomSheet
                 ? "flex max-h-[88dvh] flex-col rounded-t-[26px] border-x-0 border-b-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
-              : compact ? "rounded-[18px]" : "rounded-[20px] sm:rounded-[24px]",
+                : compact ? "rounded-[18px]" : "rounded-[20px] sm:rounded-[24px]",
             maxWidthClass,
+            dialogClassName,
           )}
         >
           {mobileBottomSheet ? (
@@ -180,6 +187,7 @@ export function ModalFrame({
                     compact
                       ? "text-[12px] leading-[18px]"
                       : "text-[13px] leading-[24px]",
+                    descriptionClassName,
                   )}
                 >
                   {description}
@@ -206,7 +214,7 @@ export function ModalFrame({
           {/* modal body content */}
           <div className={cn(
             compact ? "px-[18px] py-[14px]" : "px-[16px] py-[14px] lg:px-[24px] lg:py-[20px]",
-            "min-h-0 flex-1 overflow-y-auto overscroll-contain",
+            bodyClassName ? bodyClassName : "min-h-0 flex-1 overflow-y-auto overscroll-contain",
           )}>
             {children}
           </div>

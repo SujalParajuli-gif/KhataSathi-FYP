@@ -76,7 +76,7 @@ function detectPriceLabels(pages: PdfTextCatalogPage[]) {
     .join(" ");
   const candidates: Array<{ index: number; label: string }> = [];
   const patterns: Array<[RegExp, string]> = [
-    [/\bpurchase\s+(?:rate|price|cost)\b/gi, "Purchase rate"],
+    [/\bpurchase\s+(?:rate|price|cost)\b/gi, "Rate"],
     [/\bsupplier\s+(?:rate|price)\b/gi, "Supplier rate"],
     [/\bwholesale\s+(?:rate|price)\b/gi, "Wholesale rate"],
     [/\bWSP\b/g, "WSP"],

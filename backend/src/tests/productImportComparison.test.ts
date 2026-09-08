@@ -25,19 +25,29 @@ test("file fingerprints are stable for identical bytes and change with content",
   assert.match(fingerprintImportFile(Buffer.from("same")), /^[a-f0-9]{64}$/);
 });
 
-test("a named row without supplier price is a coming-soon product", () => {
+test("a missing Rate needs an explicit Coming soon decision", () => {
   assert.equal(resolveProductAvailability(null), "COMING_SOON");
-  const result = compareImportRowToCatalog({
+  const pendingDecision = compareImportRowToCatalog({
     rowKey: "25:173",
     name: "ROYAL PLANTER BIG",
     brand: "Bagmati",
     ratePerPiece: null,
   }, []);
+  assert.equal(pendingDecision.comparisonStatus, "NEEDS_REVIEW");
+  assert.match(pendingDecision.message || "", /mark this product as Coming soon/);
+
+  const result = compareImportRowToCatalog({
+    rowKey: "25:173",
+    name: "ROYAL PLANTER BIG",
+    brand: "Bagmati",
+    ratePerPiece: null,
+    availabilityStatus: "COMING_SOON",
+  }, []);
   assert.equal(result.comparisonStatus, "READY_NEW");
   assert.equal(result.availabilityStatus, "COMING_SOON");
 });
 
-test("an MRP-only row remains catalog-listed when purchase cost is unknown", () => {
+test("a Retail-only row still needs a Rate or Coming soon decision", () => {
   assert.equal(resolveProductAvailability(null, 299, null), "CATALOG_LISTED");
   const result = compareImportRowToCatalog({
     rowKey: "spl:2",
@@ -47,7 +57,23 @@ test("an MRP-only row remains catalog-listed when purchase cost is unknown", () 
     retailPrice: 299,
     wholesalePrice: null,
   }, []);
+  assert.equal(result.comparisonStatus, "NEEDS_REVIEW");
   assert.equal(result.availabilityStatus, "CATALOG_LISTED");
+});
+
+test("an ambiguous catalog identity remains a conflict even when the incoming Rate is blank", () => {
+  const result = compareImportRowToCatalog({
+    rowKey: "duplicate:1",
+    name: "BUCKET 13 LTR",
+    brand: "Bagmati",
+    ratePerPiece: null,
+  }, [
+    bagmatiBucket,
+    { ...bagmatiBucket, id: "product-2" },
+  ]);
+
+  assert.equal(result.comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(result.message || "", /matches 2 catalog products/);
 });
 
 test("same brand and product code produces an exact duplicate", () => {

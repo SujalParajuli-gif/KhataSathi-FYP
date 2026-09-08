@@ -610,9 +610,9 @@ export async function bulkUpdateProductPricesApi(payload: {
     reason: string;
     updates?: Array<{
         productId: string;
-        retailPrice: number;
-        wholesalePrice: number;
-        ratePerPiece?: number | null;
+        ratePerPiece?: number;
+        retailPrice?: number;
+        wholesalePrice?: number;
     }>;
     scope?: "IDS" | "FILTERED";
     filters?: {
@@ -624,15 +624,52 @@ export async function bulkUpdateProductPricesApi(payload: {
         stockStatus?: "in" | "low" | "out";
     };
     excludedProductIds?: string[];
-    wholesaleMarginPercent?: number;
-    retailMarginPercent?: number;
-}) {
-    const res = await api.post("/api/products/bulk-price-update", payload);
+    overrides?: Array<{
+        productId: string;
+        ratePerPiece?: number;
+        retailPrice?: number;
+        wholesalePrice?: number;
+    }>;
+    wholesalePercent?: number;
+    retailPercent?: number;
+    direction?: "INCREASE" | "DECREASE";
+    existingPricePolicy?: "FILL_EMPTY" | "REPLACE";
+    previewOnly?: boolean;
+    previewPage?: number;
+    previewPageSize?: number;
+    previewSearch?: string;
+    previewSort?: "affected_first" | "rate_desc" | "rate_asc" | "price_desc";
+}, options?: { signal?: AbortSignal }) {
+    const res = await api.post("/api/products/bulk-price-update", payload, { signal: options?.signal });
     return res.data as {
         updatedCount: number;
+        previewCount: number;
+        previewMatchedCount: number;
+        previewPage: number;
+        previewPageSize: number;
+        previewTotalPages: number;
         errorCount: number;
+        matchedCount: number;
+        skippedMissingRate: number;
+        skippedComingSoon: number;
+        skippedExisting: number;
         products: Array<{ id: string; name: string; sku: string }>;
         errors: Array<{ productId: string; message: string }>;
+        preview: Array<{
+            productId: string;
+            name: string;
+            sku: string;
+            currentRate: number | null;
+            newRate: number | null;
+            rate?: number | null;
+            currentRetailPrice: number | null;
+            newRetailPrice: number | null;
+            currentWholesalePrice: number | null;
+            newWholesalePrice: number | null;
+            willChange: boolean;
+        }>;
+        partialSuccess: boolean;
+        auditWarning: string | null;
     };
 }
 
@@ -798,6 +835,7 @@ export type ReviewedPdfImportRowPayload = {
     searchAliases?: string[];
     retailPrice: number | null;
     wholesalePrice: number | null;
+    availabilityStatus: "CATALOG_LISTED" | "COMING_SOON";
     stock: number;
     resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE" | null;
 };
@@ -829,6 +867,7 @@ export async function getProductImportReviewApi(
         comparisonStatus?: ProductImportRow["comparisonStatus"];
         rowStatus?: string;
     } = {},
+    options?: { signal?: AbortSignal },
 ) {
     const params = new URLSearchParams();
     if (filters.page) params.set("page", String(filters.page));
@@ -837,7 +876,9 @@ export async function getProductImportReviewApi(
     if (filters.comparisonStatus) params.set("comparisonStatus", filters.comparisonStatus);
     if (filters.rowStatus) params.set("rowStatus", filters.rowStatus);
     const query = params.toString();
-    const res = await api.get(`/api/products/import-batches/${batchId}/review${query ? `?${query}` : ""}`);
+    const res = await api.get(`/api/products/import-batches/${batchId}/review${query ? `?${query}` : ""}`, {
+        signal: options?.signal,
+    });
     return res.data as ProductImportReviewPage;
 }
 
@@ -910,10 +951,11 @@ export async function setProductImportRowResolutionApi(
 export async function setProductImportPriceMappingApi(
     batchId: string,
     mapping: Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">,
+    rowIds?: string[],
 ) {
     const res = await api.patch(
         `/api/products/import-batches/${batchId}/price-mapping`,
-        { mapping },
+        { mapping, rowIds },
     );
     return res.data as ProductImportReviewPage["priceMapping"];
 }

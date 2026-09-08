@@ -8,6 +8,14 @@ PROJECT_DIR=${KHATASATHI_PROJECT_DIR:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd
 COMPOSE_FILE=${KHATASATHI_COMPOSE_FILE:-$PROJECT_DIR/compose.production.yml}
 ENV_FILE=${KHATASATHI_ENV_FILE:-$PROJECT_DIR/deploy/production.env}
 REQUESTED_SNAPSHOT=${1:-latest}
+RESTORE_PROJECT=${KHATASATHI_RESTORE_PROJECT:-khatasathi-restore-verification}
+
+case "$RESTORE_PROJECT" in
+  khatasathi|production|default|'')
+    echo "Restore verification requires a dedicated Compose project name." >&2
+    exit 1
+    ;;
+esac
 
 if [ ! -f "$COMPOSE_FILE" ] || [ ! -f "$ENV_FILE" ]; then
   echo "Compose file or production environment file is missing." >&2
@@ -33,6 +41,7 @@ done
 
 compose() {
   docker compose \
+    --project-name "$RESTORE_PROJECT" \
     --project-directory "$PROJECT_DIR" \
     --env-file "$ENV_FILE" \
     -f "$COMPOSE_FILE" \

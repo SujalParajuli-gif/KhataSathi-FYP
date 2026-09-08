@@ -233,8 +233,8 @@ export default function ProductsFiltersCard({
               type="button"
               onClick={onTogglePurchaseCost}
               className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6]"
-              aria-label={purchaseCostVisible ? "Hide purchase costs" : "Show purchase costs"}
-              title={purchaseCostVisible ? "Hide purchase costs" : "Show purchase costs"}
+              aria-label={purchaseCostVisible ? "Hide Rate" : "Show Rate"}
+              title={purchaseCostVisible ? "Hide Rate" : "Show Rate"}
               aria-pressed={purchaseCostVisible}
             >
               <GoogleIcon name={purchaseCostVisible ? "visibility" : "visibility_off"} className="text-[21px]" />
@@ -252,9 +252,31 @@ export default function ProductsFiltersCard({
         onClear={clearMobileFilters}
         onApply={applyMobileFilters}
       >
-            <div className="space-y-5">
-              <div className="block space-y-2"><span className="text-[14px] font-bold">Brand</span><CreatableCombobox value={draftBrand} onChange={setDraftBrand} options={brands} placeholder="Search brands" ariaLabel="Filter products by brand" allowCreate={false} selectOnFocus /></div>
-              <div className="block space-y-2"><span className="text-[14px] font-bold">Category</span><CreatableCombobox value={draftCategory} onChange={setDraftCategory} options={categories} placeholder="Search categories" ariaLabel="Filter products by category" allowCreate={false} selectOnFocus /></div>
+            <div className="space-y-4">
+              <div className="block space-y-1.5">
+                <label className="text-[13px] font-bold text-slate-900">Brand</label>
+                <CreatableCombobox
+                  value={draftBrand}
+                  onChange={setDraftBrand}
+                  options={brands}
+                  placeholder="Search brands"
+                  ariaLabel="Filter products by brand"
+                  allowCreate={false}
+                  selectOnFocus
+                />
+              </div>
+              <div className="block space-y-1.5">
+                <label className="text-[13px] font-bold text-slate-900">Category</label>
+                <CreatableCombobox
+                  value={draftCategory}
+                  onChange={setDraftCategory}
+                  options={categories}
+                  placeholder="Search categories"
+                  ariaLabel="Filter products by category"
+                  allowCreate={false}
+                  selectOnFocus
+                />
+              </div>
 
               {stockTracked ? <fieldset className="space-y-2">
                 <legend className="text-[14px] font-bold">Stock Status</legend>
@@ -341,7 +363,7 @@ export default function ProductsFiltersCard({
                   name={purchaseCostVisible ? "visibility" : "visibility_off"}
                   className={purchaseCostVisible ? "text-emerald-700 text-[18px]" : "text-inherit text-[18px]"}
                 />
-                <span>{purchaseCostVisible ? "Hide purchase cost" : "Show purchase cost"}</span>
+                <span>{purchaseCostVisible ? "Hide Rate" : "Show Rate"}</span>
               </button>
             ) : null}
 

@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { priceFromGrossMargin } from "../modules/products/pricingMath";
+import { priceFromPercentageChange } from "../modules/products/pricingMath";
 
-test("gross margin calculates selling price from cost", () => {
-  assert.equal(priceFromGrossMargin(300, 18), 365.85);
-  assert.equal(priceFromGrossMargin(300, 30), 428.57);
+test("selling prices can be increased or decreased from the neutral Rate", () => {
+  assert.equal(priceFromPercentageChange(300, 18, "INCREASE"), 354);
+  assert.equal(priceFromPercentageChange(300, 30, "DECREASE"), 210);
 });
 
-test("gross margin rejects values at or above one hundred percent", () => {
-  assert.throws(() => priceFromGrossMargin(300, 100), /between 0 and 99.99/);
+test("percentage changes reject unsafe values", () => {
+  assert.throws(() => priceFromPercentageChange(300, 100, "DECREASE"), /below 100/);
+  assert.throws(() => priceFromPercentageChange(0, 20, "INCREASE"), /Rate/);
 });

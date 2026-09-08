@@ -2,6 +2,8 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import {
   prepareReviewedImportRowDraft,
+  reviewedImportRowToCsvRow,
+  normalizeCsvImportRow,
   ReviewedImportRowValidationError,
 } from "../modules/products/service";
 
@@ -19,6 +21,7 @@ function validRow(overrides: Record<string, unknown> = {}) {
     quantityStep: 1,
     retailPrice: 130,
     wholesalePrice: 118,
+    availabilityStatus: "CATALOG_LISTED" as const,
     stock: 0,
     ...overrides,
   };
@@ -47,7 +50,7 @@ test("review draft save rejects missing identity fields", () => {
 test("review draft save rejects invalid prices, packages, and stock", () => {
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ ratePerPiece: 0 })),
-    /Purchase cost/,
+    /Rate/,
   );
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ packageQuantity: 0 })),
@@ -59,13 +62,23 @@ test("review draft save rejects invalid prices, packages, and stock", () => {
   );
 });
 
-test("review draft keeps an unknown purchase cost null without copying a selling price", () => {
+test("review draft keeps an explicit Coming soon Rate empty without copying a selling price", () => {
   const prepared = prepareReviewedImportRowDraft(
-    validRow({ ratePerPiece: null }),
+    validRow({ ratePerPiece: null, availabilityStatus: "COMING_SOON" }),
   );
   assert.equal(prepared.ratePerPiece, null);
   assert.equal(prepared.retailPrice, 130);
   assert.equal(prepared.wholesalePrice, 118);
+});
+
+test("final import conversion preserves the reviewed Coming soon status", () => {
+  const converted = reviewedImportRowToCsvRow(
+    validRow({ ratePerPiece: null, availabilityStatus: "COMING_SOON" }),
+  );
+  assert.equal(converted.ratePerPiece, null);
+  assert.equal(converted.availabilityStatus, "COMING_SOON");
+  const normalized = normalizeCsvImportRow(converted, 2);
+  assert.equal(normalized.availabilityStatus, "COMING_SOON");
 });
 
 test("review draft keeps unknown selling prices null instead of inventing them", () => {

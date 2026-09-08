@@ -92,6 +92,51 @@ body {
   overscroll-behavior-x: none;
 }
 
+/* ── Global Custom Scrollbar ───────────────────────────────────────────────
+   Standardizes and slims down default browser/OS scrollbars into a sleek,
+   modern capsule design that blends cleanly with the KhataSathi UI. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: #cbd5e1 transparent;
+}
+
+/* Chrome, Edge, Safari & Chromium */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background-color: #cbd5e1;
+  border-radius: 9999px;
+  transition: background-color 0.2s ease;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background-color: #94a3b8;
+}
+
+::-webkit-scrollbar-thumb:active {
+  background-color: #64748b;
+}
+
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
+/* Utility to hide scrollbars while preserving full scrollability */
+.hide-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+.hide-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+
 /* form controls do not always inherit fonts the same way across browsers
    we added this so buttons and inputs match the rest of the UI text automatically */
 button,
@@ -229,39 +274,24 @@ input[type="number"]::-webkit-outer-spin-button {
 }
 
 .animate-selection-bar-enter {
-  animation: selection-bar-enter 0.3s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation: none;
 }
 
-/* the expandable sub-row (Select page / Choose action links) uses a
-   grid-rows trick to animate height from 0 to auto without JS measurement.
-   the wrapper toggles between grid-rows-[0fr] and grid-rows-[1fr] */
 .selection-sub-row {
-  display: grid;
-  transition: grid-template-rows 0.28s cubic-bezier(0.16, 1, 0.3, 1),
-              opacity 0.22s ease;
+  display: block;
 }
 
-.selection-sub-row[data-collapsed="true"] {
-  grid-template-rows: 0fr;
-  opacity: 0;
-}
-
+.selection-sub-row[data-collapsed="true"],
 .selection-sub-row[data-collapsed="false"] {
-  grid-template-rows: 1fr;
   opacity: 1;
 }
 
 .selection-sub-row > * {
-  overflow: hidden;
+  overflow: visible;
 }
 
-/* sticky wrapper transitions for background, shadow, blur, and padding */
 .selection-sticky-wrap {
-  transition: background-color 0.28s ease,
-              box-shadow 0.28s ease,
-              backdrop-filter 0.28s ease,
-              padding 0.28s ease,
-              margin 0.28s ease;
+  transition: none;
 }
 
 /* Mobile input and finger safeguards. iOS zooms a page when a focused form
@@ -277,7 +307,7 @@ input[type="number"]::-webkit-outer-spin-button {
     scroll-margin-bottom: 160px;
   }
 
-  button {
+  button:not([role="switch"]) {
     min-width: 44px;
     min-height: 44px;
     touch-action: manipulation;

@@ -20,12 +20,13 @@ export type ImportBulkEditConfig = {
   brand?: string;
   category?: string;
   vendorSource?: string;
+  availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
   packageQuantity?: number | null;
   packageUnit?: string;
   priceMove?: {
     from: ImportPriceField;
     to: ImportPriceField;
-    conflictPolicy: "KEEP" | "REPLACE";
+    conflictPolicy: "KEEP" | "REPLACE" | "SWAP";
     clearSource: boolean;
   } | null;
   percentage?: {
@@ -69,21 +70,7 @@ export function displayImportSourceRegion(locator?: {
   } | null;
 } | null) {
   const region = locator?.region;
-  if (!region) return undefined;
-  const rowHeight = region.bottom - region.top;
-  const needsLegacyImageAdjustment =
-    locator?.kind === "IMAGE"
-    && !locator.regionAdjusted
-    && region.right - region.left >= 700
-    && rowHeight >= 15
-    && rowHeight <= 60;
-  return needsLegacyImageAdjustment
-    ? {
-        ...region,
-        top: Math.max(0, Math.round(region.top - rowHeight * 1.25)),
-        bottom: Math.max(1, Math.round(region.bottom - rowHeight * 1.25)),
-      }
-    : region;
+  return region || undefined;
 }
 
 export function readableSourceHeader(value: string) {
@@ -120,7 +107,7 @@ const reviewFieldLabels: Partial<Record<keyof ReviewedPdfImportRowPayload, strin
   productCodeVariant: "Product code",
   sizeValue: "Size",
   sizeUnit: "Size unit",
-  ratePerPiece: "Purchase rate",
+  ratePerPiece: "Rate",
   packageQuantity: "Package quantity",
   packageUnit: "Package unit",
   saleUnit: "Sale unit",
@@ -131,6 +118,7 @@ const reviewFieldLabels: Partial<Record<keyof ReviewedPdfImportRowPayload, strin
   searchAliases: "Search aliases",
   retailPrice: "Retail price",
   wholesalePrice: "Wholesale price",
+  availabilityStatus: "Availability",
   resolution: "Import decision",
 };
 
@@ -167,6 +155,7 @@ export function applyImportBulkEdit(
     next.categoryGroup = config.category.trim();
   }
   if (config.vendorSource?.trim()) next.vendorSource = config.vendorSource.trim();
+  if (config.availabilityStatus) next.availabilityStatus = config.availabilityStatus;
   if (typeof config.packageQuantity === "number") next.packageQuantity = config.packageQuantity;
   if (config.packageUnit?.trim()) next.packageUnit = config.packageUnit.trim().toUpperCase();
 
@@ -181,7 +170,11 @@ export function applyImportBulkEdit(
     } else {
       if (destinationValue !== null) priceConflict = true;
       next[config.priceMove.to] = sourceValue;
-      if (config.priceMove.clearSource) next[config.priceMove.from] = null;
+      if (config.priceMove.conflictPolicy === "SWAP") {
+        next[config.priceMove.from] = destinationValue;
+      } else if (config.priceMove.clearSource) {
+        next[config.priceMove.from] = null;
+      }
     }
   }
 
@@ -254,6 +247,13 @@ export function importRowToDraft(
   const aliases = Array.isArray(parsed.searchAliases)
     ? parsed.searchAliases.map(String).map((value) => value.trim()).filter(Boolean)
     : [];
+  const extractedPrices = Array.isArray(parsed.extractedPrices) ? parsed.extractedPrices : [];
+  const singleExtractedRate = extractedPrices.length === 1
+    ? numberOrNull(object(extractedPrices[0]), "value")
+    : null;
+  const ratePerPiece = numberOrNull(parsed, "ratePerPiece") ?? singleExtractedRate;
+  const automaticallyClassifiedSource = ["PDF_TEXT_TABLE_ROW", "PDF_SCANNED_AI_ROW", "IMAGE_AI_ROW"]
+    .includes(text(parsed, "sourceType"));
 
   return {
     rowId: row.id,
@@ -275,7 +275,7 @@ export function importRowToDraft(
     productCodeVariant: text(parsed, "productCodeVariant"),
     sizeValue: numberOrNull(parsed, "sizeValue"),
     sizeUnit,
-    ratePerPiece: numberOrNull(parsed, "ratePerPiece"),
+    ratePerPiece,
     packageQuantity: numberOrNull(parsed, "packageQuantity"),
     packageUnit: text(parsed, "packageUnit", "PIECE"),
     saleUnit,
@@ -286,6 +286,9 @@ export function importRowToDraft(
     searchAliases: aliases,
     retailPrice: numberOrNull(parsed, "retailPrice"),
     wholesalePrice: numberOrNull(parsed, "wholesalePrice"),
+    availabilityStatus: parsed.availabilityStatus === "COMING_SOON" && !(automaticallyClassifiedSource && Number(ratePerPiece) > 0)
+      ? "COMING_SOON"
+      : "CATALOG_LISTED",
     stock: 0,
   };
 }

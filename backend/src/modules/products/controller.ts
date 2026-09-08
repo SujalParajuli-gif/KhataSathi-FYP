@@ -136,8 +136,9 @@ function parseOptionalNumber(
   return normalized;
 }
 
-// Purchase cost is genuinely optional. `undefined` means "not supplied" on an
-// update, while null/blank means "clear the currently stored cost".
+// Rate may be absent only for an explicitly coming-soon product. `undefined`
+// means "not supplied" on an update, while null/blank means "clear the saved
+// rate". The service validates the merged Rate/availability state.
 function parseNullableNumber(
   value: unknown,
   label: string,
@@ -206,7 +207,7 @@ export async function list(req: Request, res: Response) {
 }
 
 // Product Lookup has a narrower, role-aware response than product management.
-// Purchase cost is admin-only and wholesale values follow the saved per-user
+// Rate is admin-only and wholesale values follow the saved per-user
 // VIEW WHOLESALE permission, so unauthorized prices never reach the browser.
 export async function listForPriceLookup(req: Request, res: Response) {
   try {
@@ -387,6 +388,12 @@ export async function create(req: Request, res: Response) {
       }),
       wholesaleEligible: parseOptionalBoolean(req.body.wholesaleEligible),
       sourceCitation: parseOptionalText(req.body.sourceCitation),
+      availabilityStatus:
+        req.body.availabilityStatus === "COMING_SOON"
+          ? "COMING_SOON"
+          : req.body.availabilityStatus === "CATALOG_LISTED"
+            ? "CATALOG_LISTED"
+            : undefined,
       retailPrice: parseNullableNumber(req.body.retailPrice, "retailPrice", {
         min: 0.01,
       }),
@@ -525,6 +532,15 @@ export async function update(req: Request, res: Response) {
     }
     if (body.sourceCitation !== undefined) {
       data.sourceCitation = parseOptionalText(body.sourceCitation) || null;
+    }
+    if (body.availabilityStatus !== undefined) {
+      if (
+        body.availabilityStatus !== "CATALOG_LISTED" &&
+        body.availabilityStatus !== "COMING_SOON"
+      ) {
+        throw new Error("Availability must be Catalog listed or Coming soon");
+      }
+      data.availabilityStatus = body.availabilityStatus;
     }
     if (body.retailPrice !== undefined) {
       data.retailPrice = parseNullableNumber(body.retailPrice, "retailPrice", {
@@ -846,15 +862,58 @@ export async function deleteImportTemplate(req: Request, res: Response) {
 
 export async function bulkPriceUpdate(req: Request, res: Response) {
   try {
+    const scope = req.body?.scope === undefined ? "IDS" : req.body.scope;
+    if (scope !== "IDS" && scope !== "FILTERED") {
+      throw new Error("Price update scope must be selected products or filtered products.");
+    }
+    const direction = req.body?.direction === undefined ? "INCREASE" : req.body.direction;
+    if (direction !== "INCREASE" && direction !== "DECREASE") {
+      throw new Error("Price direction must be Increase or Decrease.");
+    }
+    const existingPricePolicy = req.body?.existingPricePolicy === undefined
+      ? "FILL_EMPTY"
+      : req.body.existingPricePolicy;
+    if (existingPricePolicy !== "FILL_EMPTY" && existingPricePolicy !== "REPLACE") {
+      throw new Error("Choose whether to fill empty prices or replace current prices.");
+    }
+    if (req.body?.previewOnly !== undefined && typeof req.body.previewOnly !== "boolean") {
+      throw new Error("Preview selection is invalid.");
+    }
+    const previewSort = req.body?.previewSort === undefined ? "affected_first" : req.body.previewSort;
+    if (!["affected_first", "rate_desc", "rate_asc", "price_desc"].includes(previewSort)) {
+      throw new Error("Preview sorting option is invalid.");
+    }
+    const updates = Array.isArray(req.body?.updates) ? req.body.updates : [];
+    if (scope === "IDS" && updates.length === 0) {
+      throw new Error("Choose at least one product price to update.");
+    }
+    if (
+      req.body?.excludedProductIds !== undefined &&
+      (!Array.isArray(req.body.excludedProductIds) ||
+        req.body.excludedProductIds.some((id: unknown) => typeof id !== "string"))
+    ) {
+      throw new Error("Excluded products are invalid.");
+    }
+    if (req.body?.overrides !== undefined && !Array.isArray(req.body.overrides)) {
+      throw new Error("Manual price adjustments are invalid.");
+    }
     const result = await productService.bulkUpdateProductPrices({
-      updates: Array.isArray(req.body?.updates) ? req.body.updates : [],
-      scope: req.body?.scope === "FILTERED" ? "FILTERED" : "IDS",
+      updates,
+      scope,
       filters: req.body?.filters || undefined,
       excludedProductIds: Array.isArray(req.body?.excludedProductIds)
         ? req.body.excludedProductIds
         : [],
-      wholesaleMarginPercent: req.body?.wholesaleMarginPercent,
-      retailMarginPercent: req.body?.retailMarginPercent,
+      overrides: Array.isArray(req.body?.overrides) ? req.body.overrides : [],
+      wholesalePercent: req.body?.wholesalePercent,
+      retailPercent: req.body?.retailPercent,
+      direction,
+      existingPricePolicy,
+      previewOnly: req.body?.previewOnly === true,
+      previewPage: req.body?.previewPage,
+      previewPageSize: req.body?.previewPageSize,
+      previewSearch: req.body?.previewSearch,
+      previewSort,
       reason: String(req.body?.reason || ""),
       actorId: req.user!.id,
       actorRole: req.user!.role,
@@ -1281,6 +1340,7 @@ export async function setImportBatchPriceMapping(req: Request, res: Response) {
     const result = await productService.setProductImportPriceMapping({
       batchId: String(req.params.batchId),
       mapping,
+      rowIds: Array.isArray(req.body?.rowIds) ? req.body.rowIds.map(String) : undefined,
       actorId: req.user!.id,
     });
     res.json(result);

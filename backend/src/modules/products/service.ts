@@ -10,7 +10,6 @@ import {
     getBusinessSettings,
 } from "../settings/service";
 import { evaluateProductDeletePolicy } from "./deletePolicy";
-import { priceFromGrossMargin } from "./pricingMath";
 import {
     getEnabledSearchSynonymRules,
     prepareReviewedProductAlias,
@@ -81,9 +80,6 @@ export async function listProducts(filters: ProductFilters) {
     if (category) where.category = category; // filtering by category
     if (isActive !== undefined) where.isActive = isActive; // filtering by active status
     if (stockStatus === "out" && !normalizedSearch) where.stock = { lte: 0 };
-
-    if (lowStockOnly) {
-    }
 
     const skip = (page - 1) * pageSize; // calculating how many records to skip for pagination
     const settings = await getBusinessSettings(); // fetching business settings to resolve thresholds
@@ -316,6 +312,13 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
     const settings = await getBusinessSettings();
     const retailPrice = normalizeSellingPrice(data.retailPrice);
     const wholesalePrice = normalizeSellingPrice(data.wholesalePrice);
+    const availabilityStatus = data.availabilityStatus || "CATALOG_LISTED";
+    const rate = data.ratePerPiece === null || data.ratePerPiece === undefined
+        ? null
+        : Number(data.ratePerPiece);
+    if (availabilityStatus !== "COMING_SOON" && (!Number.isFinite(rate) || Number(rate) <= 0)) {
+        throw new Error("Enter a Rate or mark this product as Coming soon.");
+    }
 
     // determining whether to use default thresholds
     // if the admin explicitly set usesDefault, we use that value
@@ -357,7 +360,7 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
             productCodeVariant: data.productCodeVariant || null,
             sizeValue: data.sizeValue ?? null,
             sizeUnit: normalizeUnitLabel(data.sizeUnit, "STANDARD"),
-            ratePerPiece: data.ratePerPiece ?? null,
+            ratePerPiece: rate,
             packageQuantity:
                 data.packageQuantity === null || data.packageQuantity === undefined
                     ? null
@@ -368,11 +371,7 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
             quantityStep: normalizePositiveNumber(data.quantityStep, 1),
             wholesaleEligible: data.wholesaleEligible ?? true,
             sourceCitation: data.sourceCitation || null,
-            availabilityStatus:
-                data.availabilityStatus ||
-                (data.ratePerPiece === null || data.ratePerPiece === undefined
-                    ? "COMING_SOON"
-                    : "CATALOG_LISTED"),
+            availabilityStatus,
             sellingPriceStatus: resolveSellingPriceStatus(retailPrice, wholesalePrice),
             retailPrice,
             wholesalePrice,
@@ -478,6 +477,17 @@ export async function updateProduct(
     }
 
     const updateData: any = { ...data };
+    const nextAvailabilityStatus = data.availabilityStatus ?? previousProduct.availabilityStatus;
+    const nextRate = data.ratePerPiece !== undefined
+        ? data.ratePerPiece
+        : previousProduct.ratePerPiece;
+    if (
+        (data.ratePerPiece !== undefined || data.availabilityStatus !== undefined) &&
+        nextAvailabilityStatus !== "COMING_SOON" &&
+        (!Number.isFinite(Number(nextRate)) || Number(nextRate) <= 0)
+    ) {
+        throw new Error("Enter a Rate or mark this product as Coming soon.");
+    }
     if (data.retailPrice !== undefined || data.wholesalePrice !== undefined) {
         const retailPrice = data.retailPrice !== undefined
             ? normalizeSellingPrice(data.retailPrice)

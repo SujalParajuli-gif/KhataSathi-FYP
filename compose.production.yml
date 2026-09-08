@@ -154,9 +154,14 @@ services:
       - edge
 
 volumes:
+  # Explicit names let a verified isolated catalog become live by changing only
+  # production.env. The previous volumes remain intact for immediate rollback.
   mysql_data:
+    name: ${MYSQL_DATA_VOLUME_NAME:-khatasathi_mysql_data}
   uploads:
+    name: ${UPLOADS_VOLUME_NAME:-khatasathi_uploads}
   document_storage:
+    name: ${DOCUMENT_STORAGE_VOLUME_NAME:-khatasathi_document_storage}
   backup_staging:
   backup_status:
   recovery_staging:

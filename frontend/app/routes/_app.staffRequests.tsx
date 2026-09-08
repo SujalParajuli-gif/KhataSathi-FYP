@@ -21,6 +21,7 @@ import {
 import { formatNpr } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
+import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 
 type RequestFilter =
   | "OPEN"
@@ -177,6 +178,7 @@ export default function StaffRequestsPage() {
   const [cashiers, setCashiers] = useState<CashierPresence[]>([]);
   const [reassignCashierId, setReassignCashierId] = useState("");
   const [detailLoading, setDetailLoading] = useState(false);
+  const [cancelTarget, setCancelTarget] = useState<BillingDraftRequest | null>(null);
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
     setRateLimitRecoveryKey((current) => current + 1);
@@ -321,9 +323,6 @@ export default function StaffRequestsPage() {
 
   async function cancelRequest(request: BillingDraftRequest) {
     if (!canCancel(request) || busyId) return;
-    const ok = window.confirm(`Cancel ${request.requestNo}? The cashier will no longer see it.`);
-    if (!ok) return;
-
     setBusyId(request.id);
     try {
       const data = await cancelDraftRequestApi(request.id);
@@ -334,6 +333,7 @@ export default function StaffRequestsPage() {
         current?.id === data.request.id ? { ...current, ...data.request } : current,
       );
       showToast("success", `${data.request.requestNo} cancelled.`);
+      setCancelTarget(null);
       void loadRequests(page, filter);
     } catch (err: any) {
       showToast("danger", errorMessage(err, "Could not cancel this request."));
@@ -770,7 +770,7 @@ export default function StaffRequestsPage() {
                 <button
                   type="button"
                   disabled={!selected || busyId === selected.id}
-                  onClick={() => selected && void cancelRequest(selected)}
+                  onClick={() => selected && setCancelTarget(selected)}
                   className="h-11 rounded-[12px] border border-rose-200 bg-rose-50 px-5 text-[13px] font-extrabold text-rose-600 disabled:opacity-50"
                 >
                   {busyId === selected?.id ? "Cancelling..." : "Cancel request"}
@@ -780,6 +780,24 @@ export default function StaffRequestsPage() {
           </div>
         </div>
       )}
+
+      <ModalFrame
+        open={Boolean(cancelTarget)}
+        title="Cancel this request?"
+        description="The cashier will no longer see this request in their active queue."
+        onClose={() => !busyId && setCancelTarget(null)}
+        layer="critical"
+        maxWidthClass="max-w-[460px]"
+        mobileBottomSheet
+        footer={(
+          <div className="grid w-full grid-cols-2 gap-3">
+            <DialogButton onClick={() => setCancelTarget(null)} disabled={Boolean(busyId)}>Keep request</DialogButton>
+            <DialogButton variant="danger" icon="close" onClick={() => cancelTarget && void cancelRequest(cancelTarget)} disabled={Boolean(busyId)}>{busyId ? "Cancelling…" : "Cancel request"}</DialogButton>
+          </div>
+        )}
+      >
+        <div className="rounded-[14px] border border-rose-200 bg-rose-50 p-4 text-[13px] font-semibold leading-6 text-rose-900">{cancelTarget?.requestNo} will be cancelled. This action is recorded and cannot be undone from this screen.</div>
+      </ModalFrame>
     </div>
   );
 }

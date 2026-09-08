@@ -1,0 +1,11 @@
+services:
+  backend:
+    environment:
+      FRONTEND_BASE_URL: http://localhost:18080
+      CORS_ORIGINS: http://localhost:18080,http://127.0.0.1:18080
+
+  web:
+    environment:
+      APP_DOMAIN: :18080
+    ports: !override
+      - "127.0.0.1:18080:18080"

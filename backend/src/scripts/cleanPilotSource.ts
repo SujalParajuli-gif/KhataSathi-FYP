@@ -103,8 +103,14 @@ export async function createCleanPilotBundle(
 ): Promise<CleanPilotBundle> {
   const accounts = await resolvePilotAccounts(references);
   const accountIds = accounts.map((account) => account.id);
+  const cashierIds = accounts
+    .filter((account) => account.role === "CASHIER")
+    .map((account) => account.id);
   const [cashierPrivileges, settings] = await Promise.all([
-    prisma.cashierPrivilege.findMany({ where: { userId: { in: accountIds } } }),
+    // Historical databases can contain stale privilege rows for users whose role
+    // later changed. Only a selected cashier's active privilege belongs in the
+    // clean pilot; bundle validation deliberately rejects every other owner.
+    prisma.cashierPrivilege.findMany({ where: { userId: { in: cashierIds } } }),
     prisma.businessSettings.findUnique({ where: { id: 1 } }),
   ]);
   if (!settings) throw new Error("Business settings row 1 is missing.");

@@ -737,16 +737,18 @@ function SettingsToggleSwitch({
       disabled={disabled}
       onClick={() => onChange(!checked)}
       className={cn(
-        "relative inline-flex h-[26px] w-[46px] min-h-[26px] min-w-[46px] shrink-0 cursor-pointer items-center rounded-full border p-0 transition-colors duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-45",
-        checked
-          ? "border-slate-950 bg-slate-950"
-          : "border-slate-300 bg-slate-200",
+        "relative inline-flex h-6 w-11 !h-6 !w-11 !min-h-6 !min-w-11 !max-h-6 !max-w-11 shrink-0 cursor-pointer items-center rounded-full border transition-all duration-150 focus:outline-none focus-visible:ring-2 focus-visible:ring-slate-900 disabled:cursor-not-allowed",
+        disabled
+          ? "border-slate-200 bg-slate-100 opacity-50"
+          : checked
+            ? "border-slate-950 bg-slate-950 hover:bg-slate-900"
+            : "border-slate-900 bg-slate-200 hover:bg-slate-300",
       )}
     >
       <span
         className={cn(
-          "pointer-events-none absolute left-[3px] top-1/2 h-[20px] w-[20px] min-h-[20px] min-w-[20px] -translate-y-1/2 rounded-full bg-white shadow-sm transition-transform duration-150 ease-out",
-          checked ? "translate-x-[20px]" : "translate-x-0",
+          "pointer-events-none absolute left-[2px] top-1/2 h-5 w-5 !h-5 !w-5 !min-h-5 !min-w-5 !max-h-5 !max-w-5 -translate-y-1/2 rounded-full bg-white shadow-xs transition-transform duration-150 ease-out",
+          checked ? "translate-x-5" : "translate-x-0",
         )}
       />
     </button>
@@ -907,6 +909,8 @@ export default function SettingsPage() {
     capabilities.staffDraftRequestsEnabled,
   );
   const [modeReason, setModeReason] = useState("");
+  const [stagedHighlighted, setStagedHighlighted] = useState(false);
+  const stagedAccessPanelRef = useRef<HTMLDivElement | null>(null);
   const [modePreflight, setModePreflight] =
     useState<BusinessModePreflight | null>(null);
   const [modeError, setModeError] = useState("");
@@ -2209,6 +2213,37 @@ export default function SettingsPage() {
     if (selectionChanged) setModeReason("");
     setModeError("");
     setModePreflight(null);
+    if (
+      next.mode !== capabilities.businessMode ||
+      next.staffDraftRequestsEnabled !== capabilities.staffDraftRequestsEnabled
+    ) {
+      setStagedHighlighted(true);
+      window.setTimeout(() => setStagedHighlighted(false), 2200);
+
+      window.setTimeout(() => {
+        const scrollContainer =
+          document.querySelector<HTMLElement>("[data-app-scroll-container]") ||
+          document.getElementById("app-main-content");
+        const btn = document.getElementById(`capability-mode-${nextMode}`);
+
+        if (scrollContainer && btn) {
+          const containerRect = scrollContainer.getBoundingClientRect();
+          const btnRect = btn.getBoundingClientRect();
+          const targetScrollTop =
+            scrollContainer.scrollTop + (btnRect.top - containerRect.top) - 12;
+
+          scrollContainer.scrollTo({
+            top: Math.max(0, targetScrollTop),
+            behavior: "smooth",
+          });
+        } else {
+          stagedAccessPanelRef.current?.scrollIntoView({
+            behavior: "smooth",
+            block: "nearest",
+          });
+        }
+      }, 100);
+    }
   }
 
   async function reviewBusinessModeChange() {
@@ -2464,7 +2499,7 @@ export default function SettingsPage() {
                   <h2 className="mt-1 text-[18px] font-black text-[#11120D]">
                     Choose what this shop can operate
                   </h2>
-                  <p className="mt-0.5 max-w-3xl text-[12.5px] font-medium leading-relaxed text-[#64748B]">
+                  <p className="mt-0.5 max-w-3xl text-[12.5px] font-medium leading-relaxed text-[#64748B] text-justify">
                     Roles decide who may act. This mode decides whether the whole shop may use inventory or POS features at all.
                   </p>
                 </div>
@@ -2474,7 +2509,7 @@ export default function SettingsPage() {
                 </span>
               </div>
 
-              <div className="mt-4 grid gap-3 lg:grid-cols-3">
+              <div className="mt-3.5 grid gap-2.5 lg:grid-cols-3">
                 {[
                   {
                     value: "CATALOG_ONLY" as const,
@@ -2502,257 +2537,321 @@ export default function SettingsPage() {
                   },
                 ].map((option) => {
                   const selected = modeDraft === option.value;
+                  const isStaged = selected && modeDraft !== capabilities.businessMode;
+                  const isSaved = option.value === capabilities.businessMode;
+
                   return (
                     <button
                       key={option.value}
+                      id={`capability-mode-${option.value}`}
                       type="button"
                       onClick={() => selectBusinessMode(option.value)}
                       className={cn(
-                        "relative flex flex-col justify-between min-h-[136px] rounded-[12px] p-4 text-left transition active:scale-98",
+                        "relative flex flex-col justify-between rounded-[12px] p-3 text-left transition active:scale-[0.99] sm:p-3.5",
                         selected
-                          ? "border-2 border-slate-800 bg-[#F1F5F9] shadow-xs"
+                          ? "border-2 border-slate-900 bg-[#F1F5F9] shadow-xs"
                           : "border border-slate-200 bg-white text-slate-700 hover:border-slate-300 hover:bg-slate-50/60",
                       )}
                       aria-pressed={selected}
                     >
                       <div>
+                        {/* Top Line: Icon + Title (Proper Dark) + Badge beside title + Radio/Check */}
                         <div className="flex items-center justify-between gap-2">
-                          <div className="flex items-center gap-2.5">
+                          <div className="flex min-w-0 flex-1 items-center gap-2">
                             <div
                               className={cn(
-                                "flex h-7 w-7 items-center justify-center rounded-[8px] transition",
+                                "flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-[7px] transition",
                                 selected
-                                  ? "bg-slate-900 text-white shadow-2xs"
+                                  ? "bg-slate-950 text-white shadow-2xs"
+                                  : "bg-slate-100 text-slate-600",
+                              )}
+                            >
+                              <Icon name={option.icon} sizePx={15} />
+                            </div>
+
+                            <span className="truncate text-[13.5px] font-black text-slate-950">
+                              {option.title}
+                            </span>
+
+                            <span
+                              className={cn(
+                                "shrink-0 rounded-full px-2 py-0.5 text-[9.5px] font-extrabold uppercase tracking-wide transition",
+                                selected
+                                  ? "border border-slate-300 bg-slate-200 text-slate-900"
                                   : "bg-slate-100 text-slate-500",
                               )}
                             >
-                              <Icon name={option.icon} sizePx={16} />
-                            </div>
-                            <span className={cn("text-[14px] font-black", selected ? "text-slate-950" : "text-slate-800")}>
-                              {option.title}
+                              {option.badge}
                             </span>
                           </div>
+
                           <div
                             className={cn(
-                              "flex h-5 w-5 items-center justify-center rounded-full transition",
+                              "flex h-4.5 w-4.5 shrink-0 items-center justify-center rounded-full transition",
                               selected
-                                ? "bg-slate-900 text-white shadow-2xs"
+                                ? "bg-slate-950 text-white shadow-2xs"
                                 : "border-2 border-slate-300 bg-white",
                             )}
                           >
                             {selected ? (
-                              <Icon name="check" sizePx={13} className="font-bold" />
+                              <Icon name="check" sizePx={11} className="font-black text-white" />
                             ) : null}
                           </div>
                         </div>
-                        <p className={cn("mt-2.5 text-[12px] font-medium leading-relaxed", selected ? "text-slate-600" : "text-slate-500")}>
+
+                        {/* Description in max 2 lines with clean justification */}
+                        <p className="mt-1.5 line-clamp-2 text-[11.5px] font-medium leading-relaxed text-slate-600 text-justify">
                           {option.description}
                         </p>
                       </div>
-                      <div className="mt-3">
-                        <span
-                          className={cn(
-                            "inline-block rounded-full px-2.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide transition",
-                            selected
-                              ? "border border-slate-300 bg-slate-200/80 text-slate-800"
-                              : "bg-slate-100 text-slate-500",
-                          )}
-                        >
-                          {option.badge}
-                        </span>
-                      </div>
+
+                      {/* Dynamic status feedback on mobile */}
+                      {isStaged ? (
+                        <div className="mt-2 flex items-center gap-1 text-[10.5px] font-black text-slate-950 sm:hidden">
+                          <span>Staged change · Confirm below ↓</span>
+                        </div>
+                      ) : isSaved ? (
+                        <div className="mt-1.5 flex items-center gap-1 text-[10px] font-bold text-emerald-700">
+                          <Icon name="check" sizePx={12} />
+                          <span>Currently Active</span>
+                        </div>
+                      ) : null}
                     </button>
                   );
                 })}
               </div>
 
-              {/* Staff Billing Requests Pro Switch Toggle */}
-              <div
-                className={cn(
-                  "mt-3.5 flex items-start sm:items-center justify-between gap-3 rounded-[12px] border p-3.5 transition",
-                  modeDraft === "FULL_POS" ? "border-slate-300 bg-[#F8FAFC] hover:bg-white" : "border-slate-200 bg-slate-50/80 opacity-75",
-                )}
-              >
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="text-[13px] font-extrabold text-slate-950">
+              {/* Staff Billing Draft Requests Card */}
+              <div className="mt-3.5 rounded-[14px] border border-slate-200 bg-white p-3.5 sm:p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <div className="flex min-w-0 items-center gap-2">
+                    <span className="text-[13.5px] font-extrabold text-slate-950">
                       Staff billing draft requests
                     </span>
-                    {modeDraft !== "FULL_POS" ? (
-                      <span className="rounded-full border border-slate-200 bg-white px-2 py-0.5 text-[10.5px] font-extrabold text-slate-500">
-                        Requires Full POS
-                      </span>
-                    ) : (
-                      <span className="rounded-full border border-slate-300 bg-white px-2 py-0.5 text-[10.5px] font-extrabold text-slate-800">
-                        Floor Assistant Tool
-                      </span>
-                    )}
+                    <span className="rounded-md border border-slate-200 bg-slate-50 px-1.5 py-0.5 text-[10px] font-extrabold uppercase tracking-wide text-slate-600">
+                      {modeDraft === "FULL_POS" ? "Floor Assistant Tool" : "Requires Full POS"}
+                    </span>
                   </div>
-                  <p className="mt-1 text-[11.5px] font-medium leading-normal text-slate-500">
-                    Allows floor staff to build and transmit selected items directly to cashier registers as pending draft bills.
-                  </p>
-                </div>
 
-                <div className="flex items-center gap-2.5 shrink-0 pt-0.5 sm:pt-0">
-                  <span className="hidden sm:inline-block text-[11.5px] font-bold text-slate-500">
-                    {modeDraft === "FULL_POS" && staffDraftsDraft ? "Enabled" : "Disabled"}
-                  </span>
-                  <SettingsToggleSwitch
-                    checked={modeDraft === "FULL_POS" && staffDraftsDraft}
-                    disabled={modeDraft !== "FULL_POS"}
-                    onChange={(checked) => {
-                      setStaffDraftsDraft(checked);
-                      setModeReason("");
-                      setModeError("");
-                      setModePreflight(null);
-                    }}
-                    ariaLabel="Toggle staff billing draft requests"
-                  />
-                </div>
-              </div>
-
-              {/* Dynamic Staged Access Migration Panel */}
-              {accessDirty ? (
-                <div className="mt-4 overflow-hidden rounded-[14px] border border-slate-300 bg-[#F8FAFC] shadow-2xs">
-                  <div className="p-3.5 sm:p-4">
-                  <div className="flex items-start justify-between gap-3">
-                    <div className="min-w-0 flex-1">
-                      <div className="flex items-center gap-2 text-[13px] font-black text-slate-950 sm:text-[14px]">
-                        <span className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-[8px] bg-slate-900 text-white">
-                          <Icon name="swap_horiz" sizePx={16} />
-                        </span>
-                        <span>Pending Shop Access Change</span>
-                      </div>
-                      <div className="mt-2 text-[12px] font-medium leading-relaxed text-slate-600">
-                        {modeDraft !== capabilities.businessMode ? (
-                          <div className="flex flex-wrap items-center gap-1.5">
-                            <span className="rounded-[7px] border border-slate-300 bg-white px-2 py-1 font-extrabold text-slate-800">
-                              {formatBusinessMode(capabilities.businessMode)}
-                            </span>
-                            <Icon name="arrow_forward" sizePx={14} className="text-slate-500" />
-                            <span className="rounded-[7px] bg-slate-900 px-2 py-1 font-extrabold text-white">
-                              {formatBusinessMode(modeDraft)}
-                            </span>
-                          </div>
-                        ) : (
-                          <span>
-                            Staff billing draft requests will be <strong className="font-extrabold text-slate-950">{effectiveStaffDraftsDraft ? "enabled" : "disabled"}</strong>.
-                          </span>
-                        )}
-                      </div>
-                    </div>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setModeDraft(capabilities.businessMode);
-                        setStaffDraftsDraft(capabilities.staffDraftRequestsEnabled);
+                  <div className="flex shrink-0 items-center gap-2.5">
+                    <span
+                      className={cn(
+                        "text-[12px]",
+                        modeDraft === "FULL_POS"
+                          ? "text-slate-950 font-black"
+                          : "text-slate-400 font-semibold"
+                      )}
+                    >
+                      {staffDraftsDraft ? "Enabled" : "Disabled"}
+                    </span>
+                    <SettingsToggleSwitch
+                      checked={staffDraftsDraft}
+                      disabled={modeDraft !== "FULL_POS"}
+                      onChange={(checked) => {
+                        setStaffDraftsDraft(checked);
                         setModeReason("");
                         setModeError("");
                         setModePreflight(null);
                       }}
-                      className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border border-slate-300 bg-white text-slate-700 shadow-2xs transition-colors hover:bg-slate-100 sm:w-auto sm:gap-1 sm:px-2.5"
-                      aria-label="Discard pending shop access change"
-                    >
-                      <Icon name="close" sizePx={14} />
-                      <span className="hidden text-[11.5px] font-extrabold sm:inline">Discard</span>
-                    </button>
+                      ariaLabel="Toggle staff billing draft requests"
+                    />
+                  </div>
+                </div>
+
+                <p className="mt-2 text-[12px] font-medium leading-relaxed text-slate-500">
+                  Allows floor staff to build and transmit selected items directly to cashier registers as pending draft bills.
+                </p>
+              </div>
+
+              {/* Dynamic Staged Access Migration Panel */}
+              {accessDirty ? (
+                <div
+                  ref={stagedAccessPanelRef}
+                  className={cn(
+                    "mt-4 overflow-hidden rounded-[14px] border bg-white transition-all duration-300",
+                    stagedHighlighted
+                      ? "border-slate-950 ring-2 ring-slate-950/10 shadow-sm"
+                      : "border-slate-300 shadow-xs",
+                  )}
+                >
+                  {/* Top Bar: Change Context */}
+                  <div className="flex flex-wrap items-center justify-between gap-2.5 border-b border-slate-100 bg-slate-50/90 px-3.5 py-2.5 sm:px-4">
+                    <div className="flex items-center gap-2">
+                      <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] bg-slate-900 text-white shadow-xs">
+                        <Icon name="swap_horiz" sizePx={14} />
+                      </span>
+                      <span className="text-[12px] font-black uppercase tracking-wider text-slate-900">
+                        Pending Shop Access Change
+                      </span>
+                    </div>
+
+                    <div className="flex items-center gap-2">
+                      {modeDraft !== capabilities.businessMode ? (
+                        <div className="inline-flex items-center gap-1.5 rounded-[8px] border border-slate-200 bg-white px-2.5 py-1 text-[11.5px] font-bold shadow-2xs">
+                          <span className="text-slate-600">{formatBusinessMode(capabilities.businessMode)}</span>
+                          <Icon name="arrow_forward" sizePx={12} className="text-slate-400" />
+                          <span className="font-extrabold text-slate-950">{formatBusinessMode(modeDraft)}</span>
+                        </div>
+                      ) : (
+                        <span className="text-[11.5px] font-bold text-slate-700">
+                          Staff drafts: <strong className="text-slate-950">{effectiveStaffDraftsDraft ? "Enabled" : "Disabled"}</strong>
+                        </span>
+                      )}
+                    </div>
                   </div>
 
-                  {/* Quick Reason Presets */}
-                  <div className="mt-3.5 space-y-2 border-t border-slate-200/80 pt-3.5">
-                    <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
-                      Suggested audit reasons
+                  {/* Panel Body */}
+                  <div className="space-y-3 p-3.5 sm:p-4">
+                    {/* Mobile View: System ProjectSelect without emoji */}
+                    <div className="sm:hidden">
+                      <ProjectSelect
+                        value={modeReasonPresets.some((p) => p.text === modeReason) ? modeReason : ""}
+                        onChange={(event) => {
+                          if (event.target.value) {
+                            setModeReason(event.target.value);
+                            setModeError("");
+                          }
+                        }}
+                        className="h-10 w-full rounded-[10px] border border-slate-300 bg-white px-3 text-[12.5px] font-bold text-slate-800 outline-none focus:border-slate-900"
+                        aria-label="Suggested audit reason"
+                      >
+                        <option value="" disabled>
+                          Pick a suggested reason...
+                        </option>
+                        {modeReasonPresets.map((preset) => (
+                          <option key={preset.label} value={preset.text}>
+                            {preset.label}
+                          </option>
+                        ))}
+                      </ProjectSelect>
                     </div>
-                    <div className="grid grid-cols-1 gap-2 min-[420px]:grid-cols-2 sm:flex sm:flex-wrap">
-                      {modeReasonPresets.map((preset) => (
-                        <button
-                          key={preset.label}
-                          type="button"
-                          onClick={() => {
-                            setModeReason(preset.text);
+
+                    {/* Desktop View: Sleek Quick Reason Pill Chips */}
+                    <div className="hidden items-center gap-2 sm:flex">
+                      <span className="shrink-0 text-[10.5px] font-extrabold uppercase tracking-wider text-slate-400">
+                        Quick Reason:
+                      </span>
+                      <div className="flex shrink-0 items-center gap-1.5">
+                        {modeReasonPresets.map((preset) => {
+                          const isSelected = modeReason === preset.text;
+                          return (
+                            <button
+                              key={preset.label}
+                              type="button"
+                              onClick={() => {
+                                setModeReason(preset.text);
+                                setModeError("");
+                              }}
+                              className={cn(
+                                "inline-flex shrink-0 items-center gap-1 rounded-full border px-2.5 py-1 text-[11.5px] font-bold transition-all",
+                                isSelected
+                                  ? "border-slate-900 bg-slate-900 text-white shadow-xs"
+                                  : "border-slate-200 bg-slate-50 text-slate-700 hover:border-slate-300 hover:bg-white",
+                              )}
+                              aria-pressed={isSelected}
+                            >
+                              <span>{preset.label}</span>
+                              {isSelected ? (
+                                <Icon name="check" sizePx={12} />
+                              ) : (
+                                <Icon name="add" sizePx={12} className="opacity-40" />
+                              )}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    </div>
+
+                    {/* Input & Action Composite Bar */}
+                    <div className="flex flex-col gap-2.5 sm:flex-row sm:items-stretch">
+                      <div className="relative min-w-0 flex-1">
+                        <input
+                          type="text"
+                          value={modeReason}
+                          maxLength={240}
+                          onChange={(event) => {
+                            setModeReason(event.target.value);
                             setModeError("");
                           }}
+                          placeholder="Explain why this access change is needed..."
+                          className="h-11 w-full rounded-[10px] border border-slate-300 bg-slate-50/50 pl-3.5 pr-24 text-[12.5px] font-semibold text-slate-900 placeholder:text-slate-400 outline-none transition-all focus:border-slate-900 focus:bg-white focus:ring-2 focus:ring-slate-900/10"
+                        />
+                        {/* Dynamic Character Badge */}
+                        <span
                           className={cn(
-                            "min-h-9 max-w-full rounded-[9px] border px-3 py-2 text-left text-[11.5px] font-bold leading-snug shadow-2xs transition-colors sm:min-h-8 sm:py-1.5",
-                            modeReason === preset.text
-                              ? "border-slate-900 bg-slate-900 text-white"
-                              : "border-slate-200 bg-white text-slate-700 hover:border-slate-400 hover:bg-slate-50",
+                            "pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[10.5px] font-extrabold tracking-tight",
+                            modeReason.trim().length >= 5 ? "text-emerald-700" : "text-slate-400",
                           )}
-                          aria-pressed={modeReason === preset.text}
                         >
-                          {preset.label}
+                          {modeReason.trim().length >= 5
+                            ? "✓ Ready"
+                            : `${modeReason.trim().length}/5 min`}
+                        </span>
+                      </div>
+
+                      <div className="grid grid-cols-2 gap-2 sm:flex sm:items-center sm:gap-2">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setModeDraft(capabilities.businessMode);
+                            setStaffDraftsDraft(capabilities.staffDraftRequestsEnabled);
+                            setModeReason("");
+                            setModeError("");
+                            setModePreflight(null);
+                          }}
+                          className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-[10px] border border-slate-300 bg-white px-4 text-[12.5px] font-extrabold text-slate-700 shadow-2xs transition-all hover:bg-slate-50 hover:text-slate-900 active:scale-95"
+                          title="Discard pending changes"
+                          aria-label="Discard pending shop access change"
+                        >
+                          <Icon name="close" sizePx={14} className="text-slate-500" />
+                          <span>Discard</span>
                         </button>
-                      ))}
-                    </div>
-                  </div>
 
-                  {/* Reason Input & Action */}
-                  <div className="mt-3.5 flex flex-col gap-3 sm:flex-row sm:items-end">
-                    <label className="min-w-0 flex-1 space-y-1">
-                      <div className="flex flex-wrap items-center justify-between gap-1">
-                        <span className="text-[11.5px] font-extrabold text-slate-950">
-                          Audit trail reason <span className="text-rose-600">*</span>
-                        </span>
-                        <span className={cn("text-[10.5px] font-extrabold", modeReason.trim().length >= 5 ? "text-emerald-700" : "text-slate-500")}>
-                          {modeReason.trim().length} characters · 5 minimum
-                        </span>
+                        <button
+                          type="button"
+                          onClick={() => void reviewBusinessModeChange()}
+                          disabled={modeBusy || defaultsDirty || modeReason.trim().length < 5}
+                          className="inline-flex h-11 shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-slate-900 px-5 text-[12.5px] font-extrabold text-white shadow-xs transition-all hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-45"
+                        >
+                          <Icon name="check_circle" sizePx={15} />
+                          <span>{modeBusy ? "Checking…" : "Review & Apply"}</span>
+                        </button>
                       </div>
-                      <textarea
-                        value={modeReason}
-                        rows={2}
-                        maxLength={240}
-                        onChange={(event) => {
-                          setModeReason(event.target.value);
-                          setModeError("");
-                        }}
-                        placeholder="Explain why this access change is needed"
-                        className="min-h-[68px] w-full resize-y rounded-[10px] border border-slate-300 bg-white px-3 py-2.5 text-[12.5px] font-semibold leading-relaxed text-slate-900 outline-none transition-colors placeholder:font-medium placeholder:text-slate-400 focus:border-slate-900 focus:ring-2 focus:ring-slate-200"
-                      />
-                    </label>
-
-                    <button
-                      type="button"
-                      onClick={() => void reviewBusinessModeChange()}
-                      disabled={modeBusy || defaultsDirty || modeReason.trim().length < 5}
-                      className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-1.5 rounded-[10px] bg-slate-950 px-5 text-[12.5px] font-extrabold text-white shadow-2xs transition-colors hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50 sm:h-10 sm:w-auto"
-                    >
-                      <Icon name="check_circle" sizePx={16} />
-                      <span>{modeBusy ? "Checking…" : "Review & Apply"}</span>
-                    </button>
-                  </div>
-
-                  {defaultsDirty ? (
-                    <div className="mt-2.5 text-[12px] font-bold text-amber-800">
-                      Save or discard the unsaved defaults above before reviewing this access change.
                     </div>
-                  ) : null}
 
-                  {modeError ? (
-                    <div className="mt-2.5 text-[12px] font-extrabold text-rose-700" role="alert">
-                      {modeError}
-                    </div>
-                  ) : null}
+                    {/* Feedback, Errors, and Preflight Blockers */}
+                    {defaultsDirty ? (
+                      <p className="text-[11.5px] font-bold text-amber-800">
+                        Save or discard the unsaved defaults above before reviewing this access change.
+                      </p>
+                    ) : null}
 
-                  {modePreflight && modePreflight.blockers.length > 0 ? (
-                    <div className="mt-3 overflow-hidden rounded-[10px] border border-rose-300 bg-rose-50">
-                      <div className="border-b border-rose-200 px-3.5 py-2.5">
-                        <div className="text-[12.5px] font-extrabold text-rose-950">
-                          {modePreflight.blockers.length} blocking workflow{modePreflight.blockers.length === 1 ? "" : "s"}
-                        </div>
-                        <div className="mt-0.5 text-[11.5px] font-medium text-rose-800">
-                          Resolve these items before changing shop access.
-                        </div>
-                      </div>
-                      <div className="divide-y divide-rose-200">
-                        {modePreflight.blockers.map((blocker) => (
-                          <div key={blocker.key} className="flex gap-3 px-3.5 py-2.5 text-[12px] text-rose-950">
-                            <span className="font-black">{blocker.count}</span>
-                            <span className="font-semibold">{blocker.message}</span>
+                    {modeError ? (
+                      <p className="text-[11.5px] font-extrabold text-rose-700" role="alert">
+                        {modeError}
+                      </p>
+                    ) : null}
+
+                    {modePreflight && modePreflight.blockers.length > 0 ? (
+                      <div className="mt-2 overflow-hidden rounded-[10px] border border-rose-300 bg-rose-50">
+                        <div className="border-b border-rose-200 px-3.5 py-2">
+                          <div className="text-[12px] font-extrabold text-rose-950">
+                            {modePreflight.blockers.length} blocking workflow{modePreflight.blockers.length === 1 ? "" : "s"}
                           </div>
-                        ))}
+                          <div className="mt-0.5 text-[11px] font-medium text-rose-800">
+                            Resolve these items before changing shop access.
+                          </div>
+                        </div>
+                        <div className="divide-y divide-rose-200">
+                          {modePreflight.blockers.map((blocker) => (
+                            <div key={blocker.key} className="flex gap-3 px-3.5 py-2 text-[11.5px] text-rose-950">
+                              <span className="font-black">{blocker.count}</span>
+                              <span className="font-semibold">{blocker.message}</span>
+                            </div>
+                          ))}
+                        </div>
                       </div>
-                    </div>
-                  ) : null}
+                    ) : null}
                   </div>
                 </div>
               ) : (
@@ -2784,7 +2883,7 @@ export default function SettingsPage() {
               </div>
 
               {!capabilities.inventoryEnabled ? (
-                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B]">
+                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B] text-justify">
                   Stock defaults are locked in Catalog only. Saved values remain preserved,
                   and new products will not claim stock until inventory is enabled and an
                   opening count is completed.
@@ -2862,7 +2961,7 @@ export default function SettingsPage() {
               </div>
 
               {!capabilities.posEnabled ? (
-                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B]">
+                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B] text-justify">
                   Billing time limits are locked while POS is off. Their saved values remain
                   available for the next time Full POS is enabled.
                 </div>

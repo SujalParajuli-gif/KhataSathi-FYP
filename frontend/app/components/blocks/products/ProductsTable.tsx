@@ -294,11 +294,33 @@ export default function ProductsTableCard({
     if (longPressTimer.current) clearTimeout(longPressTimer.current);
     longPressedProductId.current = null;
     longPressOrigin.current = { x, y };
+
     longPressTimer.current = setTimeout(() => {
       longPressedProductId.current = productId;
       toggleOne(productId, true);
-      if (typeof navigator !== "undefined" && "vibrate" in navigator) navigator.vibrate(18);
-    }, 450);
+
+      // Light native haptic feedback
+      if (typeof navigator !== "undefined" && "vibrate" in navigator) {
+        try {
+          navigator.vibrate(14);
+        } catch {}
+      }
+
+      // Intercept and discard the pointer release/click so newly shifted UI is never clicked
+      const suppressRelease = (event: Event) => {
+        event.preventDefault();
+        event.stopPropagation();
+      };
+      window.addEventListener("click", suppressRelease, { capture: true, once: true });
+      window.addEventListener("pointerup", suppressRelease, { capture: true, once: true });
+      window.addEventListener("touchend", suppressRelease, { capture: true, once: true });
+
+      setTimeout(() => {
+        window.removeEventListener("click", suppressRelease, { capture: true });
+        window.removeEventListener("pointerup", suppressRelease, { capture: true });
+        window.removeEventListener("touchend", suppressRelease, { capture: true });
+      }, 350);
+    }, 220);
   }
 
   function cancelLongPress() {
@@ -349,16 +371,32 @@ export default function ProductsTableCard({
               key={product.id}
               role="button"
               tabIndex={0}
-              onPointerDown={(event) => {
-                if (event.button === 0) startLongPress(product.id, event.clientX, event.clientY);
-              }}
-              onPointerMove={(event) => {
-                const origin = longPressOrigin.current;
-                if (origin && Math.hypot(event.clientX - origin.x, event.clientY - origin.y) > 8) cancelLongPress();
-              }}
-              onPointerUp={cancelLongPress}
-              onPointerCancel={cancelLongPress}
-              onPointerLeave={cancelLongPress}
+              onPointerDown={
+                selectionMode
+                  ? undefined
+                  : (event) => {
+                      if (event.button === 0)
+                        startLongPress(product.id, event.clientX, event.clientY);
+                    }
+              }
+              onPointerMove={
+                selectionMode
+                  ? undefined
+                  : (event) => {
+                      const origin = longPressOrigin.current;
+                      if (
+                        origin &&
+                        Math.hypot(
+                          event.clientX - origin.x,
+                          event.clientY - origin.y,
+                        ) > 10
+                      )
+                        cancelLongPress();
+                    }
+              }
+              onPointerUp={selectionMode ? undefined : cancelLongPress}
+              onPointerCancel={selectionMode ? undefined : cancelLongPress}
+              onPointerLeave={selectionMode ? undefined : cancelLongPress}
               onContextMenu={(event) => {
                 event.preventDefault();
                 cancelLongPress();
@@ -379,26 +417,35 @@ export default function ProductsTableCard({
                 }
               }}
               className={cn(
-                "relative flex items-start gap-3 rounded-[14px] border bg-white p-3 transition active:scale-[0.995]",
-                isSelected ? "border-[#11120D] bg-[#F3F4F6]" : "border-[#E5E7EB]",
+                "relative flex items-start gap-3 rounded-[14px] border p-3 select-none [-webkit-touch-callout:none]",
+                isSelected
+                  ? "border-[#11120D] bg-slate-100 ring-1 ring-slate-950"
+                  : "border-[#E5E7EB] bg-white active:bg-slate-50",
               )}
             >
               {selectionMode ? (
-                <button
-                  type="button"
+                <div
                   style={{ width: 18, height: 18, minWidth: 18, minHeight: 18 }}
-                  onClick={(event) => { event.stopPropagation(); toggleOne(product.id, !isSelected); }}
                   className={cn(
-                    "mt-1 inline-flex p-0 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] transition active:scale-95",
-                    isSelected ? "border-[#11120D] bg-[#11120D] text-white shadow-xs" : "border-[#CFCFD3] bg-white text-transparent hover:border-[#8C8889]",
+                    "mt-1 inline-flex p-0 shrink-0 items-center justify-center rounded-[5px] border-[1.5px] pointer-events-none",
+                    isSelected
+                      ? "border-[#11120D] bg-[#11120D] text-white shadow-xs"
+                      : "border-[#CFCFD3] bg-white text-transparent",
                   )}
-                  aria-label={`${isSelected ? "Deselect" : "Select"} ${product.name}`}
+                  aria-hidden="true"
                 >
                   <GoogleIcon name="check" className="text-[11px]" />
-                </button>
+                </div>
               ) : null}
 
-              <div className="flex flex-col items-center shrink-0 w-[72px]">
+              <div
+                className="flex flex-col items-center shrink-0 w-[72px]"
+                onClick={(event) => {
+                  if (!selectionMode) {
+                    event.stopPropagation();
+                  }
+                }}
+              >
                 <PreviewableImage
                   src={product.thumbnailUrl || product.imageUrl}
                   fallbackSrc={product.thumbnailUrl ? product.imageUrl : undefined}
@@ -406,7 +453,7 @@ export default function ProductsTableCard({
                   alt={product.name}
                   title={product.name}
                   subtitle={`SKU: ${product.sku}`}
-                  enablePreview="desktop"
+                  enablePreview={!selectionMode}
                   imgClassName="h-full w-full object-contain p-1"
                   className="flex h-[68px] w-[68px] shrink-0 items-center justify-center overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC]"
                   fallback={<GoogleIcon name="inventory_2" sizePx={26} className="text-[#8C8889]" />}
@@ -549,8 +596,8 @@ export default function ProductsTableCard({
           <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-4 flex items-center gap-3 border-b border-[#E5E7EB] pb-4">
-              <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} fallbackSrc={mobileActionProduct.thumbnailUrl ? mobileActionProduct.imageUrl : undefined} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview="desktop" imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
-              <div className="min-w-0 flex-1"><div className="truncate text-[17px] font-extrabold">{mobileActionProduct.name}</div><div className="mt-1 truncate font-mono text-[12px] text-[#6B7280]">SKU: {mobileActionProduct.sku}</div></div>
+              <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} fallbackSrc={mobileActionProduct.thumbnailUrl ? mobileActionProduct.imageUrl : undefined} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />
+              <div className="min-w-0 flex-1"><div className="truncate text-[17px] font-extrabold">{mobileActionProduct.name}</div><div className="mt-1 truncate text-[12px] font-semibold text-[#6B7280]">SKU: {mobileActionProduct.sku}</div></div>
               <button type="button" onClick={() => setMobileActionProduct(null)} className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-[#F3F4F6]" aria-label="Close actions"><GoogleIcon name="close" className="text-[25px]" /></button>
             </div>
             <div className="mt-2 space-y-1">
@@ -595,7 +642,7 @@ export default function ProductsTableCard({
                     <th className="px-3 py-3">Group / Variant</th>
                     <th className="px-3 py-3">Size</th>
                     <th className="px-3 py-3">Package</th>
-                    <th className="px-3 py-3">खरिद / Cost</th>
+                    <th className="px-3 py-3">Rate</th>
                     <th className="px-3 py-3">Retail / खुद्रा</th>
                     <th className="px-3 py-3">Wholesale / थोक</th>
                     {stockTracked ? <th className="px-3 py-3">Stock</th> : null}
@@ -701,7 +748,7 @@ export default function ProductsTableCard({
                         </td>
                         <td className="px-3 py-3 align-top font-semibold text-[#000000]">
                           {!purchaseCostVisible ? (
-                            <span className="font-mono text-[13px] tracking-widest text-[#94A3B8]">••••</span>
+                            <span className="text-[13px] tracking-widest text-[#94A3B8]">••••</span>
                           ) : product.ratePerPiece === null ? (
                             product.availabilityStatus === "COMING_SOON" ? "Coming soon" : "Not entered"
                           ) : (

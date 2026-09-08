@@ -469,12 +469,7 @@ function ProductPreviewThumb({
         )}
       />
       {image.ready ? (
-        <>
-          <span className="pointer-events-none absolute inset-0 rounded-[inherit] bg-slate-950/0 transition group-hover:bg-slate-950/10 group-focus-visible:bg-slate-950/10" />
-          <span className="pointer-events-none absolute right-1.5 top-1.5 flex h-6 w-6 items-center justify-center rounded-full border border-white/70 bg-slate-950/75 text-white opacity-90 shadow-sm transition md:opacity-0 md:group-hover:opacity-100 md:group-focus-visible:opacity-100">
-            <Icon name="open_in_full" sizePx={14} />
-          </span>
-        </>
+        <span className="pointer-events-none absolute inset-0 rounded-[inherit] bg-slate-950/0 transition group-hover:bg-slate-950/10 group-focus-visible:bg-slate-950/10" />
       ) : null}
     </button>
   );

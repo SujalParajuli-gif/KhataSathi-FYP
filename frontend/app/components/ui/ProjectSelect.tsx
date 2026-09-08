@@ -115,21 +115,25 @@ export default function ProjectSelect({
     const button = buttonRef.current;
     if (!button || typeof window === "undefined") return;
     const rect = button.getBoundingClientRect();
-    const viewportPadding = 8;
+    const viewportPadding = 12;
     const mobileViewport = window.matchMedia("(max-width: 1023px)").matches;
     const menuHeightLimit = mobileViewport
-      ? Math.min(264, Math.max(176, window.innerHeight * 0.34))
+      ? Math.min(280, Math.max(180, window.innerHeight * 0.4))
       : 320;
+    const measuredHeight = menuRef.current?.offsetHeight || 0;
     const estimatedHeight = Math.min(
       menuHeightLimit,
-      options.length * (compact ? 37 : 43) + 12,
+      options.length * (compact ? 38 : 44) + 16,
     );
+    const expectedHeight = measuredHeight > 0 ? measuredHeight : estimatedHeight;
     const availableBelow = window.innerHeight - rect.bottom - viewportPadding;
     const availableAbove = rect.top - viewportPadding;
+
+    // Flip to open above if remaining space below is insufficient and more space is available above
     const openAbove =
-      availableBelow < estimatedHeight && availableAbove > availableBelow;
-    const availableHeight = openAbove ? availableAbove - 4 : availableBelow - 4;
-    const maxHeight = Math.max(112, Math.min(menuHeightLimit, availableHeight));
+      availableBelow < expectedHeight && availableAbove > availableBelow;
+    const availableHeight = openAbove ? availableAbove - 8 : availableBelow - 8;
+    const maxHeight = Math.max(120, Math.min(menuHeightLimit, availableHeight));
     const width = Math.min(rect.width, window.innerWidth - viewportPadding * 2);
     const left = Math.min(
       Math.max(viewportPadding, rect.left),
@@ -143,8 +147,17 @@ export default function ProjectSelect({
       maxHeight,
       scrollbarGutter: "stable",
       ...(openAbove
-        ? { bottom: window.innerHeight - rect.top + 4 }
-        : { top: rect.bottom + 4 }),
+        ? {
+            bottom: Math.max(viewportPadding, window.innerHeight - rect.top + 6),
+            top: "auto",
+          }
+        : {
+            top: Math.min(
+              rect.bottom + 6,
+              window.innerHeight - maxHeight - viewportPadding,
+            ),
+            bottom: "auto",
+          }),
     });
   }
 
@@ -157,7 +170,10 @@ export default function ProjectSelect({
     if (!open) return undefined;
     setActiveIndex(selectedIndex);
     positionMenu();
-    let positionFrame: number | null = null;
+    let positionFrame: number | null = window.requestAnimationFrame(() => {
+      positionFrame = null;
+      positionMenu();
+    });
 
     function closeOnOutside(event: MouseEvent | PointerEvent) {
       const target = event.target as Node;

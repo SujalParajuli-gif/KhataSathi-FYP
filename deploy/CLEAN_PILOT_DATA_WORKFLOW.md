@@ -2,69 +2,83 @@
 
 ## Purpose
 
-This workflow prepares a clean, reversible KhataSathi pilot without deleting or editing the existing development database. It is designed for the first real shop rollout, where old demo/Kirana products and test billing records must not appear.
+Prepare a clean, reversible first-shop catalog without copying local/demo business data or changing the live VPS before final approval. The pilot uses separate Docker volumes and remains isolated until its users, catalog, backups, and restore path have been verified.
 
-The clean pilot is a separate Docker Compose project with separate MySQL and upload volumes. The current stack remains the rollback source until the pilot has been verified and deliberately activated.
+## Accounts preserved from the live site
 
-## What is preserved
+Preserve the five accounts that currently exist on the live site, with their current roles and access. The clean pilot process must read these accounts from the live database; it must not substitute the 11 local/Docker accounts.
 
-The five approved active accounts:
+The transfer preserves IDs, names, normalized phone numbers, optional emails, password hashes, approved profile details/images, and applicable permission records. Passwords are never exported as plaintext.
 
-- `ADMINSujal` — Admin
-- `Sujal Manager` — Manager
-- `Sakshyam Sharma` — Cashier
-- `Sujalstaff` — Staff
-- `Maniram Panthee` — Staff
+Durga Parajuli is the confirmed Admin for the clean pilot. The preflight report must still show all five resolved live accounts before creation is allowed.
 
-For these five accounts, the transfer preserves:
+## Data intentionally excluded
 
-- IDs, names, normalized phone numbers, and optional emails;
-- password hashes, never plaintext passwords;
-- profile details and available profile images;
-- the Cashier permission record;
-- safe business default values.
+- all current live products and brands;
+- invoices, payments, customers, returns, stock transactions, and billing drafts;
+- documents and import-review batches;
+- alerts, audit history, login attempts, deleted records, and browser sessions;
+- all local-only or archived test accounts.
 
-The target starts in `CATALOG_ONLY`, forces staff billing draft requests off, removes any saved POS override PIN, and applies the centrally reviewed search vocabulary.
+The source database and its Docker volumes remain untouched and recoverable until a separately approved cutover and retention decision.
 
-## What is intentionally not copied
+## Approved replacement catalog
 
-- demo, Kirana, or current product and brand rows;
-- invoices, payments, customers, returns, stock transactions, or billing drafts;
-- document records or document files;
-- product/import review batches;
-- old alerts, audit history, login attempts, or recycle-bin entries;
-- current browser/login sessions;
-- archived test accounts.
+The complete 1,536-row owner-approved catalog is the only product source for the clean pilot:
 
-The omitted source data remains recoverable in the old Docker volumes and in the full recovery backup. It is not silently destroyed.
+- Bagmati: 686
+- SPL: 297
+- United Plastic: 245
+- Pradeep: 140
+- Panas Pet: 77
+- JSR: 74
+- KI Mop: 17
+
+Pricing rules for this prepared batch:
+
+- every supplier Purchase/Rate or MRP/Retail source value becomes the neutral **Rate**;
+- Rate does not claim to be a cost, Retail price, or Wholesale price;
+- Retail and Wholesale remain blank for the shop to set later;
+- 1,522 products have a Rate;
+- 14 products without a source price are explicitly marked **Coming soon**;
+- all 1,536 products start with zero stock;
+- every product has a unique SKU and a unique Brand + Product name.
+
+Generate the deployment artifact from the immutable owner-approved file with:
+
+```powershell
+cd backend
+pnpm catalog:prepare-approved -- <owner-approved.csv> <vps-ready.csv>
+```
+
+The command refuses to overwrite the source file and writes a SHA-256 audit receipt next to the output. Do not deploy a file whose counts or hashes differ from the reviewed receipt.
 
 ## Safety controls
 
-1. `Preflight` is the default action and is read-only.
-2. The Admin, Manager, and Cashier references must each resolve to one active account, and every Staff reference must resolve to a different active Staff account.
-3. The `Create` action requires the exact confirmation phrase.
-4. A fresh Restic full-recovery snapshot is required before the target is created.
-5. Existing target volumes are never reused or overwritten.
-6. The target importer refuses any database that already contains users, products, invoices, documents, import reviews, or audit records.
-7. Profile images are transferred in memory and checked with SHA-256 before being written.
-8. The transfer never prints password hashes or personal identity fields in its report.
-9. Supplier files become review batches only; no catalogue row is inserted as a Product until the Admin completes final in-app approval.
+1. `Preflight` is read-only and is always run first.
+2. The five live accounts must resolve unambiguously; local accounts are not a fallback.
+3. `Create` requires the exact confirmation phrase.
+4. A fresh Restic backup and successful restore test are required before creating or replacing anything.
+5. Existing target volumes are never silently reused or overwritten.
+6. The target importer refuses a database that already contains business data.
+7. Profile files are hash-checked during transfer.
+8. Reports never print passwords, password hashes, API keys, or personal identity fields.
+9. Catalog import happens only in the isolated pilot and must pass its final count/price/status audit.
+10. Live activation remains a separate user-approved action.
 
-## Step 1 — generate the preflight report
+## Step 1 — preflight
 
-From Windows PowerShell in the repository root:
+From the repository root:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/prepare-clean-pilot.ps1 -Action Preflight
 ```
 
-The ignored report is written to `deploy/backup-output/clean-pilot-preflight.json`.
-
-Review the five preserved names/roles and every excluded count. If any selected account is wrong, stop and pass the correct ID, name, email, or phone explicitly through `-AdminIdentity`, `-ManagerIdentity`, `-CashierIdentity`, or `-StaffIdentities`.
+Review `deploy/backup-output/clean-pilot-preflight.json`. Confirm it shows exactly the five current live accounts, Durga Parajuli as Admin, and the expected excluded-data counts. Stop if any identity is wrong.
 
 ## Step 2 — create the isolated clean pilot
 
-Run this only after reviewing Step 1:
+Only after preflight, backup, and restore verification:
 
 ```powershell
 powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/prepare-clean-pilot.ps1 `
@@ -72,48 +86,56 @@ powershell -NoProfile -ExecutionPolicy Bypass -File deploy/scripts/prepare-clean
   -Confirmation CREATE-SEPARATE-CLEAN-PILOT
 ```
 
-This action:
+This creates separate pilot volumes and transfers only the approved accounts/settings. It does not take over the current web ports or activate the pilot publicly.
 
-1. makes a new full recovery backup of the current stack;
-2. creates the separate `khatasathi-catalog-pilot` MySQL/backend volumes;
-3. transfers only the five approved accounts and their allowed settings/files;
-4. verifies the target has five accounts and zero products, documents, sessions, or import reviews;
-5. writes an ignored receipt to `deploy/backup-output/clean-pilot-import-receipt.json`.
+## Step 3 — import and audit the approved catalog
 
-It does not start the pilot web container because the current web container already owns ports 80/443. Activation/cutover is a separate, reviewable step.
+Use the generated neutral-Rate CSV in the isolated pilot. Before accepting the import, confirm:
 
-## Step 3 — prepare one supplier catalogue for review
+- 1,536 products;
+- 1,522 Rates;
+- 14 Coming soon products;
+- zero Retail prices and zero Wholesale prices;
+- zero opening stock;
+- no missing names, duplicate SKUs, or duplicate Brand + Product names;
+- all rows show owner approval.
 
-Do not combine this with database creation.
+Do not recompute selling prices or fill missing product details during this step.
 
-- CSV or XLSX from a trusted local path can be staged with `pnpm prepare:supplier-review -- <file>` inside the selected pilot backend environment.
-- PDF or image catalogues must be opened through **Products → Import** so extraction, row correction, ignored rows, aliases, and final confirmation all use the same review UI.
-- The staging command reports `productsCreated: 0`. That is the intended approval boundary.
-
-For every approved catalogue, confirm these rules row by row before final import:
-
-- map each supplier price column only after its meaning is confirmed for that source;
-- Bagmati, JSR, KI Mop, Pradeep, Panas Pet, and United Plastic `Wholesale Rate` values map to Purchase Rate under the approved source rules;
-- SPL and United Plastic `MRP` values map to Retail Price;
-- leave shop Wholesale Price blank because none of the approved sources provides it;
-- never calculate or copy a missing Purchase, Retail, or Wholesale value from another price field;
-- brand/company and category are verified;
-- package quantity, sale unit, size, and product-specific aliases are accurate;
-- no Kirana/demo row is selected.
-
-Coming-soon and nullable selling-price behavior must pass the implementation/browser gate before the first real catalogue is finally imported.
+The guarded backend command is `catalog:import-approved`. Its compiled deployment
+entry point requires both `--file=<approved.csv>` and the exact confirmation
+`--confirmation=IMPORT-APPROVED-1536-CATALOG`. It refuses a file whose SHA-256,
+approval fields, counts, pricing rules, or uniqueness checks differ from the
+owner-approved artifact. It also refuses a target that does not contain exactly
+the five approved active accounts or already contains business data.
 
 ## Step 4 — verification before activation
 
-- sign in again with each of the five accounts;
-- verify role routes and price visibility;
-- verify Catalog Only hides stock claims and all billing/POS routes;
-- verify Product Lookup, Products, images, and Alerts;
-- upload then remove one temporary image and one temporary document;
-- restart the pilot backend and confirm the transferred profiles persist;
-- generate a pilot backup and pass isolated restore verification;
-- stage one supplier file and confirm it creates only a review batch.
+- sign in with each of the five live accounts and verify its role/access;
+- verify Catalog Only behavior and hidden billing/POS routes;
+- verify product search, Products, Product Lookup, images, alerts, and settings;
+- verify normal products require a Rate and Coming soon products cannot be sold;
+- verify import Price Setup, selected-product bulk changes, and source highlighting;
+- restart the isolated services and confirm data/files persist;
+- create and restore-test a pilot backup;
+- compare the database audit with the prepared catalog receipt.
 
-## Rollback principle
+## Activation and rollback
 
-Until the clean pilot has passed verification, never remove the original `khatasathi_*` volumes. If the target fails, stop its containers and return to the original project. Destruction of old volumes is a later retention decision after real pilot acceptance and a separately verified backup.
+Present the complete isolated-pilot results before changing the live VPS. Activation requires explicit user approval. Until the pilot is accepted, keep the original database, uploads, Docker volumes, and off-VPS backup intact so rollback remains immediate.
+
+After approval, activate the verified pilot by stopping both stacks and setting
+these values in the live `deploy/production.env` before restarting production:
+
+```env
+MYSQL_DATA_VOLUME_NAME=khatasathi-catalog-pilot-20260907_mysql_data
+UPLOADS_VOLUME_NAME=khatasathi-catalog-pilot-20260907_uploads
+DOCUMENT_STORAGE_VOLUME_NAME=khatasathi-catalog-pilot-20260907_document_storage
+```
+
+Do not delete or overwrite the original `khatasathi_mysql_data`,
+`khatasathi_uploads`, or `khatasathi_document_storage` volumes. Rollback is the
+reverse operation: stop production, restore the three original volume names in
+`production.env`, and restart the production stack. Run a fresh recovery backup
+and restore verification immediately before activation and again after the
+new live stack passes its health and catalog audit.

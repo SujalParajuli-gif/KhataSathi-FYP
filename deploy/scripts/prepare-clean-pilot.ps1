@@ -5,7 +5,7 @@ param(
     [string]$SourceProjectName = "khatasathi",
     [string]$ProjectName = "khatasathi-catalog-pilot",
     [string]$EnvironmentFile = "deploy/production.env",
-    [string]$AdminIdentity = "ADMINSujal",
+    [string]$AdminIdentity = "Durga Parajuli",
     [string]$ManagerIdentity = "Sujal Manager",
     [string]$CashierIdentity = "Sakshyam Sharma",
     [string[]]$StaffIdentities = @("Sujalstaff", "Maniram Panthee"),
@@ -63,7 +63,9 @@ Assert-LastExitCode "Docker Desktop is not running or docker is unavailable."
 
 $sourceCompose = Get-ComposeArguments $SourceProjectName
 $targetCompose = Get-ComposeArguments $ProjectName
-$sourceBackendId = (& docker @sourceCompose ps -q backend).Trim()
+$sourceBackendOutput = @(& docker @sourceCompose ps -q backend)
+Assert-LastExitCode "The source Compose stack could not be inspected."
+$sourceBackendId = ($sourceBackendOutput -join "").Trim()
 if (-not $sourceBackendId) {
     throw "The source backend is not running. Start the normal KhataSathi stack first."
 }
@@ -114,7 +116,8 @@ if ($existingProjectResources.Count -gt 0) {
 }
 
 Write-Host "Creating a fresh full recovery snapshot of the source before transfer..."
-$appCommit = (& git -C $projectDirectory rev-parse HEAD 2>$null).Trim()
+$appCommitOutput = @(& git -C $projectDirectory rev-parse HEAD 2>$null)
+$appCommit = ($appCommitOutput -join "").Trim()
 if (-not $appCommit) { $appCommit = "unknown" }
 & docker @sourceCompose run --rm -e "KHATASATHI_APP_COMMIT=$appCommit" recovery
 Assert-LastExitCode "The source backup failed. The clean pilot was not created."
@@ -125,14 +128,18 @@ Assert-LastExitCode "The isolated pilot Compose configuration is invalid."
 & docker @targetCompose up -d --build mysql backend
 Assert-LastExitCode "The isolated pilot containers could not be started."
 
-$targetBackendId = (& docker @targetCompose ps -q backend).Trim()
+$targetBackendOutput = @(& docker @targetCompose ps -q backend)
+Assert-LastExitCode "The isolated pilot backend could not be inspected."
+$targetBackendId = ($targetBackendOutput -join "").Trim()
 if (-not $targetBackendId) {
     throw "The isolated pilot backend container was not created."
 }
 
 $deadline = (Get-Date).AddMinutes(4)
 do {
-    $health = (& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $targetBackendId).Trim()
+    $healthOutput = @(& docker inspect --format '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' $targetBackendId)
+    Assert-LastExitCode "The isolated pilot health status could not be read."
+    $health = ($healthOutput -join "").Trim()
     if ($health -eq "healthy") { break }
     if ($health -eq "unhealthy" -or (Get-Date) -ge $deadline) {
         & docker @targetCompose logs --tail 120 backend mysql
