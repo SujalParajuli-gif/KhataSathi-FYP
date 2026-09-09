@@ -565,6 +565,7 @@ export async function importCsvApi(
         templateId?: string;
         fieldMap?: Record<string, string | string[]>;
         defaults?: Record<string, unknown>;
+        signal?: AbortSignal;
     },
 ) {
     const formData = new FormData();
@@ -578,6 +579,7 @@ export async function importCsvApi(
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
+        signal: options?.signal,
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -674,7 +676,7 @@ export async function bulkUpdateProductPricesApi(payload: {
 }
 
 // uploading a text-based supplier PDF to create an import preview batch
-export async function importPdfApi(file: File) {
+export async function importPdfApi(file: File, options?: { signal?: AbortSignal }) {
     const formData = new FormData();
     formData.append("file", file);
     const res = await fetch(API_BASE_URL + "/api/products/import-pdf", {
@@ -682,6 +684,7 @@ export async function importPdfApi(file: File) {
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
+        signal: options?.signal,
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
@@ -690,7 +693,7 @@ export async function importPdfApi(file: File) {
     return res.json();
 }
 
-export async function importImageRateListApi(file: File) {
+export async function importImageRateListApi(file: File, options?: { signal?: AbortSignal }) {
     const formData = new FormData();
     formData.append("file", file);
     const res = await fetch(API_BASE_URL + "/api/products/import-image", {
@@ -698,6 +701,7 @@ export async function importImageRateListApi(file: File) {
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
+        signal: options?.signal,
     });
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));

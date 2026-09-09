@@ -15,6 +15,12 @@ import {
   normalizeDocumentRelativePath,
   resolveDocumentStoragePath,
 } from "./storagePath";
+import {
+  assertDocumentStorageAccessible,
+  asStorageUnavailableError,
+  documentStorageRoot,
+  documentTempDir,
+} from "../../lib/storageReadiness";
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
@@ -83,22 +89,12 @@ function documentLabel(doc: { title?: string | null; fileName: string }) {
 }
 
 // resolving the document storage root from env, defaulting to backend/document-storage/
-const configuredRoot = process.env.DOCUMENT_STORAGE_ROOT?.trim();
-const STORAGE_ROOT = configuredRoot
-  ? path.resolve(configuredRoot)
-  : path.resolve(__dirname, "../../../document-storage");
+const STORAGE_ROOT = documentStorageRoot;
 
 // Internal consumers such as the admin integrity report need the configured
 // root, but API responses must never expose this absolute server path.
 export function getDocumentStorageRootPath() {
   return STORAGE_ROOT;
-}
-
-// ensuring the storage root exists on startup
-try {
-  mkdirSync(STORAGE_ROOT, { recursive: true });
-} catch {
-  // will fail later on actual operations with a meaningful error
 }
 
 // computing ISO week number for the folder structure
@@ -142,12 +138,7 @@ async function computeChecksum(filePath: string): Promise<string> {
 
 // validating that the storage root is accessible and writable
 function assertStorageReady() {
-  if (!existsSync(STORAGE_ROOT)) {
-    throw new Error(
-      `Document storage root does not exist: ${STORAGE_ROOT}. ` +
-      `Set DOCUMENT_STORAGE_ROOT in .env to a valid writable path.`,
-    );
-  }
+  assertDocumentStorageAccessible();
 }
 
 export async function getDocumentStorageHealth() {
@@ -336,7 +327,7 @@ export async function createDocuments(
       if (thumbnailFileName) {
         await removeFileFromDisk(relativeFolderPath, thumbnailFileName);
       }
-      throw error;
+      throw asStorageUnavailableError(error);
     }
   }
 
@@ -896,7 +887,7 @@ export async function getStorageInfo() {
 
   return {
     storageRoot: STORAGE_ROOT,
-    isConfigured: !!configuredRoot,
+    isConfigured: Boolean(process.env.DOCUMENT_STORAGE_ROOT?.trim()),
     isAccessible: storageHealth.isAccessible,
     isWritable: storageHealth.isWritable,
     storageError: storageHealth.error,
@@ -914,7 +905,6 @@ export async function getStorageInfo() {
 
 // getting the temp directory path for multer uploads
 export function getTempUploadDir(): string {
-  const tempDir = path.join(STORAGE_ROOT, ".temp");
-  mkdirSync(tempDir, { recursive: true });
-  return tempDir;
+  assertDocumentStorageAccessible();
+  return documentTempDir;
 }

@@ -45,6 +45,10 @@ import {
 import { logger } from "./lib/logger";
 import { productUploadsDir, uploadsRoot } from "./lib/uploads";
 import {
+  assertApplicationStorageAccessible,
+  ensureApplicationStorageReady,
+} from "./lib/storageReadiness";
+import {
   attachRateLimitIdentity,
   generalApiRateLimitKey,
   isBackgroundRateLimitRequest,
@@ -53,6 +57,7 @@ import {
 } from "./lib/rateLimit";
 
 validateProductionEnvironment();
+ensureApplicationStorageReady();
 
 const app = express(); // creating the express application instance
 const PORT = Number(process.env.PORT) || 4000; // reading port from env, defaults to 4000 for local dev
@@ -113,16 +118,16 @@ app.use(
 // Deployment monitoring must remain available even when a user exhausts an
 // API budget. Keep this endpoint before every rate limiter.
 app.get("/api/health", async (_req, res) => {
-  try {
-    await prisma.$queryRaw`SELECT 1`;
-    res.json({ status: "OK", database: "OK", message: "KhataSathi API running" });
-  } catch {
-    res.status(503).json({
-      status: "ERROR",
-      database: "UNAVAILABLE",
-      message: "KhataSathi API running, but database check failed",
-    });
-  }
+  const databaseReady = await prisma.$queryRaw`SELECT 1`.then(() => true).catch(() => false);
+  let storageReady = true;
+  try { assertApplicationStorageAccessible(); } catch { storageReady = false; }
+  const ready = databaseReady && storageReady;
+  res.status(ready ? 200 : 503).json({
+    status: ready ? "OK" : "ERROR",
+    database: databaseReady ? "OK" : "UNAVAILABLE",
+    storage: storageReady ? "OK" : "UNAVAILABLE",
+    message: ready ? "KhataSathi API running" : "KhataSathi API is not ready",
+  });
 });
 
 function rateLimitHandler(

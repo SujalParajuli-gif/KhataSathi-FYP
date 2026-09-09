@@ -20,6 +20,18 @@ import {
   SpreadsheetImportError,
 } from "./spreadsheetImport";
 import { extractPdfTextLineRegions } from "./pdfTextLocations";
+import {
+  assertImportSourceStorageReady,
+} from "./importSourceStorage";
+import { StorageUnavailableError } from "../../lib/storageReadiness";
+
+function sendImportFailure(res: Response, error: unknown, fallback: string) {
+  if (error instanceof StorageUnavailableError) {
+    res.status(503).json({ code: error.code, error: error.message });
+    return;
+  }
+  res.status(500).json({ error: fallback });
+}
 
 // validating that a required text field is present and not just whitespace
 function parseRequiredText(value: unknown, label: string) {
@@ -712,7 +724,11 @@ async function inspectRepeatedImportUpload(file: Express.Multer.File, processAga
     fileFingerprint,
     fileSizeBytes: file.buffer.byteLength,
     previousBatch,
-    shouldReuse: !!previousBatch && processAgain !== true && processAgain !== "true",
+    shouldReuse: !!previousBatch
+      && previousBatch.status !== "FAILED"
+      && previousBatch.totalRows > previousBatch.failedRows
+      && processAgain !== true
+      && processAgain !== "true",
   };
 }
 
@@ -763,6 +779,7 @@ export async function importCsv(req: Request, res: Response) {
       res.status(400).json({ error: "CSV or Excel spreadsheet is required" });
       return;
     }
+    assertImportSourceStorageReady();
 
     const parseJsonField = (value: unknown) => {
       if (!value || typeof value !== "string") return undefined;
@@ -813,7 +830,7 @@ export async function importCsv(req: Request, res: Response) {
       return;
     }
     console.error("Import CSV error:", err);
-    res.status(500).json({ error: "Internal server error" });
+    sendImportFailure(res, err, "The spreadsheet could not be prepared for review.");
   }
 }
 
@@ -941,6 +958,7 @@ export async function importImage(req: Request, res: Response) {
       res.status(400).json({ error: "Only PNG, JPG, JPEG, or WEBP images can use the image import endpoint" });
       return;
     }
+    assertImportSourceStorageReady();
 
     const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
     if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch) {
@@ -961,7 +979,7 @@ export async function importImage(req: Request, res: Response) {
     res.json(result);
   } catch (err: any) {
     console.error("Import image error:", err);
-    res.status(500).json({ error: err?.message || "Internal server error" });
+    sendImportFailure(res, err, "The image could not be prepared for review.");
   }
 }
 
@@ -1035,6 +1053,7 @@ export async function importPdf(req: Request, res: Response) {
       res.status(400).json({ error: "Only PDF files can use the PDF import endpoint" });
       return;
     }
+    assertImportSourceStorageReady();
 
     const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
     const previousMeta = repeatedUpload.previousBatch?.extractionMeta;
@@ -1062,7 +1081,7 @@ export async function importPdf(req: Request, res: Response) {
     res.json(result);
   } catch (err: any) {
     console.error("Import PDF error:", err);
-    res.status(500).json({ error: err?.message || "Internal server error" });
+    sendImportFailure(res, err, "The PDF could not be prepared for review.");
   }
 }
 
@@ -1073,6 +1092,7 @@ export async function importFromDocument(req: Request, res: Response) {
       res.status(400).json({ error: "Document is required" });
       return;
     }
+    assertImportSourceStorageReady();
 
     await documentService.assertDocumentsCanLinkToEntity({
       documentIds: [documentId],
@@ -1096,14 +1116,19 @@ export async function importFromDocument(req: Request, res: Response) {
     const buffer = await fs.readFile(filePath);
     const fileFingerprint = productService.fingerprintImportFile(buffer);
     const previousBatch = await productService.findRepeatedProductImportBatch(fileFingerprint);
+    const reusablePreviousBatch = previousBatch
+      && previousBatch.status !== "FAILED"
+      && previousBatch.totalRows > previousBatch.failedRows
+      ? previousBatch
+      : null;
     const lowerName = (document.fileName || "").toLowerCase();
     const isPdf = document.mimeType === "application/pdf" || lowerName.endsWith(".pdf");
     const isImage = document.mimeType.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(lowerName);
 
     let result: any;
     if (isPdf) {
-      result = previousBatch
-        ? repeatedImportResponse(previousBatch)
+      result = reusablePreviousBatch
+        ? repeatedImportResponse(reusablePreviousBatch)
         : await createPdfProductImportPreview({
             fileName: document.fileName,
             buffer,
@@ -1112,8 +1137,8 @@ export async function importFromDocument(req: Request, res: Response) {
             fileSizeBytes: buffer.byteLength,
           });
     } else if (isImage) {
-      result = previousBatch
-        ? repeatedImportResponse(previousBatch)
+      result = reusablePreviousBatch
+        ? repeatedImportResponse(reusablePreviousBatch)
         : await productService.createImageImportPreview({
             fileName: document.fileName,
             mimeType: document.mimeType || "image/png",
@@ -1154,6 +1179,10 @@ export async function importFromDocument(req: Request, res: Response) {
 
     res.json(result);
   } catch (err: any) {
+    if (err instanceof StorageUnavailableError) {
+      res.status(503).json({ code: err.code, error: err.message });
+      return;
+    }
     res.status(400).json({ error: err?.message || "Failed to open import document" });
   }
 }

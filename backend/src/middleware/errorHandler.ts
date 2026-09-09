@@ -7,6 +7,7 @@ function statusToCode(status: number) {
   if (status === 403) return "FORBIDDEN";
   if (status === 404) return "NOT_FOUND";
   if (status === 429) return "RATE_LIMITED";
+  if (status === 503) return "STORAGE_UNAVAILABLE";
   return "INTERNAL_ERROR";
 }
 

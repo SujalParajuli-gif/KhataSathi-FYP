@@ -10,6 +10,8 @@ import {
   MAX_FILE_SIZE,
   MAX_FILES_PER_UPLOAD,
 } from "../documents/validation";
+import { asStorageUnavailableError } from "../../lib/storageReadiness";
+import { safeDiskUpload } from "../../lib/uploadMiddleware";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard); // all inventory routes require authentication
@@ -19,7 +21,11 @@ router.use(denyStaff);
 const billUpload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => {
-      cb(null, getTempUploadDir());
+      try {
+        cb(null, getTempUploadDir());
+      } catch (error) {
+        cb(asStorageUnavailableError(error) as Error, "");
+      }
     },
     filename: (_req, file, cb) => {
       const uniquePrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -45,14 +51,14 @@ const billUpload = multer({
 router.post(
   "/restock",
   requireRole("ADMIN", "MANAGER"),
-  billUpload.array("billFiles", MAX_FILES_PER_UPLOAD),
+  safeDiskUpload(billUpload.array("billFiles", MAX_FILES_PER_UPLOAD)),
   restock,
 );
 
 router.post(
   "/receive-batch",
   requireRole("ADMIN", "MANAGER"),
-  billUpload.array("billFiles", MAX_FILES_PER_UPLOAD),
+  safeDiskUpload(billUpload.array("billFiles", MAX_FILES_PER_UPLOAD)),
   receiveBatch,
 );
 router.get("/receive-batches", requireRole("ADMIN", "MANAGER"), receiveBatches);

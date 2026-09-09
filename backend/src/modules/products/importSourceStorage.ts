@@ -5,11 +5,17 @@ import {
   normalizeDocumentRelativePath,
   resolveDocumentStoragePath,
 } from "../documents/storagePath";
+import {
+  assertDocumentStorageAccessible,
+  asStorageUnavailableError,
+  documentStorageRoot,
+} from "../../lib/storageReadiness";
 
-const configuredStorageRoot = process.env.DOCUMENT_STORAGE_ROOT?.trim();
-const STORAGE_ROOT = configuredStorageRoot
-  ? path.resolve(configuredStorageRoot)
-  : path.resolve(__dirname, "../../../document-storage");
+const STORAGE_ROOT = documentStorageRoot;
+
+export function assertImportSourceStorageReady() {
+  assertDocumentStorageAccessible();
+}
 
 function safeExtension(fileName: string) {
   const extension = path.extname(fileName).toLowerCase();
@@ -53,6 +59,7 @@ export async function storeImportSource(input: {
   mimeType?: string;
   buffer: Buffer;
 }): Promise<StoredImportSource> {
+  assertImportSourceStorageReady();
   const sourceStoredPath = relativeImportFolder();
   const portablePath = normalizeDocumentRelativePath(sourceStoredPath);
   if (!portablePath) throw new Error("Invalid import source storage path.");
@@ -65,8 +72,12 @@ export async function storeImportSource(input: {
   );
   if (!absolutePath) throw new Error("Invalid import source filename.");
 
-  await fs.mkdir(path.dirname(absolutePath), { recursive: true });
-  await fs.writeFile(absolutePath, input.buffer, { flag: "wx" });
+  try {
+    await fs.mkdir(path.dirname(absolutePath), { recursive: true });
+    await fs.writeFile(absolutePath, input.buffer, { flag: "wx" });
+  } catch (error) {
+    throw asStorageUnavailableError(error);
+  }
 
   return {
     sourceStoredFileName,

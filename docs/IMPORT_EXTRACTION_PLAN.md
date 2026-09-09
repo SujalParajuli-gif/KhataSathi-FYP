@@ -1,6 +1,6 @@
 # KhataSathi Import Extraction Plan
 
-Last reviewed: 2026-08-31
+Last reviewed: 2026-09-09
 
 This is the canonical plan for future discussions about the product-catalog import pipeline. Before proposing or implementing import-extraction changes, read this file and compare it with the current branch. The plan intentionally excludes VPS deployment and production-data cutover; those require their own approval and rehearsal.
 
@@ -13,7 +13,7 @@ Make catalog extraction reliable for CSV, XLSX, native-text PDF, scanned PDF, PN
 - Persistent import batches and editable staging rows.
 - Stored source documents with spreadsheet rows, PDF pages, and image/PDF highlight regions.
 - Paginated review with create, update, keep-existing, and ignore decisions.
-- Batch-wide and selected-row price-field reassignment for purchase, retail, and wholesale prices.
+- Batch-wide and selected-row price-field reassignment for neutral Rate, Retail, and Wholesale prices.
 - Coming-soon products with no announced price and zero stock.
 - Package quantity kept separate from inventory stock.
 - Conservative catalog comparison using barcode where reliable, otherwise normalized brand plus product name, with supplier code as a cautious secondary signal.
@@ -29,6 +29,18 @@ Make catalog extraction reliable for CSV, XLSX, native-text PDF, scanned PDF, PN
 5. Existing TypeScript code remains responsible for normalization, price-field decisions, validation, duplicate/change comparison, review, audit, and final commit.
 
 ## Required work order
+
+### Completed reliability foundation (2026-09-09)
+
+- Production storage directories are created with the runtime user's ownership and write-tested before startup.
+- API health now includes persistent storage readiness; imports check storage before expensive extraction.
+- Document upload storage failures return a safe service-unavailable response instead of crashing the backend.
+- Remote image/page reading has bounded request and total timeouts, controlled fallback, and clear failure messages.
+- Images are auto-rotated and compressed for reading; tall catalogues are split into overlapping sections and recombined while retaining source-row coordinates.
+- Completely failed repeated imports are processed again rather than reopening an unusable review.
+- Import and document upload screens now show an accessible processing state; direct product imports can be cancelled from the UI.
+
+This foundation fixes operational reliability but does not replace the planned golden corpus or local OCR proof of concept below.
 
 ### 1. Golden regression corpus
 

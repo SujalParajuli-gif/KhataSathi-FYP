@@ -32,6 +32,7 @@ import {
     storeImportSource,
 } from "./importSourceStorage";
 import { parsePdfTextCatalogPages } from "./pdfTextCatalogParser";
+import sharp from "sharp";
 
 export { fingerprintImportFile };
 
@@ -1449,6 +1450,71 @@ function parseJsonFromAiText(text: string) {
     }
 }
 
+const TRANSIENT_AI_STATUSES = new Set([429, 500, 502, 503, 504]);
+
+async function requestGeminiJson(input: {
+    apiKey: string;
+    models: string[];
+    requestBody: string;
+    label: string;
+}) {
+    const perRequestMs = Math.max(10_000, Number(process.env.GEMINI_IMPORT_REQUEST_TIMEOUT_MS || 55_000));
+    const totalMs = Math.max(perRequestMs, Number(process.env.GEMINI_IMPORT_TOTAL_TIMEOUT_MS || 120_000));
+    const deadline = Date.now() + totalMs;
+    let lastStatus: number | null = null;
+    let malformedResponses = 0;
+
+    for (const model of input.models) {
+        for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt += 1) {
+            const remaining = deadline - Date.now();
+            const controller = new AbortController();
+            const timeout = setTimeout(() => controller.abort(), Math.min(perRequestMs, remaining));
+            try {
+                const endpoint = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${input.apiKey}`;
+                const response = await fetch(endpoint, {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: input.requestBody,
+                    signal: controller.signal,
+                });
+                lastStatus = response.status;
+                if (response.ok) {
+                    const payload: any = await response.json();
+                    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    try {
+                        return { parsed: parseJsonFromAiText(text), error: null as string | null };
+                    } catch {
+                        malformedResponses += 1;
+                        break; // a second identical call is unlikely to help; try the fallback model
+                    }
+                }
+                if (!TRANSIENT_AI_STATUSES.has(response.status)) break;
+            } catch (error: any) {
+                // A timed-out generation should immediately try the fallback
+                // model; repeating the same long request only burns the total budget.
+                if (error?.name === "AbortError" || attempt > 0) break;
+            } finally {
+                clearTimeout(timeout);
+            }
+
+            if (attempt === 0 && Date.now() + 1_500 < deadline) {
+                await new Promise((resolve) => setTimeout(resolve, 1_500));
+            }
+        }
+    }
+
+    if (malformedResponses > 0) {
+        return { parsed: null, error: `${input.label} returned incomplete data. Try a clearer file or split a long catalogue into smaller images.` };
+    }
+    if (Date.now() >= deadline) {
+        return { parsed: null, error: `${input.label} took too long. Try a smaller file or fewer PDF pages.` };
+    }
+    return {
+        parsed: null,
+        error: lastStatus ? `${input.label} is temporarily unavailable (${lastStatus}). Please try again.` : `${input.label} could not start. Please try again.`,
+    };
+}
+
 function summarizeAiImportRow(item: Record<string, unknown>) {
     const parts = [
         normalizeCsvText(item.productName || item.name || item.Product_Name || item.product_name),
@@ -1565,8 +1631,8 @@ Rules:
 - boundingBox is [top, left, bottom, right] for the complete source row on a 0-1000 image coordinate scale.
 - Copy codes, package quantities, names and prices exactly as printed. Use null when a cell is blank or unreadable.`;
     const models = Array.from(new Set([
-        process.env.GEMINI_IMPORT_MODEL || "gemini-2.5-flash",
-        process.env.GEMINI_IMPORT_FALLBACK_MODEL || "gemini-3.5-flash-lite",
+        process.env.GEMINI_IMPORT_MODEL || "gemini-3.5-flash-lite",
+        process.env.GEMINI_IMPORT_FALLBACK_MODEL || "gemini-3.5-flash",
     ].filter(Boolean)));
     const requestBody = JSON.stringify({
         contents: [
@@ -1589,49 +1655,16 @@ Rules:
             maxOutputTokens: 32768,
         },
     });
-    let response: Response | null = null;
-    let usedModel = models[0];
-    for (const model of models) {
-        usedModel = model;
-        const endpoint =
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            response = await fetch(endpoint, {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-                body: requestBody,
-            });
-            if (response.ok ||
-                ![429, 500, 502, 503, 504].includes(response.status) ||
-                attempt === 1) {
-                break;
-            }
-            await new Promise((resolve) =>
-                setTimeout(resolve, 1500 * Math.pow(2, attempt)),
-            );
-        }
-        if (response?.ok) break;
+    const aiResult = await requestGeminiJson({
+        apiKey,
+        models,
+        requestBody,
+        label: "Image reading",
+    });
+    if (aiResult.error) {
+        return { rows: [], document: null, error: aiResult.error };
     }
-
-    if (!response) {
-        return {
-            rows: [],
-            document: null,
-            error: "AI image parsing did not start.",
-        };
-    }
-    if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        return {
-            rows: [],
-            document: null,
-            error: `AI image parsing failed with ${usedModel} (${response.status}). ${body.slice(0, 180)}`,
-        };
-    }
-
-    const payload: any = await response.json();
-    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text || "[]";
-    const parsed = parseJsonFromAiText(text);
+    const parsed: any = aiResult.parsed;
     const rows = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.products) ? parsed.products : [];
     return {
         rows,
@@ -1708,8 +1741,8 @@ Rules:
     }
 
     const models = Array.from(new Set([
-        process.env.GEMINI_IMPORT_MODEL || "gemini-2.5-flash",
-        process.env.GEMINI_IMPORT_FALLBACK_MODEL || "gemini-3.5-flash-lite",
+        process.env.GEMINI_IMPORT_MODEL || "gemini-3.5-flash-lite",
+        process.env.GEMINI_IMPORT_FALLBACK_MODEL || "gemini-3.5-flash",
     ].filter(Boolean)));
     const requestBody = JSON.stringify({
         contents: [{ role: "user", parts }],
@@ -1719,43 +1752,14 @@ Rules:
             maxOutputTokens: 32768,
         },
     });
-    let response: Response | null = null;
-    let usedModel = models[0];
-    for (const model of models) {
-        usedModel = model;
-        const endpoint =
-            `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-            response = await fetch(endpoint, {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: requestBody,
-            });
-            if (response.ok ||
-                ![429, 500, 502, 503, 504].includes(response.status) ||
-                attempt === 1) {
-                break;
-            }
-            await new Promise((resolve) =>
-                setTimeout(resolve, 1500 * Math.pow(2, attempt)),
-            );
-        }
-        if (response?.ok) break;
-    }
-    if (!response) {
-        return { rows: [] as any[], error: `AI PDF parsing did not start for pages ${pageLabels}.` };
-    }
-    if (!response.ok) {
-        const body = await response.text().catch(() => "");
-        return {
-            rows: [] as any[],
-            error: `AI PDF parsing failed for pages ${pageLabels} with ${usedModel} (${response.status}). ${body.slice(0, 180)}`,
-        };
-    }
-
-    const payload: any = await response.json();
-    const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text || "{}";
-    const parsed = parseJsonFromAiText(text);
+    const aiResult = await requestGeminiJson({
+        apiKey,
+        models,
+        requestBody,
+        label: `PDF page reading (${pageLabels})`,
+    });
+    if (aiResult.error) return { rows: [] as any[], error: aiResult.error };
+    const parsed: any = aiResult.parsed;
     return {
         rows: Array.isArray(parsed)
             ? parsed
@@ -1994,14 +1998,87 @@ export async function createImageImportPreview(input: {
     let aiDocument: { supplierName?: string; brandName?: string; hasCodeColumn?: boolean } | null = null;
     let aiError: string | null = null;
     try {
-        const result = await extractImageRateRowsWithGemini({
-            fileName: input.fileName,
-            mimeType: input.mimeType,
-            base64: input.buffer.toString("base64"),
-        });
-        aiRows = result.rows;
-        aiDocument = result.document;
-        aiError = result.error;
+        const normalizedBuffer = await sharp(input.buffer, { failOn: "error", limitInputPixels: 80_000_000 })
+            .rotate()
+            .toBuffer();
+        const metadata = await sharp(normalizedBuffer).metadata();
+        const width = metadata.width || 0;
+        const height = metadata.height || 0;
+        const shouldTile = width > 0 && height > 2600;
+
+        if (!shouldTile) {
+            const optimized = await sharp(normalizedBuffer)
+                .resize({ width: 2400, withoutEnlargement: true })
+                .jpeg({ quality: 88, mozjpeg: true })
+                .toBuffer();
+            const result = await extractImageRateRowsWithGemini({
+                fileName: input.fileName,
+                mimeType: "image/jpeg",
+                base64: optimized.toString("base64"),
+            });
+            aiRows = result.rows;
+            aiDocument = result.document;
+            aiError = result.error;
+        } else {
+            const tileHeight = 1900;
+            const overlap = 120;
+            const tiles: Array<{ top: number; height: number; buffer: Buffer }> = [];
+            for (let top = 0; top < height; top += tileHeight - overlap) {
+                const currentHeight = Math.min(tileHeight, height - top);
+                const buffer = await sharp(normalizedBuffer)
+                    .extract({ left: 0, top, width, height: currentHeight })
+                    .resize({ width: 2200, withoutEnlargement: true })
+                    .jpeg({ quality: 88, mozjpeg: true })
+                    .toBuffer();
+                tiles.push({ top, height: currentHeight, buffer });
+                if (top + currentHeight >= height) break;
+            }
+
+            const tileResults: Array<{ rows: any[]; document: any; error: string | null }> = [];
+            for (let index = 0; index < tiles.length; index += 2) {
+                const results = await Promise.all(tiles.slice(index, index + 2).map((tile, offset) =>
+                    extractImageRateRowsWithGemini({
+                        fileName: `${input.fileName || "catalog"} (section ${index + offset + 1} of ${tiles.length})`,
+                        mimeType: "image/jpeg",
+                        base64: tile.buffer.toString("base64"),
+                    }),
+                ));
+                tileResults.push(...results);
+            }
+
+            const positioned: any[] = [];
+            tileResults.forEach((result, tileIndex) => {
+                const tile = tiles[tileIndex];
+                if (!aiDocument && result.document) aiDocument = result.document;
+                if (result.error) aiError = aiError ? `${aiError} ${result.error}` : result.error;
+                for (const row of result.rows) {
+                    const box = Array.isArray(row?.boundingBox) ? row.boundingBox.map(Number) : null;
+                    if (box?.length === 4 && box.every(Number.isFinite)) {
+                        row.boundingBox = [
+                            Math.round(((tile.top + (box[0] / 1000) * tile.height) / height) * 1000),
+                            box[1],
+                            Math.round(((tile.top + (box[2] / 1000) * tile.height) / height) * 1000),
+                            box[3],
+                        ];
+                    }
+                    positioned.push(row);
+                }
+            });
+            positioned.sort((a, b) => Number(a?.boundingBox?.[0] || 0) - Number(b?.boundingBox?.[0] || 0));
+            aiRows = positioned.filter((row, index, all) => {
+                const name = normalizeCsvText(row?.productName || row?.name).toLowerCase();
+                const code = normalizeCsvText(row?.code).toLowerCase();
+                const price = Number(row?.wsp ?? row?.rate ?? row?.mrp ?? row?.price ?? 0);
+                const center = (Number(row?.boundingBox?.[0] || 0) + Number(row?.boundingBox?.[2] || 0)) / 2;
+                return !all.slice(0, index).some((prior) => {
+                    const priorCenter = (Number(prior?.boundingBox?.[0] || 0) + Number(prior?.boundingBox?.[2] || 0)) / 2;
+                    return normalizeCsvText(prior?.productName || prior?.name).toLowerCase() === name
+                        && normalizeCsvText(prior?.code).toLowerCase() === code
+                        && Number(prior?.wsp ?? prior?.rate ?? prior?.mrp ?? prior?.price ?? 0) === price
+                        && Math.abs(priorCenter - center) < 35;
+                });
+            });
+        }
     } catch (err: any) {
         aiError = err?.message || "AI image parsing failed.";
     }
@@ -2105,6 +2182,16 @@ export async function createImageImportPreview(input: {
             status: "READY",
             error: null,
             parsed: { sourceType: "IMAGE_AI_ROW", sourceProductName: rawProductName, sourceSizeText: sizeText, ...parsedProduct },
+        });
+    }
+
+    if (rows.length > 0 && aiError) {
+        rows.push({
+            rowNumber: rows.length + 1,
+            rawText: null,
+            status: "FAILED",
+            error: `Part of this image could not be read. ${aiError}`,
+            parsed: { sourceType: "IMAGE_AI_SECTION_ERROR" },
         });
     }
 

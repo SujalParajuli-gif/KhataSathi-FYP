@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
@@ -799,6 +799,8 @@ export default function ProductsPage() {
   const [productSearchTermsLoading, setProductSearchTermsLoading] = useState(false);
   const [importFile, setImportFile] = useState<File | null>(null); // selected CSV file for bulk import
   const [importBusy, setImportBusy] = useState(false); // disables repeated import submits while upload is running
+  const [importProcessingKind, setImportProcessingKind] = useState<"spreadsheet" | "pdf" | "image" | null>(null);
+  const importAbortRef = useRef<AbortController | null>(null);
   const [importError, setImportError] = useState(""); // import-specific error shown in the modal
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null); // row-by-row result returned after CSV import completes
   const [pdfReviewBatch, setPdfReviewBatch] = useState<ProductImportBatch | null>(null); // selected supplier import preview batch for row review
@@ -929,8 +931,11 @@ export default function ProductsPage() {
 
   // clearing every import-related field together makes the CSV modal start from a clean state each time it opens
   function resetImportState() {
+    importAbortRef.current?.abort();
+    importAbortRef.current = null;
     setImportFile(null);
     setImportBusy(false);
+    setImportProcessingKind(null);
     setImportError("");
     setImportResult(null);
     setPdfReviewBatch(null);
@@ -2059,6 +2064,9 @@ export default function ProductsPage() {
     }
 
     try {
+      const abortController = new AbortController();
+      importAbortRef.current?.abort();
+      importAbortRef.current = abortController;
       setImportBusy(true);
       setImportError("");
       const lowerName = importFile.name.toLowerCase();
@@ -2081,10 +2089,11 @@ export default function ProductsPage() {
         );
         return;
       }
+      setImportProcessingKind(isPdf ? "pdf" : isImage ? "image" : "spreadsheet");
       const result = (await (isPdf
-        ? importPdfApi(importFile)
+        ? importPdfApi(importFile, { signal: abortController.signal })
         : isImage
-          ? importImageRateListApi(importFile)
+          ? importImageRateListApi(importFile, { signal: abortController.signal })
           : importCsvApi(importFile, {
               supplier: importSupplier.trim() || undefined,
               templateId: importTemplateId || undefined,
@@ -2096,6 +2105,7 @@ export default function ProductsPage() {
                 stock: 0,
                 retailMarginPercent: 18,
               },
+              signal: abortController.signal,
             }))) as CsvImportResult;
       setImportResult(result);
       setLastImportedProducts([]);
@@ -2115,14 +2125,22 @@ export default function ProductsPage() {
       }
     } catch (error: any) {
       // preferring backend error text here helps the user understand row format issues more clearly
-      const message =
+      const message = error?.name === "AbortError"
+        ? "Import cancelled. No products were added."
+        :
         error?.response?.data?.error ||
         error?.message ||
         "Failed to import products.";
       setImportError(message);
     } finally {
+      importAbortRef.current = null;
       setImportBusy(false);
+      setImportProcessingKind(null);
     }
+  }
+
+  function cancelImportProcessing() {
+    importAbortRef.current?.abort();
   }
 
   async function handleImportDocument(document: DocumentRecord) {
@@ -3945,6 +3963,7 @@ export default function ProductsPage() {
           setLastImportSupplier("");
         }}
         importBusy={importBusy}
+        importProcessingKind={importProcessingKind}
         importError={importError}
         importResult={importResult}
         pdfReviewBatch={pdfReviewBatch}
@@ -4038,9 +4057,14 @@ export default function ProductsPage() {
         lastImportSupplier={lastImportSupplier}
         onReceiveImportedProducts={openStockManagerForImportedProducts}
         onCloseImport={() => {
+          if (importProcessingKind) {
+            cancelImportProcessing();
+            return;
+          }
           setOpenImport(false);
           resetImportState();
         }}
+        onCancelImportProcessing={cancelImportProcessing}
         onUploadCsvClick={handleImportCsv}
       />
 

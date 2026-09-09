@@ -20,6 +20,8 @@ import {
   MAX_FILE_SIZE,
   MAX_FILES_PER_UPLOAD,
 } from "./validation";
+import { asStorageUnavailableError } from "../../lib/storageReadiness";
+import { safeDiskUpload } from "../../lib/uploadMiddleware";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard); // all document routes require authentication
@@ -30,7 +32,11 @@ router.use(denyStaff);
 const upload = multer({
   storage: multer.diskStorage({
     destination: (_req, _file, cb) => {
-      cb(null, getTempUploadDir());
+      try {
+        cb(null, getTempUploadDir());
+      } catch (error) {
+        cb(asStorageUnavailableError(error) as Error, "");
+      }
     },
     filename: (_req, file, cb) => {
       // using a random hex prefix + timestamp to avoid temp file collisions
@@ -57,7 +63,7 @@ const upload = multer({
 router.post(
   "/",
   requireRole("ADMIN", "MANAGER"),
-  upload.array("files", MAX_FILES_PER_UPLOAD),
+  safeDiskUpload(upload.array("files", MAX_FILES_PER_UPLOAD)),
   uploadDocuments,
 );
 

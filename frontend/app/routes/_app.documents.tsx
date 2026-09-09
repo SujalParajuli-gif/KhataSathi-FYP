@@ -1572,6 +1572,32 @@ function DocumentTouchViewer({
   function renderUploadWorkspace() {
     const hasFiles = uploadFiles.length > 0;
 
+    if (uploadBusy) {
+      return (
+        <div
+          className="flex min-h-0 flex-1 items-center justify-center overflow-y-auto bg-[#F8FAFC] p-5 md:p-8"
+          role="status"
+          aria-live="polite"
+          aria-busy="true"
+        >
+          <div className="w-full max-w-[520px] rounded-[18px] border border-[#D8DBE0] bg-white p-6 text-center sm:p-8">
+            <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[16px] border border-blue-200 bg-blue-50 text-[#2563EB]">
+              <Icon name="progress_activity" sizePx={28} className="animate-spin" />
+            </div>
+            <h2 className="mt-5 text-[18px] font-extrabold text-[#11120d]">
+              Uploading {uploadFiles.length} document{uploadFiles.length === 1 ? "" : "s"}
+            </h2>
+            <p className="mx-auto mt-2 max-w-[380px] text-[13px] font-medium leading-5 text-[#64748B]">
+              The files are being stored securely. Keep this page open until the upload finishes.
+            </p>
+            <div className="mt-5 overflow-hidden rounded-full bg-[#E8EEF8]" aria-hidden="true">
+              <div className="h-1.5 w-2/5 animate-pulse rounded-full bg-[#2563EB]" />
+            </div>
+          </div>
+        </div>
+      );
+    }
+
     return (
       <div className="min-h-0 flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 bg-white">
         <div className={cn("mx-auto", hasFiles ? "max-w-7xl" : "max-w-3xl")}>

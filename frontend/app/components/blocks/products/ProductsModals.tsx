@@ -940,6 +940,7 @@ export default function ProductsModals({
   importFile,
   setImportFile,
   importBusy,
+  importProcessingKind,
   importError,
   importResult,
   pdfReviewBatch,
@@ -968,6 +969,7 @@ export default function ProductsModals({
   lastImportSupplier,
   onReceiveImportedProducts,
   onCloseImport,
+  onCancelImportProcessing,
   onUploadCsvClick,
 }: {
   stockTracked: boolean;
@@ -1031,6 +1033,7 @@ export default function ProductsModals({
   importFile: File | null;
   setImportFile: (file: File | null) => void;
   importBusy: boolean;
+  importProcessingKind: "spreadsheet" | "pdf" | "image" | null;
   importError: string;
   importResult: CsvImportResult | null;
   pdfReviewBatch: ProductImportBatch | null;
@@ -1069,6 +1072,7 @@ export default function ProductsModals({
     supplierName?: string | null,
   ) => void;
   onCloseImport: () => void;
+  onCancelImportProcessing: () => void;
   onUploadCsvClick: () => void;
 }) {
   const inputBase =
@@ -1078,6 +1082,38 @@ export default function ProductsModals({
   const compactInputClass =
     "h-[38px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
   const [importTab, setImportTab] = React.useState<"csv" | "pdf" | "image">("csv");
+  const [importElapsedSeconds, setImportElapsedSeconds] = React.useState(0);
+  React.useEffect(() => {
+    if (!importProcessingKind) {
+      setImportElapsedSeconds(0);
+      return;
+    }
+    const startedAt = Date.now();
+    const timer = window.setInterval(() => {
+      setImportElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
+    }, 1000);
+    return () => window.clearInterval(timer);
+  }, [importProcessingKind]);
+
+  const importProgressCopy = React.useMemo(() => {
+    if (importProcessingKind === "spreadsheet") {
+      return importElapsedSeconds < 3
+        ? ["Uploading spreadsheet", "Sending the selected file securely."]
+        : ["Reading products and columns", "Checking names, prices, and rows before review."];
+    }
+    if (importProcessingKind === "pdf") {
+      return importElapsedSeconds < 4
+        ? ["Uploading PDF", "Sending the selected file securely."]
+        : importElapsedSeconds < 25
+          ? ["Reading PDF pages", "Text and scanned pages are being prepared for review."]
+          : ["Still reading the PDF", "Large or scanned files take longer. You can cancel safely."];
+    }
+    return importElapsedSeconds < 4
+      ? ["Uploading image", "Sending the selected file securely."]
+      : importElapsedSeconds < 25
+        ? ["Reading product names and prices", "The catalogue image is being checked row by row."]
+        : ["Still reading the image", "Detailed rate lists can take longer. You can cancel safely."];
+  }, [importElapsedSeconds, importProcessingKind]);
   const [mobileEditorTab, setMobileEditorTab] = React.useState<ProductEditorStep>("basic");
   const productEditorTabRailRef = React.useRef<SwipeableTabRailController | null>(null);
   const [pricingDraft, setPricingDraft] = React.useState({ cost: "", wholesale: "", retail: "" });
@@ -2611,6 +2647,15 @@ export default function ProductsModals({
                     : `Apply ${commitReviewRows.length} decisions`}
               </Button>
             </div>
+          ) : importProcessingKind ? (
+            <div className="flex w-full items-center justify-between gap-3">
+              <span className="text-[12px] font-semibold text-[#64748B]">
+                Nothing is added until review.
+              </span>
+              <Button variant="secondary" icon="close" onClick={onCancelImportProcessing}>
+                Cancel processing
+              </Button>
+            </div>
           ) : (
             <div className="flex items-center justify-end gap-[10px]">
               <Button
@@ -3530,7 +3575,42 @@ export default function ProductsModals({
                 </div>
               )}
             </section>
-          </div>) : (
+          </div>) : importProcessingKind ? (
+          <div
+            className="flex min-h-[390px] items-center justify-center bg-[#F8FAFC] p-5 sm:p-8"
+            role="status"
+            aria-live="polite"
+            aria-busy="true"
+          >
+            <div className="w-full max-w-[520px] rounded-[18px] border border-[#D8DBE0] bg-white p-6 text-center sm:p-8">
+              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[16px] border border-blue-200 bg-blue-50 text-[#2563EB]">
+                <Icon name="progress_activity" className="animate-spin text-[28px]" />
+              </div>
+              <h3 className="mt-5 text-[18px] font-extrabold text-[#11120d]">
+                {importProgressCopy[0]}
+              </h3>
+              <p className="mx-auto mt-2 max-w-[390px] text-[13px] font-medium leading-5 text-[#64748B]">
+                {importProgressCopy[1]}
+              </p>
+              <div className="mt-5 overflow-hidden rounded-full bg-[#E8EEF8]" aria-hidden="true">
+                <div className="h-1.5 w-2/5 animate-pulse rounded-full bg-[#2563EB]" />
+              </div>
+              <div className="mt-5 flex min-w-0 items-center justify-between gap-3 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3.5 py-3 text-left">
+                <div className="min-w-0">
+                  <div className="truncate text-[12px] font-bold text-[#1E293B]">
+                    {importFile?.name || "Selected file"}
+                  </div>
+                  <div className="mt-0.5 text-[11px] font-medium text-[#64748B]">
+                    Preparing a safe review. Products are not added automatically.
+                  </div>
+                </div>
+                <span className="shrink-0 tabular-nums text-[12px] font-bold text-[#475569]">
+                  {Math.floor(importElapsedSeconds / 60)}:{String(importElapsedSeconds % 60).padStart(2, "0")}
+                </span>
+              </div>
+            </div>
+          </div>
+        ) : (
           <div className="flex flex-col h-full bg-[#F8FAFC]">
             {/* Tabs */}
             <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">

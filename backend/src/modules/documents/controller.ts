@@ -9,6 +9,7 @@ import {
   updateDocumentVisibilitySchema,
   ALLOWED_MIME_TYPES,
 } from "./validation";
+import { StorageUnavailableError } from "../../lib/storageReadiness";
 
 // uploading one or more document files with metadata
 export async function uploadDocuments(req: Request, res: Response) {
@@ -72,8 +73,8 @@ export async function uploadDocuments(req: Request, res: Response) {
       await Promise.all(files.map((f) => fs.unlink(f.path).catch(() => {})));
     }
 
-    if (err.message?.includes("storage root")) {
-      res.status(503).json({ error: err.message });
+    if (err instanceof StorageUnavailableError) {
+      res.status(503).json({ code: err.code, error: err.message });
       return;
     }
 
