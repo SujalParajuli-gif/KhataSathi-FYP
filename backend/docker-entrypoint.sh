@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-install -d -o node -g node -m 0750 \
+install -d -o node -g node -m 0755 \
   /uploads \
   /uploads/products \
   /document-storage \
