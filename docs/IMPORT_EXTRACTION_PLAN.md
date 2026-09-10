@@ -30,7 +30,9 @@ Make catalog extraction reliable for CSV, XLSX, native-text PDF, scanned PDF, PN
 
 ## Required work order
 
-### Implemented locally in this revision (not deployed)
+### Implemented and deployed (2026-09-10)
+
+The following foundation was deployed to the live VPS in code release `738e4bd65b990e9557154a411c8f550256132c0e`. The local OCR replacement remains a future, benchmark-gated change.
 
 - One backend spreadsheet parser serves both preview and import. Operators choose the worksheet and header row; the preview states how many rows are included. CSV extra cells, oversized tables, and duplicate-header collisions cannot silently discard values. XLSX preserves zero-padded identifiers and flags missing formula results, cell errors, and numeric identifier precision risks. Name-only coming-soon lists remain readable.
 - Native PDF parsing uses physical header columns where available. Blank price cells retain their position, packing requires header evidence, and source coordinates are retained. Missing prices and possible headings require review. A single WSP/MRP column is not silently treated as the neutral Rate.

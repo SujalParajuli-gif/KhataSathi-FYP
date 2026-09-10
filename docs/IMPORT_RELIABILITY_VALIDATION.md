@@ -1,6 +1,6 @@
 # Import reliability validation — 2026-09-09
 
-These are local engineering checks for the current working-tree changes. Nothing was deployed to the live application, and no production database migration or catalog import was performed.
+These engineering checks were completed before code release `738e4bd65b990e9557154a411c8f550256132c0e` was deployed to the live VPS on 2026-09-10. The additive production migration was applied during startup. No catalog rows were imported by the deployment.
 
 ## Results
 
@@ -34,4 +34,4 @@ From `frontend`, run `pnpm typecheck`, `pnpm test:routes`, `pnpm build`, and `pn
 - Rehearse representative private supplier files and manually inspect source highlights on desktop and mobile. Synthetic tests do not establish real catalog accuracy.
 - Benchmark local OCR candidates on approved expected data and the actual VPS before replacing the existing reader. No local OCR engine or new Python service was introduced.
 
-Production deployment, a production backup restore drill, and supplier-corpus accuracy approval remain separate operational steps. This receipt is not evidence that any of those steps occurred.
+Production deployment and isolated post-deployment restore verification completed on 2026-09-10. Supplier-corpus accuracy approval remains a separate step; synthetic tests do not establish it.
