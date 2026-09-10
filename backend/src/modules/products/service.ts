@@ -316,8 +316,8 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
     const rate = data.ratePerPiece === null || data.ratePerPiece === undefined
         ? null
         : Number(data.ratePerPiece);
-    if (availabilityStatus !== "COMING_SOON" && (!Number.isFinite(rate) || Number(rate) <= 0)) {
-        throw new Error("Enter a Rate or mark this product as Coming soon.");
+    if (availabilityStatus !== "COMING_SOON" && ![rate, retailPrice, wholesalePrice].some((value) => Number.isFinite(value) && Number(value) > 0)) {
+        throw new Error("Enter an announced price or mark this product as Coming soon.");
     }
 
     // determining whether to use default thresholds
@@ -361,6 +361,7 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
             sizeValue: data.sizeValue ?? null,
             sizeUnit: normalizeUnitLabel(data.sizeUnit, "STANDARD"),
             ratePerPiece: rate,
+            rateUpdatedAt: rate === null ? null : new Date(),
             packageQuantity:
                 data.packageQuantity === null || data.packageQuantity === undefined
                     ? null
@@ -477,6 +478,9 @@ export async function updateProduct(
     }
 
     const updateData: any = { ...data };
+    if (data.ratePerPiece !== undefined && data.ratePerPiece !== previousProduct.ratePerPiece) {
+        updateData.rateUpdatedAt = data.ratePerPiece === null ? null : new Date();
+    }
     const nextAvailabilityStatus = data.availabilityStatus ?? previousProduct.availabilityStatus;
     const nextRate = data.ratePerPiece !== undefined
         ? data.ratePerPiece
@@ -484,9 +488,9 @@ export async function updateProduct(
     if (
         (data.ratePerPiece !== undefined || data.availabilityStatus !== undefined) &&
         nextAvailabilityStatus !== "COMING_SOON" &&
-        (!Number.isFinite(Number(nextRate)) || Number(nextRate) <= 0)
+        ![nextRate, data.retailPrice !== undefined ? data.retailPrice : previousProduct.retailPrice, data.wholesalePrice !== undefined ? data.wholesalePrice : previousProduct.wholesalePrice].some((value) => Number.isFinite(Number(value)) && Number(value) > 0)
     ) {
-        throw new Error("Enter a Rate or mark this product as Coming soon.");
+        throw new Error("Enter an announced price or mark this product as Coming soon.");
     }
     if (data.retailPrice !== undefined || data.wholesalePrice !== undefined) {
         const retailPrice = data.retailPrice !== undefined

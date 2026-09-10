@@ -24,7 +24,8 @@
     "auth:remediate-archived-phones": "ts-node-dev --transpile-only --exit-child src/scripts/remediateArchivedUserPhones.ts",
     "products:backfill-media": "node dist/scripts/backfillProductMedia.js",
     "documents:backfill-thumbnails": "ts-node-dev --transpile-only --exit-child src/scripts/backfillDocumentThumbnails.ts",
-    "postinstall": "prisma generate"
+    "postinstall": "prisma generate",
+    "imports:benchmark": "node dist/scripts/benchmarkImportExtraction.js"
   },
   "prisma": {
     "seed": "ts-node-dev prisma/seed.ts"

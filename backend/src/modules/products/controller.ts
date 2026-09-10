@@ -1,6 +1,7 @@
 import { Request, Response } from "express";
 import fs from "fs/promises";
 import { PDFParse } from "pdf-parse";
+import { enqueueImport, controlImport } from "./importWorker";
 import * as productService from "./service";
 import * as documentService from "../documents/service";
 import { getCashierPrivilege } from "../settings/service";
@@ -30,7 +31,7 @@ function sendImportFailure(res: Response, error: unknown, fallback: string) {
     res.status(503).json({ code: error.code, error: error.message });
     return;
   }
-  res.status(500).json({ error: fallback });
+  res.status(500).json({ code: "IMPORT_UNAVAILABLE", error: fallback, requestId: res.locals.requestId });
 }
 
 // validating that a required text field is present and not just whitespace
@@ -725,8 +726,8 @@ async function inspectRepeatedImportUpload(file: Express.Multer.File, processAga
     fileSizeBytes: file.buffer.byteLength,
     previousBatch,
     shouldReuse: !!previousBatch
-      && previousBatch.status !== "FAILED"
-      && previousBatch.totalRows > previousBatch.failedRows
+      && !["FAILED", "INTERRUPTED"].includes(previousBatch.status)
+      && (previousBatch.totalRows > previousBatch.failedRows || ["QUEUED", "PROCESSING"].includes(previousBatch.status))
       && processAgain !== true
       && processAgain !== "true",
   };
@@ -772,6 +773,24 @@ async function reopenRepeatedImportWithSource(
   return repeatedImportResponse(previousBatch);
 }
 
+export async function previewSpreadsheet(req: Request, res: Response) {
+  try {
+    if (!req.file) throw new SpreadsheetImportError("Choose a spreadsheet first.");
+    const result = await parseProductSpreadsheet({
+      buffer: req.file.buffer, fileName: req.file.originalname, mimeType: req.file.mimetype,
+      sheetName: req.body?.sheetName || undefined,
+      headerRowNumber: req.body?.headerRowNumber ? Number(req.body.headerRowNumber) : undefined,
+      preview: true,
+    });
+    res.json({ sheetName: result.sheetName, sheets: result.sheets, headerRowNumber: result.headerRowNumber,
+      headers: result.headers, sample: result.rows[0], totalRows: result.rows.length,
+      warnings: Object.values(result.rowWarnings).flat().slice(0, 10) });
+  } catch (error) {
+    if (error instanceof SpreadsheetImportError) res.status(400).json({ code: "INVALID_SPREADSHEET", error: error.message });
+    else sendImportFailure(res, error, "The spreadsheet preview could not be loaded.");
+  }
+}
+
 export async function importCsv(req: Request, res: Response) {
   try {
     const file = req.file;
@@ -796,16 +815,26 @@ export async function importCsv(req: Request, res: Response) {
       Array.isArray(value) ? value : [value],
     );
     const repeatedUpload = await inspectRepeatedImportUpload(file, req.body?.processAgain);
-    if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch) {
-      res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
-      return;
-    }
     const spreadsheet = await parseProductSpreadsheet({
       buffer: file.buffer,
       fileName: file.originalname,
       mimeType: file.mimetype,
       expectedHeaders,
+      sheetName: req.body?.sheetName || undefined,
+      headerRowNumber: req.body?.headerRowNumber ? Number(req.body.headerRowNumber) : undefined,
     });
+
+    const selectionKey = productService.fingerprintImportFile(Buffer.from(JSON.stringify({
+      sheetName: spreadsheet.sheetName || null, headerRowNumber: spreadsheet.headerRowNumber,
+      fieldMap: Object.entries(fieldMap || {}).sort(([a], [b]) => a.localeCompare(b)),
+      defaults: Object.entries(parseJsonField(req.body?.defaults) || {}).sort(([a], [b]) => a.localeCompare(b)),
+      supplier: String(req.body?.supplier || "").trim(), templateId: req.body?.templateId || null,
+    })));
+    const previousMeta = repeatedUpload.previousBatch?.extractionMeta as Record<string, unknown> | null;
+    if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch && previousMeta?.selectionKey === selectionKey) {
+      res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
+      return;
+    }
 
     const result = await productService.createCsvImportPreview({
       fileName: file.originalname,
@@ -813,6 +842,9 @@ export async function importCsv(req: Request, res: Response) {
       rowNumbers: spreadsheet.rowNumbers,
       sourceType: spreadsheet.sourceType,
       sheetName: spreadsheet.sheetName,
+      rowWarnings: spreadsheet.rowWarnings,
+      extractionMeta: { parser: "SPREADSHEET_V2", selectionKey, headerRowNumber: spreadsheet.headerRowNumber,
+        selectedSheet: spreadsheet.sheetName || null, sheets: spreadsheet.sheets, rowCount: spreadsheet.rows.length },
       createdById: req.user!.id,
       supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
       templateId: typeof req.body?.templateId === "string" ? req.body.templateId : undefined,
@@ -966,14 +998,12 @@ export async function importImage(req: Request, res: Response) {
       return;
     }
 
-    const result = await productService.createImageImportPreview({
+    const result = await enqueueImport({
       fileName: file.originalname,
       mimeType: file.mimetype || "image/png",
       buffer: file.buffer,
       createdById: req.user!.id,
-      fileFingerprint: repeatedUpload.fileFingerprint,
-      fileSizeBytes: repeatedUpload.fileSizeBytes,
-      repeatedFromBatchId: repeatedUpload.previousBatch?.id,
+      supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
     });
     await attachUploadedSource(result, file);
     res.json(result);
@@ -983,57 +1013,13 @@ export async function importImage(req: Request, res: Response) {
   }
 }
 
-async function createPdfProductImportPreview(input: {
-  fileName: string;
-  buffer: Buffer;
-  createdById: string;
-  fileFingerprint: string;
-  fileSizeBytes: number;
-  repeatedFromBatchId?: string;
-}) {
-  const parser = new PDFParse({ data: input.buffer });
+export async function controlImportProcessing(req: Request, res: Response) {
   try {
-    const parsed = await parser.getText();
-    const hasMeaningfulText = parsed.pages.some(
-      (page) => String(page.text || "").replace(/\s+/g, " ").trim().length >= 20,
-    );
-    if (hasMeaningfulText) {
-      const locatedPages = await extractPdfTextLineRegions(input.buffer).catch(() => []);
-      return productService.createPdfImportPreview({
-        fileName: input.fileName,
-        text: parsed.text || "",
-        pages: parsed.pages.map((page) => ({
-          pageNumber: page.num,
-          text: page.text || "",
-          lines: locatedPages.find((located) => located.pageNumber === page.num)?.lines || [],
-        })),
-        createdById: input.createdById,
-        fileFingerprint: input.fileFingerprint,
-        fileSizeBytes: input.fileSizeBytes,
-        repeatedFromBatchId: input.repeatedFromBatchId,
-      });
+    if (req.body?.action !== "cancel" && req.body?.action !== "retry") {
+      res.status(400).json({ code: "INVALID_ACTION", error: "Choose cancel or retry." }); return;
     }
-
-    const screenshots = await parser.getScreenshot({
-      desiredWidth: 1800,
-      imageBuffer: true,
-      imageDataUrl: false,
-    });
-    return productService.createScannedPdfImportPreview({
-      fileName: input.fileName,
-      pages: screenshots.pages.map((page) => ({
-        pageNumber: page.pageNumber,
-        mimeType: "image/png",
-        buffer: Buffer.from(page.data),
-      })),
-      createdById: input.createdById,
-      fileFingerprint: input.fileFingerprint,
-      fileSizeBytes: input.fileSizeBytes,
-      repeatedFromBatchId: input.repeatedFromBatchId,
-    });
-  } finally {
-    await parser.destroy().catch(() => undefined);
-  }
+    res.json(await controlImport(String(req.params.batchId), req.body.action));
+  } catch (error: any) { res.status(409).json({ code: "IMPORT_CONFLICT", error: error.message }); }
 }
 
 // Text PDFs use deterministic extraction. Scanned PDFs are rendered page by
@@ -1061,19 +1047,18 @@ export async function importPdf(req: Request, res: Response) {
       ? String((previousMeta as any).parser || "")
       : "";
     const previousUsesCurrentPdfParser = repeatedUpload.previousBatch?.sourceType !== "PDF"
-      || previousParser === "TEXT_TABLE_V2";
+      || previousParser === "PAGE_PIPELINE_V1";
     if (repeatedUpload.shouldReuse && repeatedUpload.previousBatch && previousUsesCurrentPdfParser) {
       res.json(await reopenRepeatedImportWithSource(repeatedUpload.previousBatch, file));
       return;
     }
 
-    const result = await createPdfProductImportPreview({
+    const result = await enqueueImport({
       fileName: file.originalname,
+      mimeType: "application/pdf",
       buffer: file.buffer,
       createdById: req.user!.id,
-      fileFingerprint: repeatedUpload.fileFingerprint,
-      fileSizeBytes: repeatedUpload.fileSizeBytes,
-      repeatedFromBatchId: repeatedUpload.previousBatch?.id,
+      supplier: typeof req.body?.supplier === "string" ? req.body.supplier : undefined,
     });
 
     await attachUploadedSource(result, file);
@@ -1117,8 +1102,8 @@ export async function importFromDocument(req: Request, res: Response) {
     const fileFingerprint = productService.fingerprintImportFile(buffer);
     const previousBatch = await productService.findRepeatedProductImportBatch(fileFingerprint);
     const reusablePreviousBatch = previousBatch
-      && previousBatch.status !== "FAILED"
-      && previousBatch.totalRows > previousBatch.failedRows
+      && !["FAILED", "INTERRUPTED"].includes(previousBatch.status)
+      && (previousBatch.totalRows > previousBatch.failedRows || ["QUEUED", "PROCESSING"].includes(previousBatch.status))
       ? previousBatch
       : null;
     const lowerName = (document.fileName || "").toLowerCase();
@@ -1129,23 +1114,22 @@ export async function importFromDocument(req: Request, res: Response) {
     if (isPdf) {
       result = reusablePreviousBatch
         ? repeatedImportResponse(reusablePreviousBatch)
-        : await createPdfProductImportPreview({
+        : await enqueueImport({
             fileName: document.fileName,
+            mimeType: "application/pdf",
             buffer,
             createdById: req.user!.id,
-            fileFingerprint,
-            fileSizeBytes: buffer.byteLength,
+            supplier: document.supplierName || undefined,
           });
     } else if (isImage) {
       result = reusablePreviousBatch
         ? repeatedImportResponse(reusablePreviousBatch)
-        : await productService.createImageImportPreview({
+        : await enqueueImport({
             fileName: document.fileName,
             mimeType: document.mimeType || "image/png",
             buffer,
             createdById: req.user!.id,
-            fileFingerprint,
-            fileSizeBytes: buffer.byteLength,
+            supplier: document.supplierName || undefined,
           });
     } else {
       res.status(400).json({ error: "Only PDF or image product import documents can open an import review." });
@@ -1389,6 +1373,7 @@ export async function commitSavedImportBatch(req: Request, res: Response) {
       actorId: req.user!.id,
       approved: true,
       commitToken: typeof req.body?.commitToken === "string" ? req.body.commitToken : undefined,
+      acknowledgeIncomplete: req.body?.acknowledgeIncomplete === true,
     });
     res.json(result);
   } catch (err: any) {
@@ -1414,6 +1399,7 @@ export async function importReviewedBatchRows(req: Request, res: Response) {
       actorId: req.user!.id,
       approved: true,
       commitToken: typeof req.body?.commitToken === "string" ? req.body.commitToken : undefined,
+      acknowledgeIncomplete: req.body?.acknowledgeIncomplete === true,
     });
     res.json(result);
   } catch (err: any) {

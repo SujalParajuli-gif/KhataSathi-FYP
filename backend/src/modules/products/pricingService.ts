@@ -340,8 +340,8 @@ export async function bulkUpdateProductPrices(input: {
                     });
                 if (!before) throw new Error("Product not found.");
                 const effectiveRate = rateProvided ? Number(ratePerPiece) : Number(before.ratePerPiece);
-                if (before.availabilityStatus !== "COMING_SOON" && (!Number.isFinite(effectiveRate) || effectiveRate <= 0)) {
-                    throw new Error("Enter a Rate or mark this product as Coming soon.");
+                if (before.availabilityStatus !== "COMING_SOON" && ![effectiveRate, retailProvided ? retailPrice : before.retailPrice, wholesaleProvided ? wholesalePrice : before.wholesalePrice].some((value) => Number.isFinite(Number(value)) && Number(value) > 0)) {
+                    throw new Error("Enter an announced price or mark this product as Coming soon.");
                 }
                 const policy = input.existingPricePolicy === "REPLACE" ? "REPLACE" : "FILL_EMPTY";
                 const isManualOverride = filteredOverrideIdSet.has(update.productId);
@@ -377,7 +377,7 @@ export async function bulkUpdateProductPrices(input: {
                 const product = await tx.product.update({
                     where: { id: update.productId },
                     data: {
-                        ...(updateRate ? { ratePerPiece } : {}),
+                        ...(updateRate ? { ratePerPiece, rateUpdatedAt: new Date() } : {}),
                         ...(updateRetail ? { retailPrice } : {}),
                         ...(updateWholesale ? { wholesalePrice } : {}),
                         sellingPriceStatus: resolveSellingPriceStatus(nextRetailPrice, nextWholesalePrice),

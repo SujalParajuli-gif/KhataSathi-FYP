@@ -8,6 +8,7 @@ const BACKUP_STATUS_ROOT = configuredStatusRoot
 const STATUS_FILE = path.join(BACKUP_STATUS_ROOT, "last-recovery-backup.json");
 const MAX_STATUS_FILE_BYTES = 64 * 1024;
 const RUNNING_STALE_AFTER_MS = 2 * 60 * 60 * 1000;
+const SUCCESS_STALE_AFTER_MS = 36 * 60 * 60 * 1000;
 
 const SAFE_STAGES = new Set([
   "initializing",
@@ -67,10 +68,13 @@ export function sanitizeRecoveryBackupStatus(
   const startedAt = safeDate(data.startedAt);
   const completedAt = safeDate(data.completedAt);
   if (!startedAt) throw new Error("Recovery backup start time is invalid.");
+  if (storedStatus === "SUCCESS" && (!completedAt || new Date(completedAt).getTime() < new Date(startedAt).getTime() || new Date(completedAt).getTime() > now.getTime() + 5 * 60 * 1000)) {
+    throw new Error("Recovery backup completion time is invalid.");
+  }
 
   const stale =
-    storedStatus === "RUNNING" &&
-    now.getTime() - new Date(startedAt).getTime() > RUNNING_STALE_AFTER_MS;
+    (storedStatus === "RUNNING" && now.getTime() - new Date(startedAt).getTime() > RUNNING_STALE_AFTER_MS)
+    || (storedStatus === "SUCCESS" && completedAt !== null && now.getTime() - new Date(completedAt).getTime() > SUCCESS_STALE_AFTER_MS);
   const status = stale ? "STALE" : storedStatus;
   const stage =
     typeof data.stage === "string" && SAFE_STAGES.has(data.stage)
@@ -102,7 +106,9 @@ export function sanitizeRecoveryBackupStatus(
       : status === "RUNNING"
         ? "A full recovery backup is currently running."
         : status === "STALE"
-          ? "The last backup still says running and needs server review."
+          ? storedStatus === "SUCCESS"
+            ? "The last successful backup is more than 36 hours old. A nightly backup is overdue and needs server review."
+            : "The last backup still says running and needs server review."
           : "The latest full recovery backup failed before completion.";
 
   return {

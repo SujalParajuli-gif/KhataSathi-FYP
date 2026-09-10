@@ -19,6 +19,8 @@ import {
   deactivate,
   categories,
   importCsv,
+  previewSpreadsheet,
+  controlImportProcessing,
   importFromDocument,
   importImage,
   importPdf,
@@ -105,13 +107,30 @@ router.get("/import-batches/:batchId/source/pages/:pageNumber", requireRole("ADM
 router.get("/import-batches/:batchId/source-context", requireRole("ADMIN", "MANAGER"), getImportBatchSourceContext); // whole batch spreadsheet context
 router.get("/import-batches/:batchId/rows/:rowId/source-context", requireRole("ADMIN", "MANAGER"), getImportRowSourceContext); // nearby original source rows
 router.get("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), getImportBatch); // returning extracted import rows for review
-router.delete("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), deleteImportBatch); // deleting import review history only, not products
 router.get("/import-templates", requireRole("ADMIN", "MANAGER"), listImportTemplates); // saved supplier column mappings
 router.post("/import-templates", requireRole("ADMIN", "MANAGER"), saveImportTemplate); // create/update supplier import mapping
 router.delete("/import-templates/:id", requireRole("ADMIN", "MANAGER"), deleteImportTemplate); // remove supplier import mapping
 router.post("/", requireRole("ADMIN", "MANAGER"), create); // admin and managers can create new products
 router.post("/bulk-price-update", requireRole("ADMIN", "MANAGER"), bulkPriceUpdate); // audited seasonal/bulk price updates
+router.use("/import-batches/:batchId", async (req, res, next) => {
+  if (!["PUT", "PATCH", "DELETE"].includes(req.method)) return next();
+  try {
+    const batch = await prisma.productImportBatch.findUnique({ where: { id: String(req.params.batchId) }, select: { status: true } });
+    if (batch && ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status)) {
+      res.status(409).json({ code: "IMPORT_BUSY", error: "Wait for the current import operation to finish before changing this review." }); return;
+    }
+    next();
+  } catch (error) { next(error); }
+});
+router.delete("/import-batches/:batchId", requireRole("ADMIN", "MANAGER"), deleteImportBatch); // deleting import review history only, not products
+router.get("/import-batches/:batchId/commits/:token", requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  const commit = await prisma.productImportCommit.findFirst({ where: { batchId: String(req.params.batchId), token: String(req.params.token), batch: { deletedAt: null } }, select: { status: true, result: true, error: true } });
+  if (!commit) { res.status(404).json({ error: "Import attempt not found." }); return; }
+  res.json(commit);
+});
+router.post("/import-batches/:batchId/processing", requireRole("ADMIN", "MANAGER"), controlImportProcessing);
 router.post("/import-csv", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importCsv); // admin and managers can create CSV/XLSX review batches
+router.post("/import-spreadsheet-preview", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), previewSpreadsheet);
 router.post("/import-pdf", requireRole("ADMIN", "MANAGER"), receiveSupplierPdf, importPdf); // text or scanned PDF review preview
 router.post("/import-image", requireRole("ADMIN", "MANAGER"), csvUpload.single("file"), importImage); // image rate-list import via optional AI parser
 router.post("/import-documents/:documentId", requireRole("ADMIN", "MANAGER"), importFromDocument); // open an import review from an uploaded Documents inbox file

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router";
+import { useBlocker, useNavigate, useParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { useToast } from "~/components/ui/Toast";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
@@ -10,6 +10,8 @@ import {
   fetchProductImportSourceBlobApi,
   fetchProductImportSourcePageBlobApi,
   commitSavedProductImportBatchApi,
+  controlProductImportApi,
+  getProductImportCommitApi,
   getProductImportReviewApi,
   getProductImportSourceContextApi,
   getCategoriesApi,
@@ -79,6 +81,7 @@ const FILTERS: Array<{
   { value: "IDENTIFIER_CONFLICT", label: "Conflicts" },
   { value: "IN_FILE_DUPLICATE", label: "File duplicates" },
   { value: "FAILED", label: "Failed" },
+  { value: "NEEDS_REVIEW", label: "Needs attention" },
 ];
 
 function rowName(row: ProductImportRow) {
@@ -454,7 +457,7 @@ export default function ProductImportReviewPage() {
         if (active) setSourceContext(null);
       });
     return () => { active = false; };
-  }, [batchId, activeRowId, sourceContext]);
+  }, [batchId, activeRowId]);
 
   useEffect(() => {
     if (!activeRowId) return;
@@ -516,6 +519,53 @@ export default function ProductImportReviewPage() {
 
   const currentDraftFingerprint = useMemo(() => (draft ? JSON.stringify(draftPayload(draft)) : ""), [draft]);
   const dirty = Boolean(draft && currentDraftFingerprint !== savedFingerprint);
+  const blocker = useBlocker(dirty);
+  const [coverageAcknowledged, setCoverageAcknowledged] = useState(false);
+  const [processingAction, setProcessingAction] = useState(false);
+  const [commitUnknown, setCommitUnknown] = useState(false);
+  const processing = Boolean(review && ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(review.batch.status));
+  useEffect(() => { setCoverageAcknowledged(false); }, [batchId, review?.coverage?.completed]);
+  useEffect(() => {
+    if (!dirty) return;
+    const warn = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warn);
+    return () => window.removeEventListener("beforeunload", warn);
+  }, [dirty]);
+  useEffect(() => {
+    if (!processing || dirty) return;
+    let stopped = false;
+    let timer: ReturnType<typeof setTimeout>;
+    const poll = async () => { await loadReview(); if (!stopped) timer = setTimeout(poll, 2500); };
+    timer = setTimeout(poll, 2500);
+    return () => { stopped = true; clearTimeout(timer); };
+  }, [processing, dirty, batchId, page, pageSize, search, filter]);
+  useEffect(() => {
+    if (!batchId) return;
+    try { setCommitUnknown(Boolean(sessionStorage.getItem(`import-commit:${batchId}`))); } catch { /* Optional browser storage. */ }
+  }, [batchId]);
+  async function changeProcessing(action: "cancel" | "retry") {
+    if (!batchId) return;
+    try { setProcessingAction(true); await controlProductImportApi(batchId, action); await loadReview(); }
+    catch (error: any) { showToast("danger", error?.response?.data?.error || "The processing request could not be completed."); }
+    finally { setProcessingAction(false); }
+  }
+  async function recoverCommit() {
+    if (!batchId) return;
+    try {
+      const token = sessionStorage.getItem(`import-commit:${batchId}`);
+      if (!token) { setCommitUnknown(false); return; }
+      const attempt = await getProductImportCommitApi(batchId, token);
+      if (attempt.status === "IN_PROGRESS") { showToast("info", "The import is still running. Check its result again shortly."); return; }
+      if (attempt.result) setCommitResult(attempt.result);
+      sessionStorage.removeItem(`import-commit:${batchId}`);
+      setCommitUnknown(false);
+      await loadReview();
+      showToast(attempt.status === "COMPLETED" ? "success" : "info", attempt.status === "COMPLETED" ? "The previous import completed. Its saved result has been recovered." : "The previous attempt stopped. Completed rows are saved; review the remaining rows before submitting again.");
+    } catch (error: any) {
+      if (error?.response?.status === 404) { sessionStorage.removeItem(`import-commit:${batchId}`); setCommitUnknown(false); showToast("info", "No saved attempt was found. Refresh the review before submitting again."); }
+      else showToast("danger", "The import result is still unknown. Check again when the connection is available.");
+    }
+  }
   const sourceRows = sourceContext?.rows || [];
   const sourceHeaders = useMemo(() => {
     const keys = new Set<string>();
@@ -801,12 +851,12 @@ export default function ProductImportReviewPage() {
 
   async function saveDraft() {
     if (!draft || !review || !activeRow) return;
-    if (!draft.name.trim() || !draft.sku.trim() || !draft.brand.trim() || !draft.category.trim()) {
-      showToast("danger", "Product name, SKU, brand and category are required.");
+    if (draft.resolution !== "IGNORE" && !draft.name.trim()) {
+      showToast("danger", "Product name is required.");
       return;
     }
-    if (draft.availabilityStatus !== "COMING_SOON" && !(Number(draft.ratePerPiece) > 0)) {
-      showToast("danger", "Enter a Rate or mark this product as Coming soon.");
+    if (draft.resolution !== "IGNORE" && draft.availabilityStatus !== "COMING_SOON" && ![draft.ratePerPiece, draft.retailPrice, draft.wholesalePrice].some((price) => Number(price) > 0)) {
+      showToast("danger", "Enter an announced price or mark this product as Coming soon.");
       return;
     }
     const before = draftPayload(importRowToDraft(review.batch, activeRow));
@@ -828,7 +878,7 @@ export default function ProductImportReviewPage() {
         );
         showToast("success", `Row ${draft.rowNumber} ignored.`);
         await loadReview();
-        return;
+        return true;
       }
       const result = await saveReviewedProductImportRowsApi(review.batch.id, [draftPayload(draft)]);
       const saved = result.rows[0];
@@ -845,6 +895,8 @@ export default function ProductImportReviewPage() {
         [after],
       );
       showToast("success", `Row ${draft.rowNumber} saved.`);
+      await loadReview();
+      return true;
     } catch (saveError: any) {
       showToast("danger", saveError?.response?.data?.error || saveError?.message || "Row could not be saved.");
     } finally {
@@ -1217,16 +1269,23 @@ export default function ProductImportReviewPage() {
       showToast("danger", "Save or discard the current row changes before final commit.");
       return;
     }
+    if (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) { showToast("danger", "Acknowledge the unread source pages before committing."); return; }
     if (review.decisionCounts.unresolved > 0) {
       showToast("danger", `${review.decisionCounts.unresolved} rows still need a decision.`);
       return;
     }
     try {
       setCommitBusy(true);
-      const token = typeof crypto !== "undefined" && "randomUUID" in crypto
+      let token = "";
+      try { token = sessionStorage.getItem(`import-commit:${review.batch.id}`) || ""; } catch { /* Optional browser storage. */ }
+      token ||= typeof crypto !== "undefined" && "randomUUID" in crypto
         ? crypto.randomUUID()
         : `commit-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
-      const result = await commitSavedProductImportBatchApi(review.batch.id, token);
+      try { sessionStorage.setItem(`import-commit:${review.batch.id}`, token); } catch { /* The server still enforces idempotency. */ }
+      setCommitUnknown(true);
+      const result = await commitSavedProductImportBatchApi(review.batch.id, token, coverageAcknowledged);
+      try { sessionStorage.removeItem(`import-commit:${review.batch.id}`); } catch { /* Optional browser storage. */ }
+      setCommitUnknown(false);
       setCommitResult(result);
       setCommitOpen(false);
       setUndoStack([]);
@@ -1628,9 +1687,11 @@ export default function ProductImportReviewPage() {
               <div className="mt-2 grid gap-2">
                 {draft.changeSet.map((change) => (
                   <div key={change.field} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-[9px] bg-white/80 px-3 py-2 text-[10px] font-bold">
-                    <span>{String(change.currentValue ?? "Not entered")}</span>
+                    <span><span className="block text-xs text-slate-600">{readableSourceHeader(change.field)}</span>{String(change.currentValue ?? "Not entered")}</span>
                     <Icon name="arrow_forward" sizePx={15} />
-                    <span className="text-amber-900">{String(change.incomingValue ?? "Not entered")}</span>
+                    <span className="text-amber-900">{String(change.incomingValue ?? "Not entered")}
+                      {typeof change.currentValue === "number" && change.currentValue > 0 && typeof change.incomingValue === "number" && /price|rate/i.test(change.field) ? <span className="ml-2 font-semibold">({((change.incomingValue / change.currentValue - 1) * 100).toFixed(1)}%)</span> : null}
+                    </span>
                   </div>
                 ))}
               </div>
@@ -1666,6 +1727,13 @@ export default function ProductImportReviewPage() {
             <Icon name="save" sizePx={17} />
             {saving ? "Saving…" : dirty ? "Save row changes" : "Saved"}
           </button>
+          <button type="button" disabled={saving} className="h-10 rounded-lg border px-3 text-sm font-semibold" onClick={async () => {
+            const index = review?.rows.findIndex((row) => row.id === activeRowId) ?? -1;
+            const nextId = review?.rows[index + 1]?.id;
+            if (dirty && !await saveDraft()) return;
+            if (nextId) setActiveRowId(nextId);
+            else if (review && page < review.pagination.totalPages) { pendingPageEdge.current = "first"; setPage(page + 1); }
+          }}>Save and next</button>
         </div>
       </section>
     );
@@ -1675,14 +1743,33 @@ export default function ProductImportReviewPage() {
     return <div className="rounded-[18px] border border-rose-200 bg-rose-50 p-6"><h1 className="text-[18px] font-extrabold text-rose-900">Import review unavailable</h1><p className="mt-2 text-[13px] font-semibold text-rose-800">{error}</p><button type="button" onClick={() => navigate("/products")} className="mt-4 h-11 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white">Back to products</button></div>;
   }
 
+  if (processing) return <div className="mx-auto w-full max-w-xl space-y-4 rounded-xl border bg-white p-6" role="status" aria-live="polite">
+    <h1 className="text-xl font-bold">{review?.batch.status === "COMMITTING" ? "Applying reviewed changes" : "Preparing import review"}</h1>
+    <p>{review?.batch.fileName}</p>
+    <p>{review?.coverage?.completed || 0} of {review?.coverage?.total || "..."} pages processed. Saved progress remains available if you leave.</p>
+    {error ? <p role="alert" className="text-rose-800">{error}</p> : null}
+    <div className="flex flex-wrap gap-3"><button className="min-h-11 rounded-lg border px-4" onClick={() => navigate("/products")}>Back to products</button>
+      <button className="min-h-11 rounded-lg border px-4" onClick={() => void loadReview()}>Refresh status</button>
+      {review?.batch.status !== "COMMITTING" ? <button disabled={processingAction} className="min-h-11 rounded-lg border px-4" onClick={() => void changeProcessing("cancel")}>Stop processing</button> : null}</div>
+  </div>;
+
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden xl:gap-3">
+      {blocker.state === "blocked" ? <ModalFrame open title="Unsaved row changes" onClose={() => blocker.reset()} footer={<div className="flex flex-wrap gap-3"><button className="min-h-11 rounded-lg border px-4" onClick={() => blocker.reset()}>Keep editing</button><button className="min-h-11 rounded-lg border px-4" onClick={() => blocker.proceed()}>Discard and leave</button><button disabled={saving} className="min-h-11 rounded-lg border px-4" onClick={async () => { if (await saveDraft()) blocker.proceed(); }}>Save and leave</button></div>}><p>The current row has changes that have not been saved.</p></ModalFrame> : null}
+      {commitUnknown ? <div role="alert" className="shrink-0 rounded-lg bg-amber-50 p-3 text-sm">A previous import attempt needs a status check before another submission. <button className="font-bold underline" onClick={() => void recoverCommit()}>Check saved result</button></div> : null}
+      {review?.coverage && (review.coverage.total > 0 || review.coverage.requiresAcknowledgement) ? <div className="shrink-0 rounded-lg border bg-white p-3 text-sm">
+        <span>{review.coverage.completed} / {review.coverage.total || "unknown"} source pages processed.</span>
+        {review.coverage.requiresAcknowledgement ? <span className="ml-2 text-amber-800">Some source pages remain unread or incomplete. {review.coverage.failedPages.map((entry) => `Page ${entry.pageNumber}`).join(", ")}. <button disabled={processingAction || dirty} className="font-bold underline" onClick={() => void changeProcessing("retry")}>Retry remaining pages</button></span> : null}
+        {review.coverage.failedPages.map((entry) => entry.message ? <p key={entry.pageNumber} className="mt-1 text-amber-800">Page {entry.pageNumber}: {entry.message}</p> : null)}
+        {typeof review.batch.extractionMeta?.jobError === "string" ? <p role="alert" className="mt-1 text-amber-800">{review.batch.extractionMeta.jobError}</p> : null}
+      </div> : null}
+
       {/* Universal 1-Row Responsive Header */}
       <header className="flex shrink-0 items-center justify-between gap-2 rounded-[14px] border border-[#D8DBE0] bg-white p-2 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <button
             type="button"
-            onClick={() => setExitConfirmOpen(true)}
+            onClick={() => dirty ? navigate("/products") : setExitConfirmOpen(true)}
             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#11120d] transition hover:bg-[#F3F4F6] sm:h-10 sm:w-10 sm:rounded-[11px]"
             aria-label="Back to products"
           >
@@ -1703,7 +1790,7 @@ export default function ProductImportReviewPage() {
           <button
             type="button"
             onClick={() => setCommitOpen(true)}
-            disabled={!review || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
+            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
             title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
             className="inline-flex h-11 items-center gap-1 rounded-[9px] bg-[#11120d] px-3 text-[11px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40"
           >
@@ -1780,7 +1867,7 @@ export default function ProductImportReviewPage() {
           <button
             type="button"
             onClick={() => setCommitOpen(true)}
-            disabled={!review || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
+            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
             title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
             className="hidden h-10 items-center gap-2 rounded-[10px] bg-[#11120d] px-4 text-[12px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40 sm:inline-flex"
           >
@@ -3318,17 +3405,14 @@ export default function ProductImportReviewPage() {
 
       {/* Final Import Confirmation Modal */}
       {commitOpen && review ? (
-        <div className="fixed inset-0 z-[80] flex items-end justify-center bg-slate-950/45 p-0 sm:items-center sm:p-4" role="dialog" aria-modal="true" aria-label="Confirm final product import">
-          <button type="button" className="absolute inset-0 cursor-default" onClick={() => !commitBusy && setCommitOpen(false)} aria-label="Close final import confirmation" />
-          <section className="relative z-10 w-full max-w-[560px] rounded-t-[22px] border border-[#D8DBE0] bg-white p-5 sm:rounded-[20px]">
-            <div className="flex items-start justify-between gap-3"><div><h2 className="text-[18px] font-extrabold text-[#11120d]">Confirm final import</h2><p className="mt-1 text-[11px] font-semibold text-[#7A7F89]">This applies every saved decision in this batch. It is not a preview.</p></div><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-10 w-10 rounded-[10px] border border-[#D4D7DC]"><Icon name="close" sizePx={18} /></button></div>
+        <ModalFrame open title="Confirm final import" description="This applies every saved decision in this batch." onClose={() => { if (!commitBusy) setCommitOpen(false); }} mobileBottomSheet>
             <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
               {[{ label: "Create", value: review.decisionCounts.create }, { label: "Update", value: review.decisionCounts.update }, { label: "Keep", value: review.decisionCounts.keep }, { label: "Ignore", value: review.decisionCounts.ignore }, { label: "Unresolved", value: review.decisionCounts.unresolved }].map((item) => <div key={item.label} className={`rounded-[11px] border p-3 ${item.label === "Unresolved" && item.value > 0 ? "border-rose-200 bg-rose-50" : "border-[#D8DBE0] bg-[#F8F9FA]"}`}><div className="text-[18px] font-extrabold">{item.value}</div><div className="text-[9px] font-bold text-[#68707C]">{item.label}</div></div>)}
             </div>
             {review.priceMapping.required && !review.priceMapping.complete ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked until every extracted price column is classified.</div> : review.decisionCounts.unresolved > 0 ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked. Filter conflicts, file duplicates and failed rows; correct them or explicitly ignore them.</div> : <div className="mt-4 rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-bold leading-5 text-amber-950">Create and update decisions change product data. Keep and ignore decisions do not change existing products.</div>}
-            <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
-          </section>
-        </div>
+            {review.coverage?.requiresAcknowledgement ? <label className="mt-4 flex items-start gap-3 rounded-lg bg-amber-50 p-3 text-sm"><input type="checkbox" checked={coverageAcknowledged} onChange={(event) => setCoverageAcknowledged(event.target.checked)} className="mt-1" />I checked the source and understand that unread pages are excluded from this import.</label> : null}
+            <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || commitUnknown || (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
+        </ModalFrame>
       ) : null}
 
       {/* Exit Confirmation Modal */}

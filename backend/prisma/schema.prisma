@@ -277,6 +277,7 @@ model Product {
   sizeValue                        Float?
   sizeUnit                         String   @default("STANDARD")
   ratePerPiece                     Float?
+  rateUpdatedAt                    DateTime?
   packageQuantity                  Float?
   packageUnit                      String   @default("PIECE")
   saleUnit                         String   @default("PIECE")

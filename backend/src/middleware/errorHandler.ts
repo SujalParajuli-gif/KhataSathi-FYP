@@ -6,6 +6,8 @@ function statusToCode(status: number) {
   if (status === 401) return "UNAUTHORIZED";
   if (status === 403) return "FORBIDDEN";
   if (status === 404) return "NOT_FOUND";
+  if (status === 409) return "CONFLICT";
+  if (status === 413) return "FILE_TOO_LARGE";
   if (status === 429) return "RATE_LIMITED";
   if (status === 503) return "STORAGE_UNAVAILABLE";
   return "INTERNAL_ERROR";
@@ -30,20 +32,22 @@ export function errorHandler(
   }
 
   const status =
+    (err?.code === "LIMIT_FILE_SIZE" ? 413 : 0) ||
     Number(err?.statusCode || err?.status) ||
     (String(err?.message || "").includes("CORS") ? 403 : 500);
   const safeStatus = status >= 400 && status < 600 ? status : 500;
   const message =
-    safeStatus === 500
+    err?.code === "LIMIT_FILE_SIZE" ? "This file exceeds the upload size limit. Choose a smaller file." : safeStatus === 500
       ? "Internal server error"
       : err?.message || "Request failed";
 
   if (safeStatus >= 500) {
-    logger.error("Unhandled request error", err);
+    logger.error("Unhandled request error", err, { requestId: res.locals.requestId });
   }
 
   res.status(safeStatus).json({
     code: statusToCode(safeStatus),
     error: message,
+    requestId: res.locals.requestId,
   });
 }

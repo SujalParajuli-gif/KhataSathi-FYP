@@ -222,13 +222,14 @@ export function compareImportRowToCatalog(
     availabilityStatus !== "COMING_SOON"
     && (incomingRate === null || incomingRate <= 0)
     && (matchedRate === null || matchedRate <= 0)
+    && ![row.retailPrice, row.wholesalePrice, ...(matches.length === 1 ? [matches[0].retailPrice, matches[0].wholesalePrice] : [])].some((value) => Number(value) > 0)
   ) {
     return {
       comparisonStatus: "NEEDS_REVIEW",
       availabilityStatus,
       matchedProductId: matches.length === 1 ? matches[0].id : null,
       changes: [],
-      message: "Enter a Rate or mark this product as Coming soon.",
+      message: "Enter an announced price or mark this product as Coming soon.",
     };
   }
   if (matches.length === 0) {

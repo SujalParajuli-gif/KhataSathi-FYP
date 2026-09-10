@@ -2143,6 +2143,9 @@ export default function ProductLookupPage() {
                                 {product.ratePerPiece === null
                                   ? "Not entered"
                                   : formatNpr(product.ratePerPiece)}
+                                <div className="mt-1 text-xs font-normal text-slate-500" title={product.sourceCitation || undefined}>
+                                  {product.rateUpdatedAt ? `Rate updated ${new Date(product.rateUpdatedAt).toLocaleDateString("en-GB")}` : "Rate date unknown"}
+                                </div>
                               </td>
                             ) : null}
                             <td className="px-3.5 py-3.5 text-right font-extrabold text-[#000000] text-[13.5px]">
@@ -2304,6 +2307,7 @@ export default function ProductLookupPage() {
                                     "—"
                                   )}
                                 </div>
+                                {canViewPurchaseCost && purchaseCostVisible ? <div className="px-1 pb-1 text-center text-[9px] text-slate-500" title={product.sourceCitation || undefined}>{product.rateUpdatedAt ? new Date(product.rateUpdatedAt).toLocaleDateString("en-GB") : "Rate date unknown"}</div> : null}
                               </div>
 
                               {/* 2. Retail / खुद्रा */}

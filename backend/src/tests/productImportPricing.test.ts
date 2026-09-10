@@ -66,6 +66,14 @@ test("multiple extracted supplier price columns still require an explicit mappin
   assert.deepEqual(state.mapping, { priceOne: "", priceTwo: "" });
 });
 
+test("a single WSP or MRP is not silently treated as a purchase Rate", () => {
+  for (const key of ["wsp", "mrp", "priceOne"]) {
+    const state = getImportPriceMappingState({extractionMeta:{priceColumns:[{key,label:key.toUpperCase()}]}});
+    assert.equal(state.complete,false);
+    assert.equal(state.mapping[key],"");
+  }
+});
+
 test("image source regions keep the extractor's exact row coordinates", () => {
   const regions = normalizedImageSourceRegions([
     { boundingBox: [482, 80, 512, 920] },

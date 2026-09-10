@@ -1,0 +1,12 @@
+{
+  "fixtures": [{
+    "id": "synthetic-csv-missing-and-quoted-prices",
+    "file": "catalog.csv",
+    "nameColumn": "Name",
+    "priceColumns": ["Rate", "Retail"],
+    "expected": [
+      {"name": "Bucket 13 LTR", "prices": {"Rate": 1250, "Retail": 1500}},
+      {"name": "Coming soon planter", "prices": {"Rate": null, "Retail": null}}
+    ]
+  }]
+}

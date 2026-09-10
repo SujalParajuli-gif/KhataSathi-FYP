@@ -1,6 +1,9 @@
+import type { PdfTextLineRegion } from "./pdfTextLocations";
+
 export type PdfTextCatalogPage = {
   pageNumber: number;
   text: string;
+  lines?: PdfTextLineRegion[];
 };
 
 export type ExtractedPriceCandidate = {
@@ -19,6 +22,8 @@ export type ParsedPdfTextCatalogRow = {
   packageQuantity: number | null;
   packageUnit: string;
   extractedPrices: ExtractedPriceCandidate[];
+  region?: PdfTextLineRegion["region"];
+  warnings?: string[];
 };
 
 export type ParsedPdfTextCatalog = {
@@ -58,8 +63,71 @@ function unitKey(value: string) {
 }
 
 function parsedNumber(value: string) {
-  const normalized = value.replace(/,/g, "").replace(/^(?:rs\.?|npr)\s*/i, "").trim();
+  const normalized = value.replace(/[०-९]/g, (digit) => String(digit.charCodeAt(0) - 0x0966)).replace(/,/g, "").replace(/^(?:rs\.?|npr)\s*/i, "").trim();
   return /^\d+(?:\.\d+)?$/.test(normalized) ? Number(normalized) : null;
+}
+
+type Column = { kind: "name" | "code" | "unit" | "packing" | "price" | "ignore"; label: string; left?: number; right?: number };
+
+function columnKind(label: string): Column["kind"] {
+  const text = compact(label).toLowerCase();
+  if (/\b(?:packing|pack(?:age)?\s*(?:qty|quantity)?|pkg|case\s*qty)\b/.test(text) && !/price|rate|mrp|wsp/.test(text)) return "packing";
+  if (/\b(?:rate|price|wsp|mrp)\b/.test(text)) return "price";
+  if (/\b(?:name|description|particulars|product|jar|item)\b/.test(text) && !/code/.test(text)) return "name";
+  if (/\bcode\b/.test(text)) return "code";
+  if (/^(?:unit|uom)$/i.test(text)) return "unit";
+  return "ignore";
+}
+
+function priceLabel(label: string) {
+  const labels = detectPriceLabels([{ pageNumber: 1, text: label }]);
+  return labels[0] || compact(label);
+}
+
+// Retain cell boundaries from the header. Never infer packing from number count.
+function structuredCells(page: PdfTextCatalogPage): Array<{ text: string; columns: Column[] | null; cells: string[]; region?: PdfTextLineRegion["region"] }> {
+  const located = page.lines || [];
+  let geometryColumns: Column[] | null = null;
+  const output: Array<{ text: string; columns: Column[] | null; cells: string[]; region?: PdfTextLineRegion["region"] }> = [];
+  for (const line of located) {
+    if (!line.items?.length) continue;
+    const chunks: Array<{ text: string; left: number; right: number }> = [];
+    for (const item of line.items) {
+      const last = chunks[chunks.length - 1];
+      if (last && item.left - last.right < 9) { last.text += ` ${item.text}`; last.right = item.right; }
+      else chunks.push({ ...item });
+    }
+    const candidate = chunks.map((chunk) => ({ ...chunk, label: chunk.text, kind: columnKind(chunk.text) }));
+    if (candidate.some((column) => column.kind === "name") && candidate.some((column) => column.kind === "price") && candidate.filter((column) => column.kind !== "ignore").length >= 2) {
+      // Separate side-by-side tables need layout OCR; merging them loses products.
+      if (candidate.filter((column) => column.kind === "name").length > 1) return [];
+      geometryColumns = candidate;
+      output.push({ text: line.text, columns: null, cells: [], region: line.region });
+      continue;
+    }
+    if (!geometryColumns) { output.push({ text: line.text, columns: null, cells: [], region: line.region }); continue; }
+    const cells = geometryColumns.map(() => "");
+    for (const item of line.items) {
+      const center = (item.left + item.right) / 2;
+      let index = geometryColumns.findIndex((column, i) => i + 1 === geometryColumns!.length || center < (column.right! + geometryColumns![i + 1].left!) / 2);
+      if (index < 0) index = cells.length - 1;
+      cells[index] = compact(`${cells[index]} ${item.text}`);
+    }
+    output.push({ text: line.text, columns: geometryColumns, cells, region: line.region });
+  }
+  if (geometryColumns) return output;
+  let columns: Column[] | null = null;
+  return page.text.split(/\r?\n/).map((text) => {
+    const cells = text.split("\t").map(compact);
+    const candidate = cells.map((label) => ({ label, kind: columnKind(label) }));
+    if (candidate.some((column) => column.kind === "name") && candidate.some((column) => column.kind === "price") && cells.length > 1
+        && !cells.some((cell) => /packing\s+(?:wholesale|wsp|mrp)|packing\s+wsp\s+mrp/i.test(cell))) {
+      columns = candidate;
+      if (candidate.filter((column) => column.kind === "name").length > 1) columns = null;
+      return { text, columns: null, cells: [] };
+    }
+    return { text, columns, cells };
+  });
 }
 
 function priceKey(label: string, index: number) {
@@ -158,13 +226,47 @@ export function parsePdfTextCatalogPages(
   const rows: ParsedPdfTextCatalogRow[] = [];
   let currentCategory = "Uncategorized";
   let maximumPriceCount = 0;
+  const allPriceColumns = new Map<string, { key: string; label: string }>();
 
   for (const page of pages) {
-    const lines = String(page.text || "").split(/\r?\n/);
+    const inputs = structuredCells(page);
+    const lines = inputs.map((line) => line.text);
     for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
       const original = lines[lineIndex];
       const rawText = compact(original);
       if (isNonProductLine(original)) continue;
+
+      const mapped = inputs[lineIndex];
+      if (mapped.columns && mapped.cells.length > 1) {
+        const nameIndex = mapped.columns.findIndex((column) => column.kind === "name");
+        const productName = compact(mapped.cells[nameIndex] || "").replace(/^\([a-z]\)\s*/i, "");
+        if (productName && !/^\d+$/.test(productName) && !/^(?:total|note|remarks)\b/i.test(productName)) {
+          const warnings: string[] = [];
+          const extractedPrices: ExtractedPriceCandidate[] = [];
+          let packageQuantity: number | null = null;
+          let packageUnit = "PIECE";
+          let productCodeVariant = "";
+          mapped.columns.forEach((column, index) => {
+            const cell = mapped.cells[index] || "";
+            if (column.kind === "code") productCodeVariant = cell;
+            if (column.kind === "unit") packageUnit = UNIT_ALIASES[unitKey(cell)] || "PIECE";
+            if (column.kind === "packing") packageQuantity = parsedNumber(cell);
+            if (column.kind === "price") {
+              const label = priceLabel(column.label);
+              const key = priceKey(label, index);
+              allPriceColumns.set(key, { key, label });
+              const value = parsedNumber(cell);
+              if (value !== null) extractedPrices.push({ key, label, value });
+              else if (cell && !/coming soon|tba|n\/?a|^[-–—]$/i.test(cell)) warnings.push(`${label}: could not read "${cell}". Check the source.`);
+              if (/\b(?:dozen|pack|box|set|case|carton)\b|\/\s*(?:doz|pkt|box)/i.test(column.label)) warnings.push(`${column.label}: confirm the price basis before using a per-piece rate.`);
+            }
+          });
+          if (!extractedPrices.length) warnings.push("No price captured. Check whether the supplier left it unannounced or extraction missed it.");
+          if (mapped.cells.every((cell, index) => index === nameIndex || !cell)) warnings.push("This may be a heading or part of a wrapped product name. Check the source before creating a product.");
+          rows.push({ pageNumber: page.pageNumber, lineNumber: lineIndex + 1, rawText, productName, productCodeVariant, category: currentCategory, packageQuantity, packageUnit, extractedPrices, ...("region" in mapped && mapped.region ? { region: mapped.region } : {}), ...(warnings.length ? { warnings } : {}) });
+          continue;
+        }
+      }
 
       if (serialCodePriceTable) {
         const tableRow = parseSerialCodePriceLine(original);
@@ -192,7 +294,7 @@ export function parsePdfTextCatalogPages(
         continue;
       }
 
-      const cells = original.split(/\t+/).map(compact).filter(Boolean);
+      const cells = original.split(/\t/).map(compact);
       const unitIndex = cells.findIndex((cell) => Boolean(UNIT_ALIASES[unitKey(cell)]));
       if (unitIndex <= 0) continue;
 
@@ -200,10 +302,9 @@ export function parsePdfTextCatalogPages(
         .slice(unitIndex + 1)
         .map((cell, offset) => ({ cellIndex: unitIndex + 1 + offset, value: parsedNumber(cell) }))
         .filter((item): item is { cellIndex: number; value: number } => item.value !== null);
-      if (numericAfterUnit.length === 0) continue;
-
-      const packageQuantity = numericAfterUnit.length >= 2 ? numericAfterUnit[0].value : null;
-      const priceValues = numericAfterUnit.length >= 2
+      const hasPackingColumn = /\b(?:packing|pack(?:age)?\s*(?:qty|quantity)|pkg)\b/i.test(page.text.split(/\r?\n/).slice(0, 12).join(" "));
+      const packageQuantity = hasPackingColumn && numericAfterUnit[0]?.cellIndex === unitIndex + 1 ? numericAfterUnit[0].value : null;
+      const priceValues = packageQuantity !== null
         ? numericAfterUnit.slice(1).map((item) => item.value)
         : numericAfterUnit.map((item) => item.value);
       maximumPriceCount = Math.max(maximumPriceCount, priceValues.length);
@@ -225,6 +326,7 @@ export function parsePdfTextCatalogPages(
         category: currentCategory,
         packageQuantity,
         packageUnit: UNIT_ALIASES[unitKey(cells[unitIndex])] || "PIECE",
+        ...(!priceValues.length ? { warnings: ["No price captured. Check the source before marking this product as coming soon."] } : {}),
         extractedPrices: priceValues.map((value, priceIndex) => {
           const label = detectedLabels[priceIndex] || `Extracted price ${priceIndex + 1}`;
           return { key: priceKey(label, priceIndex), label, value };
@@ -237,5 +339,6 @@ export function parsePdfTextCatalogPages(
     const label = detectedLabels[index] || `Extracted price ${index + 1}`;
     return { key: priceKey(label, index), label };
   });
-  return { rows, priceColumns };
+  for (const column of priceColumns) allPriceColumns.set(column.key, column);
+  return { rows, priceColumns: [...allPriceColumns.values()] };
 }

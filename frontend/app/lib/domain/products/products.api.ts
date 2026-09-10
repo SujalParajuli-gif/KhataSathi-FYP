@@ -34,6 +34,7 @@ type BackendProduct = {
   sizeValue?: number | null;
   sizeUnit?: string | null;
   ratePerPiece?: number | null;
+  rateUpdatedAt?: string | null;
   packageQuantity?: number | null;
   packageUnit?: string | null;
   saleUnit?: string | null;
@@ -96,6 +97,7 @@ function toFrontendProduct(product: BackendProduct): Product {
     quantityStep: Number(product.quantityStep ?? 1),
     wholesaleEligible: product.wholesaleEligible ?? true,
     sourceCitation: product.sourceCitation ?? "",
+    rateUpdatedAt: product.rateUpdatedAt || null,
     sellingPriceStatus:
       product.sellingPriceStatus === "PENDING" ||
       !Number(product.retailPrice) ||

@@ -23,6 +23,7 @@ export function redactProductForLookup<T extends Record<string, any>>(
 
   if (!visibility.canViewPurchaseCost) {
     delete visibleProduct.ratePerPiece;
+    delete visibleProduct.rateUpdatedAt;
   }
 
   if (!visibility.canViewWholesalePrice) {

@@ -1,6 +1,7 @@
 export type PdfTextLineRegion = {
   text: string;
-  region: { top: number; left: number; bottom: number; right: number; scale: 1000 };
+  items?: Array<{ text: string; left: number; right: number }>;
+  region: { top: number; left: number; bottom: number; right: number; scale: number };
 };
 
 function compact(value: string) {
@@ -39,6 +40,7 @@ export async function extractPdfTextLineRegions(buffer: Buffer) {
         const pdfTop = Math.max(...ordered.map((item) => item.y + item.height));
         return {
           text: compact(ordered.map((item) => item.text).join(" ")),
+          items: ordered.map((item) => ({ text: item.text, left: item.x / viewport.width * 1000, right: (item.x + item.width) / viewport.width * 1000 })),
           region: {
             top: Math.max(0, Math.round(((viewport.height - pdfTop - 2) / viewport.height) * 1000)),
             left: Math.max(0, Math.round(((left - 2) / viewport.width) * 1000)),

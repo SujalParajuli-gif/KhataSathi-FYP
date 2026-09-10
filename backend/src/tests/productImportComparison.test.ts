@@ -47,7 +47,7 @@ test("a missing Rate needs an explicit Coming soon decision", () => {
   assert.equal(result.availabilityStatus, "COMING_SOON");
 });
 
-test("a Retail-only row still needs a Rate or Coming soon decision", () => {
+test("an announced retail price can be imported without inventing a purchase rate", () => {
   assert.equal(resolveProductAvailability(null, 299, null), "CATALOG_LISTED");
   const result = compareImportRowToCatalog({
     rowKey: "spl:2",
@@ -57,7 +57,7 @@ test("a Retail-only row still needs a Rate or Coming soon decision", () => {
     retailPrice: 299,
     wholesalePrice: null,
   }, []);
-  assert.equal(result.comparisonStatus, "NEEDS_REVIEW");
+  assert.equal(result.comparisonStatus, "READY_NEW");
   assert.equal(result.availabilityStatus, "CATALOG_LISTED");
 });
 

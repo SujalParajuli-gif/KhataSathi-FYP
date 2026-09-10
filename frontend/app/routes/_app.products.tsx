@@ -1669,8 +1669,8 @@ export default function ProductsPage() {
     if (!form.category.trim() || form.category === "All Categories") {
       errors.category = "Category is required.";
     }
-    if (form.availabilityStatus !== "COMING_SOON" && !(Number(form.ratePerPiece) > 0)) {
-      errors.ratePerPiece = "Enter a Rate or mark this product as Coming soon.";
+    if (form.availabilityStatus !== "COMING_SOON" && ![form.ratePerPiece, form.retailPrice, form.wholesalePrice].some((value) => Number(value) > 0)) {
+      errors.ratePerPiece = "Enter an announced price or mark this product as Coming soon.";
     } else if (
       form.ratePerPiece !== null &&
       (!Number.isFinite(form.ratePerPiece) || form.ratePerPiece <= 0)
@@ -2056,7 +2056,7 @@ export default function ProductsPage() {
   }
 
   // this uploads a supplier file into a review batch; products are only inserted after the selected rows are approved
-  async function handleImportCsv() {
+  async function handleImportCsv(selection?: { sheetName?: string; headerRowNumber?: number }) {
     // requiring a file first avoids sending an empty import request
     if (!importFile) {
       setImportError("Choose a CSV, Excel, PDF, or image rate list before uploading.");
@@ -2091,10 +2091,11 @@ export default function ProductsPage() {
       }
       setImportProcessingKind(isPdf ? "pdf" : isImage ? "image" : "spreadsheet");
       const result = (await (isPdf
-        ? importPdfApi(importFile, { signal: abortController.signal })
+        ? importPdfApi(importFile, { signal: abortController.signal, supplier: importSupplier.trim() })
         : isImage
-          ? importImageRateListApi(importFile, { signal: abortController.signal })
+          ? importImageRateListApi(importFile, { signal: abortController.signal, supplier: importSupplier.trim() })
           : importCsvApi(importFile, {
+              ...selection,
               supplier: importSupplier.trim() || undefined,
               templateId: importTemplateId || undefined,
               fieldMap: Object.fromEntries(
@@ -2126,7 +2127,7 @@ export default function ProductsPage() {
     } catch (error: any) {
       // preferring backend error text here helps the user understand row format issues more clearly
       const message = error?.name === "AbortError"
-        ? "Import cancelled. No products were added."
+        ? "Upload stopped. No products were added. Check import history in case the source was already saved."
         :
         error?.response?.data?.error ||
         error?.message ||
@@ -3360,7 +3361,7 @@ export default function ProductsPage() {
         const errors: Partial<Record<PriceField, string>> = {};
         const product = selectedProducts.find((item) => item.id === row.productId);
         if (row.ratePerPiece !== undefined && (!Number.isFinite(row.ratePerPiece) || row.ratePerPiece <= 0)) errors.ratePerPiece = "Enter a Rate greater than 0.";
-        if (bulkPriceMode === "MANUAL" && product?.availabilityStatus !== "COMING_SOON" && !(Number(row.ratePerPiece ?? product?.ratePerPiece) > 0)) errors.ratePerPiece = "Enter a Rate greater than 0.";
+        if (bulkPriceMode === "MANUAL" && product?.availabilityStatus !== "COMING_SOON" && ![row.ratePerPiece ?? product?.ratePerPiece, row.retailPrice ?? product?.retailPrice, row.wholesalePrice ?? product?.wholesalePrice].some((value) => Number(value) > 0)) errors.ratePerPiece = "Enter a Rate greater than 0.";
         if (row.wholesalePrice !== undefined && (!Number.isFinite(row.wholesalePrice) || row.wholesalePrice <= 0)) errors.wholesalePrice = "Enter a wholesale price greater than 0.";
         if (row.retailPrice !== undefined && (!Number.isFinite(row.retailPrice) || row.retailPrice <= 0)) errors.retailPrice = "Enter a retail price greater than 0.";
         if (Object.keys(errors).length > 0) rowErrors[row.productId] = errors;

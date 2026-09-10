@@ -824,6 +824,13 @@ function ModalShell({
   footerClassName?: string;
 }) {
   useBodyScrollLock(open);
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  React.useEffect(() => {
+    if (!open) return;
+    const previous = document.activeElement as HTMLElement | null;
+    const frame = requestAnimationFrame(() => dialogRef.current?.focus());
+    return () => { cancelAnimationFrame(frame); if (previous?.isConnected) previous.focus(); };
+  }, [open]);
 
   if (!open) return null;
 
@@ -837,6 +844,21 @@ function ModalShell({
       />
       <div className="absolute inset-0 z-10 flex items-end justify-center p-0 lg:items-center lg:p-[12px]">
         <div
+          ref={dialogRef}
+          role="dialog"
+          aria-modal="true"
+          aria-label={title}
+          tabIndex={-1}
+          onKeyDown={(event) => {
+            if (event.defaultPrevented || !dialogRef.current?.contains(event.target as Node)) return;
+            if (event.key === "Escape") { event.preventDefault(); event.stopPropagation(); onClose(); return; }
+            if (event.key !== "Tab") return;
+            const controls = Array.from(dialogRef.current.querySelectorAll<HTMLElement>('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), a[href], [tabindex="0"]')).filter((control) => control.offsetParent !== null);
+            const first = controls[0]; const last = controls.at(-1);
+            if (!first) { event.preventDefault(); return; }
+            if (event.shiftKey && (document.activeElement === first || document.activeElement === dialogRef.current)) { event.preventDefault(); last?.focus(); }
+            else if (!event.shiftKey && document.activeElement === last) { event.preventDefault(); first.focus(); }
+          }}
           className={cn(
             "relative z-10 flex h-auto max-h-[92dvh] w-full flex-col overflow-hidden rounded-t-[20px] bg-white border border-[#CFCFD3] lg:max-h-[calc(100vh-28px)] lg:rounded-[18px] lg:border lg:border-[#CFCFD3]",
             maxWidthClass || (landscape ? "max-w-[1180px]" : "max-w-[1040px]"),
@@ -1073,7 +1095,7 @@ export default function ProductsModals({
   ) => void;
   onCloseImport: () => void;
   onCancelImportProcessing: () => void;
-  onUploadCsvClick: () => void;
+  onUploadCsvClick: (selection?: { sheetName?: string; headerRowNumber?: number }) => void;
 }) {
   const inputBase =
     "h-[38px] w-full rounded-[12px] border bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
@@ -1299,6 +1321,10 @@ export default function ProductsModals({
 
   const [spreadsheetPreview, setSpreadsheetPreview] = React.useState<SpreadsheetPreviewResult | null>(null);
   const [previewLoading, setPreviewLoading] = React.useState(false);
+  const [previewError, setPreviewError] = React.useState("");
+  const [sheetSelection, setSheetSelection] = React.useState("");
+  const [headerSelection, setHeaderSelection] = React.useState<number | undefined>();
+  React.useEffect(() => { setSheetSelection(""); setHeaderSelection(undefined); setPreviewError(""); setSpreadsheetPreview(null); }, [importFile]);
   const [showAdvancedTemplates, setShowAdvancedTemplates] = React.useState(false);
 
   React.useEffect(() => {
@@ -1318,8 +1344,7 @@ export default function ProductsModals({
     }
 
     const isSpreadsheet =
-      importFile.name.endsWith(".csv") ||
-      importFile.name.endsWith(".xlsx") ||
+      /\.(csv|xlsx)$/i.test(importFile.name) ||
       importFile.type.includes("sheet") ||
       importFile.type.includes("csv");
 
@@ -1330,15 +1355,18 @@ export default function ProductsModals({
     }
 
     let cancelled = false;
+    const controller = new AbortController();
     setPreviewLoading(true);
+    setPreviewError("");
 
-    extractSpreadsheetPreview(importFile)
+    extractSpreadsheetPreview(importFile, { sheetName: sheetSelection || undefined, headerRowNumber: headerSelection, signal: controller.signal })
       .then((preview) => {
         if (cancelled) return;
         setSpreadsheetPreview(preview);
         if (preview?.columns.length) {
           setImportFieldMap((current) => {
-            const next = { ...current };
+            const availableHeaders = new Set(preview.columns.map((column) => column.header));
+            const next = Object.fromEntries(Object.entries(current).map(([key, value]) => [key, availableHeaders.has(value) ? value : ""]));
             preview.columns.forEach((col) => {
               if (col.autoMatchedField && !next[col.autoMatchedField]) {
                 next[col.autoMatchedField] = col.header;
@@ -1350,7 +1378,9 @@ export default function ProductsModals({
       })
       .catch((err) => {
         console.warn("Spreadsheet preview extraction failed:", err);
-        if (!cancelled) setSpreadsheetPreview(null);
+        if (!cancelled) {
+          setPreviewError(err?.response?.data?.error || "The spreadsheet preview could not be loaded. Please try again.");
+        }
       })
       .finally(() => {
         if (!cancelled) setPreviewLoading(false);
@@ -1358,8 +1388,9 @@ export default function ProductsModals({
 
     return () => {
       cancelled = true;
+      controller.abort();
     };
-  }, [importFile, setImportFieldMap]);
+  }, [importFile, sheetSelection, headerSelection, setImportFieldMap]);
 
   function handleColumnMappingChange(colHeader: string, newFieldKey: string) {
     setImportFieldMap((prev) => {
@@ -2653,7 +2684,7 @@ export default function ProductsModals({
                 Nothing is added until review.
               </span>
               <Button variant="secondary" icon="close" onClick={onCancelImportProcessing}>
-                Cancel processing
+                Stop waiting
               </Button>
             </div>
           ) : (
@@ -2661,8 +2692,8 @@ export default function ProductsModals({
               <Button
                 variant="primary"
                 icon="upload_file"
-                onClick={onUploadCsvClick}
-                disabled={importBusy}
+                onClick={() => onUploadCsvClick({ sheetName: spreadsheetPreview?.sheetName, headerRowNumber: spreadsheetPreview?.headerRowNumber })}
+                disabled={importBusy || !importFile || previewLoading || Boolean(previewError)}
               >
                 {importBusy ? "Importing..." : "Import File"}
               </Button>
@@ -3771,7 +3802,20 @@ export default function ProductsModals({
                         </div>
                       </div>
 
-                      {/* Interactive Column Mapping Card */}
+                        {previewError ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{previewError}</p> : null}
+                        {spreadsheetPreview ? <div className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2">
+                          {spreadsheetPreview.sheets.length > 0 ? <label className="text-sm font-semibold">Worksheet
+                            <ProjectSelect value={spreadsheetPreview.sheetName || ""} onChange={(event) => { setSheetSelection(event.target.value); setHeaderSelection(undefined); }}>
+                              {spreadsheetPreview.sheets.map((name) => <option key={name} value={name}>{name}</option>)}
+                            </ProjectSelect>
+                          </label> : null}
+                          <label className="text-sm font-semibold">Header row
+                            <input type="number" min={1} max={50} value={headerSelection ?? spreadsheetPreview.headerRowNumber} onChange={(event) => { const row = Number(event.target.value); if (row >= 1 && row <= 50) setHeaderSelection(row); }} className="mt-1 h-10 w-full rounded-lg border px-3" />
+                          </label>
+                          <p className="text-sm text-slate-600 sm:col-span-2">{spreadsheetPreview.totalRows} rows in this selection. Other worksheets are excluded.</p>
+                          {spreadsheetPreview.warnings.map((warning, index) => <p key={index} className="text-sm text-amber-800 sm:col-span-2">{warning}</p>)}
+                        </div> : null}
+                        {/* Interactive Column Mapping Card */}
                       <div className="rounded-[16px] border border-[#E5E7EB] bg-white overflow-hidden">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3">
                           <div>
@@ -3986,6 +4030,10 @@ export default function ProductsModals({
                 </div>
               )}
 
+              {importTab !== "csv" ? <label className="mb-3 block text-sm font-semibold">Supplier / brand
+                <input value={importSupplier} onChange={(event) => setImportSupplier(event.target.value)} placeholder="Brand shown on this file" className="mt-1 h-11 w-full rounded-lg border px-3" />
+                <span className="mt-1 block text-xs font-normal text-slate-600">The filename is retained only as a source reference.</span>
+              </label> : null}
               {importTab === "pdf" && (
                 <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
                   <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">

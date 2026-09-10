@@ -205,16 +205,18 @@ test("manual price updates can change Rate and selling prices together", async (
     assert.equal(result.updatedCount, 1);
     assert.deepEqual(mock.savedData, {
       ratePerPiece: 110,
+      rateUpdatedAt: mock.savedData?.rateUpdatedAt,
       retailPrice: 150,
       wholesalePrice: 135,
       sellingPriceStatus: "READY",
     });
+    assert.ok(mock.savedData?.rateUpdatedAt instanceof Date);
   } finally {
     mock.restore();
   }
 });
 
-test("a normal product cannot receive selling prices without a Rate", async () => {
+test("retail-only products can update their announced selling price", async () => {
   const mock = installPricingMocks({ product: { ratePerPiece: null } });
   try {
     const result = await bulkUpdateProductPrices({
@@ -225,9 +227,10 @@ test("a normal product cannot receive selling prices without a Rate", async () =
       actorId: "actor-1",
     });
 
-    assert.equal(result.updatedCount, 0);
-    assert.equal(result.errorCount, 1);
-    assert.match(result.errors[0]?.message || "", /Rate or mark this product as Coming soon/);
+    assert.equal(result.updatedCount, 1);
+    assert.equal(result.errorCount, 0);
+    assert.equal(mock.savedData?.retailPrice, 150);
+    assert.equal(mock.savedData?.rateUpdatedAt, undefined);
   } finally {
     mock.restore();
   }

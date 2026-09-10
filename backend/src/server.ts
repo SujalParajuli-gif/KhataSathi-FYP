@@ -1,3 +1,5 @@
+import { createServer } from "node:http";
+import { startImportWorker, stopImportWorker } from "./modules/products/importWorker";
 import "dotenv/config";
 import express from "express";
 import cors from "cors";
@@ -67,7 +69,8 @@ const rateLimitConfig = getRateLimitConfig();
 app.set("trust proxy", 1);
 
 app.use((req, res, next) => {
-  const requestId = String(req.header("x-request-id") || randomUUID());
+  const suppliedRequestId = req.header("x-request-id") || "";
+  const requestId = /^[A-Za-z0-9_-]{1,64}$/.test(suppliedRequestId) ? suppliedRequestId : randomUUID();
   res.locals.requestId = requestId;
   res.setHeader("X-Request-Id", requestId);
   next();
@@ -286,13 +289,14 @@ app.use(notFoundHandler);
 app.use(errorHandler);
 
 // starting the server on all network interfaces (0.0.0.0) so it is accessible from other devices on the network
-const server = app.listen(PORT, "0.0.0.0", () => {
+const server = createServer(app);
+void startImportWorker().then(() => server.listen(PORT, "0.0.0.0", () => {
   console.log(`✅ KhataSathi Backend running on http://localhost:${PORT}`);
   logger.info("KhataSathi Backend running", {
     port: PORT,
     healthUrl: `http://localhost:${PORT}/api/health`,
   });
-});
+})).catch((error) => { logger.error("Import recovery failed; server startup stopped", error); process.exit(1); });
 
 async function runEsewaCleanup() {
   try {
@@ -424,6 +428,7 @@ const authSessionPurgeTimer = setInterval(() => {
 }, 24 * 60 * 60 * 1000);
 authSessionPurgeTimer.unref();
 
+
 let shuttingDown = false;
 
 async function shutdown(signal: string) {
@@ -431,6 +436,7 @@ async function shutdown(signal: string) {
   shuttingDown = true;
 
   logger.info("Shutdown signal received", { signal });
+  const workerStopped = stopImportWorker();
   clearInterval(esewaCleanupTimer);
   clearInterval(draftRequestExpiryTimer);
   clearInterval(parkedBillExpiryTimer);
@@ -451,6 +457,7 @@ async function shutdown(signal: string) {
     }
 
     try {
+      await workerStopped;
       await prisma.$disconnect();
       logger.info("Prisma connection closed");
       process.exit(error ? 1 : 0);

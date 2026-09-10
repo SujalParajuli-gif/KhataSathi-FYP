@@ -36,15 +36,20 @@ test("review draft normalization produces a durable import payload", () => {
   assert.equal(prepared.packageUnit, "PIECE");
 });
 
-test("review draft save rejects missing identity fields", () => {
+test("review draft requires a product name and generates a stable missing internal SKU", () => {
   assert.throws(
     () => prepareReviewedImportRowDraft(validRow({ name: "" })),
     ReviewedImportRowValidationError,
   );
-  assert.throws(
-    () => prepareReviewedImportRowDraft(validRow({ sku: "" })),
-    ReviewedImportRowValidationError,
-  );
+  const row = validRow({ sku: "" });
+  assert.ok(prepareReviewedImportRowDraft(row).sku);
+  assert.equal(prepareReviewedImportRowDraft(row).sku, prepareReviewedImportRowDraft(row).sku);
+});
+
+test("a reviewed retail-only product does not require an invented supplier rate", () => {
+  const prepared = prepareReviewedImportRowDraft(validRow({ ratePerPiece: null, wholesalePrice: null }));
+  assert.equal(prepared.ratePerPiece, null);
+  assert.equal(prepared.retailPrice, 130);
 });
 
 test("review draft save rejects invalid prices, packages, and stock", () => {

@@ -52,3 +52,10 @@ test("malformed recovery backup status is rejected", () => {
     /unsupported/i,
   );
 });
+
+test("a missed nightly backup makes a previous success stale", () => {
+  const raw = { schemaVersion: 1, status: "SUCCESS", startedAt: "2026-09-01T00:00:00Z", completedAt: "2026-09-01T00:01:00Z" };
+  assert.equal(sanitizeRecoveryBackupStatus(raw, new Date("2026-09-02T00:00:00Z")).status, "SUCCESS");
+  assert.equal(sanitizeRecoveryBackupStatus(raw, new Date("2026-09-03T00:00:00Z")).status, "STALE");
+  assert.throws(() => sanitizeRecoveryBackupStatus({ ...raw, completedAt: null }), /completion time/);
+});

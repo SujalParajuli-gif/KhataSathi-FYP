@@ -1,5 +1,5 @@
-// Client-side spreadsheet preview and intelligent column auto-detection
-// Parses CSV and XLSX workbooks in-browser (<50ms) to provide live header and sample data previews
+// The backend owns sheet/header parsing; the browser only suggests field mappings.
+import api from "~/lib/api/client";
 
 export type DetectedSpreadsheetColumn = {
   index: number;
@@ -11,6 +11,10 @@ export type DetectedSpreadsheetColumn = {
 
 export type SpreadsheetPreviewResult = {
   sheetName?: string;
+  sheets: string[];
+  headerRowNumber: number;
+  totalRows: number;
+  warnings: string[];
   totalColumns: number;
   columns: DetectedSpreadsheetColumn[];
 };
@@ -169,178 +173,20 @@ export function autoDetectFieldKey(
   return undefined;
 }
 
-// Simple CSV tokenizer that handles commas, semicolons, tabs, and quotes
-function parseCsvLine(line: string, delimiter: string): string[] {
-  const result: string[] = [];
-  let current = "";
-  let insideQuote = false;
-
-  for (let i = 0; i < line.length; i++) {
-    const char = line[i];
-    if (char === '"') {
-      if (insideQuote && line[i + 1] === '"') {
-        current += '"';
-        i++;
-      } else {
-        insideQuote = !insideQuote;
-      }
-    } else if (char === delimiter && !insideQuote) {
-      result.push(current.trim());
-      current = "";
-    } else {
-      current += char;
-    }
-  }
-  result.push(current.trim());
-  return result;
-}
-
-function detectCsvDelimiter(text: string): string {
-  const firstLines = text.split(/\r?\n/).slice(0, 5).filter(Boolean);
-  if (!firstLines.length) return ",";
-
-  const counts = { ",": 0, ";": 0, "\t": 0 };
-  firstLines.forEach((line) => {
-    counts[","] += (line.match(/,/g) || []).length;
-    counts[";"] += (line.match(/;/g) || []).length;
-    counts["\t"] += (line.match(/\t/g) || []).length;
-  });
-
-  if (counts["\t"] > counts[","] && counts["\t"] > counts[";"]) return "\t";
-  if (counts[";"] > counts[","]) return ";";
-  return ",";
-}
-
 export async function extractSpreadsheetPreview(
   file: File,
-): Promise<SpreadsheetPreviewResult | null> {
-  const isExcel =
-    file.name.endsWith(".xlsx") ||
-    file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
-
-  try {
-    if (isExcel) {
-      const ExcelJS = await import("exceljs");
-      const workbook = new ExcelJS.Workbook();
-      const buffer = await file.arrayBuffer();
-      await workbook.xlsx.load(buffer);
-
-      const worksheet = workbook.worksheets[0];
-      if (!worksheet) return null;
-
-      // Find first row with at least 2 non-empty text cells (avoids banner titles in row 1)
-      let headerRowIndex = 1;
-      const maxScan = Math.min(10, worksheet.rowCount);
-      for (let r = 1; r <= maxScan; r++) {
-        const row = worksheet.getRow(r);
-        const nonEmp = (Array.isArray(row.values) ? row.values : [])
-          .filter((v) => v !== null && v !== undefined && String(v).trim() !== "");
-        if (nonEmp.length >= 2) {
-          headerRowIndex = r;
-          break;
-        }
-      }
-
-      const headerRow = worksheet.getRow(headerRowIndex);
-      const sampleRow = worksheet.getRow(headerRowIndex + 1);
-
-      const columns: DetectedSpreadsheetColumn[] = [];
-      const matchedKeys = new Set<string>();
-
-      // Extract cells
-      const colCount = Math.min(worksheet.columnCount, 30);
-      for (let c = 1; c <= colCount; c++) {
-        const headerCell = headerRow.getCell(c).value;
-        const sampleCell = sampleRow.getCell(c).value;
-
-        const headerText =
-          headerCell !== null && headerCell !== undefined
-            ? typeof headerCell === "object" && "text" in (headerCell as any)
-              ? String((headerCell as any).text || "").trim()
-              : String(headerCell).trim()
-            : "";
-
-        const sampleText =
-          sampleCell !== null && sampleCell !== undefined
-            ? typeof sampleCell === "object" && "text" in (sampleCell as any)
-              ? String((sampleCell as any).text || "").trim()
-              : String(sampleCell).trim()
-            : "";
-
-        if (headerText || sampleText) {
-          const autoKey = autoDetectFieldKey(headerText, matchedKeys);
-          if (autoKey) matchedKeys.add(autoKey);
-
-          columns.push({
-            index: c - 1,
-            colLetter: toColumnLetter(c - 1),
-            header: headerText || `Column ${toColumnLetter(c - 1)}`,
-            sampleValue: sampleText,
-            autoMatchedField: autoKey,
-          });
-        }
-      }
-
-      return {
-        sheetName: worksheet.name,
-        totalColumns: columns.length,
-        columns,
-      };
-    } else {
-      // CSV or plain text
-      const slice = file.slice(0, 100000); // 100KB is plenty for the first few rows
-      const text = await slice.text();
-      const delimiter = detectCsvDelimiter(text);
-      const lines = text
-        .split(/\r?\n/)
-        .map((l) => l.trim())
-        .filter(Boolean);
-
-      if (!lines.length) return null;
-
-      // Find candidate header row
-      let headerRowIndex = 0;
-      for (let i = 0; i < Math.min(10, lines.length); i++) {
-        const parsed = parseCsvLine(lines[i], delimiter).filter(Boolean);
-        if (parsed.length >= 2) {
-          headerRowIndex = i;
-          break;
-        }
-      }
-
-      const headers = parseCsvLine(lines[headerRowIndex], delimiter);
-      const sample = lines[headerRowIndex + 1]
-        ? parseCsvLine(lines[headerRowIndex + 1], delimiter)
-        : [];
-
-      const columns: DetectedSpreadsheetColumn[] = [];
-      const matchedKeys = new Set<string>();
-
-      headers.forEach((header, index) => {
-        const headerText = header.trim();
-        const sampleText = (sample[index] || "").trim();
-
-        if (headerText || sampleText) {
-          const autoKey = autoDetectFieldKey(headerText, matchedKeys);
-          if (autoKey) matchedKeys.add(autoKey);
-
-          columns.push({
-            index,
-            colLetter: toColumnLetter(index),
-            header: headerText || `Column ${toColumnLetter(index)}`,
-            sampleValue: sampleText,
-            autoMatchedField: autoKey,
-          });
-        }
-      });
-
-      return {
-        totalColumns: columns.length,
-        columns,
-      };
-    }
-  } catch (error) {
-    console.warn("Failed to extract spreadsheet preview:", error);
-    return null;
-  }
+  options?: { sheetName?: string; headerRowNumber?: number; signal?: AbortSignal },
+): Promise<SpreadsheetPreviewResult> {
+  const form = new FormData();
+  form.append("file", file);
+  if (options?.sheetName) form.append("sheetName", options.sheetName);
+  if (options?.headerRowNumber) form.append("headerRowNumber", String(options.headerRowNumber));
+  const { data } = await api.post("/api/products/import-spreadsheet-preview", form, { signal: options?.signal, headers: { "Content-Type": undefined } });
+  const matchedKeys = new Set<string>();
+  const columns = (data.headers as string[]).map((header, index) => {
+    const autoMatchedField = autoDetectFieldKey(header, matchedKeys);
+    if (autoMatchedField) matchedKeys.add(autoMatchedField);
+    return { index, colLetter: toColumnLetter(index), header, sampleValue: String(data.sample?.[header] ?? ""), autoMatchedField };
+  });
+  return { ...data, columns, totalColumns: columns.length };
 }

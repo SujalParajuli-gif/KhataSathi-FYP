@@ -46,6 +46,8 @@ dev-server.log
 
 # testing / coverage
 coverage/
+test-results/
+playwright-report/
 *.lcov
 
 # caches

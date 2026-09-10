@@ -2,6 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { parsePdfTextCatalogPages } from "../modules/products/pdfTextCatalogParser.js";
 
+test("PDF prices without packing do not shift and unpriced products stay visible", () => {
+  const result = parsePdfTextCatalogPages([{ pageNumber: 1, text: "Product Name\tUnit\tWSP\tMRP\nBucket\tPcs\t100\t150\nNew Jar\tPcs\t\tComing soon" }]);
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].packageQuantity, null);
+  assert.deepEqual(result.rows[0].extractedPrices.map((price) => [price.label, price.value]), [["WSP", 100], ["MRP", 150]]);
+  assert.equal(result.rows[1].productName, "New Jar");
+  assert.equal(result.rows[1].extractedPrices.length, 0);
+});
+
+test("a blank first PDF price does not relabel the second price", () => {
+  const result = parsePdfTextCatalogPages([{ pageNumber: 1, text: "Product Name\tUnit\tWSP\tMRP\nBucket\tPcs\t\t150" }]);
+  assert.deepEqual(result.rows[0].extractedPrices, [{ key: "mrp", label: "MRP", value: 150 }]);
+});
+
 test("PDF text catalog rejects United headings and separates structured fields", () => {
     const result = parsePdfTextCatalogPages([{ pageNumber: 1, text: [
       "UNITED PLASTIC INDUSTRIES PVT.LTD.",

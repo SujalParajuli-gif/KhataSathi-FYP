@@ -33,6 +33,7 @@ import {
 } from "./importSourceStorage";
 import { parsePdfTextCatalogPages } from "./pdfTextCatalogParser";
 import sharp from "sharp";
+import { assertExtractionActive, importCoverage, importExecution, importMetadata, persistImportPreview } from "./importExecution";
 
 export { fingerprintImportFile };
 
@@ -184,16 +185,16 @@ function reviewedImportResolution(value: unknown) {
 export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) {
     const rowId = reviewedDraftText(input.rowId, "Import row", true)!;
     const name = reviewedDraftText(input.name, "Product name", true)!;
-    const sku = reviewedDraftText(input.sku, "SKU", true)!;
+    const sku = reviewedDraftText(input.sku, "SKU") || buildSupplierSku(String(input.brand || "IMPORT"), rowId, name);
     const ratePerPiece = reviewedDraftNumber(input.ratePerPiece, "Rate", {
         min: 0.01,
     }) ?? null;
     const availabilityStatus: "CATALOG_LISTED" | "COMING_SOON" = input.availabilityStatus === "COMING_SOON"
         ? "COMING_SOON"
         : "CATALOG_LISTED";
-    if (availabilityStatus !== "COMING_SOON" && ratePerPiece === null) {
+    if (availabilityStatus !== "COMING_SOON" && ratePerPiece === null && ![input.retailPrice, input.wholesalePrice].some((price) => Number.isFinite(Number(price)) && Number(price) > 0)) {
         throw new ReviewedImportRowValidationError(
-            "Enter a Rate or mark this product as Coming soon.",
+            "Enter an announced price or mark this product as Coming soon.",
         );
     }
     const packageQuantity = reviewedDraftNumber(
@@ -978,7 +979,7 @@ export function normalizeCsvImportRow(
 
 export async function importProductsFromCsv(
     rawRows: Array<Record<string, unknown>>,
-    options: { actorId?: string } = {},
+    options: { actorId?: string; importRowIds?: string[] } = {},
 ) {
     const createdProducts: Array<{ id: string; sku: string; name: string }> = [];
     const errors: CsvImportError[] = [];
@@ -1084,6 +1085,7 @@ export async function importProductsFromCsv(
                         sizeValue: row.sizeValue ?? null,
                         sizeUnit: normalizeUnitLabel(row.sizeUnit, "STANDARD"),
                         ratePerPiece: row.ratePerPiece ?? null,
+                        rateUpdatedAt: row.ratePerPiece == null ? null : new Date(),
                         packageQuantity:
                             row.packageQuantity === null || row.packageQuantity === undefined
                                 ? null
@@ -1130,6 +1132,9 @@ export async function importProductsFromCsv(
                             },
                         });
                     }
+                }
+                if (options.importRowIds?.[index]) {
+                    await tx.productImportRow.update({ where: { id: options.importRowIds[index] }, data: { status: "IMPORTED", matchedProductId: created.id, error: null } });
                 }
                 await rebuildProductSearchDocument(created.id, tx, searchSynonymRules);
                 return created;
@@ -1198,6 +1203,14 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
     rows.forEach((row, index) => {
         if (row.status === "FAILED" || !row.parsed || typeof row.parsed !== "object") return;
         const parsed = row.parsed as Record<string, unknown>;
+        if (String(parsed.sourceType).includes("AI_ROW")) {
+            parsed.warnings = [
+                ...(Array.isArray(parsed.warnings) ? parsed.warnings : []),
+                ...(Array.isArray(parsed.uncertainFields) && parsed.uncertainFields.length ? [`Check unreadable fields: ${parsed.uncertainFields.join(", ")}.`] : []),
+                ...(!parsed.brand ? ["Confirm the supplier / brand before importing."] : []),
+                ...(![parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice].some((value) => Number(value) > 0) ? ["No price captured. Check the source before marking this product as coming soon."] : []),
+            ];
+        }
         comparableIndexes.push(index);
         comparableRows.push({
             rowKey: String(row.rowNumber),
@@ -1267,6 +1280,13 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
                         (requestedResolution === "UPDATE_MATCHED" || requestedResolution === "KEEP_EXISTING")
                         ? requestedResolution
                         : null;
+        if (Array.isArray(parsed.warnings) && parsed.warnings.length && !requestedResolution) {
+            row.resolution = null;
+            row.comparisonStatus = "NEEDS_REVIEW";
+            row.status = "DUPLICATE";
+            row.error = parsed.warnings.map(String).join(" ");
+            return;
+        }
         row.resolution = resolution;
 
         if (resolution === "CREATE_NEW" || resolution === "UPDATE_MATCHED" || resolution === "KEEP_EXISTING") {
@@ -1294,6 +1314,8 @@ export async function createCsvImportPreview(input: {
     rowNumbers?: number[];
     sourceType?: "CSV" | "XLSX";
     sheetName?: string;
+    rowWarnings?: Record<number, string[]>;
+    extractionMeta?: Prisma.InputJsonObject;
     createdById: string;
     supplier?: string;
     templateId?: string;
@@ -1346,6 +1368,7 @@ export async function createCsvImportPreview(input: {
                 parsed: {
                     sourceType: `${sourceType}_ROW`,
                     ...parsedProduct,
+                    warnings: input.rowWarnings?.[rowNumber] || [],
                 },
             });
         } catch (err: any) {
@@ -1370,7 +1393,7 @@ export async function createCsvImportPreview(input: {
     await classifyProductPreviewRows(createdRows);
 
     const failedRows = createdRows.filter((row) => row.status === "FAILED").length;
-    const batch = await prisma.productImportBatch.create({
+    const batch = await persistImportPreview({
         data: {
             sourceType,
             fileName: input.fileName || null,
@@ -1379,6 +1402,7 @@ export async function createCsvImportPreview(input: {
             totalRows: input.rows.length,
             importedRows: 0,
             failedRows,
+            extractionMeta: input.extractionMeta,
             fileFingerprint: input.fileFingerprint || null,
             fileSizeBytes: input.fileSizeBytes ?? null,
             repeatedFromBatchId: input.repeatedFromBatchId || null,
@@ -1460,12 +1484,14 @@ async function requestGeminiJson(input: {
 }) {
     const perRequestMs = Math.max(10_000, Number(process.env.GEMINI_IMPORT_REQUEST_TIMEOUT_MS || 55_000));
     const totalMs = Math.max(perRequestMs, Number(process.env.GEMINI_IMPORT_TOTAL_TIMEOUT_MS || 120_000));
-    const deadline = Date.now() + totalMs;
+    const execution = importExecution.getStore();
+    const deadline = Math.min(Date.now() + totalMs, execution?.deadline ?? Infinity);
     let lastStatus: number | null = null;
     let malformedResponses = 0;
 
     for (const model of input.models) {
         for (let attempt = 0; attempt < 2 && Date.now() < deadline; attempt += 1) {
+            assertExtractionActive();
             const remaining = deadline - Date.now();
             const controller = new AbortController();
             const timeout = setTimeout(() => controller.abort(), Math.min(perRequestMs, remaining));
@@ -1475,7 +1501,7 @@ async function requestGeminiJson(input: {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: input.requestBody,
-                    signal: controller.signal,
+                    signal: execution ? AbortSignal.any([controller.signal, execution.signal]) : controller.signal,
                 });
                 lastStatus = response.status;
                 if (response.ok) {
@@ -1490,6 +1516,7 @@ async function requestGeminiJson(input: {
                 }
                 if (!TRANSIENT_AI_STATUSES.has(response.status)) break;
             } catch (error: any) {
+                assertExtractionActive();
                 // A timed-out generation should immediately try the fallback
                 // model; repeating the same long request only burns the total budget.
                 if (error?.name === "AbortError" || attempt > 0) break;
@@ -1778,7 +1805,8 @@ export async function createScannedPdfImportPreview(input: {
     fileSizeBytes?: number;
     repeatedFromBatchId?: string;
 }) {
-    const sourceName =
+    const sourceName = importExecution.getStore()?.supplier || "";
+    const sourceTitle =
         (input.fileName || "Scanned Supplier PDF")
             .replace(/\.[^.]+$/, "")
             .replace(/[_-]+/g, " ")
@@ -1943,7 +1971,7 @@ export async function createScannedPdfImportPreview(input: {
     await classifyProductPreviewRows(previewRows);
 
     const failedRows = previewRows.filter((row) => row.status === "FAILED").length;
-    const batch = await prisma.productImportBatch.create({
+    const batch = await persistImportPreview({
         data: {
             sourceType: "PDF_SCANNED_AI",
             fileName: input.fileName || null,
@@ -1988,7 +2016,8 @@ export async function createImageImportPreview(input: {
     fileSizeBytes?: number;
     repeatedFromBatchId?: string;
 }) {
-    const sourceName =
+    const sourceName = importExecution.getStore()?.supplier || "";
+    const sourceTitle =
         (input.fileName || "Image Supplier")
             .replace(/\.[^.]+$/, "")
             .replace(/[_-]+/g, " ")
@@ -2139,10 +2168,10 @@ export async function createImageImportPreview(input: {
             : parsedSize.sizeValue;
         const sizeUnit = normalizeImportedCatalogUnit(item.sizeUnit ?? item.size_unit, parsedSize.sizeUnit || "STANDARD");
         const saleUnit = normalizeImportedCatalogUnit(item.saleUnit ?? item.unit, "PIECE");
-        const supplierRate = supplierRateInput > 0
+        const supplierRate = Number.isFinite(supplierRateInput) && supplierRateInput > 0
             ? roundCurrency(supplierRateInput)
             : null;
-        const retailPrice = retailInput > 0 && roundCurrency(retailInput) !== supplierRate
+        const retailPrice = Number.isFinite(retailInput) && retailInput > 0
             ? roundCurrency(retailInput)
             : null;
         const parsedProduct = {
@@ -2209,7 +2238,7 @@ export async function createImageImportPreview(input: {
 
     const failedRows = rows.filter((row) => row.status === "FAILED").length;
     const detectedSupplier = normalizeCsvText(aiDocument?.supplierName) || sourceName;
-    const batch = await prisma.productImportBatch.create({
+    const batch = await persistImportPreview({
         data: {
             sourceType: "IMAGE",
             fileName: input.fileName || null,
@@ -2269,10 +2298,10 @@ export async function createPdfImportPreview(input: {
             .replace(/\.[^.]+$/, "")
             .replace(/[_-]+/g, " ")
             .trim() || "Supplier PDF";
-    const sourceName = fileSourceName;
+    const sourceName = importExecution.getStore()?.supplier || "";
     const structured = parsePdfTextCatalogPages(sourcePages);
     if (structured.rows.length > 0) {
-        const defaultPriceColumn = structured.priceColumns.length === 1
+        const defaultPriceColumn = structured.priceColumns.length === 1 && /^(?:rate|supplier rate)$/i.test(structured.priceColumns[0].label)
             ? structured.priceColumns[0]
             : null;
         const defaultPriceMapping = defaultPriceColumn
@@ -2301,7 +2330,7 @@ export async function createPdfImportPreview(input: {
                     pageNumber: row.pageNumber,
                     lineNumber: row.lineNumber,
                     searchText: row.rawText,
-                    region: locatedLine?.region || null,
+                    region: row.region || locatedLine?.region || null,
                 },
                 status: "READY",
                 error: null,
@@ -2337,11 +2366,12 @@ export async function createPdfImportPreview(input: {
                     availabilityStatus: row.extractedPrices.length > 0 ? "CATALOG_LISTED" : "COMING_SOON",
                     stock: 0,
                     extractedPrices: row.extractedPrices,
+                    warnings: [...(row.warnings || []), ...(!sourceName ? ["Confirm the supplier / brand before importing."] : [])],
                 },
             };
         });
         await classifyProductPreviewRows(previewRows);
-        const batch = await prisma.productImportBatch.create({
+        const batch = await persistImportPreview({
             data: {
                 sourceType: "PDF",
                 fileName: input.fileName || null,
@@ -2351,7 +2381,7 @@ export async function createPdfImportPreview(input: {
                 importedRows: 0,
                 failedRows: 0,
                 extractionMeta: {
-                    parser: "TEXT_TABLE_V2",
+                    parser: "TEXT_TABLE_V3",
                     priceColumns: structured.priceColumns,
                 },
                 priceMapping: defaultPriceMapping,
@@ -2389,11 +2419,12 @@ export async function createPdfImportPreview(input: {
 
     const status = lines.length > 0 ? "DRAFT" : "FAILED";
     const failedRows = lines.length > 0 ? 0 : 1;
-    const previewRows = lines.slice(0, 500);
+    if (lines.length > 5000) throw new Error("This PDF exceeds 5000 text lines. Split it into smaller files.");
+    const previewRows = lines;
     const noTextMessage =
         "No selectable product text was found. This supplier PDF may be scanned/image-only and needs OCR before import.";
 
-    const batch = await prisma.productImportBatch.create({
+    const batch = await persistImportPreview({
         data: {
             sourceType: "PDF",
             fileName: input.fileName || null,
@@ -2417,8 +2448,10 @@ export async function createPdfImportPreview(input: {
                                 lineNumber: line.lineNumber,
                                 searchText: line.text,
                             },
-                            status: "READY",
+                            status: "DUPLICATE",
+                            comparisonStatus: "NEEDS_REVIEW",
                             parsed: {
+                                warnings: ["Table columns could not be identified. Enter product fields from the source before importing."],
                                 sourceType: "PDF_TEXT_LINE",
                                 pageNumber: line.pageNumber,
                             },
@@ -2727,6 +2760,7 @@ export async function getProductImportReview(input: {
 
     return {
         batch: omitPrivateImportStorage(batch),
+        coverage: importCoverage(batch.extractionMeta),
         rows: displayRows,
         pagination: {
             page,
@@ -2793,9 +2827,8 @@ function defaultImportPriceDestination(
     if (key === "sourceRatePerPiece") return "ratePerPiece";
     if (key === "sourceRetailPrice") return "retailPrice";
     if (key === "sourceWholesalePrice") return "wholesalePrice";
-    // A single price in a supplier catalog is the neutral Rate by default.
-    // Multiple source price columns still require an explicit classification.
-    if (columnCount === 1) return "ratePerPiece";
+    // WSP, MRP and unnamed prices require an explicit decision even when alone.
+    if (columnCount === 1 && ["rate", "supplierRate"].includes(key)) return "ratePerPiece";
     return "";
 }
 
@@ -2862,7 +2895,7 @@ function parsedWithImportPriceMapping(
     const parsed = parsedValue && typeof parsedValue === "object" && !Array.isArray(parsedValue)
         ? { ...(parsedValue as Record<string, unknown>) }
         : {};
-    if (parsed.sourceType === "REVIEWED_ROW_DRAFT") {
+    if (["REVIEWED_ROW_DRAFT", "FINAL_REVIEWED_ROW"].includes(String(parsed.sourceType))) {
         return parsed;
     }
     const candidates = importPriceCandidates(parsed);
@@ -2914,9 +2947,7 @@ export async function setProductImportPriceMapping(input: {
     }
 
     const targetRowIdSet = input.rowIds && input.rowIds.length > 0 ? new Set(input.rowIds) : null;
-    const rowsToProcess = targetRowIdSet
-        ? batch.rows.filter((row) => targetRowIdSet.has(row.id))
-        : batch.rows;
+    const rowsToProcess = batch.rows.filter((row) => (!targetRowIdSet || targetRowIdSet.has(row.id)) && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status));
 
     const drafts: ProductImportPreviewRowDraft[] = rowsToProcess.map((row) => {
         const parsed = row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed)
@@ -2952,16 +2983,17 @@ export async function setProductImportPriceMapping(input: {
     });
     await classifyProductPreviewRows(drafts);
 
-    await prisma.$transaction([
-        prisma.productImportBatch.update({
+    await prisma.$transaction(async (tx) => {
+        await lockEditableImportBatch(tx, batch.id);
+        await tx.productImportBatch.update({
             where: { id: batch.id },
             data: { priceMapping: mapping },
-        }),
-        ...rowsToProcess.map((row, index) => prisma.productImportRow.update({
-            where: { id: row.id },
+        });
+        await Promise.all(rowsToProcess.map((row, index) => tx.productImportRow.update({
+            where: { id: row.id, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
             data: {
                 parsed: drafts[index].parsed || Prisma.DbNull,
-                extracted: drafts[index].extracted || Prisma.DbNull,
+                extracted: row.extracted || drafts[index].extracted || Prisma.DbNull,
                 status: drafts[index].status,
                 error: drafts[index].error || null,
                 comparisonStatus: drafts[index].comparisonStatus,
@@ -2969,8 +3001,8 @@ export async function setProductImportPriceMapping(input: {
                 changeSet: drafts[index].changeSet || Prisma.DbNull,
                 resolution: drafts[index].resolution || null,
             },
-        })),
-        prisma.auditLog.create({
+        })));
+        await tx.auditLog.create({
             data: {
                 actorId: input.actorId,
                 action: "PRODUCT_IMPORT_PRICE_MAPPING_UPDATED",
@@ -2978,8 +3010,8 @@ export async function setProductImportPriceMapping(input: {
                 entityId: batch.id,
                 meta: { mapping, targetRowIds: input.rowIds || "all" },
             },
-        }),
-    ]);
+        });
+    });
     return getImportPriceMappingState({
         extractionMeta: batch.extractionMeta,
         priceMapping: mapping,
@@ -3038,6 +3070,7 @@ export async function saveReviewedProductImportRows(
         include: { rows: true },
     });
     if (!batch) throw new Error("Product import batch was not found.");
+    if (["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status)) throw new Error("Wait for import processing to finish before editing.");
     const batchRows = new Map<string, ProductImportRow>(
         batch.rows.map((row) => [row.id, row]),
     );
@@ -3048,7 +3081,7 @@ export async function saveReviewedProductImportRows(
                 "One or more rows do not belong to this import review.",
             );
         }
-        if (stored.status === "IMPORTED") {
+        if (["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(stored.status)) {
             throw new ReviewedImportRowValidationError(
                 `Row ${stored.rowNumber} has already been imported and cannot be edited.`,
             );
@@ -3090,18 +3123,19 @@ export async function saveReviewedProductImportRows(
     await classifyProductPreviewRows(reviewedDrafts);
 
     const savedRows = await prisma.$transaction(async (tx) => {
+        await lockEditableImportBatch(tx, batchId);
         const results: ProductImportRow[] = [];
         for (let index = 0; index < preparedRows.length; index += 1) {
             const row = preparedRows[index];
             const classified = reviewedDrafts[index];
             results.push(
                 await tx.productImportRow.update({
-                    where: { id: row.rowId },
+                    where: { id: row.rowId, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
                     data: {
                         status: classified.status,
                         error: classified.error || null,
                         parsed: classified.parsed,
-                        extracted: classified.extracted,
+                        extracted: batchRows.get(row.rowId)?.extracted || classified.extracted,
                         comparisonStatus: classified.comparisonStatus,
                         matchedProductId: classified.matchedProductId,
                         changeSet: classified.changeSet,
@@ -3119,6 +3153,13 @@ export async function saveReviewedProductImportRows(
                 meta: {
                     rowIds: preparedRows.map((row) => row.rowId),
                     rowCount: preparedRows.length,
+                    correctedFields: preparedRows.map((row) => ({ rowId: row.rowId,
+                        fields: Object.entries(row).filter(([field, value]) => {
+                            if (["rowId", "resolution"].includes(field)) return false;
+                            const before = importMetadata(batchRows.get(row.rowId)?.parsed)[field];
+                            return JSON.stringify(before ?? null) !== JSON.stringify(value ?? null);
+                        }).map(([field]) => field),
+                    })),
                 },
             },
         });
@@ -3150,8 +3191,9 @@ export async function setProductImportRowResolution(input: {
     }
 
     const updated = await prisma.$transaction(async (tx) => {
+        await lockEditableImportBatch(tx, input.batchId);
         const result = await tx.productImportRow.update({
-            where: { id: row.id },
+            where: { id: row.id, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
             data: {
                 resolution: input.resolution,
                 status: input.resolution === "IGNORE" ? "IGNORED" : "READY",
@@ -3216,6 +3258,13 @@ export async function listProductImportBatches(filters?: {
     return batches.map(omitPrivateImportStorage);
 }
 
+async function lockEditableImportBatch(tx: Prisma.TransactionClient, batchId: string) {
+    await tx.$queryRaw`SELECT id FROM ProductImportBatch WHERE id = ${batchId} FOR UPDATE`;
+    const batch = await tx.productImportBatch.findUnique({ where: { id: batchId }, select: { status: true, deletedAt: true } });
+    if (!batch || batch.deletedAt) throw new Error("Product import batch was not found.");
+    if (["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status)) throw new Error("Wait for the current import operation to finish before changing this review.");
+}
+
 export async function deleteProductImportBatch(batchId: string, userId: string) {
     const batch = await prisma.productImportBatch.findFirst({
         where: { id: batchId, deletedAt: null },
@@ -3238,8 +3287,9 @@ export async function deleteProductImportBatch(batchId: string, userId: string) 
     const purgeAfter = new Date();
     purgeAfter.setDate(purgeAfter.getDate() + 30);
 
-    await prisma.$transaction([
-        prisma.productImportBatch.update({
+    await prisma.$transaction(async (tx) => {
+        await lockEditableImportBatch(tx, batchId);
+        await tx.productImportBatch.update({
             where: { id: batchId },
             data: {
                 deletedAt: new Date(),
@@ -3247,8 +3297,8 @@ export async function deleteProductImportBatch(batchId: string, userId: string) 
                 deleteReason: "Deleted from import reviews",
                 deletedById: userId,
             },
-        }),
-        prisma.softDeleteRecord.create({
+        });
+        await tx.softDeleteRecord.create({
             data: {
                 entityType: "ProductImportBatch",
                 entityId: batchId,
@@ -3258,8 +3308,8 @@ export async function deleteProductImportBatch(batchId: string, userId: string) 
                 purgeAfter,
                 entitySnapshot: batch,
             },
-        }),
-        prisma.auditLog.create({
+        });
+        await tx.auditLog.create({
             data: {
                 actorId: userId,
                 action: "PRODUCT_IMPORT_BATCH_DELETED",
@@ -3275,8 +3325,8 @@ export async function deleteProductImportBatch(batchId: string, userId: string) 
                     failedRows: batch.failedRows,
                 },
             },
-        }),
-    ]);
+        });
+    });
 
     return {
         deleted: true,
@@ -3412,6 +3462,7 @@ async function updateMatchedProductFromImport(input: {
     }
 
     return prisma.$transaction(async (tx) => {
+        await tx.$queryRaw`SELECT id FROM Product WHERE id = ${input.matchedProductId} FOR UPDATE`;
         const current = await tx.product.findUnique({
             where: { id: input.matchedProductId },
             select: {
@@ -3432,6 +3483,10 @@ async function updateMatchedProductFromImport(input: {
         if (!current) {
             throw new Error(`Row ${input.rowNumber}: the matched catalog product no longer exists.`);
         }
+        for (const change of input.changes) {
+            const value = current[String(change.field) as keyof typeof current] ?? null;
+            if (value !== (change.currentValue ?? null)) throw new Error(`Row ${input.rowNumber}: the catalog changed during import. Save and review this row again.`);
+        }
 
         const data: Prisma.ProductUpdateInput = {};
         if (allowedChanges.has("name")) {
@@ -3450,6 +3505,7 @@ async function updateMatchedProductFromImport(input: {
         }
         if (allowedChanges.has("ratePerPiece")) {
             data.ratePerPiece = input.row.ratePerPiece;
+            data.rateUpdatedAt = input.row.ratePerPiece === null ? null : new Date();
         }
         if (allowedChanges.has("retailPrice")) {
             data.retailPrice = input.row.retailPrice;
@@ -3475,6 +3531,7 @@ async function updateMatchedProductFromImport(input: {
             data,
             select: { id: true, sku: true, name: true },
         });
+        await tx.productImportRow.update({ where: { id: input.row.rowId }, data: { status: "UPDATED", error: null } });
         await rebuildProductSearchDocument(updated.id, tx);
         await tx.auditLog.create({
             data: {
@@ -3500,7 +3557,16 @@ type ReviewedImportCommitInput = {
     actorId: string;
     approved: true;
     commitToken?: string;
+    acknowledgeIncomplete?: boolean;
 };
+
+// MySQL JSON may reorder object keys. Compare field values, not serialized key order.
+export function sameImportChanges(left: unknown, right: unknown) {
+    const normalize = (value: unknown) => (Array.isArray(value) ? value : [])
+        .map((change) => [change.field, change.currentValue ?? null, change.incomingValue ?? null])
+        .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
+    return JSON.stringify(normalize(left)) === JSON.stringify(normalize(right));
+}
 
 async function executeReviewedPdfRows(
     batchId: string,
@@ -3520,11 +3586,12 @@ async function executeReviewedPdfRows(
         throw new Error("Product import batch was not found.");
     }
 
+    if (importCoverage(batch.extractionMeta).requiresAcknowledgement && input.acknowledgeIncomplete !== true) throw new Error("Some source pages remain unread or incomplete. Acknowledge the missing coverage before importing.");
     const existingRowsById = new Map<string, ProductImportRow>(
         batch.rows.map((row) => [row.id, row]),
     );
-    const rows = Array.isArray(input.rows) ? input.rows : [];
-    const ignoredRowIds = Array.isArray(input.ignoredRowIds) ? input.ignoredRowIds : [];
+    const rows = (Array.isArray(input.rows) ? input.rows : []).filter((row) => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(existingRowsById.get(row.rowId)?.status || ""));
+    const ignoredRowIds = (Array.isArray(input.ignoredRowIds) ? input.ignoredRowIds : []).filter((id) => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(existingRowsById.get(id)?.status || ""));
 
     for (const row of rows) {
         if (!existingRowsById.has(row.rowId)) {
@@ -3560,6 +3627,9 @@ async function executeReviewedPdfRows(
         stored: existingRowsById.get(row.rowId)!,
     }));
     for (const decision of decisions) {
+        if (decision.stored.resolution === "UPDATE_MATCHED" && !sameImportChanges(decision.stored.changeSet, decision.classified.changeSet)) {
+            throw new Error(`Row ${decision.stored.rowNumber}: the catalog changed after review. Save the row again to review the current values.`);
+        }
         const resolution = decision.classified.resolution;
         const comparison = decision.classified.comparisonStatus;
         const valid =
@@ -3583,7 +3653,7 @@ async function executeReviewedPdfRows(
                 changeSet: decision.classified.changeSet,
                 resolution: decision.classified.resolution,
                 parsed: decision.classified.parsed,
-                extracted: decision.classified.extracted,
+                extracted: decision.stored.extracted || decision.classified.extracted,
                 status: decision.classified.status,
                 error: decision.classified.error || null,
             },
@@ -3644,7 +3714,7 @@ async function executeReviewedPdfRows(
     const createResult = createDecisions.length > 0
         ? await importProductsFromCsv(
             createDecisions.map((decision) => reviewedImportRowToCsvRow(decision.row)),
-            { actorId: input.actorId },
+            { actorId: input.actorId, importRowIds: createDecisions.map((decision) => decision.row.rowId) },
         )
         : {
             totalRows: 0,
@@ -3723,16 +3793,11 @@ async function executeReviewedPdfRows(
     const failedRows = await prisma.productImportRow.count({
         where: { batchId, status: "FAILED" },
     });
-    const actionableRows = await prisma.productImportRow.count({
-        where: { batchId, status: { in: ["READY", "FAILED", "DUPLICATE"] } },
-    });
-
     await prisma.productImportBatch.update({
         where: { id: batchId },
         data: {
             importedRows,
             failedRows,
-            status: actionableRows > 0 ? "DRAFT" : "IMPORTED",
         },
     });
 
@@ -3787,6 +3852,7 @@ export async function importReviewedPdfRows(
         ignoredRowIds: [...(Array.isArray(input.ignoredRowIds) ? input.ignoredRowIds : [])].sort(),
         actorId: input.actorId,
         approved: input.approved,
+        acknowledgeIncomplete: input.acknowledgeIncomplete === true,
     };
     const requestHash = fingerprintImportFile(
         Buffer.from(JSON.stringify(canonicalRequest), "utf8"),
@@ -3818,7 +3884,10 @@ export async function importReviewedPdfRows(
         throw new Error("This import commit is already in progress. Wait and reopen the review before trying again.");
     }
 
-    const commit = await prisma.productImportCommit.create({
+    const claimed = await prisma.productImportBatch.updateMany({ where: { id: batchId, deletedAt: null, status: { in: ["DRAFT", "FAILED", "INTERRUPTED"] } }, data: { status: "COMMITTING" } });
+    if (!claimed.count) throw new Error("This batch is processing, already committed, or another import is in progress. Reopen the review.");
+    let commit;
+    try { commit = await prisma.productImportCommit.create({
         data: {
             batchId,
             token,
@@ -3826,16 +3895,26 @@ export async function importReviewedPdfRows(
             actorId: input.actorId,
         },
     });
+    } catch (error) {
+        await prisma.productImportBatch.updateMany({ where: { id: batchId, status: "COMMITTING" }, data: { status: "DRAFT" } });
+        throw error;
+    }
     try {
         const result = await executeReviewedPdfRows(batchId, input);
-        const storedResult = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
-        await prisma.productImportCommit.update({
-            where: { id: commit.id },
-            data: {
-                status: "COMPLETED",
-                result: storedResult,
-                completedAt: new Date(),
-            },
+        await prisma.$transaction(async (tx) => {
+            const actionableRows = await tx.productImportRow.count({ where: { batchId, status: { in: ["READY", "FAILED", "DUPLICATE"] } } });
+            const status = actionableRows ? "DRAFT" : "IMPORTED";
+            await tx.productImportBatch.update({ where: { id: batchId }, data: { status } });
+            if (result.batch) result.batch.status = status;
+            const storedResult = JSON.parse(JSON.stringify(result)) as Prisma.InputJsonValue;
+            await tx.productImportCommit.update({
+                where: { id: commit.id },
+                data: {
+                    status: "COMPLETED",
+                    result: storedResult,
+                    completedAt: new Date(),
+                },
+            });
         });
         return {
             ...result,
@@ -3843,6 +3922,7 @@ export async function importReviewedPdfRows(
             replayed: false,
         };
     } catch (error: any) {
+        await prisma.productImportBatch.updateMany({ where: { id: batchId, status: "COMMITTING" }, data: { status: "DRAFT" } });
         await prisma.productImportCommit.update({
             where: { id: commit.id },
             data: {
@@ -3860,9 +3940,14 @@ export async function importSavedProductImportBatch(input: {
     actorId: string;
     approved: true;
     commitToken?: string;
+    acknowledgeIncomplete?: boolean;
 }) {
     if (input.approved !== true) {
         throw new Error("Final import approval is required.");
+    }
+    if (input.commitToken) {
+        const prior = await prisma.productImportCommit.findUnique({ where: { batchId_token: { batchId: input.batchId, token: input.commitToken } } });
+        if (prior?.status === "COMPLETED" && prior.result) return { ...(prior.result as Record<string, unknown>), commitToken: input.commitToken, replayed: true };
     }
     const batch = await prisma.productImportBatch.findFirst({
         where: { id: input.batchId, deletedAt: null },
@@ -3913,5 +3998,6 @@ export async function importSavedProductImportBatch(input: {
         actorId: input.actorId,
         approved: true,
         commitToken: input.commitToken,
+        acknowledgeIncomplete: input.acknowledgeIncomplete,
     });
 }

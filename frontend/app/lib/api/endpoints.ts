@@ -561,6 +561,8 @@ export type ProductImportTemplatePayload = {
 export async function importCsvApi(
     file: File,
     options?: {
+        sheetName?: string;
+        headerRowNumber?: number;
         supplier?: string;
         templateId?: string;
         fieldMap?: Record<string, string | string[]>;
@@ -571,6 +573,8 @@ export async function importCsvApi(
     const formData = new FormData();
     formData.append("file", file);
     if (options?.supplier) formData.append("supplier", options.supplier);
+    if (options?.sheetName) formData.append("sheetName", options.sheetName);
+    if (options?.headerRowNumber) formData.append("headerRowNumber", String(options.headerRowNumber));
     if (options?.templateId) formData.append("templateId", options.templateId);
     if (options?.fieldMap) formData.append("fieldMap", JSON.stringify(options.fieldMap));
     if (options?.defaults) formData.append("defaults", JSON.stringify(options.defaults));
@@ -676,9 +680,10 @@ export async function bulkUpdateProductPricesApi(payload: {
 }
 
 // uploading a text-based supplier PDF to create an import preview batch
-export async function importPdfApi(file: File, options?: { signal?: AbortSignal }) {
+export async function importPdfApi(file: File, options?: { signal?: AbortSignal; supplier?: string }) {
     const formData = new FormData();
     formData.append("file", file);
+    if (options?.supplier) formData.append("supplier", options.supplier);
     const res = await fetch(API_BASE_URL + "/api/products/import-pdf", {
         method: "POST",
         headers: getSessionMutationHeaders(),
@@ -693,9 +698,10 @@ export async function importPdfApi(file: File, options?: { signal?: AbortSignal 
     return res.json();
 }
 
-export async function importImageRateListApi(file: File, options?: { signal?: AbortSignal }) {
+export async function importImageRateListApi(file: File, options?: { signal?: AbortSignal; supplier?: string }) {
     const formData = new FormData();
     formData.append("file", file);
+    if (options?.supplier) formData.append("supplier", options.supplier);
     const res = await fetch(API_BASE_URL + "/api/products/import-image", {
         method: "POST",
         headers: getSessionMutationHeaders(),
@@ -773,6 +779,7 @@ export type ProductImportBatch = {
 };
 
 export type ProductImportReviewPage = {
+    coverage: { total: number; completed: number; failedPages: Array<{ pageNumber: number; message?: string }>; requiresAcknowledgement: boolean };
     batch: Omit<ProductImportBatch, "rows">;
     rows: ProductImportRow[];
     pagination: {
@@ -964,10 +971,11 @@ export async function setProductImportPriceMappingApi(
     return res.data as ProductImportReviewPage["priceMapping"];
 }
 
-export async function commitSavedProductImportBatchApi(batchId: string, commitToken: string) {
+export async function commitSavedProductImportBatchApi(batchId: string, commitToken: string, acknowledgeIncomplete = false) {
     const res = await api.post(`/api/products/import-batches/${batchId}/commit`, {
         approved: true,
         commitToken,
+        acknowledgeIncomplete,
     });
     return res.data as ReviewedPdfImportResult & {
         commitToken: string;
@@ -2488,4 +2496,11 @@ export async function getStorageInfoApi(options?: { signal?: AbortSignal }) {
         signal: options?.signal,
     });
     return res.data;
+}
+
+export async function controlProductImportApi(batchId: string, action: "cancel" | "retry") {
+    return (await api.post(`/api/products/import-batches/${batchId}/processing`, { action })).data;
+}
+export async function getProductImportCommitApi(batchId: string, token: string) {
+    return (await api.get(`/api/products/import-batches/${batchId}/commits/${encodeURIComponent(token)}`)).data as { status: string; result?: ReviewedPdfImportResult; error?: string };
 }

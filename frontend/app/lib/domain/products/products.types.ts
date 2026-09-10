@@ -26,6 +26,7 @@ export type Product = {
   sizeValue?: number | null;
   sizeUnit: string;
   ratePerPiece: number | null;
+  rateUpdatedAt?: string | null;
   packageQuantity: number | null;
   packageUnit: string;
   saleUnit: string;
