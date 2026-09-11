@@ -3,6 +3,12 @@ import { optionalSafeText, safeText } from "../../lib/requestValidation";
 
 const optionalIdSchema = optionalSafeText("ID", 120);
 const optionalPinSchema = optionalSafeText("Override PIN", 20);
+const checkoutOperationKeySchema = safeText("Checkout operation key", 120)
+  .min(16, "Checkout operation key must be at least 16 characters")
+  .regex(
+    /^[A-Za-z0-9_-]+$/,
+    "Checkout operation key may only contain letters, numbers, underscores, and hyphens",
+  );
 const moneySchema = z
   .number({ message: "Must be a number" })
   .finite("Must be a finite number");
@@ -34,6 +40,7 @@ export const checkoutPaymentSchema = z
 
 export const checkoutBodySchema = z
   .object({
+    operationKey: checkoutOperationKeySchema,
     draftInvoiceId: optionalIdSchema,
     customerId: optionalIdSchema,
     discountAmount: nonNegativeMoneySchema.optional(),

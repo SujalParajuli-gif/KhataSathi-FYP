@@ -15,7 +15,9 @@ function getFilters(req: Request) {
       : undefined;
 
   if (!from || !to) {
-    throw new Error("from and to query params are required (YYYY-MM-DD).");
+    throw new reportService.ReportValidationError(
+      "from and to query params are required (YYYY-MM-DD).",
+    );
   }
 
   return { from, to, cashierId, paymentStatus };
@@ -28,18 +30,17 @@ function shouldIncludeOperations(req: Request) {
 
 // shared error handler for all report endpoints
 // we check the error message to determine if it is a validation error (400) or an unexpected error (500)
-function handleError(res: Response, err: unknown, label: string) {
-  const message =
-    err instanceof Error ? err.message : "An unexpected error occurred.";
-  const status = /required|format|valid|before|Unsupported/.test(message)
-    ? 400
-    : 500;
-
-  if (status === 500) {
-    console.error(`${label}:`, err); // only logging unexpected errors, not validation failures
+export function handleReportError(res: Response, err: unknown, label: string) {
+  if (err instanceof reportService.ReportValidationError) {
+    res.status(400).json({ code: err.code, error: err.message });
+    return;
   }
-
-  res.status(status).json({ error: message });
+  console.error(`${label}:`, err);
+  res.status(500).json({
+    code: "REPORT_UNAVAILABLE",
+    error: "The report could not be generated. Please try again.",
+    requestId: res.locals.requestId,
+  });
 }
 
 // returning the full analytics dashboard data — revenue, invoice counts, payment breakdown, etc.
@@ -51,7 +52,7 @@ export async function analytics(req: Request, res: Response) {
     });
     res.json(result);
   } catch (err) {
-    handleError(res, err, "Analytics report error");
+    handleReportError(res, err, "Analytics report error");
   }
 }
 
@@ -70,7 +71,7 @@ export async function analyticsCsv(req: Request, res: Response) {
     );
     res.send(csv);
   } catch (err) {
-    handleError(res, err, "Analytics CSV export error");
+    handleReportError(res, err, "Analytics CSV export error");
   }
 }
 
@@ -81,7 +82,7 @@ export async function salesSummary(req: Request, res: Response) {
     const result = await reportService.salesSummary(from, to);
     res.json(result);
   } catch (err) {
-    handleError(res, err, "Sales summary error");
+    handleReportError(res, err, "Sales summary error");
   }
 }
 
@@ -91,10 +92,15 @@ export async function bestSellers(req: Request, res: Response) {
     const { from, to } = getFilters(req);
     const limit =
       typeof req.query.limit === "string" ? Number(req.query.limit) : 10; // how many products to return, defaults to 10
+    if (!Number.isInteger(limit) || limit < 1 || limit > 100) {
+      throw new reportService.ReportValidationError(
+        "limit must be an integer from 1 to 100.",
+      );
+    }
     const result = await reportService.bestSellers(from, to, limit);
     res.json(result);
   } catch (err) {
-    handleError(res, err, "Best sellers error");
+    handleReportError(res, err, "Best sellers error");
   }
 }
 
@@ -105,6 +111,6 @@ export async function cashierSales(req: Request, res: Response) {
     const result = await reportService.cashierSales(from, to);
     res.json(result);
   } catch (err) {
-    handleError(res, err, "Cashier sales error");
+    handleReportError(res, err, "Cashier sales error");
   }
 }

@@ -13,6 +13,7 @@ export type SpreadsheetPreviewResult = {
   sheetName?: string;
   sheets: string[];
   headerRowNumber: number;
+  headerConfidence?: "HIGH" | "LOW";
   totalRows: number;
   warnings: string[];
   totalColumns: number;

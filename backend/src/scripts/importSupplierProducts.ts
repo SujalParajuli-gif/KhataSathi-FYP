@@ -12,7 +12,7 @@ async function main() {
 
   if (!filePath) {
     throw new Error(
-      "Usage: pnpm prepare:supplier-review -- <path-to-supplier.csv|xlsx>",
+      "Usage: pnpm prepare:supplier-review -- <path-to-supplier.csv|xlsx|xlsm>",
     );
   }
 
@@ -22,7 +22,7 @@ async function main() {
   }
 
   const extension = path.extname(resolvedPath).toLowerCase();
-  if (![".csv", ".xlsx"].includes(extension)) {
+  if (![".csv", ".xlsx", ".xlsm"].includes(extension)) {
     throw new Error(
       "This command prepares CSV/XLSX review batches only. Open PDF and image catalogues from Products > Import so they remain inside the same review flow.",
     );
@@ -54,7 +54,7 @@ async function main() {
     buffer: fs.readFileSync(resolvedPath),
     fileName: path.basename(resolvedPath),
     mimeType:
-      extension === ".xlsx"
+      extension === ".xlsx" || extension === ".xlsm"
         ? "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
         : "text/csv",
   });

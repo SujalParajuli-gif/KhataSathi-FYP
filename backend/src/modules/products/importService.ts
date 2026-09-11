@@ -1445,33 +1445,89 @@ export async function createCsvImportPreview(input: {
     };
 }
 
-function parseJsonFromAiText(text: string) {
+function stripTrailingJsonCommas(candidate: string) {
+    let result = "";
+    let inString = false;
+    let escaped = false;
+    for (let index = 0; index < candidate.length; index += 1) {
+        const character = candidate[index];
+        if (inString) {
+            result += character;
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === '"') inString = false;
+            continue;
+        }
+        if (character === '"') {
+            inString = true;
+            result += character;
+            continue;
+        }
+        if (character === ",") {
+            let next = index + 1;
+            while (/\s/u.test(candidate[next] || "")) next += 1;
+            if (candidate[next] === "}" || candidate[next] === "]") continue;
+        }
+        result += character;
+    }
+    return result;
+}
+
+function findBalancedJson(text: string) {
+    const start = text.search(/[\[{]/u);
+    if (start < 0) return text;
+    const stack: string[] = [];
+    let inString = false;
+    let escaped = false;
+    for (let index = start; index < text.length; index += 1) {
+        const character = text[index];
+        if (inString) {
+            if (escaped) escaped = false;
+            else if (character === "\\") escaped = true;
+            else if (character === '"') inString = false;
+            continue;
+        }
+        if (character === '"') inString = true;
+        else if (character === "{" || character === "[") stack.push(character);
+        else if (character === "}" || character === "]") {
+            const expected = character === "}" ? "{" : "[";
+            if (stack.pop() !== expected) break;
+            if (!stack.length) return text.slice(start, index + 1);
+        }
+    }
+    return text.slice(start);
+}
+
+export function parseJsonFromAiText(text: string) {
     const cleaned = text
-        .replace(/```json/gi, "")
-        .replace(/```/g, "")
+        .replace(/^\s*```(?:json)?\s*/i, "")
+        .replace(/\s*```\s*$/i, "")
         .trim();
-    const firstBrace = cleaned.indexOf("{");
-    const lastBrace = cleaned.lastIndexOf("}");
-    const firstBracket = cleaned.indexOf("[");
-    const lastBracket = cleaned.lastIndexOf("]");
-    const candidate =
-        firstBrace >= 0 && lastBrace > firstBrace
-            ? cleaned.slice(firstBrace, lastBrace + 1)
-            : firstBracket >= 0 && lastBracket > firstBracket
-                ? cleaned.slice(firstBracket, lastBracket + 1)
-                : cleaned;
     try {
-        return JSON.parse(candidate);
+        return JSON.parse(cleaned);
     } catch {
-        // Some model responses contain a trailing comma even when JSON mode is
-        // requested. Repair only that harmless, unambiguous formatting error.
-        const withoutTrailingCommas = candidate.replace(/,\s*([}\]])/g, "$1");
+        const candidate = stripTrailingJsonCommas(findBalancedJson(cleaned));
         try {
-            return JSON.parse(withoutTrailingCommas);
+            return JSON.parse(candidate);
         } catch {
             throw new Error("The image reader returned incomplete data. Try the import again.");
         }
     }
+}
+
+function aiProductRows(value: any): unknown[] | null {
+    if (Array.isArray(value)) return value;
+    if (!value || typeof value !== "object") return null;
+    return Array.isArray(value.products) ? value.products : null;
+}
+
+export function hasUsableAiProductShape(value: unknown) {
+    const rows = aiProductRows(value);
+    return Boolean(rows?.length) && rows!.every((row: any) =>
+        row && typeof row === "object" && Boolean(normalizeCsvText(
+            row.productName || row.name || row.Product_Name || row.product_name,
+        )),
+    );
 }
 
 const TRANSIENT_AI_STATUSES = new Set([429, 500, 502, 503, 504]);
@@ -1508,7 +1564,11 @@ async function requestGeminiJson(input: {
                     const payload: any = await response.json();
                     const text = payload?.candidates?.[0]?.content?.parts?.[0]?.text || "";
                     try {
-                        return { parsed: parseJsonFromAiText(text), error: null as string | null };
+                        const parsed = parseJsonFromAiText(text);
+                        if (!hasUsableAiProductShape(parsed)) {
+                            throw new Error("The response did not contain usable product rows.");
+                        }
+                        return { parsed, error: null as string | null };
                     } catch {
                         malformedResponses += 1;
                         break; // a second identical call is unlikely to help; try the fallback model
@@ -1598,10 +1658,29 @@ function normalizeImportedCatalogUnit(value: unknown, fallback: string) {
     return aliases[key] || normalizeUnitLabel(raw, fallback);
 }
 
+export function parseAiPrintedPrice(textValue: unknown, numericValue: unknown) {
+    const exactText = normalizeCsvText(textValue);
+    if (exactText) {
+        if (/[०-९]/.test(exactText) && /[0-9]/.test(exactText)) return null;
+        const normalized = exactText
+            .replace(/[०-९]/g, (digit) => String(digit.charCodeAt(0) - 0x0966))
+            .replace(/(?:npr|rs\.?|रु\.?)/gi, "")
+            .replace(/\s+/g, "")
+            .replace(/,/g, "");
+        const decimal = normalized.match(/^(\d+)[.।|:](\d{2})$/);
+        if (decimal) return Number(`${decimal[1]}.${decimal[2]}`);
+        if (/^\d+(?:\.\d+)?$/.test(normalized)) return Number(normalized);
+        return null;
+    }
+    const numeric = Number(numericValue);
+    return Number.isFinite(numeric) && numeric > 0 ? numeric : null;
+}
+
 export async function extractImageRateRowsWithGemini(input: {
     fileName?: string;
-    mimeType: string;
-    base64: string;
+    mimeType?: string;
+    base64?: string;
+    images?: Array<{ mimeType: string; base64: string; label: string; sourcePanel: number }>;
 }) {
     const apiKey =
         process.env.GEMINI_API_KEY ||
@@ -1626,6 +1705,8 @@ Return strict JSON only in this shape:
     {
       "serial": 1,
       "productName": "verbatim complete text from the ITEMS/product-name cell",
+      "englishName": "concise English translation or transliteration when productName is not English, otherwise empty",
+      "sourcePanel": 1,
       "code": "",
       "sizeText": "",
       "sizeValue": null,
@@ -1633,24 +1714,32 @@ Return strict JSON only in this shape:
       "saleUnit": "",
       "packageQty": null,
       "mrp": null,
+      "mrpText": "exact printed MRP cell or empty",
       "wsp": null,
+      "wspText": "exact printed WSP cell or empty",
       "rate": null,
+      "rateText": "exact printed Rate cell or empty",
       "category": "section heading such as ROYAL BUCKET or BASIN - KING",
       "variant": "variant or series if different from code",
       "boundingBox": [120, 80, 175, 920]
     }
   ]
 }
+
 Rules:
 - Extract EVERY visible product data row in top-to-bottom order. Do not summarize, sample, merge, or omit rows.
+- When multiple labeled panel images are attached, extract each panel independently, return sourcePanel exactly as labeled, and order rows by panel number then top-to-bottom.
 - Do not return document titles, table headers, section-only headings, addresses, or contact details as products.
 - Copy the complete product-name/ITEMS cell verbatim. Preserve every number, parenthesized size, inch mark, hyphen, model word and variant (for example, MOP (8\") T Mop must stay MOP (8\") T Mop).
+- Preserve non-English productName exactly. Put a useful English translation or transliteration in englishName without removing sizes, colors, or variants. Leave englishName empty rather than guessing an unclear name.
 - Never simplify or normalize product names. Two rows with similar names but different sizes or variants are separate products.
 - If size is printed in its own column, put it in sizeValue/sizeUnit and do not put it in code. Convert Nepali digits to ordinary JSON numbers.
 - code is only for a real code/model column such as MRP Code or Product Code. Never use a size, unit, packing value or price as code.
 - hasCodeColumn is true only when the table visibly contains a dedicated code/model column. When false, every product code must be empty.
 - saleUnit is the printed unit such as PIECE, SET, DOZEN, KG or LITER; empty if absent.
 - The null and empty values in the JSON schema are not defaults. Leave optional fields null/empty whenever that field is absent in the source row.
+- Read a printed decimal separator as punctuation, even when the typeface makes it resemble the digit 1. For example, a price ending in a separator plus 00 is a whole-value price with .00 cents; never concatenate that separator and 00 onto the amount.
+- Cross-check price scale against neighboring rows in the same price column. Preserve the exact visible cell in rateText/wspText/mrpText and return the correctly parsed numeric value separately.
 - Never invent stock or a shop selling price.
 - Treat MRP as a possible retail price. Treat supplier WSP/Rate/Base Price as a neutral Rate unless the source clearly labels it Retail or Wholesale.
 - Do not put price numbers inside productName.
@@ -1661,23 +1750,28 @@ Rules:
         process.env.GEMINI_IMPORT_MODEL || "gemini-3.5-flash-lite",
         process.env.GEMINI_IMPORT_FALLBACK_MODEL || "gemini-3.5-flash",
     ].filter(Boolean)));
+    const suppliedImages = input.images?.length
+        ? input.images
+        : input.base64 && input.mimeType
+            ? [{ mimeType: input.mimeType, base64: input.base64, label: "Complete image", sourcePanel: 1 }]
+            : [];
+    if (!suppliedImages.length) {
+        return { rows: [], document: null, error: "No readable image data was supplied." };
+    }
+    const parts: any[] = [{ text: prompt }];
+    for (const image of suppliedImages) {
+        parts.push({ text: `${image.label}; sourcePanel ${image.sourcePanel}` });
+        parts.push({ inline_data: { mime_type: image.mimeType, data: image.base64 } });
+    }
     const requestBody = JSON.stringify({
         contents: [
             {
                 role: "user",
-                parts: [
-                    { text: prompt },
-                    {
-                        inline_data: {
-                            mime_type: input.mimeType,
-                            data: input.base64,
-                        },
-                    },
-                ],
+                parts,
             },
         ],
         generationConfig: {
-            temperature: 0.1,
+            temperature: 0,
             responseMimeType: "application/json",
             maxOutputTokens: 32768,
         },
@@ -1704,6 +1798,49 @@ Rules:
             },
         error: null,
     };
+}
+
+export async function detectVerticalCatalogPanelSplit(buffer: Buffer) {
+    const { data, info } = await sharp(buffer, { failOn: "error", limitInputPixels: 80_000_000 })
+        .rotate()
+        .greyscale()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+    if (info.width < 700 || info.height < 500) return null;
+
+    const first = Math.floor(info.width * 0.3);
+    const last = Math.ceil(info.width * 0.7);
+    const maximumEdges = Math.max(4, Math.floor(info.height * 0.012));
+    const candidates: number[] = [];
+    for (let x = first; x < last; x += 1) {
+        let sum = 0;
+        let squareSum = 0;
+        let verticalEdges = 0;
+        for (let y = 0; y < info.height; y += 1) {
+            const value = data[y * info.width + x];
+            sum += value;
+            squareSum += value * value;
+            if (y > 0 && Math.abs(value - data[(y - 1) * info.width + x]) > 30) verticalEdges += 1;
+        }
+        const mean = sum / info.height;
+        const deviation = Math.sqrt(Math.max(0, squareSum / info.height - mean * mean));
+        if (mean >= 170 && deviation <= 40 && verticalEdges <= maximumEdges) candidates.push(x);
+    }
+
+    const minimumRun = Math.max(6, Math.ceil(info.width * 0.005));
+    let best: number[] = [];
+    let current: number[] = [];
+    for (const x of candidates) {
+        if (!current.length || x === current[current.length - 1] + 1) current.push(x);
+        else {
+            if (current.length > best.length) best = current;
+            current = [x];
+        }
+    }
+    if (current.length > best.length) best = current;
+    if (best.length < minimumRun) return null;
+    const splitX = Math.round((best[0] + best[best.length - 1]) / 2);
+    return splitX >= info.width * 0.3 && splitX <= info.width * 0.7 ? splitX : null;
 }
 
 type ScannedPdfPage = {
@@ -1737,8 +1874,8 @@ Return strict JSON only:
     {
       "pageNumber": 3,
       "serial": "1",
-      "nepaliName": "exact printed Nepali name or empty",
-      "productName": "exact complete English product name, preserving numbers, sizes, WITH LID and other variants",
+      "productName": "exact complete product name as printed, preserving the source language, numbers, sizes, WITH LID and other variants",
+      "englishName": "concise English translation or transliteration when productName is not English, otherwise empty",
       "code": "exact printed product/model code or empty",
       "packageQty": 24,
       "supplierRate": 172,
@@ -1752,6 +1889,7 @@ Rules:
 - Put the source's generic price, rate, WSP, or MRP column in supplierRate. This is a neutral extracted value; do not classify it as the shop's Rate, Retail, or Wholesale price here.
 - Do not calculate or invent retail price, store wholesale price, stock, code, package quantity, category, or missing words.
 - Preserve the full product name. Numbers and sizes distinguish real variants.
+- Preserve non-English productName exactly. Put a searchable English translation or transliteration in englishName, and leave it empty rather than guessing unclear text.
 - pageNumber must match the page label supplied immediately before each image.
 - boundingBox is [top, left, bottom, right] for the complete source row on a 0-1000 page-image coordinate scale.
 - If a cell is unreadable use null or an empty string and list its field name in uncertainFields.
@@ -1839,7 +1977,12 @@ export async function createScannedPdfImportPreview(input: {
     for (let index = 0; index < extracted.length; index += 1) {
         const item = extracted[index] || {};
         const pageNumber = Math.max(1, Number(item.pageNumber || 1));
-        const rawProductName = normalizeCsvText(item.productName || item.name);
+        // Older queued responses used nepaliName + an English productName.
+        // Accept that shape while the current contract preserves the printed
+        // name and returns English as a separate search alias.
+        const legacyNepaliName = normalizeCsvText(item.nepaliName);
+        const rawProductName = legacyNepaliName || normalizeCsvText(item.productName || item.name);
+        const englishName = normalizeCsvText(item.englishName || (legacyNepaliName ? item.productName : ""));
         const code = normalizeCsvText(item.code || item.variant);
         const purchaseRate = Number(
             item.supplierRate ?? item.purchaseRate ?? item.wsp ?? item.rate ?? 0,
@@ -1885,7 +2028,7 @@ export async function createScannedPdfImportPreview(input: {
             sku: buildSupplierSku(
                 sourceName,
                 `${pageNumber}-${String(item.serial || rowNumber)}`,
-                productName,
+                englishName || productName,
                 code,
             ),
             barcode: "",
@@ -1918,6 +2061,9 @@ export async function createScannedPdfImportPreview(input: {
             wholesalePrice: null,
             availabilityStatus: validPurchaseRate ? "CATALOG_LISTED" : "COMING_SOON",
             stock: 0,
+            searchAliases: englishName && englishName.toLocaleLowerCase("en-US") !== productName.toLocaleLowerCase("en-US")
+                ? [englishName]
+                : [],
         };
         previewRows.push({
             rowNumber,
@@ -1939,7 +2085,8 @@ export async function createScannedPdfImportPreview(input: {
             parsed: {
                 sourceType: "PDF_SCANNED_AI_ROW",
                 pageNumber,
-                nepaliName: normalizeCsvText(item.nepaliName),
+                sourceProductName: productName,
+                englishName,
                 uncertainFields,
                 ...parsedProduct,
             },
@@ -2036,18 +2183,64 @@ export async function createImageImportPreview(input: {
         const shouldTile = width > 0 && height > 2600;
 
         if (!shouldTile) {
-            const optimized = await sharp(normalizedBuffer)
-                .resize({ width: 2400, withoutEnlargement: true })
-                .jpeg({ quality: 88, mozjpeg: true })
-                .toBuffer();
-            const result = await extractImageRateRowsWithGemini({
-                fileName: input.fileName,
-                mimeType: "image/jpeg",
-                base64: optimized.toString("base64"),
-            });
-            aiRows = result.rows;
-            aiDocument = result.document;
-            aiError = result.error;
+            const panelSplit = await detectVerticalCatalogPanelSplit(normalizedBuffer);
+            if (panelSplit) {
+                const panelRanges = [
+                    { left: 0, width: panelSplit },
+                    { left: panelSplit + 1, width: width - panelSplit - 1 },
+                ].filter((panel) => panel.width > 0);
+                const panelImages: Array<{ mimeType: string; base64: string; label: string; sourcePanel: number }> = [];
+                for (let index = 0; index < panelRanges.length; index += 1) {
+                    const panel = panelRanges[index];
+                    const optimized = await sharp(normalizedBuffer)
+                        .extract({ left: panel.left, top: 0, width: panel.width, height })
+                        .resize({ width: 1800, withoutEnlargement: false })
+                        .jpeg({ quality: 90, mozjpeg: true })
+                        .toBuffer();
+                    panelImages.push({
+                        mimeType: "image/jpeg",
+                        base64: optimized.toString("base64"),
+                        label: index === 0 ? "Left panel" : "Right panel",
+                        sourcePanel: index + 1,
+                    });
+                }
+                const result = await extractImageRateRowsWithGemini({ fileName: input.fileName, images: panelImages });
+                aiDocument = result.document;
+                aiError = result.error;
+                const panelRows = result.rows;
+                for (const row of panelRows) {
+                        const panelIndex = Number(row?.sourcePanel) - 1;
+                        const panel = panelRanges[panelIndex];
+                        const box = Array.isArray(row?.boundingBox) ? row.boundingBox.map(Number) : null;
+                        if (panel && box?.length === 4 && box.every(Number.isFinite)) {
+                            row.boundingBox = [
+                                box[0],
+                                Math.round(((panel.left + (box[1] / 1000) * panel.width) / width) * 1000),
+                                box[2],
+                                Math.round(((panel.left + (box[3] / 1000) * panel.width) / width) * 1000),
+                            ];
+                        }
+                        aiRows.push(row);
+                }
+            } else {
+                const optimized = await sharp(normalizedBuffer)
+                    .resize({ width: 2400, withoutEnlargement: true })
+                    .jpeg({ quality: 88, mozjpeg: true })
+                    .toBuffer();
+                const singleImage = {
+                    mimeType: "image/jpeg",
+                    base64: optimized.toString("base64"),
+                    label: "Complete image",
+                    sourcePanel: 1,
+                };
+                const result = await extractImageRateRowsWithGemini({
+                    fileName: input.fileName,
+                    images: [singleImage],
+                });
+                aiRows = result.rows;
+                aiDocument = result.document;
+                aiError = result.error;
+            }
         } else {
             const tileHeight = 1900;
             const overlap = 120;
@@ -2126,6 +2319,7 @@ export async function createImageImportPreview(input: {
         const rawProductName = normalizeCsvText(
             item.productName || item.name || item.Product_Name || item.product_name,
         );
+        const englishName = normalizeCsvText(item.englishName || item.english_name);
         const sizeText = normalizeCsvText(item.sizeText || item.size_text);
         const repeatedName = (sourceNameCounts.get(rawProductName.toLocaleLowerCase("en-US")) || 0) > 1;
         const completeProductName = repeatedName && sizeText
@@ -2137,8 +2331,12 @@ export async function createImageImportPreview(input: {
         const code = extractedCode.toLocaleLowerCase("en-US") === rawProductName.toLocaleLowerCase("en-US")
             ? ""
             : extractedCode;
-        const supplierRateInput = Number(item.wsp ?? item.WSP ?? item.rate ?? item.Rate ?? item.mrp ?? item.MRP ?? item.price ?? 0);
-        const retailInput = Number(item.mrp ?? item.MRP ?? 0);
+        const printedPriceText = normalizeCsvText(item.wspText ?? item.rateText ?? item.mrpText);
+        const supplierRateInput = parseAiPrintedPrice(
+            item.wspText ?? item.rateText ?? item.mrpText,
+            item.wsp ?? item.WSP ?? item.rate ?? item.Rate ?? item.mrp ?? item.MRP ?? item.price,
+        );
+        const retailInput = parseAiPrintedPrice(item.mrpText, item.mrp ?? item.MRP);
         const sourceRegion = imageSourceRegions[index] || null;
         const packageInput = item.packageQty ?? item.pkg ?? item.packageQuantity;
         const packageQuantity = packageInput === null || packageInput === undefined || packageInput === ""
@@ -2168,16 +2366,16 @@ export async function createImageImportPreview(input: {
             : parsedSize.sizeValue;
         const sizeUnit = normalizeImportedCatalogUnit(item.sizeUnit ?? item.size_unit, parsedSize.sizeUnit || "STANDARD");
         const saleUnit = normalizeImportedCatalogUnit(item.saleUnit ?? item.unit, "PIECE");
-        const supplierRate = Number.isFinite(supplierRateInput) && supplierRateInput > 0
+        const supplierRate = supplierRateInput !== null && Number.isFinite(supplierRateInput) && supplierRateInput > 0
             ? roundCurrency(supplierRateInput)
             : null;
-        const retailPrice = Number.isFinite(retailInput) && retailInput > 0
+        const retailPrice = retailInput !== null && Number.isFinite(retailInput) && retailInput > 0
             ? roundCurrency(retailInput)
             : null;
         const parsedProduct = {
             name: productName,
             productName,
-            sku: buildSupplierSku(supplierName, String(item.serial || index + 1), productName, code),
+            sku: buildSupplierSku(supplierName, String(item.serial || index + 1), englishName || productName, code),
             barcode: "",
             brand: brandName,
             category,
@@ -2203,6 +2401,12 @@ export async function createImageImportPreview(input: {
             wholesalePrice: null,
             availabilityStatus: supplierRate || retailPrice ? "CATALOG_LISTED" : "COMING_SOON",
             stock: 0,
+            warnings: printedPriceText && supplierRateInput === null
+                ? [`Price text "${printedPriceText}" could not be parsed safely. Verify the source cell.`]
+                : [],
+            searchAliases: englishName && englishName.toLocaleLowerCase("en-US") !== productName.toLocaleLowerCase("en-US")
+                ? [englishName]
+                : [],
         };
         rows.push({
             rowNumber: index + 1,
@@ -2210,7 +2414,7 @@ export async function createImageImportPreview(input: {
             sourceLocator: { kind: "IMAGE", region: sourceRegion, regionAdjusted: true },
             status: "READY",
             error: null,
-            parsed: { sourceType: "IMAGE_AI_ROW", sourceProductName: rawProductName, sourceSizeText: sizeText, ...parsedProduct },
+            parsed: { sourceType: "IMAGE_AI_ROW", sourceProductName: rawProductName, englishName, sourceSizeText: sizeText, ...parsedProduct },
         });
     }
 
@@ -2675,6 +2879,7 @@ export async function getProductImportReview(input: {
     search?: string;
     comparisonStatus?: string;
     rowStatus?: string;
+    reviewState?: "EDITED" | "ATTENTION";
 }) {
     const page = Math.max(1, Math.floor(input.page || 1));
     const pageSize = Math.max(1, Math.min(100, Math.floor(input.pageSize || 25)));
@@ -2692,11 +2897,27 @@ export async function getProductImportReview(input: {
             return Boolean(normalizeCsvText((column as any).key) && normalizeCsvText((column as any).label));
         });
 
+    const reviewMetricRows = await prisma.productImportRow.findMany({
+        where: { batchId: input.batchId },
+        select: { id: true, parsed: true, extracted: true, comparisonStatus: true, status: true, error: true },
+    });
+    const reviewChangesById = new Map<string, string[]>(
+        reviewMetricRows.map((row): [string, string[]] => [row.id, importReviewChanges(row.parsed, row.extracted)]),
+    );
+    const attentionIds = reviewMetricRows.filter((row) =>
+        row.status === "FAILED"
+        || Boolean(row.error)
+        || ["NEEDS_REVIEW", "IDENTIFIER_CONFLICT", "IN_FILE_DUPLICATE", "FAILED"].includes(row.comparisonStatus)
+        || (row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed) && Array.isArray((row.parsed as any).warnings) && (row.parsed as any).warnings.length > 0),
+    ).map((row) => row.id);
+    const editedIds = reviewMetricRows.filter((row) => (reviewChangesById.get(row.id)?.length || 0) > 0).map((row) => row.id);
+
     const where: Prisma.ProductImportRowWhereInput = { batchId: input.batchId };
     if (input.comparisonStatus) {
         where.comparisonStatus = input.comparisonStatus as any;
     }
     if (input.rowStatus) where.status = input.rowStatus;
+    if (input.reviewState) where.id = { in: input.reviewState === "EDITED" ? editedIds : attentionIds };
     const search = normalizeCsvText(input.search);
     if (search) {
         where.OR = [
@@ -2751,16 +2972,20 @@ export async function getProductImportReview(input: {
     }
 
     const priceMapping = getImportPriceMappingState({ ...batch, rows: priceInferenceRows });
-    const displayRows = priceMapping.complete
+    const mappedRows = priceMapping.complete
         ? rows.map((row) => ({
             ...row,
             parsed: parsedWithImportPriceMapping(row.parsed, priceMapping.mapping) as Prisma.JsonValue,
         }))
         : rows;
+    const displayRows = mappedRows.map((row) => ({
+        ...row,
+        reviewChanges: reviewChangesById.get(row.id) || [],
+    }));
 
     return {
         batch: omitPrivateImportStorage(batch),
-        coverage: importCoverage(batch.extractionMeta),
+        coverage: importCoverage(batch.extractionMeta, batch.status),
         rows: displayRows,
         pagination: {
             page,
@@ -2771,9 +2996,30 @@ export async function getProductImportReview(input: {
         comparisonCounts: Object.fromEntries(
             grouped.map((item) => [item.comparisonStatus, item._count._all]),
         ),
+        reviewCounts: {
+            all: reviewMetricRows.length,
+            edited: editedIds.length,
+            attention: attentionIds.length,
+        },
         decisionCounts,
         priceMapping,
     };
+}
+
+export function importReviewChanges(parsedValue: unknown, extractedValue: unknown): string[] {
+    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)
+        || !extractedValue || typeof extractedValue !== "object" || Array.isArray(extractedValue)) return [];
+    const parsed = parsedValue as Record<string, unknown>;
+    const extracted = extractedValue as Record<string, unknown>;
+    const fields: Array<[string, string]> = [
+        ["productName", "Product name"], ["sku", "SKU"], ["barcode", "Barcode"],
+        ["brand", "Brand"], ["category", "Category"], ["productCodeVariant", "Product code"],
+        ["sizeValue", "Size"], ["sizeUnit", "Size unit"], ["packageQuantity", "Package quantity"],
+        ["packageUnit", "Package unit"], ["saleUnit", "Sale unit"], ["ratePerPiece", "Rate"],
+        ["retailPrice", "Retail price"], ["wholesalePrice", "Wholesale price"],
+        ["availabilityStatus", "Availability"],
+    ];
+    return fields.filter(([key]) => JSON.stringify(parsed[key] ?? null) !== JSON.stringify(extracted[key] ?? null)).map(([, label]) => label);
 }
 
 type ImportPriceDestination = "ratePerPiece" | "retailPrice" | "wholesalePrice";
@@ -3586,7 +3832,7 @@ async function executeReviewedPdfRows(
         throw new Error("Product import batch was not found.");
     }
 
-    if (importCoverage(batch.extractionMeta).requiresAcknowledgement && input.acknowledgeIncomplete !== true) throw new Error("Some source pages remain unread or incomplete. Acknowledge the missing coverage before importing.");
+    if (importCoverage(batch.extractionMeta, batch.status).requiresAcknowledgement && input.acknowledgeIncomplete !== true) throw new Error("Some source pages remain unread or incomplete. Acknowledge the missing coverage before importing.");
     const existingRowsById = new Map<string, ProductImportRow>(
         batch.rows.map((row) => [row.id, row]),
     );

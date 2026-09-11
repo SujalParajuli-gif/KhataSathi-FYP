@@ -6,6 +6,7 @@ import {
   finalizeBodySchema,
   priceOverrideAuthorizationBodySchema,
 } from "./validation";
+import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
 // validating that a value is a positive whole number (at least 1)
 // we use this for quantities and pagination parameters
@@ -36,6 +37,10 @@ function parseOptionalNonNegativeNumber(value: unknown, label: string) {
 }
 
 function sendStockConflict(res: Response, err: any) {
+  if (err instanceof FinancialTransactionConflictError) {
+    res.status(409).json({ error: err.message, code: err.code });
+    return true;
+  }
   if (!(err instanceof invoiceService.StockConflictError)) return false;
 
   res.status(409).json({
@@ -79,6 +84,7 @@ export async function checkout(req: Request, res: Response) {
     const body = parsed.data;
 
     const result = await invoiceService.checkoutInvoice(req.user!.id, {
+      operationKey: body.operationKey,
       draftInvoiceId: body.draftInvoiceId,
       customerId: body.customerId,
       items: body.items,
@@ -92,6 +98,14 @@ export async function checkout(req: Request, res: Response) {
     res.status(201).json(result);
   } catch (err: any) {
     if (sendStockConflict(res, err)) return;
+
+    if (err.message.includes("Checkout operation")) {
+      res.status(409).json({
+        error: err.message,
+        code: "CHECKOUT_OPERATION_CONFLICT",
+      });
+      return;
+    }
 
     if (
       err.message.includes("Checkout") ||
@@ -228,6 +242,7 @@ export async function resumeParked(req: Request, res: Response) {
     );
     res.json(draft);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("Parked bill") ||
       err.message.includes("parked draft")
@@ -249,6 +264,7 @@ export async function discardParked(req: Request, res: Response) {
     );
     res.json(result);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("Parked bill") ||
       err.message.includes("parked draft")
@@ -276,6 +292,7 @@ export async function transferParked(req: Request, res: Response) {
     );
     res.json(draft);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("Parked bill") ||
       err.message.includes("parked draft") ||
@@ -411,6 +428,7 @@ export async function addItem(req: Request, res: Response) {
     );
     res.status(201).json(item);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     // checking for various business rule violations
     if (
       err.message.includes("qty") ||
@@ -440,6 +458,7 @@ export async function updateItem(req: Request, res: Response) {
     );
     res.json(item);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("qty") ||
       err.message.includes("finalized") ||
@@ -463,6 +482,7 @@ export async function removeItem(req: Request, res: Response) {
     await invoiceService.removeItem(invoiceId, itemId);
     res.json({ message: "Item removed" });
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("finalized") ||
       err.message.includes("not found") ||
@@ -525,6 +545,7 @@ export async function cancel(req: Request, res: Response) {
     );
     res.json(invoice);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("not found") ||
       err.message.includes("finalized") ||
@@ -550,6 +571,7 @@ export async function softDelete(req: Request, res: Response) {
     );
     res.json(result);
   } catch (err: any) {
+    if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("not found") ||
       err.message.includes("cancelled") ||

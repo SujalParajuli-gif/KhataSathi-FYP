@@ -21,6 +21,13 @@ import {
 } from "../settings/service";
 
 const DAY_MS = 24 * 60 * 60 * 1000; // milliseconds in a day — used for calculating date spans
+export const MAX_INTERACTIVE_REPORT_DAYS = 366;
+const REPORT_BATCH_SIZE = 250;
+
+export class ReportValidationError extends Error {
+  statusCode = 400;
+  code = "REPORT_VALIDATION_ERROR";
+}
 const PAYMENT_METHODS: PaymentMethod[] = [
   "CASH",
   "ESEWA",
@@ -45,6 +52,7 @@ export type AnalyticsFilters = {
 export type AnalyticsReportOptions = {
   viewerRole?: string;
   includeOperations?: boolean;
+  allowLongRange?: boolean;
   now?: Date;
 };
 
@@ -70,8 +78,6 @@ type PaymentDistributionSlice = {
   amount: number;
   count: number;
 };
-
-type ReportInvoice = Awaited<ReturnType<typeof getReportInvoices>>[number];
 
 const MANAGER_FORBIDDEN_REPORT_KEYS = new Set([
   "cost",
@@ -254,19 +260,41 @@ function getBucketKey(date: Date, granularity: BucketGranularity) {
 }
 
 // validating and normalizing the date filters — making sure from <= to and status is valid
-function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
-  const fromDate = parseBusinessDate(filters.from, "from");
-  const toDate = parseBusinessDate(filters.to, "to");
+export function normalizeAnalyticsFilters(
+  filters: AnalyticsFilters,
+  options: { allowLongRange?: boolean } = {},
+) {
+  let fromDate: Date;
+  let toDate: Date;
+  try {
+    fromDate = parseBusinessDate(filters.from, "from");
+    toDate = parseBusinessDate(filters.to, "to");
+  } catch (error) {
+    throw new ReportValidationError(
+      error instanceof Error ? error.message : "Invalid report date range.",
+    );
+  }
 
   if (fromDate.getTime() > toDate.getTime()) {
-    throw new Error("from must be before or equal to to.");
+    throw new ReportValidationError("from must be before or equal to to.");
   }
 
   if (
     filters.paymentStatus &&
     !INVOICE_PAYMENT_STATUSES.includes(filters.paymentStatus)
   ) {
-    throw new Error("Unsupported paymentStatus filter.");
+    throw new ReportValidationError("Unsupported paymentStatus filter.");
+  }
+
+  const rangeDays =
+    Math.floor(
+      (startOfBusinessDay(toDate).getTime() - startOfBusinessDay(fromDate).getTime()) /
+        DAY_MS,
+    ) + 1;
+  if (!options.allowLongRange && rangeDays > MAX_INTERACTIVE_REPORT_DAYS) {
+    throw new ReportValidationError(
+      `Interactive reports support at most ${MAX_INTERACTIVE_REPORT_DAYS} days. Use CSV export for a longer range.`,
+    );
   }
 
   return {
@@ -280,16 +308,11 @@ function normalizeAnalyticsFilters(filters: AnalyticsFilters) {
     toDate,
     startAt: toBusinessRangeStart(fromDate), // converting to UTC range start for the database query
     endAt: toBusinessRangeEnd(toDate), // converting to UTC range end for the database query
+    rangeDays,
   };
 }
 
-// fetching all finalized invoices within the date range with their items, payments, cashier, and customer data
-// we include everything here because the analytics report needs to compute metrics from all of this
-async function getReportInvoices(where: Prisma.InvoiceWhereInput) {
-  return prisma.invoice.findMany({
-    where,
-    orderBy: { finalizedAt: "asc" },
-    include: {
+const reportInvoiceInclude = {
       cashier: {
         select: {
           id: true,
@@ -336,8 +359,29 @@ async function getReportInvoices(where: Prisma.InvoiceWhereInput) {
           createdAt: true,
         },
       },
-    },
-  });
+} satisfies Prisma.InvoiceInclude;
+
+type ReportInvoice = Prisma.InvoiceGetPayload<{
+  include: typeof reportInvoiceInclude;
+}>;
+
+// Read one bounded graph at a time. Aggregation below retains only summary maps,
+// rather than a range-sized array of hydrated invoices.
+async function* getReportInvoiceBatches(where: Prisma.InvoiceWhereInput) {
+  let cursor: string | undefined;
+  while (true) {
+    const batch = await prisma.invoice.findMany({
+      where,
+      orderBy: [{ finalizedAt: "asc" }, { id: "asc" }],
+      include: reportInvoiceInclude,
+      take: REPORT_BATCH_SIZE,
+      ...(cursor ? { cursor: { id: cursor }, skip: 1 } : {}),
+    });
+    if (!batch.length) return;
+    yield batch;
+    if (batch.length < REPORT_BATCH_SIZE) return;
+    cursor = batch[batch.length - 1].id;
+  }
 }
 
 // building the Prisma where clause for invoice queries based on the analytics filters
@@ -663,7 +707,9 @@ export async function getAnalyticsReport(
   input: AnalyticsFilters,
   options: AnalyticsReportOptions = {},
 ) {
-  const normalized = normalizeAnalyticsFilters(input);
+  const normalized = normalizeAnalyticsFilters(input, {
+    allowLongRange: options.allowLongRange,
+  });
   const granularity = resolveBucketGranularity(
     normalized.fromDate,
     normalized.toDate,
@@ -675,13 +721,11 @@ export async function getAnalyticsReport(
     granularity,
   );
 
-  const invoices = await getReportInvoices(
-    buildWhereClause({
-      startAt: normalized.startAt,
-      endAt: normalized.endAt,
-      filters: normalized.filters,
-    }),
-  );
+  const invoiceWhere = buildWhereClause({
+    startAt: normalized.startAt,
+    endAt: normalized.endAt,
+    filters: normalized.filters,
+  });
 
   // fetching all active cashiers for the cashier filter dropdown in the frontend
   const availableCashiers = await prisma.user.findMany({
@@ -774,9 +818,12 @@ export async function getAnalyticsReport(
   let partiallyPaidInvoiceCount = 0;
   let unpaidInvoiceCount = 0;
   let walkInInvoiceCount = 0;
+  let finalizedInvoiceCount = 0;
 
-  // looping through every invoice and accumulating metrics
-  for (const invoice of invoices) {
+  // Loop through bounded database pages and retain only aggregate state.
+  for await (const invoiceBatch of getReportInvoiceBatches(invoiceWhere)) {
+    for (const invoice of invoiceBatch) {
+    finalizedInvoiceCount += 1;
     // using the higher of the stored paidTotal and the actual sum of successful payments
     // in case they got out of sync at some point
     const successfulPaidTotal = sumSuccessfulPayments(invoice);
@@ -927,6 +974,7 @@ export async function getAnalyticsReport(
       });
     }
   }
+  }
 
   // rounding all bucket values and computing the average basket size per bucket
   for (const bucket of buckets) {
@@ -1011,7 +1059,7 @@ export async function getAnalyticsReport(
     },
     cashiers: availableCashiers, // for the cashier filter dropdown
     summary: {
-      finalizedInvoiceCount: invoices.length,
+      finalizedInvoiceCount,
       invoiceCount: activeInvoiceCount,
       cancelledInvoiceCount,
       paidInvoiceCount,
@@ -1081,7 +1129,7 @@ function csvRow(values: Array<string | number>) {
 // exporting the analytics report as a CSV file — generates the same data as getAnalyticsReport
 // and formats it into a multi-section CSV with summary, sales over time, top products, etc.
 export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
-  const report = await getAnalyticsReport(filters);
+  const report = await getAnalyticsReport(filters, { allowLongRange: true });
   const lines: string[] = [];
 
   // header section with report metadata
@@ -1261,46 +1309,123 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
 
 // simplified sales summary — reuses the full analytics report and returns just the totals
 export async function salesSummary(from: string, to: string) {
-  const report = await getAnalyticsReport({ from, to });
+  const normalized = normalizeAnalyticsFilters({ from, to });
+  const rows = await prisma.$queryRaw(Prisma.sql`
+    SELECT
+      COUNT(*) AS invoiceCount,
+      COALESCE(SUM(ROUND(i.netTotal, 0)), 0) AS totalSales,
+      COALESCE(SUM(i.loyaltyDiscountAmount), 0) AS totalDiscount,
+      COALESCE(SUM(LEAST(
+        ROUND(i.netTotal, 0),
+        GREATEST(i.paidTotal, COALESCE((
+          SELECT ROUND(SUM(p.amount), 2)
+          FROM Payment p
+          WHERE p.invoiceId = i.id AND p.status = 'SUCCESS' AND (p.kind IS NULL OR p.kind <> 'REFUND')
+        ), 0))
+      )), 0) AS totalCollected
+    FROM Invoice i
+    WHERE i.status = 'FINALIZED'
+      AND i.paymentStatus <> 'CANCELLED'
+      AND i.finalizedAt >= ${normalized.startAt}
+      AND i.finalizedAt <= ${normalized.endAt}
+  `) as Array<Record<string, bigint | number>>;
+  const summary = rows[0] || {};
+  const invoiceCount = Number(summary.invoiceCount || 0);
+  const totalSales = roundCurrency(Number(summary.totalSales || 0));
+  const totalDiscount = roundCurrency(Number(summary.totalDiscount || 0));
+  const totalCollected = roundCurrency(Number(summary.totalCollected || 0));
 
   return {
     from,
     to,
-    invoiceCount: report.summary.invoiceCount,
-    totalSales: report.summary.netSales,
-    totalRevenue: report.summary.netSales,
-    totalDiscount: report.summary.discountTotal,
-    totalCollected: report.summary.collectedTotal,
-    totalPaid: report.summary.collectedTotal,
+    invoiceCount,
+    totalSales,
+    totalRevenue: totalSales,
+    totalDiscount,
+    totalCollected,
+    totalPaid: totalCollected,
   };
 }
 
 // returning the best-selling products ranked by revenue for a given date range
 export async function bestSellers(from: string, to: string, limit = 10) {
-  const report = await getAnalyticsReport({ from, to });
-  return report.topProducts.slice(0, limit).map((product) => ({
+  const normalized = normalizeAnalyticsFilters({ from, to });
+  const products = await prisma.$queryRaw(Prisma.sql`
+    SELECT
+      p.id AS productId,
+      p.name,
+      p.sku,
+      COALESCE(b.name, 'Unbranded') AS brandName,
+      SUM(ii.qty) AS qty,
+      SUM(ROUND(ii.lineTotal * CASE WHEN i.subTotal > 0 THEN ROUND(i.netTotal, 0) / i.subTotal ELSE 0 END, 2)) AS revenue
+    FROM Invoice i
+    INNER JOIN InvoiceItem ii ON ii.invoiceId = i.id
+    INNER JOIN Product p ON p.id = ii.productId
+    LEFT JOIN Brand b ON b.id = p.brandId
+    WHERE i.status = 'FINALIZED'
+      AND i.paymentStatus <> 'CANCELLED'
+      AND i.finalizedAt >= ${normalized.startAt}
+      AND i.finalizedAt <= ${normalized.endAt}
+    GROUP BY p.id, p.name, p.sku, b.name
+    ORDER BY revenue DESC, qty DESC
+    LIMIT ${limit}
+  `) as Array<{ productId: string; name: string; sku: string; brandName: string; qty: number; revenue: number }>;
+  return products.map((product) => ({
     product: {
       id: product.productId,
       name: product.name,
       sku: product.sku,
       brand: product.brandName,
     },
-    totalQty: product.qty,
-    totalRevenue: product.revenue,
+    totalQty: Number(product.qty),
+    totalRevenue: roundCurrency(Number(product.revenue)),
   }));
 }
 
 // returning sales performance per cashier for a given date range
 export async function cashierSales(from: string, to: string) {
-  const report = await getAnalyticsReport({ from, to });
-  return report.cashierPerformance.map((cashier) => ({
+  const normalized = normalizeAnalyticsFilters({ from, to });
+  const cashiers = await prisma.$queryRaw(Prisma.sql`
+    SELECT
+      grouped.cashierId,
+      grouped.name,
+      COUNT(*) AS invoiceCount,
+      SUM(grouped.revenue) AS revenue,
+      SUM(grouped.collected) AS collected,
+      SUM(ROUND(GREATEST(0, grouped.revenue - grouped.collected), 2)) AS due
+    FROM (
+      SELECT
+        i.id,
+        i.cashierId,
+        COALESCE(u.name, 'Unknown cashier') AS name,
+        ROUND(i.netTotal, 0) AS revenue,
+        LEAST(
+          ROUND(i.netTotal, 0),
+          GREATEST(i.paidTotal, COALESCE(ROUND(SUM(CASE
+            WHEN p.status = 'SUCCESS' AND (p.kind IS NULL OR p.kind <> 'REFUND') THEN p.amount
+            ELSE 0
+          END), 2), 0))
+        ) AS collected
+      FROM Invoice i
+      LEFT JOIN User u ON u.id = i.cashierId
+      LEFT JOIN Payment p ON p.invoiceId = i.id
+      WHERE i.status = 'FINALIZED'
+        AND i.paymentStatus <> 'CANCELLED'
+        AND i.finalizedAt >= ${normalized.startAt}
+        AND i.finalizedAt <= ${normalized.endAt}
+      GROUP BY i.id, i.cashierId, u.name, i.netTotal, i.paidTotal
+    ) grouped
+    GROUP BY grouped.cashierId, grouped.name
+    ORDER BY revenue DESC, invoiceCount DESC
+  `) as Array<{ cashierId: string; name: string; invoiceCount: bigint | number; revenue: number; collected: number; due: number }>;
+  return cashiers.map((cashier) => ({
     cashier: {
       id: cashier.cashierId,
       name: cashier.name,
     },
-    invoiceCount: cashier.invoiceCount,
-    totalSales: cashier.revenue,
-    totalCollected: cashier.collected,
-    totalDue: cashier.due,
+    invoiceCount: Number(cashier.invoiceCount),
+    totalSales: roundCurrency(Number(cashier.revenue)),
+    totalCollected: roundCurrency(Number(cashier.collected)),
+    totalDue: roundCurrency(Number(cashier.due)),
   }));
 }

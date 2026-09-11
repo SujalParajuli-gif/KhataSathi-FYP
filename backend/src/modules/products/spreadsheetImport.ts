@@ -1,5 +1,6 @@
 import ExcelJS from "exceljs";
 import { parse } from "csv-parse/sync";
+import JSZip from "jszip";
 
 export type SpreadsheetSourceType = "CSV" | "XLSX";
 
@@ -12,6 +13,7 @@ export type ParsedSpreadsheet = {
   sheets: string[];
   headers: string[];
   rowWarnings: Record<number, string[]>;
+  headerConfidence?: "HIGH" | "LOW";
 };
 
 export class SpreadsheetImportError extends Error {}
@@ -86,6 +88,15 @@ function headerScore(values: string[], expectedHeaders: Set<string>) {
   return score;
 }
 
+function explicitHeaderEvidence(values: string[], expectedHeaders: Set<string>) {
+  return values.reduce((score, value) => {
+    const normalized = normalizedHeader(value);
+    if (!normalized) return score;
+    if (expectedHeaders.has(normalized)) return score + 4;
+    return score + normalized.split(/[^\p{L}\p{N}]+/u).filter((word) => HEADER_WORDS.has(word)).length;
+  }, 0);
+}
+
 function makeUniqueHeaders(values: string[]) {
   const bases = values.map((value, index) => String(value || `Column ${index + 1}`).trim() || `Column ${index + 1}`);
   const reserved = new Set(bases.map((base) => base.toLowerCase()));
@@ -106,11 +117,37 @@ async function parseXlsx(
   expectedHeaders: string[],
   selection: SpreadsheetSelection,
 ): Promise<ParsedSpreadsheet> {
-  const workbook = new ExcelJS.Workbook();
+  let workbook = new ExcelJS.Workbook();
   try {
     await workbook.xlsx.load(buffer as unknown as ExcelJS.Buffer);
   } catch {
-    throw new SpreadsheetImportError("This Excel workbook is damaged or is not a valid .xlsx file.");
+    // SpreadsheetML permits a namespace prefix on its elements (`x:row`,
+    // `x:cell`, and so on). ExcelJS currently rejects otherwise valid files
+    // written that way, so retry after removing only the declared main
+    // SpreadsheetML prefix. Other XML namespaces and workbook data remain
+    // untouched.
+    try {
+      const archive = await JSZip.loadAsync(buffer);
+      let changed = false;
+      for (const [name, entry] of Object.entries(archive.files)) {
+        if (entry.dir || !/^xl\/.*\.xml$/i.test(name)) continue;
+        const xml = await entry.async("string");
+        const declaration = xml.match(/xmlns:([A-Za-z_][\w.-]*)=["']http:\/\/schemas\.openxmlformats\.org\/spreadsheetml\/2006\/main["']/i);
+        if (!declaration) continue;
+        const prefix = declaration[1].replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+        const normalized = xml
+          .replace(new RegExp(`<(/?)${prefix}:`, "g"), "<$1")
+          .replace(declaration[0], 'xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"');
+        archive.file(name, normalized);
+        changed = true;
+      }
+      if (!changed) throw new Error("No compatible SpreadsheetML prefix was found.");
+      const normalizedBuffer = await archive.generateAsync({ type: "nodebuffer" });
+      workbook = new ExcelJS.Workbook();
+      await workbook.xlsx.load(normalizedBuffer as unknown as ExcelJS.Buffer);
+    } catch {
+      throw new SpreadsheetImportError("This Excel workbook is damaged or is not a valid .xlsx file.");
+    }
   }
 
   const expected = new Set(expectedHeaders.map(normalizedHeader).filter(Boolean));
@@ -216,35 +253,61 @@ async function parseXlsx(
   };
 }
 
-function parseCsv(buffer: Buffer, selection: SpreadsheetSelection): ParsedSpreadsheet {
-  let records: Array<{ record: string[]; info: { lines: number } }>;
-  const text = buffer.toString("utf8").replace(/^\uFEFF/, "");
-  // Count separators in the header, ignoring quoted fields, not in numeric data.
-  const physicalLines = text.split(/\r?\n/);
-  const firstLine = (selection.headerRowNumber ? physicalLines[selection.headerRowNumber - 1] : physicalLines.find((line) => line.trim())) || "";
-  const unquoted = firstLine.replace(/"(?:[^"]|"")*"/g, "");
-  const delimiter = [",", ";", "\t"].sort((a, b) => unquoted.split(b).length - unquoted.split(a).length)[0];
-  try {
-    records = parse(buffer, {
-      delimiter,
-      info: true,
-      skip_empty_lines: true,
-      trim: true,
-      bom: true,
-      // Keep all cells until we can report an actionable physical row number.
-      relax_column_count: true,
-      max_record_size: 1024 * 1024,
-    }) as unknown as typeof records;
-  } catch (error: any) {
-    throw new SpreadsheetImportError(error?.message ? `CSV could not be read: ${error.message}` : "CSV could not be read.");
+function parseCsv(buffer: Buffer, selection: SpreadsheetSelection, expectedHeaders: string[]): ParsedSpreadsheet {
+  type CsvRecord = { record: string[]; info: { lines: number } };
+  const expected = new Set(expectedHeaders.map(normalizedHeader).filter(Boolean));
+  const parsedVariants: Array<{ delimiter: string; records: CsvRecord[] }> = [];
+  let parseError: unknown;
+  for (const delimiter of [",", ";", "\t"]) {
+    try {
+      const records = parse(buffer, {
+        delimiter,
+        info: true,
+        skip_empty_lines: true,
+        trim: true,
+        bom: true,
+        relax_column_count: true,
+        max_record_size: 1024 * 1024,
+      }) as unknown as CsvRecord[];
+      parsedVariants.push({ delimiter, records });
+    } catch (error) {
+      parseError = error;
+    }
   }
+  if (!parsedVariants.length) {
+    const detail = parseError instanceof Error ? parseError.message : "";
+    throw new SpreadsheetImportError(detail ? `CSV could not be read: ${detail}` : "CSV could not be read.");
+  }
+  const candidates = parsedVariants.flatMap((variant) =>
+    variant.records.slice(0, 50).map((record, index) => {
+      const width = record.record.length;
+      const following = variant.records.slice(index + 1, index + 7);
+      const consistent = following.filter((row) => row.record.length === width).length;
+      const evidence = explicitHeaderEvidence(record.record, expected);
+      const structural = width === 1 ? Math.min(consistent, 2) : consistent * 3 + width;
+      return { ...variant, index, record, evidence, score: headerScore(record.record, expected) + structural + evidence * 20 };
+    }),
+  );
+  const chosen = selection.headerRowNumber
+    ? candidates
+        .filter((candidate) => candidate.record.info.lines === selection.headerRowNumber)
+        .sort((a, b) => b.score - a.score)[0]
+    : candidates.sort((a, b) => b.score - a.score || a.record.info.lines - b.record.info.lines)[0];
+  if (!chosen) throw new SpreadsheetImportError("The selected CSV header row was not found.");
+  const records = chosen.records;
   const headerIndex = selection.headerRowNumber
     ? records.findIndex((record) => record.info.lines === selection.headerRowNumber)
-    : 0;
+    : chosen.index;
   if (headerIndex < 0) throw new SpreadsheetImportError("The selected CSV header row was not found.");
   const header = records[headerIndex];
   if (!header || records.length <= headerIndex + 1) {
     throw new SpreadsheetImportError("No product rows were found below the CSV header.");
+  }
+  const headerConfidence = chosen.evidence > 0 ? "HIGH" : "LOW";
+  if (!selection.headerRowNumber && !selection.preview && headerConfidence === "LOW") {
+    throw new SpreadsheetImportError(
+      "The CSV header could not be identified confidently. Select the header row in the preview.",
+    );
   }
   const headers = makeUniqueHeaders(header.record);
   if (headers.length > MAX_COLUMNS) throw new SpreadsheetImportError(`CSV files may contain at most ${MAX_COLUMNS} columns.`);
@@ -263,6 +326,7 @@ function parseCsv(buffer: Buffer, selection: SpreadsheetSelection): ParsedSpread
     headers,
     sheets: [],
     rowWarnings: {},
+    headerConfidence,
   };
 }
 
@@ -289,12 +353,12 @@ export async function parseProductSpreadsheet(input: {
   }
   if (workbookByName || workbookByMime || workbookBySignature) {
     if (!workbookBySignature) {
-      throw new SpreadsheetImportError("The selected file is named as Excel but is not a valid .xlsx workbook.");
+      throw new SpreadsheetImportError("The selected file is named as Excel but is not a valid .xlsx/.xlsm workbook.");
     }
     return parseXlsx(input.buffer, input.expectedHeaders || [], input);
   }
   if (extension && extension !== ".csv") {
-    throw new SpreadsheetImportError("Only .csv and .xlsx spreadsheet files are supported here.");
+    throw new SpreadsheetImportError("Only .csv, .xlsx, and .xlsm spreadsheet files are supported here.");
   }
-  return parseCsv(input.buffer, input);
+  return parseCsv(input.buffer, input, input.expectedHeaders || []);
 }

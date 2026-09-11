@@ -14,13 +14,81 @@ export function assertExtractionActive() {
   if (execution && Date.now() >= execution.deadline) throw new Error("The import reached its processing time limit. Retry the remaining pages.");
 }
 
-export function importCoverage(value: unknown) {
+export function importCoverage(value: unknown, batchStatus?: string) {
   const meta = importMetadata(value);
   const pages = (Array.isArray(meta.pages) ? meta.pages : []) as ImportPageProgress[];
   const total = Math.max(0, Number(meta.totalPages) || 0);
   const completed = pages.filter((page) => page.status === "DONE").length;
-  return { total, completed, failedPages: pages.filter((page) => page.status !== "DONE"),
-    requiresAcknowledgement: meta.parser === "PAGE_PIPELINE_V1" && (completed < total || !total || Boolean(meta.jobError)) };
+  const partialPages = pages.filter((page) => page.status === "PARTIAL");
+  const failedPages = pages.filter((page) => page.status === "FAILED");
+  const visited = new Set(pages.map((page) => page.pageNumber));
+  const unvisitedPages = total > 0
+    ? Array.from({ length: total }, (_, index) => index + 1).filter((page) => !visited.has(page))
+    : [];
+  const retryablePages = [
+    ...failedPages.map((page) => page.pageNumber),
+    ...unvisitedPages,
+  ];
+  const emptyPageNumbers = pages
+    .filter((page) => page.status === "DONE" && page.extractor === "EMPTY_PAGE")
+    .map((page) => page.pageNumber);
+  const complete = total > 0 && completed === total && !partialPages.length && !failedPages.length && !meta.jobError;
+  const outcome = batchStatus === "INTERRUPTED" || batchStatus === "CANCELLING"
+    ? "INTERRUPTED"
+    : complete
+      ? "COMPLETE"
+      : partialPages.length > 0 || pages.some((page) => Number(page.rows || 0) > 0)
+        ? "PARTIAL"
+        : "FAILED";
+  return {
+    total,
+    visited: visited.size,
+    completed,
+    partialPages,
+    failedPages: [
+      ...partialPages,
+      ...failedPages,
+      ...unvisitedPages.map((pageNumber) => ({
+        pageNumber,
+        status: "UNVISITED" as const,
+        message: "This page has not been processed yet.",
+      })),
+    ],
+    unvisitedPages,
+    retryablePages,
+    emptyPageNumbers,
+    outcome,
+    canRetry: retryablePages.length > 0,
+    canReprocessEmpty: emptyPageNumbers.length > 0 && ["DRAFT", "FAILED", "INTERRUPTED"].includes(String(batchStatus || "")),
+    requiresAcknowledgement: meta.parser === "PAGE_PIPELINE_V1" && !complete,
+  };
+}
+
+export async function persistEmptyImportPage() {
+  const execution = importExecution.getStore();
+  if (!execution) throw new Error("Empty-page completion requires an active import job.");
+  assertExtractionActive();
+  await prisma.$transaction(async (tx) => {
+    const batch = await tx.productImportBatch.findUniqueOrThrow({ where: { id: execution.batchId } });
+    if (batch.deletedAt || batch.status !== "PROCESSING") throw new Error("Import processing was cancelled.");
+    const meta = importMetadata(batch.extractionMeta);
+    const pages = (meta.pages || []) as ImportPageProgress[];
+    if (pages.some((page) => page.pageNumber === execution.pageNumber && page.status !== "FAILED")) return;
+    const page: ImportPageProgress = {
+      pageNumber: execution.pageNumber,
+      status: "DONE",
+      extractor: "EMPTY_PAGE",
+      rows: 0,
+      candidateCount: 0,
+      reviewRequiredCount: 0,
+      durationMs: Date.now() - execution.startedAt,
+      message: "No product content was present on this page.",
+    };
+    await tx.productImportBatch.update({
+      where: { id: batch.id },
+      data: { extractionMeta: { ...meta, pages: [...pages.filter((entry) => entry.pageNumber !== page.pageNumber), page] } },
+    });
+  });
 }
 
 // A page's rows and completion marker are saved together. Retrying an interrupted
@@ -48,9 +116,8 @@ export async function persistImportPreview(args: Prisma.ProductImportBatchCreate
       reviewRequiredCount: goodRows.filter((row) => !row.resolution).length, durationMs: Date.now() - execution.startedAt };
     if (page.status !== "DONE") page.message = page.status === "PARTIAL"
       ? "Only part of this page was extracted. Saved candidates are retained; upload a crop of missing products as a new import."
-      : rows.some((row) => row.error?.includes("not configured"))
-        ? "Image reading is not configured. Ask an administrator to enable it, or upload a CSV/XLSX version."
-        : "No complete product table was extracted. Check this page or retry it.";
+      : rows.find((row) => row.status === "FAILED" && row.error)?.error
+        || "No complete product table was extracted. Check this page or retry it.";
     const incomingMeta = importMetadata(args.data.extractionMeta);
     const columns = new Map<string, any>((meta.priceColumns || []).map((column: any) => [column.key, column]));
     for (const column of incomingMeta.priceColumns || []) columns.set(column.key, column);

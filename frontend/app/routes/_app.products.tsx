@@ -17,6 +17,7 @@ import {
   getBusinessSettingsApi,
   getProductImportBatchApi,
   importCsvApi,
+  controlProductImportApi,
   importImageRateListApi,
   importProductDocumentApi,
   importPdfApi,
@@ -56,6 +57,10 @@ import {
 } from "~/lib/domain/products/products.api";
 import { getAuthUser } from "~/lib/auth";
 import { isRateLimitError } from "~/lib/api/client";
+import {
+  isCurrentRequestIdentity,
+  refreshAfterSuccessfulMutation,
+} from "~/lib/api/requestPolicy";
 import type { ProductDeleteSafety } from "~/lib/api/endpoints";
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
@@ -327,6 +332,7 @@ export default function ProductsPage() {
   const [productsLoadError, setProductsLoadError] = useState("");
   const [activeSearchLogId, setActiveSearchLogId] = useState<string | null>(null);
   const productLoadRequestRef = React.useRef(0);
+  const productFilterIdentityRef = React.useRef("");
   const productMetaRecoveryNeededRef = React.useRef(false);
   const productRowsRecoveryNeededRef = React.useRef(false);
   const [productRecoveryKey, setProductRecoveryKey] = useState(0);
@@ -411,6 +417,16 @@ export default function ProductsPage() {
 
   const [tablePageSize, setTablePageSize] = useState(20); // visible rows per table page
   const [page, setPage] = useState(1); // current table page
+  productFilterIdentityRef.current = JSON.stringify([
+    debouncedQ,
+    brand,
+    category,
+    stockStatus,
+    status,
+    lowOnly,
+    page,
+    tablePageSize,
+  ]);
 
   const [openAddEdit, setOpenAddEdit] = useState(false); // controls the create/edit modal
   const [productSaveBusy, setProductSaveBusy] = useState(false);
@@ -805,6 +821,7 @@ export default function ProductsPage() {
   const [importResult, setImportResult] = useState<CsvImportResult | null>(null); // row-by-row result returned after CSV import completes
   const [pdfReviewBatch, setPdfReviewBatch] = useState<ProductImportBatch | null>(null); // selected supplier import preview batch for row review
   const [pdfReviewBusy, setPdfReviewBusy] = useState(false); // disables review submit while selected import rows are importing
+  const [activeImportBatchId, setActiveImportBatchId] = useState<string | null>(null);
   const [importBatches, setImportBatches] = useState<ProductImportBatch[]>([]); // recent CSV/PDF/image review batches shown in the import modal
   const [importDocuments, setImportDocuments] = useState<DocumentRecord[]>([]);
   const [importDocumentsLoading, setImportDocumentsLoading] = useState(false);
@@ -1025,7 +1042,33 @@ export default function ProductsPage() {
     navigate(`/products/imports/${encodeURIComponent(batchId)}`);
   }
 
-  async function loadProducts(options?: { signal?: AbortSignal }) {
+  async function handleImportBatchCompleted(batchId: string) {
+    sessionStorage.removeItem("active_product_import_batch_id");
+    window.dispatchEvent(
+      new CustomEvent("active_product_import_changed", {
+        detail: { batchId: null },
+      })
+    );
+    setActiveImportBatchId(null);
+    setImportBusy(false);
+    setImportProcessingKind(null);
+    setOpenImport(false);
+    await loadImportBatches();
+    toastMsg("success", "Extraction finished. Review the saved rows and source coverage before importing.");
+    navigate(`/products/imports/${encodeURIComponent(batchId)}`);
+  }
+
+  async function loadProducts(options?: {
+    signal?: AbortSignal;
+    requestId?: number;
+  }) {
+    const requestId =
+      options?.requestId ?? productLoadRequestRef.current + 1;
+    productLoadRequestRef.current = Math.max(
+      productLoadRequestRef.current,
+      requestId,
+    );
+    const filterIdentity = productFilterIdentityRef.current;
     const res = await fetchProducts(
       {
         q: debouncedQ || undefined,
@@ -1037,12 +1080,28 @@ export default function ProductsPage() {
         page,
         pageSize: tablePageSize,
       },
-      options,
+      { signal: options?.signal },
     );
 
+    if (!isCurrentRequestIdentity({
+      requestId,
+      currentRequestId: productLoadRequestRef.current,
+      filterIdentity,
+      currentFilterIdentity: productFilterIdentityRef.current,
+    })) {
+      return false;
+    }
     setProducts(res.items);
     setTotal(res.total);
     setActiveSearchLogId(res.searchLogId);
+    return true;
+  }
+
+  async function refreshProductsAfterSavedMutation() {
+    const outcome = await refreshAfterSuccessfulMutation(() => loadProducts());
+    if (outcome === "saved_refresh_failed") {
+      toastMsg("info", "Saved; the product list could not refresh.");
+    }
   }
 
   React.useEffect(() => {
@@ -1115,14 +1174,19 @@ export default function ProductsPage() {
     const controller = new AbortController();
     const requestId = productLoadRequestRef.current + 1;
     productLoadRequestRef.current = requestId;
+    const filterIdentity = productFilterIdentityRef.current;
     setProductsLoading(true);
     setProductsLoadError("");
-    void loadProducts({ signal: controller.signal })
-      .then(() => {
-        productRowsRecoveryNeededRef.current = false;
+    void loadProducts({ signal: controller.signal, requestId })
+      .then((applied) => {
+        if (applied) productRowsRecoveryNeededRef.current = false;
       })
       .catch((error: any) => {
         if (error?.code === "ERR_CANCELED") return;
+        if (
+          productLoadRequestRef.current !== requestId ||
+          productFilterIdentityRef.current !== filterIdentity
+        ) return;
         if (
           error?.code === "ERR_RATE_LIMIT_COOLDOWN" ||
           error?.response?.status === 429
@@ -1137,7 +1201,10 @@ export default function ProductsPage() {
         }
       })
       .finally(() => {
-        if (productLoadRequestRef.current === requestId) {
+        if (
+          productLoadRequestRef.current === requestId &&
+          productFilterIdentityRef.current === filterIdentity
+        ) {
           setProductsLoading(false);
         }
       });
@@ -1154,6 +1221,45 @@ export default function ProductsPage() {
     productRecoveryKey,
     productLookupEditHandoff,
   ]);
+
+  React.useEffect(() => {
+    const savedBatchId = sessionStorage.getItem("active_product_import_batch_id");
+    if (savedBatchId) {
+      setActiveImportBatchId(savedBatchId);
+      window.dispatchEvent(
+        new CustomEvent("active_product_import_changed", {
+          detail: { batchId: savedBatchId },
+        })
+      );
+    }
+  }, []);
+
+  React.useEffect(() => {
+    window.dispatchEvent(
+      new CustomEvent("active_product_import_modal_state", {
+        detail: { open: openImport },
+      })
+    );
+  }, [openImport]);
+
+  React.useEffect(() => {
+    function handleReopen() {
+      setOpenImport(true);
+    }
+    window.addEventListener("reopen_product_import_modal", handleReopen);
+    return () => window.removeEventListener("reopen_product_import_modal", handleReopen);
+  }, []);
+
+  React.useEffect(() => {
+    if (searchParams.get("openImport") === "true") {
+      setOpenImport(true);
+      setSearchParams((current) => {
+        const next = new URLSearchParams(current);
+        next.delete("openImport");
+        return next;
+      }, { replace: true });
+    }
+  }, [searchParams, setSearchParams]);
 
   React.useEffect(() => {
     if (!requestedImportBatchId) return;
@@ -1940,7 +2046,7 @@ export default function ProductsPage() {
         formatStatusOutcome("Active", result.changedCount, skippedCount + result.skippedCount),
       );
       clearBulkSelection();
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       toastMsg("danger", error?.message || "Failed to activate selected.");
     }
@@ -1992,7 +2098,7 @@ export default function ProductsPage() {
       );
       clearBulkSelection();
       setBulkAction(null);
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       toastMsg("danger", error?.message || "Failed to update selected.");
     }
@@ -2013,7 +2119,7 @@ export default function ProductsPage() {
       setOpenConfirmDelete(false);
       setActiveProductId(null);
       setDeleteSafety(null);
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       toastMsg("danger", error?.message || "Failed to update product.");
     }
@@ -2024,7 +2130,7 @@ export default function ProductsPage() {
     try {
       const result = await setProductStatus(product.id, newStatus);
       toastMsg(result.changed ? "success" : "info", result.message || `Product set to ${newStatus}.`);
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       toastMsg("danger", error?.message || "Failed to update product status.");
     }
@@ -2040,7 +2146,7 @@ export default function ProductsPage() {
       setActiveProductId(null);
       setDeleteSafety(null);
       clearBulkSelection();
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       const safety = error?.response?.data?.safety as ProductDeleteSafety | undefined;
       if (safety) setDeleteSafety(safety);
@@ -2077,15 +2183,16 @@ export default function ProductsPage() {
         importFile.type.startsWith("image/") ||
         /\.(png|jpe?g|webp)$/i.test(lowerName);
       const isSpreadsheet =
-        /\.(csv|xlsx)$/i.test(lowerName) ||
+        /\.(csv|xlsx|xlsm)$/i.test(lowerName) ||
         importFile.type === "text/csv" ||
         importFile.type ===
-          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+          "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" ||
+        importFile.type === "application/vnd.ms-excel.sheet.macroenabled.12";
       if (!isPdf && !isImage && !isSpreadsheet) {
         setImportError(
           lowerName.endsWith(".xls")
             ? "Legacy .xls files are not supported. Save the workbook as .xlsx or CSV and try again."
-            : "This file type is not supported. Choose CSV, XLSX, PDF, PNG, JPG, or WebP.",
+            : "This file type is not supported. Choose CSV, XLSX, XLSM, PDF, PNG, JPG, or WebP.",
         );
         return;
       }
@@ -2114,13 +2221,18 @@ export default function ProductsPage() {
       clearBulkSelection();
 
       if (result.batchId) {
-        await loadImportBatches();
-        toastMsg(
-          result.repeatedFile || result.errorCount > 0 ? "info" : "success",
-          result.message || "Import review is ready.",
+        setActiveImportBatchId(result.batchId);
+        sessionStorage.setItem("active_product_import_batch_id", result.batchId);
+        window.dispatchEvent(
+          new CustomEvent("active_product_import_changed", {
+            detail: { batchId: result.batchId },
+          })
         );
-        setOpenImport(false);
-        navigate(`/products/imports/${encodeURIComponent(result.batchId)}`);
+        toastMsg(
+          "info",
+          "Catalog extraction in progress. You can minimize or stay here.",
+        );
+        void loadImportBatches().catch(() => undefined);
       } else {
         setImportError(result.message || "No import review was created.");
       }
@@ -2142,6 +2254,19 @@ export default function ProductsPage() {
 
   function cancelImportProcessing() {
     importAbortRef.current?.abort();
+    if (activeImportBatchId) {
+      void controlProductImportApi(activeImportBatchId, "cancel").catch(() => {});
+      sessionStorage.removeItem("active_product_import_batch_id");
+      window.dispatchEvent(
+        new CustomEvent("active_product_import_changed", {
+          detail: { batchId: null },
+        })
+      );
+      setActiveImportBatchId(null);
+    }
+    setImportBusy(false);
+    setImportProcessingKind(null);
+    setOpenImport(false);
   }
 
   async function handleImportDocument(document: DocumentRecord) {
@@ -2158,12 +2283,17 @@ export default function ProductsPage() {
       if (result.batchId) {
         await loadImportBatches();
         await loadImportDocuments();
-        toastMsg(
-          result.repeatedFile || result.errorCount > 0 ? "info" : "success",
-          result.message || "Import review is ready.",
+        setActiveImportBatchId(result.batchId);
+        sessionStorage.setItem("active_product_import_batch_id", result.batchId);
+        window.dispatchEvent(
+          new CustomEvent("active_product_import_changed", {
+            detail: { batchId: result.batchId },
+          })
         );
-        setOpenImport(false);
-        navigate(`/products/imports/${encodeURIComponent(result.batchId)}`);
+        toastMsg(
+          "info",
+          "Catalog extraction in progress. You can minimize or stay here.",
+        );
       } else {
         setImportError(result.message || "No import review was created.");
       }
@@ -2356,7 +2486,7 @@ export default function ProductsPage() {
       setActiveProductId(null);
       setDeleteSafety(null);
       clearBulkSelection();
-      await loadProducts();
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
       const safety = error?.response?.data?.safety as ProductDeleteSafety | undefined;
       if (safety) setDeleteSafety(safety);
@@ -4058,15 +4188,21 @@ export default function ProductsPage() {
         lastImportSupplier={lastImportSupplier}
         onReceiveImportedProducts={openStockManagerForImportedProducts}
         onCloseImport={() => {
-          if (importProcessingKind) {
+          if (importProcessingKind && !activeImportBatchId) {
             cancelImportProcessing();
             return;
           }
           setOpenImport(false);
-          resetImportState();
+          if (!activeImportBatchId) {
+            resetImportState();
+          }
         }}
         onCancelImportProcessing={cancelImportProcessing}
         onUploadCsvClick={handleImportCsv}
+        activeImportBatchId={activeImportBatchId}
+        onCompleteImportBatch={handleImportBatchCompleted}
+        onMinimizeImport={() => setOpenImport(false)}
+        onOpenImportModal={() => setOpenImport(true)}
       />
 
       <ModalFrame

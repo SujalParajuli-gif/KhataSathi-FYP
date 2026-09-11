@@ -1,6 +1,6 @@
 # KhataSathi Import Extraction Plan
 
-Last reviewed: 2026-09-09
+Last reviewed: 2026-09-11
 
 This is the canonical plan for future discussions about the product-catalog import pipeline. Before proposing or implementing import-extraction changes, read this file and compare it with the current branch. The plan intentionally excludes VPS deployment and production-data cutover; those require their own approval and rehearsal.
 
@@ -29,6 +29,17 @@ Make catalog extraction reliable for CSV, XLSX, native-text PDF, scanned PDF, PN
 5. Existing TypeScript code remains responsible for normalization, price-field decisions, validation, duplicate/change comparison, review, audit, and final commit.
 
 ## Required work order
+
+### Local reliability follow-up (2026-09-11; not deployed)
+
+- Headerless native-PDF continuation pages now inherit the first detected header for both parsing and OCR routing. Pages containing only a page number are completed as empty instead of being sent to OCR and reported as failed. On the private Panas Jars PDF this produces 29 + 22 = 51 product rows, excludes the five category labels, and treats page 3 as an empty completed page.
+- Valid XLSX/XLSM workbooks that use a namespace prefix for SpreadsheetML elements are normalized in memory and retried. The supplied prefixed workbook now reads all 44 rows without requiring a resave. CSV, XLSX, XLSM, PDF, PNG, JPEG, and WebP use the same supported-file checks through upload and stored-source handling; legacy binary XLS remains intentionally unsupported.
+- Two-panel images are detected by their layout gutter, enlarged, and attached as separately labelled panels in one AI request. This keeps panel reading order and source coordinates while avoiding the half-catalog result caused by two independent requests when the second request is rate-limited.
+- Image extraction preserves the printed product name and requests a separate English translation/transliteration. That English value builds the readable SKU and is retained as a reviewed search alias; unclear English names remain blank. This is language-driven behavior and contains no supplier or filename condition.
+- Image price output now includes the exact printed price cell as evidence. Devanagari digits and decimal punctuation are parsed locally, preventing scale errors such as treating `७०।००` as `70,100`. Similar-looking digits can still be misread on low-resolution sources, so image rows remain review-required and no claim of perfect OCR accuracy is made.
+- Initial upload, background extraction, and retry now use the same progress component and status vocabulary. Spreadsheet preparation shows an indeterminate form of the same component because a synchronous structured parser has no meaningful page count.
+
+An audit of the runtime extraction paths found layout- and format-level rules but no checks for Panas, Super Plastic, Household MRP, or any supplier/file name. Deployment scripts may contain approved supplier mappings; they are not invoked by the extraction engine.
 
 ### Implemented and deployed (2026-09-10)
 

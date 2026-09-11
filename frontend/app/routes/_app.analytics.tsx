@@ -37,7 +37,9 @@ import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { formatNpr } from "~/lib/invoices";
 import {
+  getInclusiveReportRangeDays,
   getRangeFromPreset,
+  MAX_INTERACTIVE_REPORT_DAYS,
   paymentMethodLabel,
   paymentStatusLabel,
   type AnalyticsFilters,
@@ -380,6 +382,13 @@ export default function AnalyticsPage() {
     }
     if (next.from > next.to) {
       setFilterError("The start date must be on or before the end date.");
+      return false;
+    }
+    const rangeDays = getInclusiveReportRangeDays(next.from, next.to);
+    if (rangeDays === null || rangeDays > MAX_INTERACTIVE_REPORT_DAYS) {
+      setFilterError(
+        `Interactive reports support up to ${MAX_INTERACTIVE_REPORT_DAYS} days. Use CSV export for longer history.`,
+      );
       return false;
     }
     setFilterError("");

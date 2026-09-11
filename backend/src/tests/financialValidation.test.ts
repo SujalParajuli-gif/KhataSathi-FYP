@@ -14,6 +14,7 @@ function assertInvalid(result: { success: boolean }) {
 
 test("checkout validation accepts valid split-payment payloads", () => {
   const result = checkoutBodySchema.safeParse({
+    operationKey: "checkout-operation-0001",
     draftInvoiceId: "draft-1",
     customerId: "customer-1",
     discountAmount: 25,
@@ -41,17 +42,20 @@ test("checkout validation accepts valid split-payment payloads", () => {
 test("checkout validation rejects numeric strings, HTML strings, and extra fields", () => {
   assertInvalid(
     checkoutBodySchema.safeParse({
+      operationKey: "checkout-operation-0002",
       items: [{ productId: "product-1", qty: "2" }],
     }),
   );
   assertInvalid(
     checkoutBodySchema.safeParse({
+      operationKey: "checkout-operation-0003",
       notes: "<b>discount</b>",
       items: [{ productId: "product-1", qty: 2 }],
     }),
   );
   assertInvalid(
     checkoutBodySchema.safeParse({
+      operationKey: "checkout-operation-0004",
       items: [{ productId: "product-1", qty: 2, surprise: true }],
     }),
   );

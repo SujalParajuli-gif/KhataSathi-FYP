@@ -35,3 +35,13 @@ From `frontend`, run `pnpm typecheck`, `pnpm test:routes`, `pnpm build`, and `pn
 - Benchmark local OCR candidates on approved expected data and the actual VPS before replacing the existing reader. No local OCR engine or new Python service was introduced.
 
 Production deployment and isolated post-deployment restore verification completed on 2026-09-10. Supplier-corpus accuracy approval remains a separate step; synthetic tests do not establish it.
+
+## Local follow-up validation — 2026-09-11
+
+These checks cover later local changes and are not a production deployment record.
+
+- The exact Panas Jars PDF routes pages 1 and 2 through native parsing with 29 and 22 rows. Page 3 contains only `0` and is classified as an empty completed page. The resulting 51 rows exclude category-only labels.
+- The exact prefixed-namespace Super Plastic XLSX opens successfully with 44 rows and 17 columns. A synthetic prefixed-SpreadsheetML workbook is included as a regression test.
+- The exact Super Plastic image detects a center gutter at x=877 and can return all 44 rows in one two-panel request. English aliases were returned for the Nepali rows. Repeated remote-model reads still vary: visually similar digits produced five incorrect announced prices in the accepted split benchmark (38/43 exact prices, 88.4%), although the decimal-scale error was removed. Every image row therefore remains subject to source-backed human review.
+- Runtime source was searched for supplier and fixture names. No supplier- or filename-specific extraction branch was found or added.
+- Validation passed after the combined changes: backend build and tests (265 passed, 1 intentionally skipped), frontend typecheck, 26 route tests, production build, and 5 Chromium browser tests. These should still be rerun immediately before deployment because the working tree contains the owner's concurrent UI changes.

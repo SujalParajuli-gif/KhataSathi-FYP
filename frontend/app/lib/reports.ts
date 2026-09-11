@@ -1,5 +1,13 @@
 // the quick date range presets for the analytics filter bar
 export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
+export const MAX_INTERACTIVE_REPORT_DAYS = 366;
+
+export function getInclusiveReportRangeDays(from: string, to: string) {
+  const fromTime = Date.parse(`${from}T00:00:00Z`);
+  const toTime = Date.parse(`${to}T00:00:00Z`);
+  if (!Number.isFinite(fromTime) || !Number.isFinite(toTime)) return null;
+  return Math.floor((toTime - fromTime) / 86_400_000) + 1;
+}
 export type AnalyticsPaymentStatus =
   | "UNPAID"
   | "PARTIALLY_PAID"

@@ -10,6 +10,7 @@ import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import { ImportPreparingWidget, ImportProcessingWidget } from "./ImportProcessingWidget";
 import type {
   DocumentRecord,
   ImportedProductSummary,
@@ -808,6 +809,7 @@ function ModalShell({
   onClose,
   landscape = false,
   headerLeft,
+  headerRight,
   maxWidthClass,
   contentClassName,
   footerClassName,
@@ -819,6 +821,7 @@ function ModalShell({
   onClose: () => void;
   landscape?: boolean;
   headerLeft?: React.ReactNode;
+  headerRight?: React.ReactNode;
   maxWidthClass?: string;
   contentClassName?: string;
   footerClassName?: string;
@@ -871,14 +874,17 @@ function ModalShell({
                 {title}
               </div>
             </div>
-            <button
-              type="button"
-              onClick={onClose}
-              className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] hover:bg-[#F3F4F6]"
-              aria-label="Close modal"
-            >
-              <GoogleIcon name="close" className="text-[#565449]" />
-            </button>
+            <div className="flex items-center gap-2">
+              {headerRight}
+              <button
+                type="button"
+                onClick={onClose}
+                className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] hover:bg-[#F3F4F6]"
+                aria-label="Close modal"
+              >
+                <GoogleIcon name="close" className="text-[#565449]" />
+              </button>
+            </div>
           </div>
 
           <div
@@ -993,6 +999,10 @@ export default function ProductsModals({
   onCloseImport,
   onCancelImportProcessing,
   onUploadCsvClick,
+  activeImportBatchId,
+  onCompleteImportBatch,
+  onMinimizeImport,
+  onOpenImportModal,
 }: {
   stockTracked: boolean;
   brands: string[];
@@ -1096,6 +1106,10 @@ export default function ProductsModals({
   onCloseImport: () => void;
   onCancelImportProcessing: () => void;
   onUploadCsvClick: (selection?: { sheetName?: string; headerRowNumber?: number }) => void;
+  activeImportBatchId?: string | null;
+  onCompleteImportBatch?: (batchId: string) => void;
+  onMinimizeImport?: () => void;
+  onOpenImportModal?: () => void;
 }) {
   const inputBase =
     "h-[38px] w-full rounded-[12px] border bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
@@ -1104,38 +1118,33 @@ export default function ProductsModals({
   const compactInputClass =
     "h-[38px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
   const [importTab, setImportTab] = React.useState<"csv" | "pdf" | "image">("csv");
-  const [importElapsedSeconds, setImportElapsedSeconds] = React.useState(0);
-  React.useEffect(() => {
-    if (!importProcessingKind) {
-      setImportElapsedSeconds(0);
+  const [confirmStopImport, setConfirmStopImport] = React.useState(false);
+  const detectedImportFileType = React.useMemo(() => {
+    if (!importFile) return null;
+    const name = importFile.name.toLowerCase();
+    if (importFile.type === "application/pdf" || name.endsWith(".pdf")) return "pdf";
+    if (importFile.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(name)) return "image";
+    if (/\.(csv|xlsx|xlsm)$/i.test(name) || importFile.type === "text/csv" || importFile.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || importFile.type === "application/vnd.ms-excel.sheet.macroenabled.12") return "csv";
+    return null;
+  }, [importFile]);
+
+  function handleFileSelected(file: File | null, expectedTab: "csv" | "pdf" | "image") {
+    if (!file) {
+      setImportFile(null);
+      setSpreadsheetPreview(null);
       return;
     }
-    const startedAt = Date.now();
-    const timer = window.setInterval(() => {
-      setImportElapsedSeconds(Math.floor((Date.now() - startedAt) / 1000));
-    }, 1000);
-    return () => window.clearInterval(timer);
-  }, [importProcessingKind]);
+    const name = file.name.toLowerCase();
+    let detected: "csv" | "pdf" | "image" | null = null;
+    if (file.type === "application/pdf" || name.endsWith(".pdf")) detected = "pdf";
+    else if (file.type.startsWith("image/") || /\.(png|jpe?g|webp)$/i.test(name)) detected = "image";
+    else if (/\.(csv|xlsx|xlsm)$/i.test(name) || file.type === "text/csv" || file.type === "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" || file.type === "application/vnd.ms-excel.sheet.macroenabled.12") detected = "csv";
 
-  const importProgressCopy = React.useMemo(() => {
-    if (importProcessingKind === "spreadsheet") {
-      return importElapsedSeconds < 3
-        ? ["Uploading spreadsheet", "Sending the selected file securely."]
-        : ["Reading products and columns", "Checking names, prices, and rows before review."];
+    setImportFile(file);
+    if (detected && detected !== expectedTab) {
+      setImportTab(detected);
     }
-    if (importProcessingKind === "pdf") {
-      return importElapsedSeconds < 4
-        ? ["Uploading PDF", "Sending the selected file securely."]
-        : importElapsedSeconds < 25
-          ? ["Reading PDF pages", "Text and scanned pages are being prepared for review."]
-          : ["Still reading the PDF", "Large or scanned files take longer. You can cancel safely."];
-    }
-    return importElapsedSeconds < 4
-      ? ["Uploading image", "Sending the selected file securely."]
-      : importElapsedSeconds < 25
-        ? ["Reading product names and prices", "The catalogue image is being checked row by row."]
-        : ["Still reading the image", "Detailed rate lists can take longer. You can cancel safely."];
-  }, [importElapsedSeconds, importProcessingKind]);
+  }
   const [mobileEditorTab, setMobileEditorTab] = React.useState<ProductEditorStep>("basic");
   const productEditorTabRailRef = React.useRef<SwipeableTabRailController | null>(null);
   const [pricingDraft, setPricingDraft] = React.useState({ cost: "", wholesale: "", retail: "" });
@@ -1344,7 +1353,7 @@ export default function ProductsModals({
     }
 
     const isSpreadsheet =
-      /\.(csv|xlsx)$/i.test(importFile.name) ||
+      /\.(csv|xlsx|xlsm)$/i.test(importFile.name) ||
       importFile.type.includes("sheet") ||
       importFile.type.includes("csv");
 
@@ -1653,28 +1662,28 @@ export default function ProductsModals({
     let changedCount = 0;
     let missingRateCount = 0;
     const nextRows = pdfReviewRows.map((row) => {
-        if (!row.selected || row.ignored || row.status === "IMPORTED")
-          return row;
-        if (!(Number(row.ratePerPiece) > 0)) {
-          missingRateCount += 1;
-          return row;
-        }
-        const rate = Number(row.ratePerPiece);
-        const nextWholesale = priceFromIncrease(rate, bulkWholesaleIncrease);
-        const nextRetail = priceFromIncrease(rate, bulkRetailIncrease);
-        const wholesalePrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.wholesalePrice) > 0)
-          ? nextWholesale
-          : row.wholesalePrice;
-        const retailPrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.retailPrice) > 0)
-          ? nextRetail
-          : row.retailPrice;
-        if (wholesalePrice !== row.wholesalePrice || retailPrice !== row.retailPrice) changedCount += 1;
-        return {
-          ...row,
-          wholesalePrice,
-          retailPrice,
-        };
-      });
+      if (!row.selected || row.ignored || row.status === "IMPORTED")
+        return row;
+      if (!(Number(row.ratePerPiece) > 0)) {
+        missingRateCount += 1;
+        return row;
+      }
+      const rate = Number(row.ratePerPiece);
+      const nextWholesale = priceFromIncrease(rate, bulkWholesaleIncrease);
+      const nextRetail = priceFromIncrease(rate, bulkRetailIncrease);
+      const wholesalePrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.wholesalePrice) > 0)
+        ? nextWholesale
+        : row.wholesalePrice;
+      const retailPrice = bulkImportPricePolicy === "REPLACE" || !(Number(row.retailPrice) > 0)
+        ? nextRetail
+        : row.retailPrice;
+      if (wholesalePrice !== row.wholesalePrice || retailPrice !== row.retailPrice) changedCount += 1;
+      return {
+        ...row,
+        wholesalePrice,
+        retailPrice,
+      };
+    });
     setPdfReviewRows(nextRows);
     setBulkImportPriceNotice(
       changedCount > 0
@@ -2624,9 +2633,30 @@ export default function ProductsModals({
         title={
           pdfReviewBatch
             ? `Review ${displaySourceType(pdfReviewBatch.sourceType)} Import`
-            : "Import Products from Spreadsheet, PDF, or Image"
+            : activeImportBatchId
+              ? "Extracting Supplier Catalog"
+              : "Import Products from Spreadsheet, PDF, or Image"
         }
-        onClose={onCloseImport}
+        onClose={() => {
+          if (activeImportBatchId) {
+            setConfirmStopImport(true);
+          } else {
+            onCloseImport();
+          }
+        }}
+        headerRight={
+          activeImportBatchId ? (
+            <button
+              type="button"
+              onClick={onMinimizeImport || onCloseImport}
+              className="inline-flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6] hover:text-[#11120d] transition"
+              aria-label="Work in background (minimize)"
+              title="Work in background"
+            >
+              <GoogleIcon name="remove" className="text-[20px]" />
+            </button>
+          ) : null
+        }
         landscape={!!pdfReviewBatch}
         contentClassName={
           pdfReviewBatch
@@ -2678,7 +2708,7 @@ export default function ProductsModals({
                     : `Apply ${commitReviewRows.length} decisions`}
               </Button>
             </div>
-          ) : importProcessingKind ? (
+          ) : activeImportBatchId ? null : importProcessingKind ? (
             <div className="flex w-full items-center justify-between gap-3">
               <span className="text-[12px] font-semibold text-[#64748B]">
                 Nothing is added until review.
@@ -2688,15 +2718,42 @@ export default function ProductsModals({
               </Button>
             </div>
           ) : (
-            <div className="flex items-center justify-end gap-[10px]">
-              <Button
-                variant="primary"
-                icon="upload_file"
-                onClick={() => onUploadCsvClick({ sheetName: spreadsheetPreview?.sheetName, headerRowNumber: spreadsheetPreview?.headerRowNumber })}
-                disabled={importBusy || !importFile || previewLoading || Boolean(previewError)}
-              >
-                {importBusy ? "Importing..." : "Import File"}
-              </Button>
+            <div className="flex flex-wrap w-full items-center justify-between gap-3">
+              <div className="text-[12px] font-semibold text-[#64748B]">
+                {importFile && detectedImportFileType !== importTab ? (
+                  <span className="text-amber-700 flex items-center gap-1.5 font-bold">
+                    <Icon name="info" sizePx={15} />
+                    Active file is a {detectedImportFileType === "csv" ? "Spreadsheet" : detectedImportFileType === "pdf" ? "PDF" : "Image"}. Switch to that tab to import it.
+                  </span>
+                ) : importTab === "csv" ? (
+                  "Map your columns or use presets before reviewing rows."
+                ) : importTab === "pdf" ? (
+                  "PDF pages will be read and prepared for interactive review."
+                ) : (
+                  "Rate list image will be parsed into editable review rows."
+                )}
+              </div>
+              <div className="flex items-center gap-[10px]">
+                <Button
+                  variant="primary"
+                  icon={importTab === "csv" ? "table_chart" : importTab === "pdf" ? "picture_as_pdf" : "image"}
+                  onClick={() => onUploadCsvClick({ sheetName: spreadsheetPreview?.sheetName, headerRowNumber: headerSelection ?? spreadsheetPreview?.headerRowNumber })}
+                  disabled={
+                    importBusy ||
+                    !importFile ||
+                    detectedImportFileType !== importTab ||
+                    (importTab === "csv" && (previewLoading || Boolean(previewError) || (spreadsheetPreview?.headerConfidence === "LOW" && !headerSelection)))
+                  }
+                >
+                  {importBusy
+                    ? "Importing..."
+                    : importTab === "csv"
+                      ? "Review Spreadsheet"
+                      : importTab === "pdf"
+                        ? "Extract PDF Rate List"
+                        : "Scan Image with AI"}
+                </Button>
+              </div>
             </div>
           )
         }
@@ -3606,42 +3663,35 @@ export default function ProductsModals({
                 </div>
               )}
             </section>
-          </div>) : importProcessingKind ? (
-          <div
-            className="flex min-h-[390px] items-center justify-center bg-[#F8FAFC] p-5 sm:p-8"
-            role="status"
-            aria-live="polite"
-            aria-busy="true"
-          >
-            <div className="w-full max-w-[520px] rounded-[18px] border border-[#D8DBE0] bg-white p-6 text-center sm:p-8">
-              <div className="mx-auto flex h-14 w-14 items-center justify-center rounded-[16px] border border-blue-200 bg-blue-50 text-[#2563EB]">
-                <Icon name="progress_activity" className="animate-spin text-[28px]" />
+          </div>) : (activeImportBatchId || importProcessingKind) ? (
+            activeImportBatchId ? (
+              <div className="flex min-h-[400px] items-center justify-center bg-[#F8FAFC] p-3 sm:p-5">
+                <ImportProcessingWidget
+                  batchId={activeImportBatchId}
+                  fileName={importFile?.name}
+                  sourceType={importResult?.sourceType || (importProcessingKind === "pdf" ? "PDF" : importProcessingKind === "image" ? "IMAGE" : "CSV")}
+                  supplier={importSupplier}
+                  onComplete={(completedBatchId) => {
+                    onCompleteImportBatch?.(completedBatchId);
+                  }}
+                  onMinimize={() => {
+                    if (onMinimizeImport) onMinimizeImport();
+                    else onCloseImport();
+                  }}
+                  onCancel={() => {
+                    setConfirmStopImport(true);
+                  }}
+                />
               </div>
-              <h3 className="mt-5 text-[18px] font-extrabold text-[#11120d]">
-                {importProgressCopy[0]}
-              </h3>
-              <p className="mx-auto mt-2 max-w-[390px] text-[13px] font-medium leading-5 text-[#64748B]">
-                {importProgressCopy[1]}
-              </p>
-              <div className="mt-5 overflow-hidden rounded-full bg-[#E8EEF8]" aria-hidden="true">
-                <div className="h-1.5 w-2/5 animate-pulse rounded-full bg-[#2563EB]" />
+            ) : (
+              <div className="flex min-h-[390px] items-center justify-center bg-[#F8FAFC] p-3 sm:p-5">
+                <ImportPreparingWidget
+                  fileName={importFile?.name}
+                  sourceType={importProcessingKind === "pdf" ? "PDF" : importProcessingKind === "image" ? "IMAGE" : "SPREADSHEET"}
+                />
               </div>
-              <div className="mt-5 flex min-w-0 items-center justify-between gap-3 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3.5 py-3 text-left">
-                <div className="min-w-0">
-                  <div className="truncate text-[12px] font-bold text-[#1E293B]">
-                    {importFile?.name || "Selected file"}
-                  </div>
-                  <div className="mt-0.5 text-[11px] font-medium text-[#64748B]">
-                    Preparing a safe review. Products are not added automatically.
-                  </div>
-                </div>
-                <span className="shrink-0 tabular-nums text-[12px] font-bold text-[#475569]">
-                  {Math.floor(importElapsedSeconds / 60)}:{String(importElapsedSeconds % 60).padStart(2, "0")}
-                </span>
-              </div>
-            </div>
-          </div>
-        ) : (
+            )
+          ) : (
           <div className="flex flex-col h-full bg-[#F8FAFC]">
             {/* Tabs */}
             <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
@@ -3692,13 +3742,13 @@ export default function ProductsModals({
                           <Icon name="table_chart" className="text-[24px] text-[#64748B] group-hover:text-[#11120d]" />
                         </div>
                         <h4 className="mb-[4px] text-[15px] font-bold text-[#1E293B]">Upload spreadsheet rate list</h4>
-                        <p className="mb-[14px] text-[12px] text-[#64748B]">Supports .csv and modern Excel .xlsx workbooks</p>
+                        <p className="mb-[14px] text-[12px] text-[#64748B]">Supports .csv and modern Excel .xlsx/.xlsm workbooks</p>
                         <label htmlFor="csv-upload" className="inline-flex cursor-pointer rounded-[9px] bg-[#11120d] px-[22px] py-[9px] text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] active:scale-[0.98]">
                           Choose spreadsheet
                         </label>
                         <input
                           type="file"
-                          accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                          accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
                           onChange={(event) => setImportFile(event.target.files?.[0] || null)}
                           className="hidden"
                           id="csv-upload"
@@ -3794,7 +3844,7 @@ export default function ProductsModals({
                           </button>
                           <input
                             type="file"
-                            accept=".csv,.xlsx,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                            accept=".csv,.xlsx,.xlsm,text/csv,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet,application/vnd.ms-excel.sheet.macroEnabled.12"
                             onChange={(event) => setImportFile(event.target.files?.[0] || null)}
                             className="hidden"
                             id="csv-upload"
@@ -3802,20 +3852,21 @@ export default function ProductsModals({
                         </div>
                       </div>
 
-                        {previewError ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{previewError}</p> : null}
-                        {spreadsheetPreview ? <div className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2">
-                          {spreadsheetPreview.sheets.length > 0 ? <label className="text-sm font-semibold">Worksheet
-                            <ProjectSelect value={spreadsheetPreview.sheetName || ""} onChange={(event) => { setSheetSelection(event.target.value); setHeaderSelection(undefined); }}>
-                              {spreadsheetPreview.sheets.map((name) => <option key={name} value={name}>{name}</option>)}
-                            </ProjectSelect>
-                          </label> : null}
-                          <label className="text-sm font-semibold">Header row
-                            <input type="number" min={1} max={50} value={headerSelection ?? spreadsheetPreview.headerRowNumber} onChange={(event) => { const row = Number(event.target.value); if (row >= 1 && row <= 50) setHeaderSelection(row); }} className="mt-1 h-10 w-full rounded-lg border px-3" />
-                          </label>
-                          <p className="text-sm text-slate-600 sm:col-span-2">{spreadsheetPreview.totalRows} rows in this selection. Other worksheets are excluded.</p>
-                          {spreadsheetPreview.warnings.map((warning, index) => <p key={index} className="text-sm text-amber-800 sm:col-span-2">{warning}</p>)}
-                        </div> : null}
-                        {/* Interactive Column Mapping Card */}
+                      {previewError ? <p role="alert" className="rounded-lg bg-rose-50 p-3 text-sm text-rose-800">{previewError}</p> : null}
+                      {spreadsheetPreview ? <div className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2">
+                        {spreadsheetPreview.headerConfidence === "LOW" && !headerSelection ? <p role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 sm:col-span-2">The header could not be identified confidently. Confirm the header row below before continuing.</p> : null}
+                        {spreadsheetPreview.sheets.length > 0 ? <label className="text-sm font-semibold">Worksheet
+                          <ProjectSelect value={spreadsheetPreview.sheetName || ""} onChange={(event) => { setSheetSelection(event.target.value); setHeaderSelection(undefined); }}>
+                            {spreadsheetPreview.sheets.map((name) => <option key={name} value={name}>{name}</option>)}
+                          </ProjectSelect>
+                        </label> : null}
+                        <label className="text-sm font-semibold">Header row
+                          <input type="number" min={1} max={50} value={headerSelection ?? spreadsheetPreview.headerRowNumber} onChange={(event) => { const row = Number(event.target.value); if (row >= 1 && row <= 50) setHeaderSelection(row); }} className="mt-1 h-10 w-full rounded-lg border px-3" />
+                        </label>
+                        <p className="text-sm text-slate-600 sm:col-span-2">{spreadsheetPreview.totalRows} rows in this selection. Other worksheets are excluded.</p>
+                        {spreadsheetPreview.warnings.map((warning, index) => <p key={index} className="text-sm text-amber-800 sm:col-span-2">{warning}</p>)}
+                      </div> : null}
+                      {/* Interactive Column Mapping Card */}
                       <div className="rounded-[16px] border border-[#E5E7EB] bg-white overflow-hidden">
                         <div className="flex flex-wrap items-center justify-between gap-3 border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-3">
                           <div>
@@ -4035,50 +4086,148 @@ export default function ProductsModals({
                 <span className="mt-1 block text-xs font-normal text-slate-600">The filename is retained only as a source reference.</span>
               </label> : null}
               {importTab === "pdf" && (
-                <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
-                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
-                    <Icon name="picture_as_pdf" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
-                  </div>
-                  <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload PDF supplier rate list</h4>
-                  <p className="mb-[20px] text-[13px] text-[#64748B]">Text or scanned PDF files up to 50 MB. Extracted rows always open in review before import.</p>
-                  <label htmlFor="pdf-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
-                    {importFile ? "Change PDF File" : "Choose PDF File"}
-                  </label>
-                  <input
-                    type="file"
-                    accept=".pdf,application/pdf"
-                    onChange={(event) => setImportFile(event.target.files?.[0] || null)}
-                    className="hidden"
-                    id="pdf-upload"
-                  />
-                  {importFile && (
-                    <div className="mt-[14px] flex items-center justify-center gap-[6px] text-[13px] font-bold text-emerald-800">
-                      <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
+                <div className="space-y-3">
+                  {importFile && detectedImportFileType !== "pdf" ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-[14px] border border-amber-200 bg-amber-50 p-3 text-[12px] font-bold text-amber-900">
+                      <div className="flex items-center gap-2">
+                        <Icon name="info" className="text-[17px] text-amber-600 shrink-0" />
+                        <span>Active file “{importFile.name}” is a {detectedImportFileType === "csv" ? "Spreadsheet" : "catalog image"}.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setImportTab(detectedImportFileType as any)}
+                        className="rounded-[8px] bg-amber-200/90 px-3 py-1 text-[11.5px] font-extrabold text-amber-900 hover:bg-amber-300 transition"
+                      >
+                        Switch to {detectedImportFileType === "csv" ? "Spreadsheet" : "Image"} tab
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {detectedImportFileType === "pdf" && importFile ? (
+                    <div className="flex items-center justify-between rounded-[16px] border border-emerald-200 bg-emerald-50/60 p-4">
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[12px] bg-emerald-600 text-white shadow-sm">
+                          <Icon name="picture_as_pdf" className="text-[24px]" />
+                        </div>
+                        <div className="min-w-0 text-left">
+                          <div className="truncate text-[14px] font-extrabold text-slate-900">{importFile.name}</div>
+                          <div className="text-[11.5px] font-semibold text-emerald-800">
+                            {(importFile.size / 1024).toFixed(1)} KB • PDF Rate list ready for extraction
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <label htmlFor="pdf-upload" className="cursor-pointer rounded-[8px] border border-slate-200 bg-white px-3.5 py-1.5 text-[12px] font-bold text-slate-700 hover:bg-slate-50 transition shadow-sm">
+                          Change File
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setImportFile(null)}
+                          className="flex h-8 w-8 items-center justify-center rounded-[8px] text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition"
+                          aria-label="Remove PDF file"
+                        >
+                          <Icon name="close" sizePx={18} />
+                        </button>
+                        <input
+                          type="file"
+                          accept=".pdf,application/pdf"
+                          onChange={(event) => handleFileSelected(event.target.files?.[0] || null, "pdf")}
+                          className="hidden"
+                          id="pdf-upload"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
+                      <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
+                        <Icon name="picture_as_pdf" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
+                      </div>
+                      <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload PDF supplier rate list</h4>
+                      <p className="mb-[20px] text-[13px] text-[#64748B]">Text or scanned PDF files up to 50 MB. Extracted rows always open in review before import.</p>
+                      <label htmlFor="pdf-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
+                        Choose PDF File
+                      </label>
+                      <input
+                        type="file"
+                        accept=".pdf,application/pdf"
+                        onChange={(event) => handleFileSelected(event.target.files?.[0] || null, "pdf")}
+                        className="hidden"
+                        id="pdf-upload"
+                      />
                     </div>
                   )}
                 </div>
               )}
 
               {importTab === "image" && (
-                <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
-                  <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
-                    <Icon name="image" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
-                  </div>
-                  <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload image of printed rate list</h4>
-                  <p className="mb-[20px] text-[13px] text-[#64748B]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
-                  <label htmlFor="img-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
-                    {importFile ? "Change Image" : "Choose Image"}
-                  </label>
-                  <input
-                    type="file"
-                    accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
-                    onChange={(event) => setImportFile(event.target.files?.[0] || null)}
-                    className="hidden"
-                    id="img-upload"
-                  />
-                  {importFile && (
-                    <div className="mt-[14px] flex items-center justify-center gap-[6px] text-[13px] font-bold text-emerald-800">
-                      <Icon name="check_circle" className="text-[16px]" /> {importFile.name}
+                <div className="space-y-3">
+                  {importFile && detectedImportFileType !== "image" ? (
+                    <div className="flex flex-wrap items-center justify-between gap-2.5 rounded-[14px] border border-amber-200 bg-amber-50 p-3 text-[12px] font-bold text-amber-900">
+                      <div className="flex items-center gap-2">
+                        <Icon name="info" className="text-[17px] text-amber-600 shrink-0" />
+                        <span>Active file “{importFile.name}” is a {detectedImportFileType === "csv" ? "Spreadsheet" : "PDF rate list"}.</span>
+                      </div>
+                      <button
+                        type="button"
+                        onClick={() => setImportTab(detectedImportFileType as any)}
+                        className="rounded-[8px] bg-amber-200/90 px-3 py-1 text-[11.5px] font-extrabold text-amber-900 hover:bg-amber-300 transition"
+                      >
+                        Switch to {detectedImportFileType === "csv" ? "Spreadsheet" : "PDF"} tab
+                      </button>
+                    </div>
+                  ) : null}
+
+                  {detectedImportFileType === "image" && importFile ? (
+                    <div className="flex items-center justify-between rounded-[16px] border border-emerald-200 bg-emerald-50/60 p-4">
+                      <div className="flex items-center gap-3.5 min-w-0">
+                        <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-[12px] bg-emerald-600 text-white shadow-sm">
+                          <Icon name="image" className="text-[24px]" />
+                        </div>
+                        <div className="min-w-0 text-left">
+                          <div className="truncate text-[14px] font-extrabold text-slate-900">{importFile.name}</div>
+                          <div className="text-[11.5px] font-semibold text-emerald-800">
+                            {(importFile.size / 1024).toFixed(1)} KB • Catalog image ready for AI scan
+                          </div>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2 shrink-0">
+                        <label htmlFor="img-upload" className="cursor-pointer rounded-[8px] border border-slate-200 bg-white px-3.5 py-1.5 text-[12px] font-bold text-slate-700 hover:bg-slate-50 transition shadow-sm">
+                          Change Image
+                        </label>
+                        <button
+                          type="button"
+                          onClick={() => setImportFile(null)}
+                          className="flex h-8 w-8 items-center justify-center rounded-[8px] text-slate-400 hover:bg-rose-50 hover:text-rose-600 transition"
+                          aria-label="Remove image file"
+                        >
+                          <Icon name="close" sizePx={18} />
+                        </button>
+                        <input
+                          type="file"
+                          accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                          onChange={(event) => handleFileSelected(event.target.files?.[0] || null, "image")}
+                          className="hidden"
+                          id="img-upload"
+                        />
+                      </div>
+                    </div>
+                  ) : (
+                    <div className="group relative rounded-[16px] border-2 border-dashed border-[#CFCFD3] bg-white p-[40px] text-center transition hover:border-[#11120d] hover:bg-[#F8F9FA] sm:p-[48px]">
+                      <div className="mx-auto mb-[18px] flex h-[60px] w-[60px] items-center justify-center rounded-[16px] border border-[#E2E8F0] bg-[#F1F5F9] transition-transform group-hover:scale-110">
+                        <Icon name="image" className="text-[30px] text-[#94A3B8] group-hover:text-[#11120d]" />
+                      </div>
+                      <h4 className="mb-[6px] text-[16px] font-bold text-[#1E293B]">Upload image of printed rate list</h4>
+                      <p className="mb-[20px] text-[13px] text-[#64748B]">PNG, JPG, WebP up to 10MB — AI will parse from image</p>
+                      <label htmlFor="img-upload" className="inline-flex cursor-pointer rounded-[10px] bg-[#11120d] px-[24px] py-[10px] text-[13px] font-bold text-white transition hover:bg-[#2a2c27]">
+                        Choose Image
+                      </label>
+                      <input
+                        type="file"
+                        accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp"
+                        onChange={(event) => handleFileSelected(event.target.files?.[0] || null, "image")}
+                        className="hidden"
+                        id="img-upload"
+                      />
                     </div>
                   )}
                 </div>
@@ -4088,6 +4237,54 @@ export default function ProductsModals({
           </div>
         )}
       </ModalShell>
+
+      <ModalFrame
+        open={confirmStopImport}
+        title="Stop extraction?"
+        description="Unsaved progress will be lost."
+        onClose={() => setConfirmStopImport(false)}
+        layer="critical"
+        maxWidthClass="max-w-[480px]"
+        mobileBottomSheet
+        footer={(
+          <div className="flex w-full flex-col sm:flex-row sm:items-center sm:justify-end gap-2.5">
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmStopImport(false);
+                onCancelImportProcessing();
+              }}
+              className="order-3 sm:order-1 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-1.5 rounded-[12px] border border-rose-200 bg-rose-50 px-4 py-2 text-[12.5px] font-bold text-rose-700 transition hover:bg-rose-100"
+            >
+              <Icon name="cancel" sizePx={15} />
+              <span>Stop & Discard</span>
+            </button>
+            <button
+              type="button"
+              onClick={() => setConfirmStopImport(false)}
+              className="order-2 sm:order-2 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-4 py-2 text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
+            >
+              Keep Extracting
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setConfirmStopImport(false);
+                if (onMinimizeImport) onMinimizeImport();
+                else onCloseImport();
+              }}
+              className="order-1 sm:order-3 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 py-2 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm"
+            >
+              <Icon name="visibility_off" sizePx={16} />
+              <span>Work in Background</span>
+            </button>
+          </div>
+        )}
+      >
+        <div className="rounded-[12px] border border-amber-200 bg-amber-50/80 p-3 text-[12px] font-medium leading-5 text-amber-900">
+          Tip: Choose <strong>Work in Background</strong> to let it finish while you use KhataSathi.
+        </div>
+      </ModalFrame>
 
       <ModalFrame
         open={confirmImportSelected}
@@ -4117,11 +4314,12 @@ export default function ProductsModals({
 
       <ModalFrame
         open={!!deleteImportBatchId}
-        title="Delete Import Review"
-        description="Products that were already imported from this review will not be removed from your catalog."
+        title="Delete import review?"
+        description="This review history will be permanently removed."
         onClose={() => setDeleteImportBatchId(null)}
         layer="critical"
         maxWidthClass="max-w-[460px]"
+        mobileBottomSheet
         footer={
           <div className="grid w-full grid-cols-2 gap-2.5">
             <DialogButton onClick={() => setDeleteImportBatchId(null)} disabled={importBusy}>
@@ -4144,7 +4342,7 @@ export default function ProductsModals({
       >
         <div className="space-y-3">
           <div className="rounded-[12px] border border-rose-200 bg-rose-50 p-3 text-[12px] font-semibold leading-5 text-rose-800">
-            Delete this import review history? Products that were already imported from this review will not be removed.
+            Note: Products already in your catalog will not be removed.
           </div>
           <div className="rounded-[12px] border border-[#D8DBE0] bg-[#F8FAFC] p-3.5">
             <div className="text-[10px] font-extrabold uppercase tracking-wide text-[#7A7F89]">

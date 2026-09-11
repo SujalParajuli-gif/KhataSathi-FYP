@@ -6,6 +6,10 @@ import {
 } from "../../lib/money";
 import { assertCashierOverrideAllowed } from "../settings/service";
 import { getPaymentGateway } from "./gateways";
+import {
+  lockInvoiceForUpdate,
+  runFinancialTransaction,
+} from "../../lib/transactionLocks";
 
 // the payment methods our system currently supports — CASH is manual, ESEWA is online
 export const SUPPORTED_PAYMENT_METHODS = [
@@ -170,32 +174,31 @@ export async function addPayment(
   createdById: string,
   reference?: string,
 ) {
-  const invoice = await prisma.invoice.findUnique({
-    where: { id: invoiceId },
-    include: { payments: true },
-  });
-
-  if (!invoice) throw new Error("Invoice not found");
-  ensureInvoiceCanAcceptPayment(invoice);
-
   const normalizedAmount = roundCurrency(amount);
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
   // checking for overpayment — the new payment plus what is already paid cannot exceed the net total
-  if (status === "SUCCESS") {
-    const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
-    const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const invoice = await tx.invoice.findUnique({
+      where: { id: invoiceId },
+      include: { payments: true },
+    });
+    if (!invoice) throw new Error("Invoice not found");
+    ensureInvoiceCanAcceptPayment(invoice);
 
-    if (currentPaid + normalizedAmount > paymentTargetTotal) {
-      throw new Error(
-        `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
-      );
+    if (status === "SUCCESS") {
+      const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
+      const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+      if (currentPaid + normalizedAmount > paymentTargetTotal) {
+        throw new Error(
+          `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
+        );
+      }
     }
-  }
 
-  return prisma.$transaction(async (tx) => {
     const actor = await getActorSummaryTx(tx, createdById);
     // creating the payment record in the database
     const payment = await tx.payment.create({
@@ -311,7 +314,8 @@ export async function initiateEsewaPayment(
   amount: number,
   createdById: string,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: { payments: true },
@@ -328,7 +332,14 @@ export async function initiateEsewaPayment(
 // marking an eSewa payment as successful — updates the payment record and the invoice's payment status
 // we also create an audit log entry to track who and when
 async function markEsewaPaymentSuccess(paymentId: string, reference?: string | null) {
-  return prisma.$transaction(async (tx) => {
+  const paymentIdentity = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { invoiceId: true },
+  });
+  if (!paymentIdentity) throw new Error("Payment attempt not found");
+
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, paymentIdentity.invoiceId);
     const payment = await tx.payment.findUnique({
       where: { id: paymentId },
       include: {
@@ -404,7 +415,14 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
 
 // marking an eSewa payment as failed — updates the payment record and logs the failure reason
 async function markEsewaPaymentFailed(paymentId: string, reason: string) {
-  return prisma.$transaction(async (tx) => {
+  const paymentIdentity = await prisma.payment.findUnique({
+    where: { id: paymentId },
+    select: { invoiceId: true },
+  });
+  if (!paymentIdentity) throw new Error("Payment attempt not found");
+
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, paymentIdentity.invoiceId);
     const payment = await tx.payment.findUnique({
       where: { id: paymentId },
       include: {
@@ -645,10 +663,11 @@ export async function cleanupStaleEsewaPayments(maxAgeMinutes = 30) {
     return { expired: 0 };
   }
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
     let expired = 0;
 
     for (const payment of stalePayments) {
+      await lockInvoiceForUpdate(tx, payment.invoiceId);
       const updated = await tx.payment.updateMany({
         where: {
           id: payment.id,
@@ -693,7 +712,8 @@ export async function voidPayment(
   voidedById: string,
   overridePin?: string | null,
 ) {
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     await assertCashierOverrideAllowed(
       voidedById,
       "PAYMENT_VOID",

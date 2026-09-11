@@ -4,6 +4,10 @@ export type PdfTextCatalogPage = {
   pageNumber: number;
   text: string;
   lines?: PdfTextLineRegion[];
+  // Continuation pages often omit the table header. The worker supplies the
+  // first detected header so those pages can still use deterministic parsing.
+  headerContext?: string;
+  headerLine?: PdfTextLineRegion;
 };
 
 export type ExtractedPriceCandidate = {
@@ -87,7 +91,18 @@ function priceLabel(label: string) {
 // Retain cell boundaries from the header. Never infer packing from number count.
 function structuredCells(page: PdfTextCatalogPage): Array<{ text: string; columns: Column[] | null; cells: string[]; region?: PdfTextLineRegion["region"] }> {
   const located = page.lines || [];
-  let geometryColumns: Column[] | null = null;
+  const headerChunks = page.headerLine?.items?.reduce<Array<{ text: string; left: number; right: number }>>((chunks, item) => {
+    const last = chunks[chunks.length - 1];
+    if (last && item.left - last.right < 9) { last.text += ` ${item.text}`; last.right = item.right; }
+    else chunks.push({ ...item });
+    return chunks;
+  }, []) || [];
+  let geometryColumns: Column[] | null = headerChunks.length
+    ? headerChunks.map((chunk) => ({ ...chunk, label: chunk.text, kind: columnKind(chunk.text) }))
+    : null;
+  if (geometryColumns && (!geometryColumns.some((column) => column.kind === "name") || !geometryColumns.some((column) => column.kind === "price"))) {
+    geometryColumns = null;
+  }
   const output: Array<{ text: string; columns: Column[] | null; cells: string[]; region?: PdfTextLineRegion["region"] }> = [];
   for (const line of located) {
     if (!line.items?.length) continue;
@@ -116,7 +131,10 @@ function structuredCells(page: PdfTextCatalogPage): Array<{ text: string; column
     output.push({ text: line.text, columns: geometryColumns, cells, region: line.region });
   }
   if (geometryColumns) return output;
-  let columns: Column[] | null = null;
+  let columns: Column[] | null = page.headerContext
+    ? page.headerContext.split("\t").map(compact).map((label) => ({ label, kind: columnKind(label) }))
+    : null;
+  if (columns && (!columns.some((column) => column.kind === "name") || !columns.some((column) => column.kind === "price"))) columns = null;
   return page.text.split(/\r?\n/).map((text) => {
     const cells = text.split("\t").map(compact);
     const candidate = cells.map((label) => ({ label, kind: columnKind(label) }));
@@ -170,7 +188,7 @@ function detectPriceLabels(pages: PdfTextCatalogPage[]) {
 }
 
 function hasSerialCodePriceTable(pages: PdfTextCatalogPage[]) {
-  return pages.some((page) => page.text.split(/\r?\n/).slice(0, 12).some((line) => {
+  return pages.some((page) => [page.headerContext || "", ...page.text.split(/\r?\n/).slice(0, 12)].some((line) => {
     const header = compact(line).toLowerCase();
     return /\b(?:s\.?\s*n\.?|serial)\b/.test(header)
       && /\b(?:product|jar)\s*(?:name)?\b/.test(header)

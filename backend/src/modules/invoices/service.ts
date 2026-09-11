@@ -11,6 +11,14 @@ import {
 } from "../../lib/money";
 import prisma from "../../db/prisma";
 import {
+  lockCashierForUpdate,
+  lockInvoiceItemForUpdate,
+  lockInvoiceItemsForUpdate,
+  lockInvoiceForUpdate,
+  lockProductsForUpdate,
+  runFinancialTransaction,
+} from "../../lib/transactionLocks";
+import {
   assertCashierOverrideAllowed,
   getBusinessSettings,
   resolveWholesaleQtyThreshold,
@@ -437,6 +445,7 @@ type CheckoutPaymentInput = {
 };
 
 type CheckoutInput = {
+  operationKey: string;
   draftInvoiceId?: string | null;
   customerId?: string | null;
   discountAmount?: number;
@@ -446,6 +455,67 @@ type CheckoutInput = {
   payment?: CheckoutPaymentInput | null;
   payments?: CheckoutPaymentInput[] | null;
 };
+
+export function buildCheckoutPayloadHash(
+  input: CheckoutInput,
+  items: ReturnType<typeof normalizeCheckoutItems>,
+  payments: ReturnType<typeof normalizeCheckoutPayments>,
+) {
+  const fingerprintPayload = {
+    draftInvoiceId: String(input.draftInvoiceId || "").trim() || null,
+    customerId: String(input.customerId || "").trim() || null,
+    discountAmount:
+      input.discountAmount === undefined ? null : roundCurrency(input.discountAmount),
+    notes: normalizeInvoiceNotes(input.notes),
+    items: items.map((item) => ({
+      productId: item.productId,
+      qty: item.qty,
+      overrideUnitPrice: item.overrideUnitPrice ?? null,
+      overrideReason: item.overrideReason || null,
+    })),
+    payments: payments.map((payment) => ({
+      method: payment.method,
+      amount: payment.amount,
+      reference: payment.reference || null,
+      tenderedAmount: payment.tenderedAmount ?? null,
+    })),
+  };
+  return createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex");
+}
+
+function isCheckoutOperationKeyConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; meta?: { target?: unknown } };
+  if (candidate.code !== "P2002") return false;
+  const target = Array.isArray(candidate.meta?.target)
+    ? candidate.meta?.target.join(",")
+    : String(candidate.meta?.target || "");
+  return target.includes("operationKey");
+}
+
+async function replayCheckoutOperation(
+  cashierId: string,
+  operationKey: string,
+  payloadHash: string,
+) {
+  const operation = await prisma.checkoutOperation.findUnique({
+    where: { operationKey },
+  });
+  if (!operation) throw new Error("Checkout operation conflict. Please retry.");
+  if (operation.actorId !== cashierId) {
+    throw new Error("Checkout operation key belongs to another user.");
+  }
+  if (operation.payloadHash !== payloadHash) {
+    throw new Error("Checkout operation key was already used with different bill contents.");
+  }
+  if (!operation.completedAt || !operation.invoiceId || !operation.responseJson) {
+    throw new Error("Checkout operation is still being resolved. Please retry shortly.");
+  }
+  return operation.responseJson as {
+    invoice: { id: string } | null;
+    esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
+  };
+}
 
 type ParkDraftInput = {
   replaceDraftInvoiceId?: string | null;
@@ -746,6 +816,7 @@ async function validateCheckoutProductsTx(
   ownReservedQtyByProduct = new Map<string, number>(),
 ) {
   const productIds = checkoutItems.map((line) => line.productId);
+  await lockProductsForUpdate(tx, productIds);
   const products = await tx.product.findMany({
     where: { id: { in: productIds } },
   });
@@ -1361,10 +1432,20 @@ async function prepareCheckoutInvoiceTx(
 export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   const checkoutItems = normalizeCheckoutItems(input.items);
   const checkoutPayments = normalizeCheckoutPayments(input);
+  const operationKey = String(input.operationKey || "").trim();
+  if (!/^[A-Za-z0-9_-]{16,120}$/.test(operationKey)) {
+    throw new Error("A valid checkout operation key is required.");
+  }
+  const payloadHash = buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments);
   const settings = await getBusinessSettings();
 
-  return prisma.$transaction(async (tx) => {
-    const customerId = input.customerId ? String(input.customerId) : null;
+  try {
+    return await runFinancialTransaction(prisma, async (tx) => {
+      const operation = await tx.checkoutOperation.create({
+        data: { operationKey, actorId: cashierId, payloadHash },
+        select: { id: true },
+      });
+      const customerId = input.customerId ? String(input.customerId) : null;
     const customer = customerId
       ? await tx.customer.findUnique({
           where: { id: customerId },
@@ -1382,6 +1463,13 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
     }
 
     const draftInvoiceId = String(input.draftInvoiceId || "").trim();
+    if (draftInvoiceId) {
+      await lockInvoiceForUpdate(tx, draftInvoiceId);
+    }
+    await lockProductsForUpdate(
+      tx,
+      checkoutItems.map((item) => item.productId),
+    );
     const ownReservedItems = draftInvoiceId
       ? await tx.invoiceItem.findMany({
           where: { invoiceId: draftInvoiceId },
@@ -1616,8 +1704,21 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
       },
     });
 
-    return { invoice: savedInvoice, esewaPaymentIntent };
-  });
+    const response = { invoice: savedInvoice, esewaPaymentIntent };
+    await tx.checkoutOperation.update({
+      where: { id: operation.id },
+      data: {
+        invoiceId: invoice.id,
+        responseJson: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
+        completedAt: new Date(),
+      },
+    });
+    return response;
+    });
+  } catch (error) {
+    if (!isCheckoutOperationKeyConflict(error)) throw error;
+    return replayCheckoutOperation(cashierId, operationKey, payloadHash);
+  }
 }
 
 export async function modifyFinalizedInvoice(
@@ -1628,7 +1729,13 @@ export async function modifyFinalizedInvoice(
   const replacementItems = normalizeCheckoutItems(input.items);
   const settings = await getBusinessSettings();
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const originalProductIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
+    await lockProductsForUpdate(tx, [
+      ...originalProductIds,
+      ...replacementItems.map((item) => item.productId),
+    ]);
     const original = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: {
@@ -1735,8 +1842,8 @@ export async function modifyFinalizedInvoice(
         resolveWholesaleQtyThreshold(product, settings),
         product.wholesaleEligible,
       )
-        ? product.wholesalePrice
-        : product.retailPrice;
+        ? Number(product.wholesalePrice)
+        : Number(product.retailPrice);
 
       await tx.invoiceItem.create({
         data: {
@@ -1968,7 +2075,10 @@ export async function parkDraft(cashierId: string, input: ParkDraftInput) {
   const draftItems = normalizeCheckoutItems(input.items);
   const settings = await getBusinessSettings();
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    const existingDraftId = String(input.replaceDraftInvoiceId || "").trim();
+    if (existingDraftId) await lockInvoiceForUpdate(tx, existingDraftId);
+    await lockCashierForUpdate(tx, cashierId);
     const customerId = input.customerId ? String(input.customerId) : null;
     const customer = customerId
       ? await tx.customer.findUnique({
@@ -2103,7 +2213,8 @@ export async function listParkedDrafts(userId: string, role?: string) {
 }
 
 export async function resumeParkedDraft(invoiceId: string, cashierId: string) {
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: parkedDraftInclude,
@@ -2150,7 +2261,10 @@ export async function discardParkedDraft(
   userId: string,
   role?: string,
 ) {
-  await prisma.$transaction(async (tx) => {
+  await runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const productIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
+    await lockProductsForUpdate(tx, productIds);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: { items: true },
@@ -2218,8 +2332,11 @@ export async function expireDueParkedDrafts(now = new Date()) {
   const actorId = await findSystemAuditActorId();
   const invoiceNos: string[] = [];
 
-  await prisma.$transaction(async (tx) => {
+  await runFinancialTransaction(prisma, async (tx) => {
     for (const draft of dueDrafts) {
+      await lockInvoiceForUpdate(tx, draft.id);
+      const productIds = await lockInvoiceItemsForUpdate(tx, draft.id);
+      await lockProductsForUpdate(tx, productIds);
       const invoice = await tx.invoice.findUnique({
         where: { id: draft.id },
         include: {
@@ -2278,17 +2395,16 @@ export async function transferParkedDraft(
   adminId: string,
   targetCashierId: string,
 ) {
-  return prisma.$transaction(async (tx) => {
-    const [invoice, targetCashier] = await Promise.all([
-      tx.invoice.findUnique({
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const invoice = await tx.invoice.findUnique({
         where: { id: invoiceId },
         include: { items: true, cashier: { select: { id: true, name: true } } },
-      }),
-      tx.user.findUnique({
+      });
+    const targetCashier = await tx.user.findUnique({
         where: { id: targetCashierId },
         select: { id: true, name: true, role: true, isActive: true },
-      }),
-    ]);
+      });
 
     if (!invoice) throw new Error("Parked bill not found");
     if (invoice.status !== "DRAFT" || !invoice.parkedAt) {
@@ -2628,7 +2744,10 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
   const normalizedQty = normalizePositiveQuantity(qty, "qty");
   const settings = await getBusinessSettings(); // needed to resolve wholesale qty thresholds
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    await lockProductsForUpdate(tx, [productId]);
+    await lockProductsForUpdate(tx, [productId]);
     // fetching the invoice with its customer data to determine which pricing rules apply
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
@@ -2667,8 +2786,8 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
         resolveWholesaleQtyThreshold(product, settings),
         product.wholesaleEligible,
       )
-        ? product.wholesalePrice
-        : product.retailPrice;
+        ? Number(product.wholesalePrice)
+        : Number(product.retailPrice);
       const newLineTotal = roundCurrency(recalculatedUnitPrice * newQty);
 
       const item = await tx.invoiceItem.update({
@@ -2698,8 +2817,8 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
       resolveWholesaleQtyThreshold(product, settings),
       product.wholesaleEligible,
     )
-      ? product.wholesalePrice
-      : product.retailPrice;
+      ? Number(product.wholesalePrice)
+      : Number(product.retailPrice);
     const lineTotal = roundCurrency(appliedUnitPrice * normalizedQty);
 
     const item = await tx.invoiceItem.create({
@@ -2724,7 +2843,10 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
   const normalizedQty = normalizePositiveQuantity(qty, "qty");
   const settings = await getBusinessSettings();
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const productId = await lockInvoiceItemForUpdate(tx, invoiceId, itemId);
+    if (productId) await lockProductsForUpdate(tx, [productId]);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: {
@@ -2763,8 +2885,8 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
       resolveWholesaleQtyThreshold(item.product, settings),
       item.product.wholesaleEligible,
     )
-      ? item.product.wholesalePrice
-      : item.product.retailPrice;
+      ? Number(item.product.wholesalePrice)
+      : Number(item.product.retailPrice);
     const lineTotal = roundCurrency(appliedUnitPrice * normalizedQty);
 
     const updated = await tx.invoiceItem.update({
@@ -2781,7 +2903,8 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
 // and that the item actually belongs to this invoice
 // wrapped in a transaction so the delete and subtotal recomputation are atomic
 export async function removeItem(invoiceId: string, itemId: string) {
-  await prisma.$transaction(async (tx) => {
+  await runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     const invoice = await tx.invoice.findUnique({ where: { id: invoiceId } });
     if (!invoice) throw new Error("Invoice not found");
     if (invoice.status !== "DRAFT") throw new Error("Cannot modify a finalized invoice");
@@ -2806,7 +2929,10 @@ export async function finalizeInvoice(
   userId: string,
   discountAmount?: number,
 ) {
-  await prisma.$transaction(async (tx) => {
+  await runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const productIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
+    await lockProductsForUpdate(tx, productIds);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: {
@@ -2948,7 +3074,10 @@ export async function finalizeInvoice(
 // cancelling a finalized invoice — reverses the stock deductions and marks it as cancelled
 // this is a serious action so we wrap it in a transaction and log everything in the audit
 export async function cancelInvoice(invoiceId: string, userId: string) {
-  await prisma.$transaction(async (tx) => {
+  await runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
+    const productIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
+    await lockProductsForUpdate(tx, productIds);
     // fetching the invoice with its items and payments — we need all of this for the reversal
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
@@ -3058,7 +3187,8 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
 // only cancelled invoices can be soft-deleted because active or finalized invoices
 // should remain visible for billing and payment operations
 export async function softDeleteInvoice(invoiceId: string, userId: string) {
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       select: {

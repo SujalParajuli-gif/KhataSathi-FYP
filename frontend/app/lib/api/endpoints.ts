@@ -1,5 +1,26 @@
 import { API_BASE_URL } from "./baseUrl";
 import api from "./client";
+import { LONG_API_TIMEOUT_MS, ORDINARY_API_TIMEOUT_MS } from "./requestPolicy";
+
+export { LONG_API_TIMEOUT_MS } from "./requestPolicy";
+
+async function fetchWithDeadline(
+    input: RequestInfo | URL,
+    init: RequestInit = {},
+    timeoutMs = ORDINARY_API_TIMEOUT_MS,
+) {
+    const controller = new AbortController();
+    const abort = () => controller.abort();
+    if (init.signal?.aborted) controller.abort();
+    else init.signal?.addEventListener("abort", abort, { once: true });
+    const timer = globalThis.setTimeout(abort, timeoutMs);
+    try {
+        return await fetch(input, { ...init, signal: controller.signal });
+    } finally {
+        globalThis.clearTimeout(timer);
+        init.signal?.removeEventListener("abort", abort);
+    }
+}
 
 // --- Auth endpoints ---
 
@@ -138,12 +159,12 @@ async function readUploadError(res: Response, fallback: string) {
 export async function uploadProfilePhotoApi(file: File) {
     const formData = new FormData();
     formData.append("photo", file);
-    const res = await fetch(API_BASE_URL + "/api/auth/profile/photo", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/auth/profile/photo", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         throw new Error(await readUploadError(res, "Upload failed"));
     }
@@ -578,13 +599,13 @@ export async function importCsvApi(
     if (options?.templateId) formData.append("templateId", options.templateId);
     if (options?.fieldMap) formData.append("fieldMap", JSON.stringify(options.fieldMap));
     if (options?.defaults) formData.append("defaults", JSON.stringify(options.defaults));
-    const res = await fetch(API_BASE_URL + "/api/products/import-csv", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/products/import-csv", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
         signal: options?.signal,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to import products.");
@@ -684,13 +705,13 @@ export async function importPdfApi(file: File, options?: { signal?: AbortSignal;
     const formData = new FormData();
     formData.append("file", file);
     if (options?.supplier) formData.append("supplier", options.supplier);
-    const res = await fetch(API_BASE_URL + "/api/products/import-pdf", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/products/import-pdf", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
         signal: options?.signal,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to import PDF.");
@@ -702,13 +723,13 @@ export async function importImageRateListApi(file: File, options?: { signal?: Ab
     const formData = new FormData();
     formData.append("file", file);
     if (options?.supplier) formData.append("supplier", options.supplier);
-    const res = await fetch(API_BASE_URL + "/api/products/import-image", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/products/import-image", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: formData,
         signal: options?.signal,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Failed to import image.");
@@ -749,6 +770,7 @@ export type ProductImportRow = {
         currentValue: string | number | null;
         incomingValue: string | number | null;
     }> | null;
+    reviewChanges?: string[];
     resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE" | null;
     createdAt: string;
 };
@@ -779,7 +801,20 @@ export type ProductImportBatch = {
 };
 
 export type ProductImportReviewPage = {
-    coverage: { total: number; completed: number; failedPages: Array<{ pageNumber: number; message?: string }>; requiresAcknowledgement: boolean };
+    coverage: {
+        total: number;
+        visited: number;
+        completed: number;
+        partialPages: Array<{ pageNumber: number; message?: string }>;
+        failedPages: Array<{ pageNumber: number; status?: string; message?: string }>;
+        unvisitedPages: number[];
+        retryablePages: number[];
+        emptyPageNumbers: number[];
+        outcome: "COMPLETE" | "PARTIAL" | "FAILED" | "INTERRUPTED";
+        canRetry: boolean;
+        canReprocessEmpty: boolean;
+        requiresAcknowledgement: boolean;
+    };
     batch: Omit<ProductImportBatch, "rows">;
     rows: ProductImportRow[];
     pagination: {
@@ -789,6 +824,11 @@ export type ProductImportReviewPage = {
         totalPages: number;
     };
     comparisonCounts: Partial<Record<NonNullable<ProductImportRow["comparisonStatus"]>, number>>;
+    reviewCounts?: {
+        all: number;
+        edited: number;
+        attention: number;
+    };
     decisionCounts: {
         create: number;
         update: number;
@@ -877,6 +917,7 @@ export async function getProductImportReviewApi(
         search?: string;
         comparisonStatus?: ProductImportRow["comparisonStatus"];
         rowStatus?: string;
+        reviewState?: "EDITED" | "ATTENTION";
     } = {},
     options?: { signal?: AbortSignal },
 ) {
@@ -886,6 +927,7 @@ export async function getProductImportReviewApi(
     if (filters.search) params.set("search", filters.search);
     if (filters.comparisonStatus) params.set("comparisonStatus", filters.comparisonStatus);
     if (filters.rowStatus) params.set("rowStatus", filters.rowStatus);
+    if (filters.reviewState) params.set("reviewState", filters.reviewState);
     const query = params.toString();
     const res = await api.get(`/api/products/import-batches/${batchId}/review${query ? `?${query}` : ""}`, {
         signal: options?.signal,
@@ -911,6 +953,7 @@ export async function getProductImportSourceContextApi(
 export async function fetchProductImportSourceBlobApi(batchId: string) {
     const res = await api.get(`/api/products/import-batches/${batchId}/source`, {
         responseType: "blob",
+        timeout: LONG_API_TIMEOUT_MS,
     });
     return res.data as Blob;
 }
@@ -918,7 +961,7 @@ export async function fetchProductImportSourceBlobApi(batchId: string) {
 export async function fetchProductImportSourcePageBlobApi(batchId: string, pageNumber: number) {
     const res = await api.get(
         `/api/products/import-batches/${batchId}/source/pages/${pageNumber}`,
-        { responseType: "blob" },
+        { responseType: "blob", timeout: LONG_API_TIMEOUT_MS },
     );
     return res.data as Blob;
 }
@@ -1286,7 +1329,8 @@ export async function createInvoiceApi(customerId?: string) {
     return res.data;
 }
 
-export async function checkoutInvoiceApi(data: {
+export type CheckoutInvoiceInput = {
+    operationKey: string;
     draftInvoiceId?: string;
     customerId?: string;
     discountAmount?: number;
@@ -1311,7 +1355,9 @@ export async function checkoutInvoiceApi(data: {
         reference?: string;
         tenderedAmount?: number;
     }>;
-}) {
+};
+
+export async function checkoutInvoiceApi(data: CheckoutInvoiceInput) {
     const res = await api.post("/api/invoices/checkout", data);
     return res.data;
 }
@@ -1532,12 +1578,12 @@ export async function restockApi(
         for (const file of billData.files) {
             fd.append("billFiles", file);
         }
-        const res = await fetch(API_BASE_URL + "/api/inventory/restock", {
+        const res = await fetchWithDeadline(API_BASE_URL + "/api/inventory/restock", {
             method: "POST",
             headers: getSessionMutationHeaders(),
             credentials: "include",
             body: fd,
-        });
+        }, LONG_API_TIMEOUT_MS);
         if (!res.ok) {
             const err = await res.json().catch(() => ({}));
             throw new Error(err.error || "Restock failed");
@@ -1574,12 +1620,12 @@ export async function receiveStockBatchApi(data: {
         fd.append("billFiles", file);
     }
 
-    const res = await fetch(API_BASE_URL + "/api/inventory/receive-batch", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/inventory/receive-batch", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: fd,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Stock receive failed");
@@ -1685,6 +1731,7 @@ export async function downloadAnalyticsCsvApi(filters: {
     const res = await api.get("/api/reports/analytics/export/csv", {
         params: filters,
         responseType: "blob", // telling axios to return the raw binary data instead of parsing JSON
+        timeout: LONG_API_TIMEOUT_MS,
     });
     return res.data;
 }
@@ -2227,12 +2274,12 @@ export async function purgeBinRecordApi(id: string) {
 export async function uploadUserPhotoApi(userId: string, file: File) {
     const fd = new FormData();
     fd.append("photo", file);
-    const res = await fetch(API_BASE_URL + `/api/users/${userId}/photo`, {
+    const res = await fetchWithDeadline(API_BASE_URL + `/api/users/${userId}/photo`, {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: fd,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         throw new Error(await readUploadError(res, "Upload failed"));
     }
@@ -2245,12 +2292,12 @@ export async function uploadUserPhotoApi(userId: string, file: File) {
 export async function uploadProductImageApi(productId: string, file: File) {
     const fd = new FormData();
     fd.append("image", file);
-    const res = await fetch(API_BASE_URL + `/api/products/${productId}/image`, {
+    const res = await fetchWithDeadline(API_BASE_URL + `/api/products/${productId}/image`, {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: fd,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         throw new Error(await readUploadError(res, "Upload failed"));
     }
@@ -2341,12 +2388,12 @@ export async function uploadDocumentsApi(
     if (metadata.linkedEntityId) fd.append("linkedEntityId", metadata.linkedEntityId);
     if (metadata.visibility) fd.append("visibility", metadata.visibility);
 
-    const res = await fetch(API_BASE_URL + "/api/documents", {
+    const res = await fetchWithDeadline(API_BASE_URL + "/api/documents", {
         method: "POST",
         headers: getSessionMutationHeaders(),
         credentials: "include",
         body: fd,
-    });
+    }, LONG_API_TIMEOUT_MS);
     if (!res.ok) {
         const err = await res.json().catch(() => ({}));
         throw new Error(err.error || "Document upload failed");
@@ -2498,8 +2545,8 @@ export async function getStorageInfoApi(options?: { signal?: AbortSignal }) {
     return res.data;
 }
 
-export async function controlProductImportApi(batchId: string, action: "cancel" | "retry") {
-    return (await api.post(`/api/products/import-batches/${batchId}/processing`, { action })).data;
+export async function controlProductImportApi(batchId: string, action: "cancel" | "retry" | "reprocess_empty", pageNumbers?: number[]) {
+    return (await api.post(`/api/products/import-batches/${batchId}/processing`, { action, pageNumbers })).data;
 }
 export async function getProductImportCommitApi(batchId: string, token: string) {
     return (await api.get(`/api/products/import-batches/${batchId}/commits/${encodeURIComponent(token)}`)).data as { status: string; result?: ReviewedPdfImportResult; error?: string };

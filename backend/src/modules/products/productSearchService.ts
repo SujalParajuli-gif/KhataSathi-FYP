@@ -11,6 +11,7 @@ import {
   restoreRankedProductOrder,
 } from "./searchRanking";
 import { PRODUCT_SEARCH_TYPO_LIMITS } from "./searchTypoTolerance";
+import { normalizeProductSearchQuery } from "./searchNormalization";
 
 type RankedProductSearchInput = {
   query: string;
@@ -71,18 +72,76 @@ export async function searchProductsWithDeterministicRanking(
   input: RankedProductSearchInput,
 ) {
   const candidateLimit = PRODUCT_SEARCH_TYPO_LIMITS.maxDocuments;
-  const [candidateRows, synonymRules] = await Promise.all([
+  const normalizedQuery = normalizeProductSearchQuery(input.query);
+  const synonymRules = await getEnabledSearchSynonymRules();
+  const synonymTerms = synonymRules.flatMap((rule) =>
+    rule.normalizedAlias === normalizedQuery
+      ? [rule.normalizedCanonicalTerm]
+      : rule.normalizedCanonicalTerm === normalizedQuery
+        ? [rule.normalizedAlias]
+        : [],
+  );
+  const anchorTerms = [normalizedQuery, ...synonymTerms]
+    .flatMap((term) => term.split(/\s+/u))
+    .filter((term) => /^\p{L}{3,}$/u.test(term))
+    .flatMap((term) => {
+      const width = Math.min(4, term.length);
+      const anchors = [term.slice(0, width), term.slice(-width)];
+      if (term.length >= 7) {
+        const middle = Math.max(0, Math.floor((term.length - width) / 2));
+        anchors.push(term.slice(middle, middle + width));
+      }
+      return anchors;
+    });
+  const relevantTerms = [...new Set([normalizedQuery, ...synonymTerms, ...anchorTerms])]
+    .filter(Boolean);
+
+  const exactWhere: Prisma.ProductWhereInput = {
+    AND: [
+      input.where,
+      {
+        OR: [
+          { barcode: input.query.trim() },
+          { sku: input.query.trim() },
+          { name: input.query.trim() },
+          { productName: input.query.trim() },
+          {
+            searchAliases: {
+              some: { isEnabled: true, normalizedAlias: normalizedQuery },
+            },
+          },
+        ],
+      },
+    ],
+  };
+  const relevantWhere: Prisma.ProductWhereInput = {
+    AND: [
+      input.where,
+      {
+        OR: relevantTerms.map((term) => ({
+          searchDocument: { is: { normalizedText: { contains: term } } },
+        })),
+      },
+    ],
+  };
+  const [exactRows, relevantRows] = await Promise.all([
     prisma.product.findMany({
-      where: input.where,
+      where: exactWhere,
+      select: searchCandidateSelect,
+      orderBy: { id: "asc" },
+    }),
+    prisma.product.findMany({
+      where: relevantWhere,
       select: searchCandidateSelect,
       orderBy: { id: "asc" },
       take: candidateLimit + 1,
     }),
-    getEnabledSearchSynonymRules(),
   ]);
-  const candidateLimitReached = candidateRows.length > candidateLimit;
-  const eligibleCandidates = candidateRows
-    .slice(0, candidateLimit)
+  const candidateLimitReached = relevantRows.length > candidateLimit;
+  const candidatesById = new Map(
+    [...exactRows, ...relevantRows.slice(0, candidateLimit)].map((row) => [row.id, row]),
+  );
+  const eligibleCandidates = [...candidatesById.values()]
     .filter((product) => matchesProductSearchStockConstraint(product, input));
   const ranked = rankProductSearchCandidates(
     input.query,
@@ -123,6 +182,7 @@ export async function searchProductsWithDeterministicRanking(
     search: {
       candidateLimit,
       candidateLimitReached,
+      totalIsExact: !candidateLimitReached,
     },
   };
 }

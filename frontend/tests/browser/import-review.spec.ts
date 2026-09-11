@@ -36,10 +36,10 @@ test("processing recovers after a polling failure without looping on empty sourc
   const state = review("PROCESSING");
   const counters = await mockApp(page,state,{failFirstPoll:true});
   await page.goto("/products/imports/test-batch");
-  await expect(page.getByRole("heading",{name:"Preparing import review"})).toBeVisible();
+  await expect(page.getByRole("status")).toContainText("Extracting Supplier Rate List");
   await expect.poll(() => counters.reads,{timeout:12000}).toBeGreaterThanOrEqual(3);
   state.batch.status = "DRAFT"; state.rows = [structuredClone(row)];
-  await expect(page.getByRole("heading",{name:"test-catalog.pdf"})).toBeVisible({timeout:10000});
+  await expect(page.getByRole("heading",{name:"Review item"})).toBeVisible({timeout:10000});
   expect(counters.contextReads).toBeLessThanOrEqual(3);
 });
 
@@ -49,10 +49,10 @@ test("dirty review navigation asks to save and incomplete coverage blocks final 
   const productName = page.getByRole("textbox",{name:"Product name",exact:true});
   await productName.fill("Corrected bucket");
   await page.getByRole("button",{name:"Back to products",exact:true}).click();
-  await expect(page.getByRole("dialog",{name:"Unsaved row changes"})).toBeVisible();
-  await page.getByRole("button",{name:"Keep editing",exact:true}).click();
+  await expect(page.getByRole("dialog",{name:"Unsaved product changes"})).toBeVisible();
+  await page.getByRole("button",{name:"Keep Editing",exact:true}).click();
   await expect(productName).toHaveValue("Corrected bucket");
-  await page.getByRole("button",{name:"Save and next",exact:true}).click();
+  await page.getByRole("button",{name:/^Save (?:row|& Next)$/}).click();
   await page.getByRole("button",{name:/final import|commit batch|import saved/i}).filter({visible:true}).first().click();
   const dialog = page.getByRole("dialog",{name:"Confirm final import"});
   await expect(dialog).toBeVisible();
@@ -94,10 +94,10 @@ test("spreadsheet preview uploads multipart data and remains editable after a he
   expect(contentType).toContain("multipart/form-data; boundary=");
   await header.fill("50");
   await expect(dialog.getByRole("alert")).toContainText("selected header");
-  await expect(dialog.getByRole("button",{name:/Import File$/})).toBeDisabled();
+  await expect(dialog.getByRole("button",{name:"Review Spreadsheet"})).toBeDisabled();
   await header.fill("1");
   await expect(dialog.getByRole("alert")).toBeHidden();
-  await expect(dialog.getByRole("button",{name:/Import File$/})).toBeEnabled();
+  await expect(dialog.getByRole("button",{name:"Review Spreadsheet"})).toBeEnabled();
 });
 
 test("mobile row editing and unsaved-change confirmation stay usable", async ({page}) => {
@@ -107,7 +107,7 @@ test("mobile row editing and unsaved-change confirmation stay usable", async ({p
   await page.getByRole("button",{name:"Review Test bucket",exact:true}).click();
   await page.getByRole("textbox",{name:"Product name",exact:true}).fill("Mobile correction");
   await page.getByRole("button",{name:"Back to products",exact:true}).click();
-  const dialog = page.getByRole("dialog",{name:"Unsaved row changes"});
+  const dialog = page.getByRole("dialog",{name:"Unsaved product changes"});
   await expect(dialog).toBeVisible();
   await expect(dialog.getByRole("button",{name:"Keep editing"})).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);

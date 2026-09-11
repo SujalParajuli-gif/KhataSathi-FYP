@@ -5,15 +5,19 @@ import axios, {
   type InternalAxiosRequestConfig,
 } from "axios";
 import { API_BASE_URL } from "./baseUrl";
+import { ORDINARY_API_TIMEOUT_MS } from "./requestPolicy";
 
 type RateLimitRequestConfig = InternalAxiosRequestConfig & {
   _rateLimitRetried?: boolean;
   _routeAtRequest?: string;
 };
 
+export { ORDINARY_API_TIMEOUT_MS } from "./requestPolicy";
+
 const api = axios.create({
   baseURL: API_BASE_URL,
   withCredentials: true,
+  timeout: ORDINARY_API_TIMEOUT_MS,
   headers: {
     "Content-Type": "application/json",
   },

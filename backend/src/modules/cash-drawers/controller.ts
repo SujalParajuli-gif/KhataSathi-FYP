@@ -6,8 +6,13 @@ import {
   listCashDrawers,
   openCashDrawer,
 } from "./service";
+import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
 function sendCashDrawerError(res: Response, err: any) {
+  if (err instanceof FinancialTransactionConflictError) {
+    res.status(409).json({ error: err.message, code: err.code });
+    return;
+  }
   const message = String(err?.message || "Cash drawer operation failed");
   if (
     message.includes("must be") ||

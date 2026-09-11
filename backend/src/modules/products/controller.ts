@@ -784,6 +784,7 @@ export async function previewSpreadsheet(req: Request, res: Response) {
     });
     res.json({ sheetName: result.sheetName, sheets: result.sheets, headerRowNumber: result.headerRowNumber,
       headers: result.headers, sample: result.rows[0], totalRows: result.rows.length,
+      headerConfidence: result.headerConfidence || "HIGH",
       warnings: Object.values(result.rowWarnings).flat().slice(0, 10) });
   } catch (error) {
     if (error instanceof SpreadsheetImportError) res.status(400).json({ code: "INVALID_SPREADSHEET", error: error.message });
@@ -1015,10 +1016,13 @@ export async function importImage(req: Request, res: Response) {
 
 export async function controlImportProcessing(req: Request, res: Response) {
   try {
-    if (req.body?.action !== "cancel" && req.body?.action !== "retry") {
-      res.status(400).json({ code: "INVALID_ACTION", error: "Choose cancel or retry." }); return;
+    if (!["cancel", "retry", "reprocess_empty"].includes(req.body?.action)) {
+      res.status(400).json({ code: "INVALID_ACTION", error: "Choose cancel, retry, or reprocess empty pages." }); return;
     }
-    res.json(await controlImport(String(req.params.batchId), req.body.action));
+    const pageNumbers = Array.isArray(req.body?.pageNumbers)
+      ? req.body.pageNumbers.map(Number)
+      : [];
+    res.json(await controlImport(String(req.params.batchId), req.body.action, pageNumbers));
   } catch (error: any) { res.status(409).json({ code: "IMPORT_CONFLICT", error: error.message }); }
 }
 
@@ -1194,6 +1198,9 @@ export async function getImportBatchReview(req: Request, res: Response) {
           ? req.query.comparisonStatus
           : undefined,
       rowStatus: typeof req.query.rowStatus === "string" ? req.query.rowStatus : undefined,
+      reviewState: req.query.reviewState === "EDITED" || req.query.reviewState === "ATTENTION"
+        ? req.query.reviewState
+        : undefined,
     });
     res.json(result);
   } catch (err: any) {

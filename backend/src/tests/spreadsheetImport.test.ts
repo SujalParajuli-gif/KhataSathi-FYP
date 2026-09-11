@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import ExcelJS from "exceljs";
+import JSZip from "jszip";
 import {
   parseProductSpreadsheet,
   SpreadsheetImportError,
@@ -33,6 +34,22 @@ test("XLSX parser finds a table header below supplier title rows", async () => {
     PKG: "12 PIECE",
     MRP: "225",
   });
+});
+
+test("XLSX parser accepts standards-compliant prefixed SpreadsheetML elements", async () => {
+  const archive = await JSZip.loadAsync(await supplierWorkbookBuffer());
+  for (const [name, entry] of Object.entries(archive.files)) {
+    if (entry.dir || !/^xl\/.*\.xml$/i.test(name)) continue;
+    const xml = await entry.async("string");
+    if (!xml.includes('xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')) continue;
+    archive.file(name, xml
+      .replace('xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main"', 'xmlns:x="http://schemas.openxmlformats.org/spreadsheetml/2006/main"')
+      .replace(/<\/?[A-Za-z][\w.-]*(?=[\s>/])/g, (tag) => tag.startsWith("</") ? `</x:${tag.slice(2)}` : `<x:${tag.slice(1)}`));
+  }
+  const buffer = await archive.generateAsync({ type: "nodebuffer" });
+  const result = await parseProductSpreadsheet({ buffer, fileName: "prefixed.xlsx" });
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].Description, "Bucket 25 Ltr");
 });
 
 test("workbook signature wins when an XLSX file has a misleading CSV name", async () => {
@@ -107,6 +124,25 @@ test("duplicate headers cannot overwrite another real column", async () => {
 test("selected CSV header determines its delimiter even after a title", async () => {
   const result = await parseProductSpreadsheet({buffer:Buffer.from("Supplier catalogue\nName;Rate\nBucket;120"),fileName:"title.csv",headerRowNumber:2});
   assert.deepEqual(result.rows,[{Name:"Bucket",Rate:"120"}]);
+});
+
+test("CSV detection searches the bounded preamble for header evidence", async () => {
+  const result = await parseProductSpreadsheet({
+    buffer: Buffer.from("PRADIP SUPPLIER RATE LIST\n\nName;SKU;Rate\nBucket;BU-1;120"),
+    fileName: "title.csv",
+  });
+  assert.equal(result.headerRowNumber, 3);
+  assert.equal(result.headerConfidence, "HIGH");
+  assert.deepEqual(result.rows, [{ Name: "Bucket", SKU: "BU-1", Rate: "120" }]);
+});
+
+test("low-confidence CSV detection requires explicit preview selection", async () => {
+  const input = { buffer: Buffer.from("September catalogue\nBucket\nJug"), fileName: "names.csv" };
+  const preview = await parseProductSpreadsheet({ ...input, preview: true });
+  assert.equal(preview.headerConfidence, "LOW");
+  await assert.rejects(() => parseProductSpreadsheet(input), /Select the header row/);
+  const selected = await parseProductSpreadsheet({ ...input, headerRowNumber: 1 });
+  assert.deepEqual(selected.rows, [{ "September catalogue": "Bucket" }, { "September catalogue": "Jug" }]);
 });
 
 test("a workbook with only product names retains coming-soon candidates", async () => {

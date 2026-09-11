@@ -50,6 +50,9 @@ test-results/
 playwright-report/
 *.lcov
 
+# local QA and assistant task artifacts
+docs/qa/
+
 # caches
 .cache/
 .parcel-cache/

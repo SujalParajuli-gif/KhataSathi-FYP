@@ -35,6 +35,7 @@ import {
   resolveAcceptedDraftRequestApi,
   type BillingDraftRequest,
   type CashierPrivilege,
+  type CheckoutInvoiceInput,
   type DraftRequestReviewItem,
 } from "~/lib/api/endpoints";
 import { submitEsewaForm } from "~/lib/esewa";
@@ -48,6 +49,12 @@ const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog e
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
 const MANUAL_SEARCH_LIMIT = 12;
 const BILLING_VIEW_SIZE_STORAGE_KEY = "khatasathi:billingViewSize";
+function createCheckoutOperationKey() {
+  if (typeof crypto !== "undefined" && typeof crypto.randomUUID === "function") {
+    return crypto.randomUUID();
+  }
+  return `checkout-${Date.now()}-${Math.random().toString(36).slice(2, 12)}`;
+}
 const PRICE_OVERRIDE_REASONS = [
   "Wrong shelf/tag price",
   "Customer-specific agreed rate",
@@ -472,7 +479,19 @@ type StoredBillingCart = {
   activeDraftInvoiceId?: string | null;
   activeDraftRequestId?: string | null;
   selectedCustomerId?: string | null;
+  pendingCheckout?: PendingCheckoutSnapshot | null;
   savedAt: string;
+};
+
+type PendingCheckoutPayload = Omit<
+  CheckoutInvoiceInput,
+  "operationKey" | "overridePin"
+>;
+
+type PendingCheckoutSnapshot = {
+  operationKey: string;
+  payload: PendingCheckoutPayload;
+  activeDraftRequestId?: string | null;
 };
 
 const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
@@ -542,10 +561,22 @@ function readStoredBillingCart() {
       return null;
     }
 
+    const pendingCheckout =
+      parsed.pendingCheckout &&
+      /^[A-Za-z0-9_-]{16,120}$/.test(parsed.pendingCheckout.operationKey || "") &&
+      parsed.pendingCheckout.payload &&
+      Array.isArray(parsed.pendingCheckout.payload.items)
+        ? parsed.pendingCheckout
+        : null;
+
     return {
-      cart: normalizedCart,
+      cart: pendingCheckout
+        ? (pendingCheckout.payload.items.map((item) => ({ ...item })) as CartLine[])
+        : normalizedCart,
       activeDraftInvoiceId:
-        typeof parsed.activeDraftInvoiceId === "string"
+        typeof pendingCheckout?.payload.draftInvoiceId === "string"
+          ? pendingCheckout.payload.draftInvoiceId
+          : typeof parsed.activeDraftInvoiceId === "string"
           ? parsed.activeDraftInvoiceId
           : null,
       activeDraftRequestId:
@@ -553,9 +584,12 @@ function readStoredBillingCart() {
           ? parsed.activeDraftRequestId
           : null,
       selectedCustomerId:
-        typeof parsed.selectedCustomerId === "string"
+        typeof pendingCheckout?.payload.customerId === "string"
+          ? pendingCheckout.payload.customerId
+          : typeof parsed.selectedCustomerId === "string"
           ? parsed.selectedCustomerId
           : null,
+      pendingCheckout,
       savedAt:
         typeof parsed.savedAt === "string"
           ? parsed.savedAt
@@ -573,6 +607,7 @@ function writeStoredBillingCart(
   activeDraftInvoiceId?: string | null,
   selectedCustomerId?: string | null,
   activeDraftRequestId?: string | null,
+  pendingCheckout?: PendingCheckoutSnapshot | null,
 ) {
   if (typeof window === "undefined") return;
 
@@ -583,6 +618,7 @@ function writeStoredBillingCart(
       activeDraftInvoiceId: activeDraftInvoiceId || null,
       activeDraftRequestId: activeDraftRequestId || null,
       selectedCustomerId: selectedCustomerId || null,
+      pendingCheckout: pendingCheckout || null,
       savedAt: new Date().toISOString(),
     } satisfies StoredBillingCart),
   );
@@ -1429,6 +1465,8 @@ export default function BillingPage() {
     string | null
   >(null); // accepted staff request currently loaded into the billing cart
   const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
+  const [pendingCheckout, setPendingCheckout] =
+    useState<PendingCheckoutSnapshot | null>(null);
   const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
     string | null
   >(null);
@@ -1705,6 +1743,7 @@ export default function BillingPage() {
       setActiveDraftInvoiceId(storedCart.activeDraftInvoiceId || null);
       setActiveDraftRequestId(storedCart.activeDraftRequestId || null);
       setSelectedCustomerId(storedCart.selectedCustomerId || null);
+      setPendingCheckout(storedCart.pendingCheckout || null);
     }
     setCartPersistenceReady(true);
   }, []);
@@ -1802,7 +1841,7 @@ export default function BillingPage() {
   useEffect(() => {
     if (!cartPersistenceReady) return;
 
-    if (cart.length === 0) {
+    if (cart.length === 0 && !pendingCheckout) {
       clearStoredBillingCart();
       return;
     }
@@ -1812,12 +1851,14 @@ export default function BillingPage() {
       activeDraftInvoiceId,
       selectedCustomerId,
       activeDraftRequestId,
+      pendingCheckout,
     );
   }, [
     activeDraftInvoiceId,
     activeDraftRequestId,
     cart,
     cartPersistenceReady,
+    pendingCheckout,
     selectedCustomerId,
   ]);
 
@@ -2611,6 +2652,7 @@ export default function BillingPage() {
   function resetBill() {
     clearStoredBillingCart();
     setCart([]);
+    setPendingCheckout(null);
     setActiveDraftInvoiceId(null);
     setActiveDraftRequestId(null);
     setSelectedCustomerId(null);
@@ -3407,6 +3449,10 @@ export default function BillingPage() {
   }
 
   async function requestCheckoutConfirm() {
+    if (pendingCheckout) {
+      setPendingBillingConfirm("checkout");
+      return;
+    }
     if (!canConfirm) return;
     if (!validatePaymentBeforeConfirm()) return;
 
@@ -3432,8 +3478,8 @@ export default function BillingPage() {
 
   async function confirmCheckout() {
     // stopping here prevents double submits and blocks invalid partial payment states
-    if (!canConfirm) return;
-    if (!validatePaymentBeforeConfirm()) return;
+    if (!pendingCheckout && !canConfirm) return;
+    if (!pendingCheckout && !validatePaymentBeforeConfirm()) return;
     setPendingBillingConfirm(null);
     setSubmitting(true);
 
@@ -3476,9 +3522,7 @@ export default function BillingPage() {
               ]
             : [];
 
-      // sending everything to the atomic checkout endpoint so invoice creation, item insertion,
-      // finalization, stock deduction, and payment recording all happen inside one database transaction
-      const result = await checkoutInvoiceApi({
+      const currentPayload: PendingCheckoutPayload = {
         draftInvoiceId: activeDraftInvoiceId || undefined,
         customerId: selectedCustomerId || undefined,
         notes: invoiceNote.trim() || undefined,
@@ -3490,6 +3534,28 @@ export default function BillingPage() {
           overrideAuthorizationToken: line.overrideAuthorizationToken,
         })),
         payments: checkoutPayments,
+      };
+      const checkoutSnapshot = pendingCheckout || {
+        operationKey: createCheckoutOperationKey(),
+        payload: currentPayload,
+        activeDraftRequestId,
+      };
+
+      if (!pendingCheckout) {
+        setPendingCheckout(checkoutSnapshot);
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          checkoutSnapshot,
+        );
+      }
+
+      // The key and exact non-secret payload survive a lost response and reload.
+      const result = await checkoutInvoiceApi({
+        ...checkoutSnapshot.payload,
+        operationKey: checkoutSnapshot.operationKey,
       });
 
       const invoiceId = result?.invoice?.id;
@@ -3503,20 +3569,26 @@ export default function BillingPage() {
 
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
-        if (invoiceId && activeDraftRequestId) {
-          savePendingDraftCompletion(activeDraftRequestId, invoiceId);
+        if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
+          savePendingDraftCompletion(checkoutSnapshot.activeDraftRequestId, invoiceId);
         }
         submitEsewaForm(result.esewaPaymentIntent);
         return;
       }
 
-      if (invoiceId && activeDraftRequestId) {
+      if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
         try {
-          await completeDraftRequestApi(activeDraftRequestId, invoiceId);
+          await completeDraftRequestApi(
+            checkoutSnapshot.activeDraftRequestId,
+            invoiceId,
+          );
           clearPendingDraftCompletion();
           await loadIncomingRequests();
         } catch {
-          savePendingDraftCompletion(activeDraftRequestId, invoiceId);
+          savePendingDraftCompletion(
+            checkoutSnapshot.activeDraftRequestId,
+            invoiceId,
+          );
           showToast(
             "warning",
             "The invoice was finalized, but request status synchronization is pending and will retry automatically.",
@@ -3528,13 +3600,27 @@ export default function BillingPage() {
       setShowPaymentModal(false);
       setPriceOverrideDraftPin("");
       resetBill();
-      await loadParkedDrafts();
-
       setShowSuccess(true);
+      try {
+        await loadParkedDrafts();
+      } catch {
+        showToast(
+          "warning",
+          "Invoice created successfully; held bills could not refresh.",
+        );
+      }
     } catch (err: any) {
       console.error("Billing confirm error:", err);
       const responseData = err?.response?.data;
       if (responseData?.code === "STOCK_CONFLICT") {
+        setPendingCheckout(null);
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          null,
+        );
         const conflicts = normalizeApiStockConflicts(responseData.conflicts);
         if (conflicts.length > 0) {
           showStockConflicts(conflicts);
@@ -3547,7 +3633,14 @@ export default function BillingPage() {
         }
       }
 
-      setBillingError(responseData?.error || "Failed to create invoice.");
+      const responseStatus = Number(err?.response?.status || 0);
+      if (responseStatus >= 400 && responseStatus < 500) {
+        setPendingCheckout(null);
+      }
+      setBillingError(
+        responseData?.error ||
+          "Checkout outcome is unknown. Your bill is saved; retry to recover the same invoice.",
+      );
     } finally {
       // re-enabling billing actions whether checkout succeeded or failed
       setSubmitting(false);

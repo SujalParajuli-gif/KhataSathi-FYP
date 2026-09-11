@@ -1,6 +1,6 @@
 import {
     DraftRequestStatus,
-    type Prisma,
+    Prisma,
     type ProductImportRow,
 } from "@prisma/client";
 import prisma from "../../db/prisma";
@@ -56,6 +56,50 @@ export type ProductDeleteSafety = {
     recommendedAction: "PERMANENT_DELETE" | "SET_INACTIVE";
 };
 
+async function listStockFilteredProductIds(input: {
+    brand?: string;
+    category?: string;
+    isActive?: boolean;
+    stockStatus: "in" | "low" | "out";
+    defaultLowStockThreshold: number;
+    skip: number;
+    take: number;
+}) {
+    const clauses: Prisma.Sql[] = [];
+    if (input.brand) clauses.push(Prisma.sql`p.brandId = ${input.brand}`);
+    if (input.category) clauses.push(Prisma.sql`p.category = ${input.category}`);
+    if (input.isActive !== undefined) {
+        clauses.push(Prisma.sql`p.isActive = ${input.isActive}`);
+    }
+    const available = Prisma.sql`GREATEST(0, p.stock - GREATEST(0, p.reservedStock))`;
+    const threshold = Prisma.sql`CASE WHEN p.usesDefaultLowStockThreshold = 1 THEN ${input.defaultLowStockThreshold} ELSE p.lowStockThreshold END`;
+    clauses.push(
+        input.stockStatus === "out"
+            ? Prisma.sql`${available} <= 0`
+            : input.stockStatus === "in"
+              ? Prisma.sql`${available} > ${threshold}`
+              : Prisma.sql`${available} > 0 AND ${available} <= ${threshold}`,
+    );
+    const whereSql = Prisma.join(clauses, " AND ");
+    const [rawRows, rawCountRows] = await Promise.all([
+        prisma.$queryRaw(Prisma.sql`
+            SELECT p.id FROM Product p
+            WHERE ${whereSql}
+            ORDER BY p.createdAt DESC, p.id ASC
+            LIMIT ${input.take} OFFSET ${input.skip}
+        `),
+        prisma.$queryRaw(Prisma.sql`
+            SELECT COUNT(*) AS total FROM Product p WHERE ${whereSql}
+        `),
+    ]);
+    const rows = rawRows as Array<{ id: string }>;
+    const countRows = rawCountRows as Array<{ total: bigint | number }>;
+    return {
+        ids: rows.map((row) => row.id),
+        total: Number(countRows[0]?.total || 0),
+    };
+}
+
 // listing products with support for search, filtering, pagination, and low-stock-only mode
 // low stock mode requires special handling because we need to resolve each product's threshold
 // before we can determine if it is below the threshold
@@ -79,7 +123,6 @@ export async function listProducts(filters: ProductFilters) {
     if (brand) where.brandId = brand; // filtering by brand ID
     if (category) where.category = category; // filtering by category
     if (isActive !== undefined) where.isActive = isActive; // filtering by active status
-    if (stockStatus === "out" && !normalizedSearch) where.stock = { lte: 0 };
 
     const skip = (page - 1) * pageSize; // calculating how many records to skip for pagination
     const settings = await getBusinessSettings(); // fetching business settings to resolve thresholds
@@ -102,34 +145,40 @@ export async function listProducts(filters: ProductFilters) {
         };
     }
 
-    if (lowStockOnly || stockStatus === "low" || stockStatus === "in") {
-        // for threshold-aware stock filtering, we fetch all matching products first because we need to
-        // resolve each product's effective threshold (custom or default) before filtering
-        // this cannot be done in a single database query since thresholds are conditional
-        const allProducts = await prisma.product.findMany({
-            where,
-            include: { brand: { select: { id: true, name: true } } },
-            orderBy: { createdAt: "desc" },
+    if (lowStockOnly || stockStatus) {
+        const effectiveStockStatus = stockStatus || "low";
+        const filteredPage = await listStockFilteredProductIds({
+            brand,
+            category,
+            isActive,
+            stockStatus: effectiveStockStatus,
+            defaultLowStockThreshold: Number(settings.defaultLowStockThreshold || 0),
+            skip,
+            take: pageSize,
         });
-
-        // applying business thresholds so each product has its effective lowStockThreshold
-        const resolvedProducts = allProducts.map((product) =>
-            withAvailableStock(applyBusinessThresholds(product, settings)),
-        );
-
-        const filtered =
-            stockStatus === "in"
-                ? resolvedProducts.filter((p) => p.availableStock > p.lowStockThreshold)
-                : resolvedProducts.filter((p) => p.availableStock > 0 && p.availableStock <= p.lowStockThreshold);
-        const total = filtered.length;
-
-        const paged = filtered.slice(skip, skip + pageSize); // applying manual pagination on the filtered results
+        const pageProducts = (filteredPage.ids.length
+          ? await prisma.product.findMany({
+            where: { id: { in: filteredPage.ids } },
+            include: { brand: { select: { id: true, name: true } } },
+          })
+          : []) as Array<
+            Prisma.ProductGetPayload<{
+              include: { brand: { select: { id: true; name: true } } };
+            }>
+          >;
+        const productById = new Map(pageProducts.map((product) => [product.id, product]));
+        const resolvedProducts = filteredPage.ids.flatMap((id) => {
+          const product = productById.get(id);
+          return product
+            ? [withAvailableStock(applyBusinessThresholds(product, settings))]
+            : [];
+        });
 
         return {
             products: includeDraftReservations
-                ? await withPendingDraftQuantities(paged)
-                : paged,
-            total,
+                ? await withPendingDraftQuantities(resolvedProducts)
+                : resolvedProducts,
+            total: filteredPage.total,
             page,
             pageSize,
         };
@@ -147,8 +196,8 @@ export async function listProducts(filters: ProductFilters) {
         ]);
 
         const resolvedProducts = products.map((product) =>
-                withAvailableStock(applyBusinessThresholds(product, settings)),
-            ); // resolving thresholds on each product
+            withAvailableStock(applyBusinessThresholds(product, settings)),
+        );
 
         return {
             products: includeDraftReservations

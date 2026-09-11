@@ -225,6 +225,7 @@ model User {
   productSearchQueries        ProductSearchQueryLog[]
   productSearchSelections     ProductSearchSelection[]
   authSessions                AuthSession[]
+  checkoutOperations          CheckoutOperation[]
 
   @@index([role, isActive, lastPresenceAt])
 }
@@ -514,8 +515,25 @@ model Invoice {
   creditNoteAsReplacement CreditNote?          @relation("CreditNoteReplacementInvoice")
   returnRequests          ReturnRequest[]
   completedDraftRequest   BillingDraftRequest?
+  checkoutOperation       CheckoutOperation?
 
   @@index([status, parkedAt])
+}
+
+model CheckoutOperation {
+  id            String   @id @default(cuid())
+  operationKey  String   @unique @db.VarChar(120)
+  actorId       String
+  payloadHash   String   @db.Char(64)
+  invoiceId     String?  @unique
+  responseJson  Json?
+  createdAt     DateTime @default(now())
+  completedAt   DateTime?
+
+  actor   User     @relation(fields: [actorId], references: [id])
+  invoice Invoice? @relation(fields: [invoiceId], references: [id])
+
+  @@index([actorId, createdAt])
 }
 
 model InvoiceSequence {

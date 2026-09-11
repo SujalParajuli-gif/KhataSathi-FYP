@@ -1,4 +1,9 @@
 import prisma from "../../db/prisma";
+import {
+  lockCashDrawerForUpdate,
+  lockCashierForUpdate,
+  runFinancialTransaction,
+} from "../../lib/transactionLocks";
 
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
@@ -82,7 +87,7 @@ export async function getCurrentCashDrawer(cashierId: string) {
   });
   if (!drawer) return null;
 
-  return prisma.$transaction((tx) => summarizeDrawerTx(tx, drawer));
+  return runFinancialTransaction(prisma, (tx) => summarizeDrawerTx(tx, drawer));
 }
 
 export async function listCashDrawers(cashierId: string, role: string) {
@@ -111,7 +116,8 @@ export async function openCashDrawer(
   const normalizedFloat = normalizeAmount(openingFloat, "Opening float", true);
   const normalizedNote = normalizeNote(note);
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockCashierForUpdate(tx, cashierId);
     const existing = await tx.cashDrawer.findFirst({
       where: { cashierId, status: "OPEN" },
     });
@@ -153,7 +159,8 @@ export async function addCashDrawerEvent(
   const normalizedAmount = normalizeAmount(amount, "Amount");
   const normalizedNote = normalizeNote(note);
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockCashDrawerForUpdate(tx, drawerId);
     const drawer = await tx.cashDrawer.findUnique({ where: { id: drawerId } });
     if (!drawer) throw new Error("Cash drawer not found");
     if (drawer.status !== "OPEN") throw new Error("Cash drawer is already closed");
@@ -185,7 +192,8 @@ export async function closeCashDrawer(
   const normalizedActual = normalizeAmount(actualTotal, "Actual cash total", true);
   const normalizedNote = normalizeNote(note);
 
-  return prisma.$transaction(async (tx) => {
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockCashDrawerForUpdate(tx, drawerId);
     const drawer = await tx.cashDrawer.findUnique({ where: { id: drawerId } });
     if (!drawer) throw new Error("Cash drawer not found");
     if (drawer.status !== "OPEN") throw new Error("Cash drawer is already closed");

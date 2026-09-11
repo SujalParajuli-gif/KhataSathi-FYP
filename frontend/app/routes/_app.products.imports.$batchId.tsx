@@ -6,6 +6,7 @@ import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import Switch from "~/components/ui/Switch";
 import { ModalFrame } from "~/components/ui/Modal";
+import { ImportProcessingWidget } from "~/components/blocks/products/ImportProcessingWidget";
 import {
   fetchProductImportSourceBlobApi,
   fetchProductImportSourcePageBlobApi,
@@ -70,19 +71,26 @@ type BulkEditPreview = {
   priceConflicts: number;
 };
 
-const FILTERS: Array<{
-  value: "ALL" | NonNullable<ProductImportRow["comparisonStatus"]>;
+type ReviewFilter = "ALL" | "EDITED" | "ATTENTION" | NonNullable<ProductImportRow["comparisonStatus"]>;
+
+const COMPARISON_FILTERS: Array<{
+  value: NonNullable<ProductImportRow["comparisonStatus"]>;
   label: string;
 }> = [
-  { value: "ALL", label: "All" },
-  { value: "READY_NEW", label: "New" },
-  { value: "MATCHED_WITH_CHANGES", label: "Changed" },
-  { value: "EXACT_DUPLICATE", label: "Exact matches" },
-  { value: "IDENTIFIER_CONFLICT", label: "Conflicts" },
-  { value: "IN_FILE_DUPLICATE", label: "File duplicates" },
-  { value: "FAILED", label: "Failed" },
-  { value: "NEEDS_REVIEW", label: "Needs attention" },
-];
+    { value: "READY_NEW", label: "New" },
+    { value: "MATCHED_WITH_CHANGES", label: "Catalog updates" },
+    { value: "EXACT_DUPLICATE", label: "Exact matches" },
+    { value: "IDENTIFIER_CONFLICT", label: "Conflicts" },
+    { value: "IN_FILE_DUPLICATE", label: "File duplicates" },
+    { value: "FAILED", label: "Failed" },
+    { value: "NEEDS_REVIEW", label: "Needs attention" },
+  ];
+
+function reviewFilterParams(filter: ReviewFilter) {
+  if (filter === "EDITED" || filter === "ATTENTION") return { reviewState: filter } as const;
+  if (filter === "ALL") return {};
+  return { comparisonStatus: filter };
+}
 
 function rowName(row: ProductImportRow) {
   const parsed = parsedImportRow(row);
@@ -267,7 +275,7 @@ export default function ProductImportReviewPage() {
   const [pageSize, setPageSize] = useState(25);
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<(typeof FILTERS)[number]["value"]>("ALL");
+  const [filter, setFilter] = useState<ReviewFilter>("ALL");
   const [activeRowId, setActiveRowId] = useState("");
   const [draft, setDraft] = useState<ImportReviewDraft | null>(null);
   const [savedFingerprint, setSavedFingerprint] = useState("");
@@ -398,7 +406,7 @@ export default function ProductImportReviewPage() {
         page,
         pageSize,
         search: search || undefined,
-        comparisonStatus: filter === "ALL" ? undefined : filter,
+        ...reviewFilterParams(filter),
       }, { signal });
       if (signal?.aborted || requestId !== reviewRequestIdRef.current) return;
       setReview(result);
@@ -458,14 +466,6 @@ export default function ProductImportReviewPage() {
       });
     return () => { active = false; };
   }, [batchId, activeRowId]);
-
-  useEffect(() => {
-    if (!activeRowId) return;
-    const targetElement = document.getElementById(`source-row-${activeRowId}`);
-    if (targetElement) {
-      targetElement.scrollIntoView({ behavior: "smooth", block: "center", inline: "nearest" });
-    }
-  }, [activeRowId, sourceContext]);
 
   const sourceMimeType = review?.batch.source?.mimeType || "";
   const sourcePageNumber = Number(activeRow?.sourceLocator?.pageNumber || 1);
@@ -543,9 +543,9 @@ export default function ProductImportReviewPage() {
     if (!batchId) return;
     try { setCommitUnknown(Boolean(sessionStorage.getItem(`import-commit:${batchId}`))); } catch { /* Optional browser storage. */ }
   }, [batchId]);
-  async function changeProcessing(action: "cancel" | "retry") {
+  async function changeProcessing(action: "cancel" | "retry" | "reprocess_empty", pageNumbers?: number[]) {
     if (!batchId) return;
-    try { setProcessingAction(true); await controlProductImportApi(batchId, action); await loadReview(); }
+    try { setProcessingAction(true); await controlProductImportApi(batchId, action, pageNumbers); await loadReview(); }
     catch (error: any) { showToast("danger", error?.response?.data?.error || "The processing request could not be completed."); }
     finally { setProcessingAction(false); }
   }
@@ -574,11 +574,67 @@ export default function ProductImportReviewPage() {
       sourceRows.some((row) => sourceCellHasValue(cellsFromRow(row)[key])),
     );
   }, [sourceRows]);
-  const sourceTableWidth = useMemo(
-    () => 56 + sourceHeaders.reduce((total, header) => total + sourcePreviewColumnWidth(header), 0),
-    [sourceHeaders],
-  );
   const activeSourceRow = sourceRows.find((row) => row.id === activeRowId) || null;
+  const productNameHeader = useMemo(() => {
+    // 1. Exact high-confidence matches
+    const explicit = sourceHeaders.find((h) => {
+      const label = readableSourceHeader(h).toLowerCase();
+      return /^(product\s*name|item\s*name|product|item|description|particulars?|name|product\s*title|title|item\s*desc(ription)?)$/i.test(label);
+    });
+    if (explicit) return explicit;
+
+    // 2. Broader pattern match (excluding other common catalog columns like SKU, Brand, Category, Price, Stock, etc.)
+    const broad = sourceHeaders.find((h) => {
+      const label = readableSourceHeader(h).toLowerCase();
+      if (/category|brand|vendor|supplier|code|sku|barcode|price|rate|mrp|cost|amount|qty|quantity|unit|pack|size|weight|tax|vat|discount|serial|s\.?n\.?/i.test(label)) {
+        return false;
+      }
+      return /product|item|desc|particular|title|name/i.test(label);
+    });
+    if (broad) return broad;
+
+    // 3. Fallback: match by active row's actual name content
+    if (activeSourceRow && activeRow) {
+      const cells = cellsFromRow(activeSourceRow);
+      const parsed = parsedImportRow(activeRow);
+      const rowNameVal = String(parsed.name || draft?.name || rowName(activeRow) || "").trim().toLowerCase();
+      if (rowNameVal) {
+        const contentMatch = sourceHeaders.find((h) => {
+          const cellVal = String(cells[h] ?? "").trim().toLowerCase();
+          return cellVal && (cellVal === rowNameVal || (cellVal.length > 3 && rowNameVal.includes(cellVal)));
+        });
+        if (contentMatch) return contentMatch;
+      }
+    }
+
+    return null;
+  }, [sourceHeaders, activeSourceRow, activeRow, draft?.name]);
+  const displaySourceHeaders = useMemo(() => {
+    if (!sourceHeaders.length) return [];
+    if (!productNameHeader) return sourceHeaders;
+    const remaining = sourceHeaders.filter((h) => h !== productNameHeader);
+    return [productNameHeader, ...remaining];
+  }, [sourceHeaders, productNameHeader]);
+
+  useEffect(() => {
+    if (!activeRowId) return;
+    const timer = setTimeout(() => {
+      const nameCell = document.getElementById(`source-cell-name-${activeRowId}`);
+      if (nameCell) {
+        nameCell.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+      } else {
+        const targetElement = document.getElementById(`source-row-${activeRowId}`);
+        if (targetElement) {
+          targetElement.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+        }
+      }
+    }, 60);
+    return () => clearTimeout(timer);
+  }, [activeRowId, sourceContext, productNameHeader]);
+  const sourceTableWidth = useMemo(
+    () => 56 + displaySourceHeaders.reduce((total, header) => total + sourcePreviewColumnWidth(header), 0),
+    [displaySourceHeaders],
+  );
   const activeSourceEntries = activeSourceRow
     ? sourceHeaders
       .map((header) => [header, cellsFromRow(activeSourceRow)[header]] as const)
@@ -731,7 +787,7 @@ export default function ProductImportReviewPage() {
         page: index + 1,
         pageSize: 100,
         search: search || undefined,
-        comparisonStatus: filter === "ALL" ? undefined : filter,
+        ...reviewFilterParams(filter),
       }),
     ));
     const matchingRows = pages.flatMap((result) => result.rows);
@@ -764,6 +820,7 @@ export default function ProductImportReviewPage() {
   function restoreResolution(row: ProductImportRow) {
     if (row.comparisonStatus === "READY_NEW") return "CREATE_NEW" as const;
     if (row.comparisonStatus === "EXACT_DUPLICATE") return "KEEP_EXISTING" as const;
+    if (row.comparisonStatus === "MATCHED_WITH_CHANGES") return "UPDATE_MATCHED" as const;
     return null;
   }
 
@@ -849,38 +906,40 @@ export default function ProductImportReviewPage() {
     }
   }
 
-  async function saveDraft() {
-    if (!draft || !review || !activeRow) return;
-    if (draft.resolution !== "IGNORE" && !draft.name.trim()) {
+  async function saveDraft(overrideDraft?: Partial<ImportReviewDraft>): Promise<boolean> {
+    const activeDraft = overrideDraft && draft ? { ...draft, ...overrideDraft } : draft;
+    if (!activeDraft || !review || !activeRow) return false;
+    if (activeDraft.resolution !== "IGNORE" && !activeDraft.name.trim()) {
       showToast("danger", "Product name is required.");
-      return;
+      return false;
     }
-    if (draft.resolution !== "IGNORE" && draft.availabilityStatus !== "COMING_SOON" && ![draft.ratePerPiece, draft.retailPrice, draft.wholesalePrice].some((price) => Number(price) > 0)) {
+    if (activeDraft.resolution !== "IGNORE" && activeDraft.availabilityStatus !== "COMING_SOON" && ![activeDraft.ratePerPiece, activeDraft.retailPrice, activeDraft.wholesalePrice].some((price) => Number(price) > 0)) {
       showToast("danger", "Enter an announced price or mark this product as Coming soon.");
-      return;
+      return false;
     }
     const before = draftPayload(importRowToDraft(review.batch, activeRow));
-    const after = draftPayload(draft);
+    const after = draftPayload(activeDraft);
     const changedFields = describeReviewPayloadChanges(before, after);
     try {
       setSaving(true);
-      if (draft.resolution === "IGNORE") {
-        const result = await setProductImportRowResolutionApi(review.batch.id, draft.rowId, "IGNORE");
+      if (activeDraft.resolution === "IGNORE") {
+        const result = await setProductImportRowResolutionApi(review.batch.id, activeDraft.rowId, "IGNORE");
         setReview((current) => current ? {
           ...current,
           rows: current.rows.map((row) => row.id === result.row.id ? result.row : row),
         } : current);
-        setSavedFingerprint(JSON.stringify(draftPayload(draft)));
+        if (overrideDraft) setDraft(activeDraft);
+        setSavedFingerprint(JSON.stringify(draftPayload(activeDraft)));
         recordReviewHistory(
-          `${draft.resolution === "IGNORE" ? "Ignored" : "Updated"} “${draft.name}”${changedFields.length ? ` — ${changedFields.join(", ")}` : ""}`,
+          `Ignored “${activeDraft.name}”${changedFields.length ? ` — ${changedFields.join(", ")}` : ""}`,
           [before],
           [after],
         );
-        showToast("success", `Row ${draft.rowNumber} ignored.`);
+        showToast("success", `Row ${activeDraft.rowNumber} ignored.`);
         await loadReview();
         return true;
       }
-      const result = await saveReviewedProductImportRowsApi(review.batch.id, [draftPayload(draft)]);
+      const result = await saveReviewedProductImportRowsApi(review.batch.id, [draftPayload(activeDraft)]);
       const saved = result.rows[0];
       if (saved) {
         setReview((current) => current ? {
@@ -888,20 +947,42 @@ export default function ProductImportReviewPage() {
           rows: current.rows.map((row) => row.id === saved.id ? saved : row),
         } : current);
       }
-      setSavedFingerprint(JSON.stringify(draftPayload(draft)));
+      if (overrideDraft) setDraft(activeDraft);
+      setSavedFingerprint(JSON.stringify(draftPayload(activeDraft)));
       recordReviewHistory(
-        `Updated “${draft.name}”${changedFields.length ? ` — ${changedFields.join(", ")}` : ""}`,
+        `Updated “${activeDraft.name}”${changedFields.length ? ` — ${changedFields.join(", ")}` : ""}`,
         [before],
         [after],
       );
-      showToast("success", `Row ${draft.rowNumber} saved.`);
+      showToast("success", `Row ${activeDraft.rowNumber} saved.`);
       await loadReview();
       return true;
     } catch (saveError: any) {
       showToast("danger", saveError?.response?.data?.error || saveError?.message || "Row could not be saved.");
+      return false;
     } finally {
       setSaving(false);
     }
+  }
+
+  function advanceToNextRow() {
+    if (!review || !activeRow) return;
+    const index = review.rows.findIndex((row) => row.id === activeRow.id);
+    const next = review.rows[index + 1];
+    if (next) {
+      setActiveRowId(next.id);
+    } else if (review.pagination.page < review.pagination.totalPages) {
+      pendingPageEdge.current = "first";
+      setPage((value) => value + 1);
+    }
+  }
+
+  async function saveAndAdvance(overrideDraft?: Partial<ImportReviewDraft>) {
+    const success = await saveDraft(overrideDraft);
+    if (success) {
+      advanceToNextRow();
+    }
+    return success;
   }
 
   async function downloadSource() {
@@ -1363,6 +1444,9 @@ export default function ProductImportReviewPage() {
       } else if (event.key === "ArrowUp" || event.key === "k") {
         event.preventDefault();
         moveActiveRow(-1);
+      } else if ((event.ctrlKey || event.metaKey) && event.key === "Enter") {
+        event.preventDefault();
+        void saveAndAdvance();
       }
     }
 
@@ -1391,12 +1475,12 @@ export default function ProductImportReviewPage() {
     const isSpreadsheet = ["CSV", "XLSX"].includes(review?.batch.sourceType || "");
     return (
       <section className={`${mobilePanel === "source" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-        <div className="flex min-h-[52px] shrink-0 items-center justify-between gap-3 border-b border-[#E2E4E8] bg-white px-3.5 py-2 sm:px-4">
-          <div className="min-w-0">
-            <div className="flex items-center gap-2">
-              <h2 className="text-[13px] font-extrabold text-[#11120d]">Source document</h2>
+        <div className="flex min-h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[#E2E4E8] bg-white px-3 py-2 sm:px-3.5">
+          <div className="min-w-0 shrink-0">
+            <div className="flex items-center gap-1.5">
+              <h2 className="text-[13px] font-extrabold text-[#11120d] whitespace-nowrap">Source document</h2>
               {isSpreadsheet && activeRow ? (
-                <span className="rounded-full border border-[#D8DBE0] bg-[#F1F3F5] px-2 py-0.5 text-[9.5px] font-extrabold text-[#11120d]">
+                <span className="shrink-0 whitespace-nowrap rounded-full border border-[#D8DBE0] bg-[#F1F3F5] px-2 py-0.5 text-[9.5px] font-extrabold text-[#11120d]">
                   Row {activeRow.sourceLocator?.rowNumber || activeRow.rowNumber}
                 </span>
               ) : null}
@@ -1406,20 +1490,41 @@ export default function ProductImportReviewPage() {
             </p>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2">
+          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            {productNameHeader ? (
+              <button
+                type="button"
+                onClick={() => {
+                  const nameCell = document.getElementById(`source-cell-name-${activeRowId}`);
+                  if (nameCell) {
+                    nameCell.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
+                  } else {
+                    const rowElem = document.getElementById(`source-row-${activeRowId}`);
+                    if (rowElem) {
+                      rowElem.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
+                    }
+                  }
+                }}
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-amber-300/80 bg-amber-50/70 px-2 sm:px-2.5 text-[10.5px] sm:text-[11px] font-bold text-amber-900 transition hover:bg-amber-100 shadow-sm shrink-0 whitespace-nowrap"
+                title="Scroll table directly to the Product Name column"
+              >
+                <Icon name="center_focus_strong" sizePx={14} className="text-amber-600 shrink-0" />
+                <span>Snap to Name</span>
+              </button>
+            ) : null}
             {activeSourceEntries.length > 0 ? (
               <button
                 type="button"
                 onClick={() => setSourceDetailsOpen(true)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6]"
+                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-2 sm:px-2.5 text-[10.5px] sm:text-[11px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6] shrink-0 whitespace-nowrap"
                 title="View all extracted raw values for this row"
               >
-                <Icon name="visibility" sizePx={15} />
-                <span>Row details ({activeSourceEntries.length})</span>
+                <Icon name="visibility" sizePx={14} className="shrink-0" />
+                <span>Details ({activeSourceEntries.length})</span>
               </button>
             ) : null}
             {isSpreadsheet && sourceRows.length > 0 ? (
-              <span className="hidden rounded-full border border-[#D8DBE0] bg-[#F7F8FA] px-2 py-0.5 text-[9px] font-extrabold text-[#5F6570] sm:inline-block">
+              <span className="hidden rounded-full border border-[#D8DBE0] bg-[#F7F8FA] px-2 py-0.5 text-[9px] font-extrabold text-[#5F6570] 2xl:inline-block shrink-0 whitespace-nowrap">
                 {sourceRows.length} rows
               </span>
             ) : null}
@@ -1428,7 +1533,7 @@ export default function ProductImportReviewPage() {
 
         <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#F7F8FA] p-2 sm:p-2.5">
           {isSpreadsheet ? (
-            sourceHeaders.length > 0 ? (
+            displaySourceHeaders.length > 0 ? (
               <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[#D8DBE0] bg-white">
                 <div className="min-h-0 flex-1 overflow-auto overscroll-contain [scrollbar-gutter:stable]">
                   <table
@@ -1438,17 +1543,22 @@ export default function ProductImportReviewPage() {
                   >
                     <colgroup>
                       <col style={{ width: "56px" }} />
-                      {sourceHeaders.map((header) => (
+                      {displaySourceHeaders.map((header) => (
                         <col key={header} style={{ width: `${sourcePreviewColumnWidth(header)}px` }} />
                       ))}
                     </colgroup>
                     <thead className="sticky top-0 z-10 bg-[#EFF2F5] text-[#4B5563]">
                       <tr>
                         <th scope="col" className="sticky left-0 z-20 overflow-hidden border-b border-r border-[#D8DBE0] bg-[#EFF2F5] px-2.5 py-2 font-extrabold">Row</th>
-                        {sourceHeaders.map((header) => (
-                          <th key={header} scope="col" className="overflow-hidden border-b border-r border-[#D8DBE0] px-2.5 py-2 font-extrabold">
-                            <div className="truncate" title={readableSourceHeader(header)}>
-                              {readableSourceHeader(header)}
+                        {displaySourceHeaders.map((header) => (
+                          <th
+                            key={header}
+                            scope="col"
+                            className={`overflow-hidden border-b border-r border-[#D8DBE0] px-2.5 py-2 font-extrabold ${header === productNameHeader ? "bg-amber-100/60 text-amber-950 border-b-amber-300" : ""}`}
+                          >
+                            <div className="truncate flex items-center gap-1" title={readableSourceHeader(header)}>
+                              {header === productNameHeader ? <Icon name="star" sizePx={12} className="text-amber-600 shrink-0" /> : null}
+                              <span>{readableSourceHeader(header)}</span>
                             </div>
                           </th>
                         ))}
@@ -1472,10 +1582,16 @@ export default function ProductImportReviewPage() {
                             <td className={`sticky left-0 z-[5] overflow-hidden whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-extrabold ${selected ? "bg-amber-100 text-amber-950" : "bg-white text-[#374151]"}`}>
                               {row.sourceLocator?.rowNumber || row.rowNumber}
                             </td>
-                            {sourceHeaders.map((header) => {
+                            {displaySourceHeaders.map((header) => {
                               const value = cells[header];
+                              const isName = header === productNameHeader;
                               return (
-                                <td key={header} className={`overflow-hidden border-b border-r border-[#E2E4E8] px-2.5 py-2 font-semibold ${sourceCellHasValue(value) ? (selected ? "text-amber-950 font-bold" : "text-[#374151]") : "text-[#C4C8CE]"}`}>
+                                <td
+                                  key={header}
+                                  id={isName && selected ? `source-cell-name-${row.id}` : undefined}
+                                  className={`overflow-hidden border-b border-r border-[#E2E4E8] px-2.5 py-2 font-semibold ${isName ? (selected ? "bg-amber-200/70 text-amber-950 font-bold" : "bg-amber-50/30 font-semibold text-[#11120d]") : ""
+                                    } ${sourceCellHasValue(value) ? (selected ? "text-amber-950 font-bold" : "text-[#374151]") : "text-[#C4C8CE]"}`}
+                                >
                                   <div className="truncate" title={sourceCellHasValue(value) ? String(value) : undefined}>
                                     {sourceCellHasValue(value) ? String(value) : "—"}
                                   </div>
@@ -1542,8 +1658,8 @@ export default function ProductImportReviewPage() {
     const canMoveNext = Boolean(review && filteredPosition < review.pagination.total);
     return (
       <section className={`${mobilePanel === "editor" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-        <div className="shrink-0 border-b border-[#E2E4E8] bg-white px-3.5 py-3">
-          <div className="flex items-center justify-between gap-3">
+        <div className="shrink-0 border-b border-[#E2E4E8] bg-white px-3 sm:px-3.5 py-2.5 sm:py-3">
+          <div className="flex items-center justify-between gap-2 sm:gap-3">
             <div className="flex min-w-0 items-center gap-2">
               <button
                 type="button"
@@ -1555,36 +1671,57 @@ export default function ProductImportReviewPage() {
                 <Icon name="arrow_back" sizePx={16} />
               </button>
               <div className="min-w-0">
-                <div className="flex items-center gap-2">
-                  <h2 className="truncate text-[14px] font-extrabold text-[#11120d]">Review item</h2>
-                  <span className={`rounded-full border px-2.5 py-0.5 text-[9px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
+                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap sm:flex-nowrap">
+                  <h2 className="text-[13.5px] sm:text-[14px] font-extrabold text-[#11120d] whitespace-nowrap">Review item</h2>
+                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[8.5px] sm:text-[9px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
                     {comparisonLabel(draft.comparisonStatus)}
                   </span>
+                  {dirty ? (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[8.5px] font-bold text-amber-800">
+                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                      Unsaved
+                    </span>
+                  ) : activeRow.reviewChanges?.length ? (
+                    <span
+                      className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[8.5px] font-bold text-amber-800"
+                      title={`Changed from extraction: ${activeRow.reviewChanges.join(", ")}`}
+                    >
+                      <Icon name="edit" sizePx={10} />
+                      Edited
+                    </span>
+                  ) : (
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[8.5px] font-bold text-emerald-800">
+                      <Icon name="check" sizePx={10} className="text-emerald-600" />
+                      Saved
+                    </span>
+                  )}
                 </div>
-                <p className="mt-0.5 truncate text-[11px] font-semibold text-[#7A7F89]">
+                <p className="mt-0.5 truncate text-[10.5px] sm:text-[11px] font-semibold text-[#7A7F89]">
                   {filteredPosition.toLocaleString()} of {review?.pagination.total.toLocaleString() || 0} · source row {draft.sourceLocator?.rowNumber || draft.rowNumber}
                 </p>
               </div>
             </div>
-            <div className="flex shrink-0 items-center gap-1.5">
+            <div className="flex shrink-0 items-center gap-1">
               <button
                 type="button"
                 onClick={() => moveActiveRow(-1)}
                 disabled={!canMovePrevious}
-                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
+                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2 sm:px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
                 aria-label="Previous product row"
+                title="Previous product row"
               >
                 <Icon name="chevron_left" sizePx={16} />
-                <span>Prev</span>
+                <span className="hidden sm:inline">Prev</span>
               </button>
               <button
                 type="button"
                 onClick={() => moveActiveRow(1)}
                 disabled={!canMoveNext}
-                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
+                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2 sm:px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
                 aria-label="Next product row"
+                title="Next product row"
               >
-                <span>Next</span>
+                <span className="hidden sm:inline">Next</span>
                 <Icon name="chevron_right" sizePx={16} />
               </button>
             </div>
@@ -1597,13 +1734,13 @@ export default function ProductImportReviewPage() {
               <Icon name="sell" sizePx={16} className="text-[#11120d]" />
               Basic information
             </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <div className="col-span-2">
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <div className="sm:col-span-3">
                 <Field label="Product name">
                   <input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} className={inputClass} />
                 </Field>
               </div>
-              <div className="col-span-2">
+              <div className="sm:col-span-3">
                 <Field label="SKU">
                   <input value={draft.sku} onChange={(event) => updateDraft("sku", event.target.value)} className={inputClass} />
                 </Field>
@@ -1618,7 +1755,7 @@ export default function ProductImportReviewPage() {
                   <CreatableCombobox value={draft.category} onChange={(value) => { updateDraft("category", value); updateDraft("categoryGroup", value); }} options={categoryOptions} placeholder="Search or enter category" ariaLabel="Product category" selectOnFocus compact showCreateHelp={false} />
                 </Field>
               </div>
-              <div className="col-span-2">
+              <div>
                 <Field label="Vendor source">
                   <CreatableCombobox value={draft.vendorSource || ""} onChange={(value) => updateDraft("vendorSource", value)} options={supplierOptions} placeholder="Search or enter supplier" ariaLabel="Vendor source" selectOnFocus compact showCreateHelp={false} />
                 </Field>
@@ -1699,41 +1836,175 @@ export default function ProductImportReviewPage() {
           ) : null}
 
           {draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
-            <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-              <div className="mb-2 text-[11px] font-extrabold text-[#11120d]">Existing-product decision</div>
-              <div className="grid grid-cols-2 gap-2">
-                <button type="button" onClick={() => updateDraft("resolution", "KEEP_EXISTING")} className={`h-10 rounded-[9px] border text-[11px] font-extrabold transition ${draft.resolution === "KEEP_EXISTING" ? "border-slate-800 bg-slate-800 text-white" : "border-[#D4D7DC] bg-white hover:bg-slate-50"}`}>Keep existing</button>
-                <button type="button" onClick={() => updateDraft("resolution", "UPDATE_MATCHED")} className={`h-10 rounded-[9px] border text-[11px] font-extrabold transition ${draft.resolution === "UPDATE_MATCHED" ? "border-[#11120d] bg-[#11120d] text-white" : "border-[#CFCFD3] bg-white text-[#11120d] hover:bg-[#F3F4F6]"}`}>Apply displayed changes</button>
+            <div className="rounded-[12px] border border-amber-300/80 bg-amber-50/60 p-3">
+              <div className="flex items-center justify-between gap-2">
+                <div className="flex items-center gap-1.5">
+                  <Icon name="published_with_changes" sizePx={16} className="text-amber-900" />
+                  <span className="text-[11.5px] font-extrabold text-amber-950">Resolution Decision</span>
+                </div>
+                <span className="rounded-full bg-amber-100/90 border border-amber-200 px-2 py-0.5 text-[9px] font-bold text-amber-900">
+                  {draft.resolution === "KEEP_EXISTING" ? "Keeping store data" : draft.resolution === "IGNORE" ? "Row ignored" : "Updating with incoming"}
+                </span>
+              </div>
+              <p className="mt-1 text-[10.5px] font-medium text-amber-900/80">
+                Differences found between spreadsheet and existing catalog item. Select your resolution:
+              </p>
+
+              <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
+                <button
+                  type="button"
+                  onClick={() => updateDraft("resolution", "KEEP_EXISTING")}
+                  className={`group relative flex flex-col items-start gap-1 rounded-[9px] border p-2.5 text-left transition ${draft.resolution === "KEEP_EXISTING"
+                      ? "border-slate-800 bg-white ring-2 ring-slate-800/10 shadow-sm"
+                      : "border-slate-200 bg-white/80 hover:bg-white hover:border-slate-300"
+                    }`}
+                >
+                  <div className="flex w-full items-center justify-between">
+                    <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-[#11120d]">
+                      <Icon name={draft.resolution === "KEEP_EXISTING" ? "radio_button_checked" : "radio_button_unchecked"} sizePx={15} className={draft.resolution === "KEEP_EXISTING" ? "text-slate-900" : "text-slate-400"} />
+                      Keep existing
+                    </span>
+                    {draft.resolution === "KEEP_EXISTING" ? (
+                      <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[8.5px] font-extrabold text-slate-700">Selected</span>
+                    ) : null}
+                  </div>
+                  <span className="text-[9.5px] font-semibold text-slate-500 leading-normal pl-5">
+                    Preserve current database values; ignore incoming changes.
+                  </span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => updateDraft("resolution", "UPDATE_MATCHED")}
+                  className={`group relative flex flex-col items-start gap-1 rounded-[9px] border p-2.5 text-left transition ${draft.resolution === "UPDATE_MATCHED"
+                      ? "border-[#11120d] bg-[#11120d] text-white shadow-sm ring-2 ring-slate-900/10"
+                      : "border-amber-300/80 bg-white hover:border-amber-400"
+                    }`}
+                >
+                  <div className="flex w-full items-center justify-between">
+                    <span className={`flex items-center gap-1.5 text-[11px] font-extrabold ${draft.resolution === "UPDATE_MATCHED" ? "text-white" : "text-[#11120d]"}`}>
+                      <Icon name={draft.resolution === "UPDATE_MATCHED" ? "check_circle" : "radio_button_unchecked"} sizePx={15} className={draft.resolution === "UPDATE_MATCHED" ? "text-emerald-400" : "text-slate-400"} />
+                      Apply displayed changes
+                    </span>
+                    {draft.resolution === "UPDATE_MATCHED" ? (
+                      <span className="rounded bg-white/20 px-1.5 py-0.2 text-[8.5px] font-extrabold text-white">Selected</span>
+                    ) : null}
+                  </div>
+                  <span className={`text-[9.5px] font-semibold leading-normal pl-5 ${draft.resolution === "UPDATE_MATCHED" ? "text-slate-200" : "text-slate-600"}`}>
+                    Update catalog product with the new spreadsheet values above.
+                  </span>
+                </button>
               </div>
             </div>
           ) : null}
         </div>
 
-        <div className="grid shrink-0 grid-cols-[auto_1fr] items-center gap-2.5 border-t border-[#E2E4E8] bg-white p-3">
-          <button
-            type="button"
-            onClick={() => updateDraft("resolution", draft.resolution === "IGNORE" ? restoreResolution(activeRow) : "IGNORE")}
-            className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border px-3.5 text-[11px] font-extrabold transition ${draft.resolution === "IGNORE" ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200" : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"}`}
-          >
-            <Icon name={draft.resolution === "IGNORE" ? "undo" : "close"} sizePx={16} />
-            {draft.resolution === "IGNORE" ? "Restore row" : "Ignore row"}
-          </button>
-          <button
-            type="button"
-            onClick={() => void saveDraft()}
-            disabled={!dirty || saving}
-            className="inline-flex h-10 items-center justify-center gap-2 rounded-[9px] bg-[#11120d] px-5 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45"
-          >
-            <Icon name="save" sizePx={17} />
-            {saving ? "Saving…" : dirty ? "Save row changes" : "Saved"}
-          </button>
-          <button type="button" disabled={saving} className="h-10 rounded-lg border px-3 text-sm font-semibold" onClick={async () => {
-            const index = review?.rows.findIndex((row) => row.id === activeRowId) ?? -1;
-            const nextId = review?.rows[index + 1]?.id;
-            if (dirty && !await saveDraft()) return;
-            if (nextId) setActiveRowId(nextId);
-            else if (review && page < review.pagination.totalPages) { pendingPageEdge.current = "first"; setPage(page + 1); }
-          }}>Save and next</button>
+        {/* Docked Triage Action Bar */}
+        <div className="shrink-0 border-t border-[#E2E4E8] bg-white px-3 py-2.5 sm:py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.03)]">
+          <div className="flex items-center justify-between gap-2">
+            {/* Left: Ignore / Restore Row */}
+            <button
+              type="button"
+              onClick={() => updateDraft("resolution", draft.resolution === "IGNORE" ? restoreResolution(activeRow) : "IGNORE")}
+              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border px-3 text-[11px] font-extrabold transition shrink-0 ${draft.resolution === "IGNORE"
+                  ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200"
+                  : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                }`}
+              title={draft.resolution === "IGNORE" ? "Restore row to import" : "Skip this row completely from import"}
+            >
+              <Icon name={draft.resolution === "IGNORE" ? "undo" : "close"} sizePx={15} />
+              <span>{draft.resolution === "IGNORE" ? "Restore" : "Ignore"}</span>
+              <span className="hidden sm:inline"> row</span>
+            </button>
+
+            {/* Right: Actions Cluster */}
+            <div className="flex items-center gap-1.5 sm:gap-2 justify-end shrink-0">
+              {/* Save Only (without advancing, visible when dirty) */}
+              {dirty ? (
+                <button
+                  type="button"
+                  onClick={() => void saveDraft()}
+                  disabled={saving}
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border border-amber-300 bg-amber-50/80 px-3 text-[11px] font-extrabold text-amber-950 transition hover:bg-amber-100 disabled:opacity-45 shrink-0 shadow-sm"
+                  title="Save current row without advancing"
+                >
+                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
+                  <Icon name="save" sizePx={15} className="text-amber-800" />
+                  <span>{saving ? "Saving…" : "Save"}</span>
+                </button>
+              ) : null}
+
+              {/* Context-Aware Primary Actions */}
+              {draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
+                draft.resolution === "KEEP_EXISTING" ? (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void saveAndAdvance({ resolution: "UPDATE_MATCHED" })}
+                      className="inline-flex h-10 items-center justify-center gap-1 rounded-[9px] border border-amber-300 bg-amber-50 px-2.5 sm:px-3 text-[10.5px] sm:text-[11px] font-extrabold text-amber-900 transition hover:bg-amber-100 disabled:opacity-45 shrink-0"
+                      title="Apply spreadsheet changes and move to next"
+                    >
+                      <span>Apply changes</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void saveAndAdvance({ resolution: "KEEP_EXISTING" })}
+                      className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-3.5 sm:px-4 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
+                    >
+                      <Icon name="check" sizePx={14} />
+                      <span>{saving ? "Saving…" : canMoveNext ? "Keep & Next" : "Keep existing"}</span>
+                      {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
+                    </button>
+                  </div>
+                ) : (
+                  <div className="flex items-center gap-1.5">
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void saveAndAdvance({ resolution: "KEEP_EXISTING" })}
+                      className="inline-flex h-10 items-center justify-center gap-1 rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 sm:px-3 text-[10.5px] sm:text-[11px] font-extrabold text-slate-700 transition hover:bg-slate-50 disabled:opacity-45 shrink-0"
+                      title="Keep existing catalog product and move to next"
+                    >
+                      <span>Keep existing</span>
+                    </button>
+                    <button
+                      type="button"
+                      disabled={saving}
+                      onClick={() => void saveAndAdvance({ resolution: "UPDATE_MATCHED" })}
+                      className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-3.5 sm:px-4 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
+                    >
+                      <Icon name="published_with_changes" sizePx={14} />
+                      <span>{saving ? "Saving…" : canMoveNext ? "Apply & Next" : "Apply changes"}</span>
+                      {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
+                    </button>
+                  </div>
+                )
+              ) : dirty ? (
+                <button
+                  type="button"
+                  disabled={saving}
+                  onClick={() => void saveAndAdvance()}
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-4 sm:px-5 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
+                >
+                  <Icon name="save" sizePx={15} />
+                  <span>{saving ? "Saving…" : canMoveNext ? "Save & Next" : "Save row"}</span>
+                  {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
+                </button>
+              ) : (
+                <button
+                  type="button"
+                  onClick={() => moveActiveRow(1)}
+                  disabled={!canMoveNext}
+                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-4 sm:px-5 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-35 shadow-sm shrink-0"
+                >
+                  <span>Next item</span>
+                  <Icon name="arrow_forward" sizePx={14} />
+                </button>
+              )}
+            </div>
+          </div>
         </div>
       </section>
     );
@@ -1743,23 +2014,73 @@ export default function ProductImportReviewPage() {
     return <div className="rounded-[18px] border border-rose-200 bg-rose-50 p-6"><h1 className="text-[18px] font-extrabold text-rose-900">Import review unavailable</h1><p className="mt-2 text-[13px] font-semibold text-rose-800">{error}</p><button type="button" onClick={() => navigate("/products")} className="mt-4 h-11 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white">Back to products</button></div>;
   }
 
-  if (processing) return <div className="mx-auto w-full max-w-xl space-y-4 rounded-xl border bg-white p-6" role="status" aria-live="polite">
-    <h1 className="text-xl font-bold">{review?.batch.status === "COMMITTING" ? "Applying reviewed changes" : "Preparing import review"}</h1>
-    <p>{review?.batch.fileName}</p>
-    <p>{review?.coverage?.completed || 0} of {review?.coverage?.total || "..."} pages processed. Saved progress remains available if you leave.</p>
-    {error ? <p role="alert" className="text-rose-800">{error}</p> : null}
-    <div className="flex flex-wrap gap-3"><button className="min-h-11 rounded-lg border px-4" onClick={() => navigate("/products")}>Back to products</button>
-      <button className="min-h-11 rounded-lg border px-4" onClick={() => void loadReview()}>Refresh status</button>
-      {review?.batch.status !== "COMMITTING" ? <button disabled={processingAction} className="min-h-11 rounded-lg border px-4" onClick={() => void changeProcessing("cancel")}>Stop processing</button> : null}</div>
-  </div>;
-
+  if (processing) {
+    return (
+      <div className="flex min-h-[580px] w-full items-center justify-center bg-[#F8FAFC] p-4 sm:p-6">
+        <ImportProcessingWidget
+          batchId={batchId!}
+          fileName={review?.batch.fileName || undefined}
+          sourceType={review?.batch.sourceType || undefined}
+          supplier={review?.batch.supplier || undefined}
+          onComplete={() => void loadReview()}
+          onMinimize={() => navigate("/products")}
+          onError={(message) => setError(message)}
+        />
+      </div>
+    );
+  }
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden xl:gap-3">
-      {blocker.state === "blocked" ? <ModalFrame open title="Unsaved row changes" onClose={() => blocker.reset()} footer={<div className="flex flex-wrap gap-3"><button className="min-h-11 rounded-lg border px-4" onClick={() => blocker.reset()}>Keep editing</button><button className="min-h-11 rounded-lg border px-4" onClick={() => blocker.proceed()}>Discard and leave</button><button disabled={saving} className="min-h-11 rounded-lg border px-4" onClick={async () => { if (await saveDraft()) blocker.proceed(); }}>Save and leave</button></div>}><p>The current row has changes that have not been saved.</p></ModalFrame> : null}
+      {blocker.state === "blocked" ? (
+        <ModalFrame
+          open
+          title="Unsaved product changes"
+          description={`Edits to ${draft?.name ? `"${draft.name}"` : "this row"} are not saved.`}
+          onClose={() => blocker.reset()}
+          maxWidthClass="max-w-[480px]"
+          mobileBottomSheet
+          footer={(
+            <div className="flex w-full flex-col sm:flex-row sm:items-center sm:justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => blocker.proceed()}
+                className="order-3 sm:order-1 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-1.5 rounded-[12px] border border-rose-200 bg-rose-50 px-4 py-2 text-[12.5px] font-bold text-rose-700 transition hover:bg-rose-100"
+              >
+                <Icon name="close" sizePx={15} />
+                <span>Discard & Leave</span>
+              </button>
+              <button
+                type="button"
+                onClick={() => blocker.reset()}
+                className="order-2 sm:order-2 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-4 py-2 text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
+              >
+                Keep Editing
+              </button>
+              <button
+                type="button"
+                disabled={saving}
+                onClick={async () => {
+                  const ok = await saveDraft();
+                  if (ok) blocker.proceed();
+                }}
+                className="order-1 sm:order-3 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 py-2 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm disabled:opacity-50"
+              >
+                <Icon name="save" sizePx={16} />
+                <span>{saving ? "Saving…" : "Save & Leave"}</span>
+              </button>
+            </div>
+          )}
+        >
+          <div className="rounded-[12px] border border-amber-200 bg-amber-50/80 p-3 text-[12px] font-medium leading-5 text-amber-900">
+            Save your changes before leaving, or discard them to exit.
+          </div>
+        </ModalFrame>
+      ) : null}
       {commitUnknown ? <div role="alert" className="shrink-0 rounded-lg bg-amber-50 p-3 text-sm">A previous import attempt needs a status check before another submission. <button className="font-bold underline" onClick={() => void recoverCommit()}>Check saved result</button></div> : null}
       {review?.coverage && (review.coverage.total > 0 || review.coverage.requiresAcknowledgement) ? <div className="shrink-0 rounded-lg border bg-white p-3 text-sm">
         <span>{review.coverage.completed} / {review.coverage.total || "unknown"} source pages processed.</span>
-        {review.coverage.requiresAcknowledgement ? <span className="ml-2 text-amber-800">Some source pages remain unread or incomplete. {review.coverage.failedPages.map((entry) => `Page ${entry.pageNumber}`).join(", ")}. <button disabled={processingAction || dirty} className="font-bold underline" onClick={() => void changeProcessing("retry")}>Retry remaining pages</button></span> : null}
+        {review.coverage.requiresAcknowledgement ? <span className="ml-2 text-amber-800">Some source pages remain unread or incomplete. {review.coverage.failedPages.map((entry) => `Page ${entry.pageNumber}`).join(", ")}. {review.coverage.canRetry ? <button disabled={processingAction || dirty} className="font-bold underline" onClick={() => void changeProcessing("retry")}>Retry failed or unvisited pages</button> : <span>Upload a crop or the missing source area as a new import.</span>}</span> : null}
+        {review.coverage.canReprocessEmpty ? <button disabled={processingAction || dirty} className="ml-2 font-bold text-amber-800 underline" onClick={() => void changeProcessing("reprocess_empty", review.coverage.emptyPageNumbers)}>Recheck pages marked empty</button> : null}
         {review.coverage.failedPages.map((entry) => entry.message ? <p key={entry.pageNumber} className="mt-1 text-amber-800">Page {entry.pageNumber}: {entry.message}</p> : null)}
         {typeof review.batch.extractionMeta?.jobError === "string" ? <p role="alert" className="mt-1 text-amber-800">{review.batch.extractionMeta.jobError}</p> : null}
       </div> : null}
@@ -1769,7 +2090,7 @@ export default function ProductImportReviewPage() {
         <div className="flex min-w-0 items-center gap-2 sm:gap-3">
           <button
             type="button"
-            onClick={() => dirty ? navigate("/products") : setExitConfirmOpen(true)}
+            onClick={() => setExitConfirmOpen(true)}
             className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#11120d] transition hover:bg-[#F3F4F6] sm:h-10 sm:w-10 sm:rounded-[11px]"
             aria-label="Back to products"
           >
@@ -1824,11 +2145,10 @@ export default function ProductImportReviewPage() {
             <button
               type="button"
               onClick={() => setPriceSetupOpen(true)}
-              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border px-3 text-[11px] font-bold transition ${
-                !review.priceMapping.complete
+              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border px-3 text-[11px] font-bold transition ${!review.priceMapping.complete
                   ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
                   : "border-[#D4D7DC] bg-white text-[#374151] hover:bg-[#F3F4F6]"
-              }`}
+                }`}
               title={!review.priceMapping.complete ? "Required: Map extracted price columns before final import" : "View or customize file column mapping definitions"}
             >
               <Icon name={!review.priceMapping.complete ? "warning" : "tune"} sizePx={16} className={!review.priceMapping.complete ? "text-amber-700" : "text-[#64748B]"} />
@@ -1892,18 +2212,17 @@ export default function ProductImportReviewPage() {
             type="button"
             onClick={() => setMobilePanel(panel)}
             disabled={panel !== "list" && !activeRow}
-            className={`h-10 flex-1 rounded-[7px] text-[11px] font-extrabold capitalize transition ${
-              mobilePanel === panel
+            className={`h-10 flex-1 rounded-[7px] text-[11px] font-extrabold capitalize transition ${mobilePanel === panel
                 ? "bg-white text-[#11120d]"
                 : "text-[#64748B] hover:text-[#11120d]"
-            }`}
+              }`}
           >
             {panel === "list" ? `List (${review?.pagination.total || 0})` : panel === "editor" ? "Item Editor" : "Source Doc"}
           </button>
         ))}
       </div>
 
-<main className="min-h-0 flex-1 xl:grid xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)] xl:gap-3">
+      <main className="min-h-0 flex-1 xl:grid xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)] xl:gap-3">
         {/* Product List Panel */}
         <section className={`${mobilePanel === "list" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
           <div className="shrink-0 space-y-2 border-b border-[#E2E4E8] p-2.5">
@@ -1935,38 +2254,51 @@ export default function ProductImportReviewPage() {
               )}
             </div>
 
-            {/* Clickable Interactive Stat Filter Rail */}
-            <div className="flex gap-1.5 overflow-x-auto pb-0.5 touch-pan-x [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            <div className="grid grid-cols-3 gap-1.5">
               {[
-                { value: "ALL", label: "All", count: review?.pagination.total ?? 0, tone: "text-[#11120d]" },
-                { value: "READY_NEW", label: "New", count: review?.comparisonCounts.READY_NEW ?? 0, tone: "text-emerald-700" },
-                { value: "MATCHED_WITH_CHANGES", label: "Changed", count: review?.comparisonCounts.MATCHED_WITH_CHANGES ?? 0, tone: "text-amber-700" },
-                { value: "EXACT_DUPLICATE", label: "Exact", count: review?.comparisonCounts.EXACT_DUPLICATE ?? 0, tone: "text-violet-700" },
-                { value: "IN_FILE_DUPLICATE", label: "File dup", count: review?.comparisonCounts.IN_FILE_DUPLICATE ?? 0, tone: "text-violet-700" },
-                { value: "IDENTIFIER_CONFLICT", label: "Conflicts", count: (review?.comparisonCounts.IDENTIFIER_CONFLICT ?? 0) + (review?.comparisonCounts.FAILED ?? 0), tone: "text-rose-700" },
+                { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
+                { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
+                { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
               ].map((item) => {
                 const active = filter === item.value;
                 return (
                   <button
                     key={item.value}
                     type="button"
-                    onClick={() => requestReviewNavigation(() => { setFilter(item.value as any); setPage(1); }, `Open the ${item.label} list and discard the changes to the current product.`)}
-                    className={`inline-flex h-8.5 shrink-0 items-center gap-1.5 rounded-[9px] border px-3 text-[11px] font-extrabold transition touch-manipulation active:scale-[0.97] ${
-                      active
+                    onClick={() => requestReviewNavigation(() => { setFilter(item.value); setPage(1); }, `Open the ${item.label} list and discard the changes to the current product.`)}
+                    className={`inline-flex h-9 min-w-0 items-center justify-center gap-1 rounded-[9px] border px-2 text-[10.5px] font-extrabold transition touch-manipulation active:scale-[0.97] ${active
                         ? "border-[#11120d] bg-[#11120d] text-white"
                         : "border-[#D4D7DC] bg-white text-[#4B5563] hover:bg-[#F3F4F6]"
-                    }`}
+                      }`}
                   >
-                    <span>{item.label}</span>
-                    <span className={`rounded-full px-1.5 py-0.2 text-[9.5px] font-extrabold ${
-                      active ? "bg-white/20 text-white" : item.tone
-                    }`}>
+                    <span className="truncate">{item.label}</span>
+                    <span className={`rounded-full px-1.5 py-0.2 text-[9px] font-extrabold ${active ? "bg-white/20 text-white" : "bg-slate-100 text-[#4B5563]"}`}>
                       {item.count.toLocaleString()}
                     </span>
                   </button>
                 );
               })}
             </div>
+
+            <ProjectSelect
+              className="h-9 w-full"
+              value={COMPARISON_FILTERS.some((item) => item.value === filter) ? filter : ""}
+              onChange={(event) => {
+                const value = event.target.value as ReviewFilter;
+                requestReviewNavigation(() => {
+                  setFilter(value || "ALL");
+                  setPage(1);
+                }, "Change the comparison filter and discard the changes to the current product.");
+              }}
+              aria-label="More product comparison filters"
+            >
+              <option value="">More filters: product status</option>
+              {COMPARISON_FILTERS.map((item) => (
+                <option key={item.value} value={item.value}>
+                  {item.label} ({review?.comparisonCounts[item.value] ?? 0})
+                </option>
+              ))}
+            </ProjectSelect>
 
             <div className="flex min-h-[38px] items-center justify-between gap-2 text-[11px] font-extrabold text-[#5F6570]">
               <label className="inline-flex min-h-[38px] cursor-pointer items-center gap-2 py-1 px-1 -ml-1 rounded-lg transition hover:bg-slate-100 active:bg-slate-200 touch-manipulation select-none">
@@ -1995,6 +2327,7 @@ export default function ProductImportReviewPage() {
                 const selected = allMatchingSelected ? !excludedSelectedIds.has(row.id) : selectedIds.has(row.id);
                 const active = row.id === activeRowId;
                 const ignored = row.resolution === "IGNORE";
+                const edited = Boolean(row.reviewChanges?.length);
                 const rowBgClass = active && selected
                   ? "border-l-[3px] border-l-[#11120d] bg-[#EDF3FA]"
                   : active
@@ -2003,7 +2336,9 @@ export default function ProductImportReviewPage() {
                       ? "border-l-[3px] border-l-blue-400 bg-blue-50/40 hover:bg-blue-50/60"
                       : ignored
                         ? "border-l-[3px] border-l-transparent bg-rose-50/40"
-                        : "border-l-[3px] border-l-transparent bg-white hover:bg-[#F8FAFC]";
+                        : edited
+                          ? "border-l-[3px] border-l-amber-400 bg-amber-50/45 hover:bg-amber-50/70"
+                          : "border-l-[3px] border-l-transparent bg-white hover:bg-[#F8FAFC]";
 
                 return (
                   <div
@@ -2046,6 +2381,14 @@ export default function ProductImportReviewPage() {
                           {rowRate(row)}
                         </span>
                         <div className="flex items-center gap-1">
+                          {edited ? (
+                            <span
+                              className="inline-flex h-5 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[8.5px] font-extrabold text-amber-800"
+                              title={`Edited from extraction: ${row.reviewChanges?.join(", ")}`}
+                            >
+                              <Icon name="edit" sizePx={10} /> Edited
+                            </span>
+                          ) : null}
                           {ignored ? (
                             <span className="inline-flex h-5 items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-1.5 text-[8.5px] font-extrabold text-rose-700" title="Ignored">
                               Ignored
@@ -2133,11 +2476,10 @@ export default function ProductImportReviewPage() {
               <button
                 type="button"
                 onClick={() => { setMobileMenuOpen(false); setPriceSetupOpen(true); }}
-                className={`flex h-12 w-full items-center justify-between rounded-[10px] border px-3.5 text-[12px] font-bold transition ${
-                  !review.priceMapping.complete
+                className={`flex h-12 w-full items-center justify-between rounded-[10px] border px-3.5 text-[12px] font-bold transition ${!review.priceMapping.complete
                     ? "border-amber-300 bg-amber-50/70 text-amber-950 hover:bg-amber-100/70"
                     : "border-[#E2E4E8] bg-white text-[#11120d] hover:bg-[#F8F9FA]"
-                }`}
+                  }`}
               >
                 <span className="flex items-center gap-2.5">
                   <Icon
@@ -2203,50 +2545,67 @@ export default function ProductImportReviewPage() {
           open={sourceDetailsOpen}
           onClose={() => setSourceDetailsOpen(false)}
           title={`Row ${activeRow.sourceLocator?.rowNumber || activeRow.rowNumber} Details`}
-          description={`Product: ${rowName(activeRow)} · ${activeSourceEntries.length} populated fields from original source`}
-          maxWidthClass="max-w-[580px]"
+          description={`Product: ${rowName(activeRow)} · ${activeSourceEntries.length} source fields`}
+          maxWidthClass="max-w-[760px]"
+          compact
           mobileBottomSheet
         >
-          <div className="space-y-3 py-1">
-            <div className="relative">
-              <Icon name="search" sizePx={16} className="absolute left-3 top-2.5 text-[#7A7F89]" />
-              <input
-                value={sourceDetailSearch}
-                onChange={(event) => setSourceDetailSearch(event.target.value)}
-                placeholder="Search field names or values…"
-                className="h-9 w-full rounded-[9px] border border-[#D4D7DC] pl-9 pr-2.5 text-[11px] font-semibold outline-none focus:border-[#11120d]"
-              />
-            </div>
-            <div className="max-h-[60vh] overflow-y-auto pr-1">
-              {activeSourceEntries.filter(([header, val]) =>
-                !sourceDetailSearch ||
-                readableSourceHeader(header).toLowerCase().includes(sourceDetailSearch.toLowerCase()) ||
-                String(val).toLowerCase().includes(sourceDetailSearch.toLowerCase())
-              ).length > 0 ? (
-                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                  {activeSourceEntries
-                    .filter(([header, val]) =>
-                      !sourceDetailSearch ||
-                      readableSourceHeader(header).toLowerCase().includes(sourceDetailSearch.toLowerCase()) ||
-                      String(val).toLowerCase().includes(sourceDetailSearch.toLowerCase())
-                    )
-                    .map(([header, value]) => (
-                      <div key={header} className="rounded-[10px] border border-[#E2E4E8] bg-[#F8F9FA] p-3">
-                        <div className="text-[9px] font-extrabold uppercase tracking-wide text-[#64748B]">
+          <div className="py-0.5">
+            {activeSourceEntries.length > 8 ? (
+              <div className="relative mb-2">
+                <Icon name="search" sizePx={14} className="absolute left-2.5 top-2 text-[#7A7F89]" />
+                <input
+                  value={sourceDetailSearch}
+                  onChange={(event) => setSourceDetailSearch(event.target.value)}
+                  placeholder="Filter field names or values…"
+                  className="h-7.5 w-full rounded-[7px] border border-[#D4D7DC] bg-[#F8F9FA] pl-7.5 pr-2.5 text-[10.5px] font-semibold outline-none transition focus:border-[#11120d] focus:bg-white"
+                />
+              </div>
+            ) : null}
+
+            {activeSourceEntries.filter(([header, val]) =>
+              !sourceDetailSearch ||
+              readableSourceHeader(header).toLowerCase().includes(sourceDetailSearch.toLowerCase()) ||
+              String(val).toLowerCase().includes(sourceDetailSearch.toLowerCase())
+            ).length > 0 ? (
+              <div className="grid grid-cols-2 gap-1.5 md:grid-cols-3">
+                {activeSourceEntries
+                  .filter(([header, val]) =>
+                    !sourceDetailSearch ||
+                    readableSourceHeader(header).toLowerCase().includes(sourceDetailSearch.toLowerCase()) ||
+                    String(val).toLowerCase().includes(sourceDetailSearch.toLowerCase())
+                  )
+                  .map(([header, value]) => {
+                    const strVal = String(value ?? "");
+                    const isLong = strVal.length > 40;
+                    return (
+                      <div
+                        key={header}
+                        className={`rounded-[7px] border border-[#E2E4E8] bg-[#F8F9FA] px-2.5 py-1.5 transition hover:bg-slate-100/70 ${isLong ? "col-span-2 md:col-span-3" : ""
+                          }`}
+                      >
+                        <div
+                          className="truncate text-[8.5px] font-extrabold uppercase tracking-wide text-[#64748B] leading-none"
+                          title={readableSourceHeader(header)}
+                        >
                           {readableSourceHeader(header)}
                         </div>
-                        <div className="mt-1 select-all break-words text-[12px] font-bold text-[#11120d]">
-                          {String(value)}
+                        <div
+                          className={`mt-0.5 select-all text-[11px] sm:text-[11.5px] font-bold text-[#11120d] leading-snug ${isLong ? "break-words" : "truncate"
+                            }`}
+                          title={strVal}
+                        >
+                          {strVal}
                         </div>
                       </div>
-                    ))}
-                </div>
-              ) : (
-                <div className="py-8 text-center text-[12px] font-bold text-[#7A7F89]">
-                  No fields match "{sourceDetailSearch}"
-                </div>
-              )}
-            </div>
+                    );
+                  })}
+              </div>
+            ) : (
+              <div className="py-4 text-center text-[11px] font-bold text-[#7A7F89]">
+                No fields match "{sourceDetailSearch}"
+              </div>
+            )}
           </div>
         </ModalFrame>
       ) : null}
@@ -2275,11 +2634,10 @@ export default function ProductImportReviewPage() {
               <div>
                 <div className="flex items-center gap-2">
                   <h2 className="text-base font-extrabold text-[#11120d]">File Price Column Mapping</h2>
-                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-extrabold ${
-                    review.priceMapping.complete
+                  <span className={`rounded-full border px-2 py-0.5 text-[10px] font-extrabold ${review.priceMapping.complete
                       ? "border-emerald-200 bg-emerald-50 text-emerald-800"
                       : "border-amber-200 bg-amber-50 text-amber-900"
-                  }`}>
+                    }`}>
                     {review.priceMapping.complete ? "Active & Applied" : "Required to import"}
                   </span>
                 </div>
@@ -2394,11 +2752,10 @@ export default function ProductImportReviewPage() {
                 type="button"
                 onClick={() => void savePriceMapping()}
                 disabled={priceMappingBusy || isPriceMappingUnchanged || !hasValidPriceMappingDraft}
-                className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-extrabold transition ${
-                  isPriceMappingUnchanged
+                className={`inline-flex h-10 items-center justify-center gap-2 rounded-xl px-4 text-xs font-extrabold transition ${isPriceMappingUnchanged
                     ? "border border-[#E2E4E8] bg-[#F1F3F5] text-[#868E96] cursor-not-allowed"
                     : "bg-[#11120d] text-white hover:bg-[#2a2c27] disabled:opacity-45"
-                }`}
+                  }`}
               >
                 <Icon name={isPriceMappingUnchanged ? "check" : "save"} sizePx={16} />
                 <span>
@@ -2418,7 +2775,7 @@ export default function ProductImportReviewPage() {
       {bulkOpen ? (
         <div className="fixed inset-0 z-[70] flex items-end justify-end bg-slate-950/40 backdrop-blur-[2px] sm:items-stretch" role="dialog" aria-modal="true" aria-label="Bulk edit selected import rows">
           <button type="button" className="absolute inset-0 cursor-default" onClick={closeBulkEdit} aria-label="Close bulk editor" />
-          <aside className="relative z-10 flex flex-col h-[92dvh] w-full bg-[#F8F9FA] rounded-t-[20px] sm:h-full sm:max-h-none sm:w-[480px] lg:w-[500px] sm:rounded-none sm:border-l sm:border-[#D8DBE0] overflow-hidden">
+          <aside className="relative z-10 flex flex-col h-[92dvh] w-full bg-[#F8F9FA] rounded-t-[20px] sm:h-full sm:max-h-none sm:w-[520px] lg:w-[560px] sm:rounded-none sm:border-l sm:border-[#D8DBE0] overflow-hidden">
             {/* Header */}
             <div className="sticky top-0 z-20 flex items-center justify-between border-b border-[#D8DBE0] bg-white px-5 py-3.5">
               <div>
@@ -2477,11 +2834,10 @@ export default function ProductImportReviewPage() {
                 <button
                   type="button"
                   onClick={() => setBulkTab("catalog")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${
-                    bulkTab === "catalog"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "catalog"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
-                  }`}
+                    }`}
                 >
                   <span>Catalog</span>
                   {hasBulkCatalogChanges && (
@@ -2491,11 +2847,10 @@ export default function ProductImportReviewPage() {
                 <button
                   type="button"
                   onClick={() => setBulkTab("percentage")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${
-                    bulkTab === "percentage"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "percentage"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
-                  }`}
+                    }`}
                 >
                   <span>Calculation</span>
                   {hasBulkPercentageChanges && (
@@ -2505,11 +2860,10 @@ export default function ProductImportReviewPage() {
                 <button
                   type="button"
                   onClick={() => setBulkTab("reassign")}
-                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${
-                    bulkTab === "reassign"
+                  className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "reassign"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
-                  }`}
+                    }`}
                 >
                   <span>Move / Swap</span>
                   {hasBulkReassignChanges && (
@@ -2520,11 +2874,10 @@ export default function ProductImportReviewPage() {
                   <button
                     type="button"
                     onClick={() => setBulkTab("extracted")}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${
-                      bulkTab === "extracted"
+                    className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "extracted"
                         ? "bg-[#11120d] text-white"
                         : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
-                    }`}
+                      }`}
                   >
                     <span>Extracted</span>
                     {hasBulkExtractedChanges && (
@@ -2639,11 +2992,10 @@ export default function ProductImportReviewPage() {
                       ] as const).map(([value, label, help]) => (
                         <label
                           key={value || "unchanged"}
-                          className={`flex items-start justify-between gap-3 p-3 rounded-xl border cursor-pointer transition ${
-                            bulkAvailability === value
+                          className={`flex items-start justify-between gap-3 p-3 rounded-xl border cursor-pointer transition ${bulkAvailability === value
                               ? "border-[#11120d] bg-[#F5F6F8] ring-1 ring-[#11120d]"
                               : "border-[#D8DBE0] bg-white hover:border-[#BFC3CB]"
-                          }`}
+                            }`}
                         >
                           <div>
                             <strong className="text-xs font-bold text-[#11120d] block">{label}</strong>
@@ -2753,11 +3105,10 @@ export default function ProductImportReviewPage() {
                             type="button"
                             disabled={!bulkPercentageEnabled}
                             onClick={() => setBulkPercentageDirection("INCREASE")}
-                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                              bulkPercentageDirection === "INCREASE"
+                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "INCREASE"
                                 ? "bg-white text-emerald-800 border border-emerald-200"
                                 : "text-[#64748B] hover:text-[#11120d]"
-                            }`}
+                              }`}
                           >
                             <Icon name="add" sizePx={15} />
                             <span>Increase</span>
@@ -2766,11 +3117,10 @@ export default function ProductImportReviewPage() {
                             type="button"
                             disabled={!bulkPercentageEnabled}
                             onClick={() => setBulkPercentageDirection("DECREASE")}
-                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${
-                              bulkPercentageDirection === "DECREASE"
+                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "DECREASE"
                                 ? "bg-white text-rose-800 border border-rose-200"
                                 : "text-[#64748B] hover:text-[#11120d]"
-                            }`}
+                              }`}
                           >
                             <Icon name="remove" sizePx={15} />
                             <span>Decrease</span>
@@ -2914,11 +3264,10 @@ export default function ProductImportReviewPage() {
                           key={value}
                           type="button"
                           onClick={() => setBulkConflictPolicy(value as "KEEP" | "REPLACE" | "SWAP")}
-                          className={`rounded-lg py-1.5 px-2 text-xs font-bold transition text-center ${
-                            bulkConflictPolicy === value
+                          className={`rounded-lg py-1.5 px-2 text-xs font-bold transition text-center ${bulkConflictPolicy === value
                               ? "bg-[#11120d] text-white"
                               : "text-[#5F6570] hover:text-[#11120d] hover:bg-white/60"
-                          }`}
+                            }`}
                         >
                           {label}
                         </button>
@@ -2939,9 +3288,8 @@ export default function ProductImportReviewPage() {
                           setBulkClearSource(!bulkClearSource);
                         }
                       }}
-                      className={`pt-3 border-t border-[#E2E4E8] flex items-center justify-between gap-3 transition select-none ${
-                        bulkConflictPolicy === "SWAP" ? "opacity-40 pointer-events-none" : "cursor-pointer"
-                      }`}
+                      className={`pt-3 border-t border-[#E2E4E8] flex items-center justify-between gap-3 transition select-none ${bulkConflictPolicy === "SWAP" ? "opacity-40 pointer-events-none" : "cursor-pointer"
+                        }`}
                     >
                       <div className="min-w-0">
                         <div className="text-xs font-bold text-[#11120d]">Clear source price after move</div>
@@ -3064,17 +3412,17 @@ export default function ProductImportReviewPage() {
               const allItems = bulkPreview.items && bulkPreview.items.length > 0
                 ? bulkPreview.items
                 : bulkPreview.before.map((before, index) => {
-                    const after = bulkPreview.after[index];
-                    const changedFields = describeReviewPayloadChanges(before, after);
-                    return {
-                      before,
-                      after,
-                      changedFields,
-                      skippedOperations: [],
-                      priceConflict: false,
-                      skipReason: changedFields.length === 0 ? "No changes applied" : null,
-                    };
-                  });
+                  const after = bulkPreview.after[index];
+                  const changedFields = describeReviewPayloadChanges(before, after);
+                  return {
+                    before,
+                    after,
+                    changedFields,
+                    skippedOperations: [],
+                    priceConflict: false,
+                    skipReason: changedFields.length === 0 ? "No changes applied" : null,
+                  };
+                });
 
               const filteredItems = allItems.filter((item) => {
                 if (diffFilter === "changed" && item.changedFields.length === 0) return false;
@@ -3146,11 +3494,10 @@ export default function ProductImportReviewPage() {
                             setDiffFilter(diffFilter === "changed" ? "all" : "changed");
                             setDiffPage(1);
                           }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${
-                            diffFilter === "changed"
+                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "changed"
                               ? "bg-emerald-100/80 border-emerald-600 ring-2 ring-emerald-600/30"
                               : "bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100/50"
-                          }`}
+                            }`}
                         >
                           <div className="text-xl font-extrabold text-emerald-900">{bulkPreview.changedRows.toLocaleString()}</div>
                           <div className="text-[11px] font-bold text-emerald-800">Will change</div>
@@ -3162,13 +3509,12 @@ export default function ProductImportReviewPage() {
                             setDiffFilter(diffFilter === "skipped" ? "all" : "skipped");
                             setDiffPage(1);
                           }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${
-                            diffFilter === "skipped"
+                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "skipped"
                               ? "bg-amber-100/90 border-amber-600 ring-2 ring-amber-600/30"
                               : bulkPreview.skippedRows > 0
                                 ? "bg-amber-50/80 border-amber-200 text-amber-900 hover:bg-amber-100/50"
                                 : "bg-[#F8F9FA] border-[#E2E4E8] text-[#64748B]"
-                          }`}
+                            }`}
                         >
                           <div className={`text-xl font-extrabold ${bulkPreview.skippedRows > 0 ? "text-amber-900" : "text-[#11120d]"}`}>
                             {bulkPreview.skippedRows.toLocaleString()}
@@ -3182,13 +3528,12 @@ export default function ProductImportReviewPage() {
                             setDiffFilter(diffFilter === "conflicts" ? "all" : "conflicts");
                             setDiffPage(1);
                           }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${
-                            diffFilter === "conflicts"
+                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "conflicts"
                               ? "bg-rose-100/90 border-rose-600 ring-2 ring-rose-600/30"
                               : bulkPreview.priceConflicts > 0
                                 ? "bg-amber-50/80 border-amber-200 text-amber-900 hover:bg-amber-100/50"
                                 : "bg-[#F8F9FA] border-[#E2E4E8] text-[#64748B]"
-                          }`}
+                            }`}
                         >
                           <div className={`text-xl font-extrabold ${bulkPreview.priceConflicts > 0 ? "text-amber-900" : "text-[#11120d]"}`}>
                             {bulkPreview.priceConflicts.toLocaleString()}
@@ -3244,7 +3589,7 @@ export default function ProductImportReviewPage() {
                         </span>
                       </div>
 
-                      <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#E2E4E8]">
+                      <div className="flex-1 min-h-0 overflow-y-auto overflow-x-hidden divide-y divide-[#E2E4E8]">
                         {pageItems.length > 0 ? (
                           pageItems.map(({ before, after, changedFields, skipReason, priceConflict }) => {
                             const priceChanges = ([
@@ -3256,24 +3601,27 @@ export default function ProductImportReviewPage() {
                             const otherChanges = changedFields.filter(
                               (f) => !["Rate", "Retail price", "Wholesale price", "Availability"].includes(f)
                             );
+                            const displayName = after.name || before.name || (before.sku ? `Item ${before.sku}` : "Unnamed product");
 
                             return (
-                              <div key={before.rowId} className="p-3.5 text-xs hover:bg-[#F8F9FA] transition">
-                                <div className="flex items-center justify-between gap-2 mb-1.5">
-                                  <div className="font-bold text-[#11120d] truncate">{after.name}</div>
-                                  <div className="flex items-center gap-1 shrink-0">
+                              <div key={before.rowId} className="p-3 sm:p-3.5 text-xs hover:bg-[#F8F9FA] transition min-w-0">
+                                <div className="flex items-start justify-between gap-2 mb-1.5 flex-wrap">
+                                  <div className="font-bold text-[#11120d] min-w-0 break-words flex-1">
+                                    {displayName}
+                                  </div>
+                                  <div className="flex items-center gap-1.5 flex-wrap justify-end min-w-0">
                                     {after.sku && (
-                                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700">
+                                      <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-semibold text-slate-700 max-w-full truncate" title={after.sku}>
                                         {after.sku}
                                       </span>
                                     )}
                                     {skipReason ? (
-                                      <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-900">
+                                      <span className="rounded-md border border-amber-300 bg-amber-50 px-2 py-0.5 text-[10px] font-bold text-amber-900 break-words leading-tight max-w-full text-left" title={skipReason}>
                                         Skipped: {skipReason}
                                       </span>
                                     ) : null}
                                     {priceConflict ? (
-                                      <span className="rounded-md border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-900">
+                                      <span className="rounded-md border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-900 break-words leading-tight">
                                         Conflict resolved
                                       </span>
                                     ) : null}
@@ -3282,8 +3630,8 @@ export default function ProductImportReviewPage() {
 
                                 <div className="space-y-1">
                                   {priceChanges.map(([label, current, next]) => (
-                                    <div key={label} className="flex items-center gap-2 text-xs flex-wrap">
-                                      <span className="w-28 text-[#64748B] shrink-0 font-medium">{label}:</span>
+                                    <div key={label} className="flex items-center gap-2 text-xs flex-wrap min-w-0">
+                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">{label}:</span>
                                       <span className="text-[#64748B] line-through">{reviewPrice(current)}</span>
                                       <span className="text-[#94A3B8]">→</span>
                                       <span className="font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
@@ -3292,8 +3640,8 @@ export default function ProductImportReviewPage() {
                                     </div>
                                   ))}
                                   {availabilityChanged && (
-                                    <div className="flex items-center gap-2 text-xs flex-wrap">
-                                      <span className="w-28 text-[#64748B] shrink-0 font-medium">Availability:</span>
+                                    <div className="flex items-center gap-2 text-xs flex-wrap min-w-0">
+                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">Availability:</span>
                                       <span className="text-[#64748B]">{availabilityText(before.availabilityStatus)}</span>
                                       <span className="text-[#94A3B8]">→</span>
                                       <span className="font-bold text-[#11120d] bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
@@ -3302,9 +3650,9 @@ export default function ProductImportReviewPage() {
                                     </div>
                                   )}
                                   {otherChanges.length > 0 && (
-                                    <div className="flex items-center gap-2 text-xs flex-wrap">
-                                      <span className="w-28 text-[#64748B] shrink-0 font-medium">Other fields:</span>
-                                      <span className="font-medium text-[#11120d] bg-slate-50 px-2 py-0.5 rounded border border-slate-200">
+                                    <div className="flex items-center gap-2 text-xs flex-wrap min-w-0">
+                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">Other fields:</span>
+                                      <span className="font-medium text-[#11120d] bg-slate-50 px-2 py-0.5 rounded border border-slate-200 break-words">
                                         {otherChanges.join(", ")}
                                       </span>
                                     </div>
@@ -3406,12 +3754,12 @@ export default function ProductImportReviewPage() {
       {/* Final Import Confirmation Modal */}
       {commitOpen && review ? (
         <ModalFrame open title="Confirm final import" description="This applies every saved decision in this batch." onClose={() => { if (!commitBusy) setCommitOpen(false); }} mobileBottomSheet>
-            <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
-              {[{ label: "Create", value: review.decisionCounts.create }, { label: "Update", value: review.decisionCounts.update }, { label: "Keep", value: review.decisionCounts.keep }, { label: "Ignore", value: review.decisionCounts.ignore }, { label: "Unresolved", value: review.decisionCounts.unresolved }].map((item) => <div key={item.label} className={`rounded-[11px] border p-3 ${item.label === "Unresolved" && item.value > 0 ? "border-rose-200 bg-rose-50" : "border-[#D8DBE0] bg-[#F8F9FA]"}`}><div className="text-[18px] font-extrabold">{item.value}</div><div className="text-[9px] font-bold text-[#68707C]">{item.label}</div></div>)}
-            </div>
-            {review.priceMapping.required && !review.priceMapping.complete ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked until every extracted price column is classified.</div> : review.decisionCounts.unresolved > 0 ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked. Filter conflicts, file duplicates and failed rows; correct them or explicitly ignore them.</div> : <div className="mt-4 rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-bold leading-5 text-amber-950">Create and update decisions change product data. Keep and ignore decisions do not change existing products.</div>}
-            {review.coverage?.requiresAcknowledgement ? <label className="mt-4 flex items-start gap-3 rounded-lg bg-amber-50 p-3 text-sm"><input type="checkbox" checked={coverageAcknowledged} onChange={(event) => setCoverageAcknowledged(event.target.checked)} className="mt-1" />I checked the source and understand that unread pages are excluded from this import.</label> : null}
-            <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || commitUnknown || (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
+          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {[{ label: "Create", value: review.decisionCounts.create }, { label: "Update", value: review.decisionCounts.update }, { label: "Keep", value: review.decisionCounts.keep }, { label: "Ignore", value: review.decisionCounts.ignore }, { label: "Unresolved", value: review.decisionCounts.unresolved }].map((item) => <div key={item.label} className={`rounded-[11px] border p-3 ${item.label === "Unresolved" && item.value > 0 ? "border-rose-200 bg-rose-50" : "border-[#D8DBE0] bg-[#F8F9FA]"}`}><div className="text-[18px] font-extrabold">{item.value}</div><div className="text-[9px] font-bold text-[#68707C]">{item.label}</div></div>)}
+          </div>
+          {review.priceMapping.required && !review.priceMapping.complete ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked until every extracted price column is classified.</div> : review.decisionCounts.unresolved > 0 ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked. Filter conflicts, file duplicates and failed rows; correct them or explicitly ignore them.</div> : <div className="mt-4 rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-bold leading-5 text-amber-950">Create and update decisions change product data. Keep and ignore decisions do not change existing products.</div>}
+          {review.coverage?.requiresAcknowledgement ? <label className="mt-4 flex items-start gap-3 rounded-lg bg-amber-50 p-3 text-sm"><input type="checkbox" checked={coverageAcknowledged} onChange={(event) => setCoverageAcknowledged(event.target.checked)} className="mt-1" />I checked the source and understand that unread pages are excluded from this import.</label> : null}
+          <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || commitUnknown || (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
         </ModalFrame>
       ) : null}
 
@@ -3420,32 +3768,60 @@ export default function ProductImportReviewPage() {
         <ModalFrame
           open={exitConfirmOpen}
           onClose={() => setExitConfirmOpen(false)}
-          title="Leave import review?"
-          description="Your imported draft is saved, but products haven't been added to your catalog yet."
-          maxWidthClass="max-w-[460px]"
+          title={dirty ? "Unsaved product changes" : "Leave import review?"}
+          description={dirty ? `Edits to ${draft?.name ? `"${draft.name}"` : "this row"} are not saved.` : "Your progress is saved."}
+          maxWidthClass="max-w-[480px]"
           mobileBottomSheet
-        >
-          <div className="space-y-4 py-1">
-            <div className="rounded-[11px] border border-[#D8DBE0] bg-[#F8F9FA] p-3 text-[11px] font-semibold leading-5 text-[#5F6570]">
-              You can return to this review workbench at any time from the Products page to complete and finalize your import.
-              {dirty ? <p className="mt-1.5 font-bold text-amber-800">Note: You have unsaved changes on the current row that will be discarded if you leave now without saving.</p> : null}
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
+          footer={(
+            <div className="flex w-full flex-col sm:flex-row sm:items-center sm:justify-end gap-2.5">
+              <button
+                type="button"
+                onClick={() => {
+                  if (review && activeRow) {
+                    const initialDraft = importRowToDraft(review.batch, activeRow);
+                    setDraft(initialDraft);
+                    setSavedFingerprint(JSON.stringify(draftPayload(initialDraft)));
+                  }
+                  setExitConfirmOpen(false);
+                  navigate("/products");
+                }}
+                className="order-3 sm:order-1 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-1.5 rounded-[12px] border border-rose-200 bg-rose-50 px-4 py-2 text-[12.5px] font-bold text-rose-700 transition hover:bg-rose-100"
+              >
+                <Icon name="close" sizePx={15} />
+                <span>Discard & Leave</span>
+              </button>
               <button
                 type="button"
                 onClick={() => setExitConfirmOpen(false)}
-                className="h-10.5 rounded-[10px] border border-[#D4D7DC] bg-white text-[11px] font-extrabold text-[#374151] hover:bg-[#F3F4F6]"
+                className="order-2 sm:order-2 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-4 py-2 text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
               >
-                Stay in review
+                Keep Editing
               </button>
               <button
                 type="button"
-                onClick={() => { setExitConfirmOpen(false); navigate("/products"); }}
-                className="inline-flex h-10.5 items-center justify-center gap-1.5 rounded-[10px] bg-[#11120d] text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27]"
+                disabled={saving}
+                onClick={async () => {
+                  if (dirty) {
+                    const ok = await saveDraft();
+                    if (!ok) return;
+                  }
+                  setExitConfirmOpen(false);
+                  navigate("/products");
+                }}
+                className="order-1 sm:order-3 inline-flex min-h-[44px] w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] bg-[#11120d] px-4 py-2 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm disabled:opacity-50"
               >
-                Leave review
+                <Icon name="save" sizePx={16} />
+                <span>{saving ? "Saving…" : "Save & Leave"}</span>
               </button>
             </div>
+          )}
+        >
+          <div className="rounded-[12px] border border-amber-200 bg-amber-50/80 p-3 text-[12px] font-medium leading-5 text-amber-900">
+            {dirty ? (
+              <span>Save your changes before leaving, or discard them to exit.</span>
+            ) : (
+              <span>Resume this review anytime from the Products page.</span>
+            )}
           </div>
         </ModalFrame>
       ) : null}

@@ -1,4 +1,11 @@
 import prisma from "../../db/prisma";
+import {
+  lockInvoiceForUpdate,
+  lockProductsForUpdate,
+  lockReturnItemsForUpdate,
+  lockReturnRequestForUpdate,
+  runFinancialTransaction,
+} from "../../lib/transactionLocks";
 
 type ReturnReasonInput =
   | "DAMAGED"
@@ -226,8 +233,8 @@ export async function createReturnRequest(
   const requestedItems = normalizeReturnItems(input.items);
   const requestedIds = requestedItems.map((item) => item.invoiceItemId);
 
-  return prisma.$transaction(async (tx: any) => {
-    await tx.$queryRaw`SELECT id FROM Invoice WHERE id = ${invoiceId} FOR UPDATE`;
+  return runFinancialTransaction(prisma, async (tx: any) => {
+    await lockInvoiceForUpdate(tx, invoiceId);
     await tx.$queryRaw`SELECT id FROM InvoiceItem WHERE invoiceId = ${invoiceId} FOR UPDATE`;
 
     const invoice = await tx.invoice.findUnique({
@@ -385,8 +392,17 @@ export async function createReturnRequest(
 export async function approveReturnRequest(id: string, reviewedById: string) {
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
+  const requestIdentity = await prisma.returnRequest.findUnique({
+    where: { id: requestId },
+    select: { invoiceId: true },
+  });
+  if (!requestIdentity) throw new Error("Return request not found.");
 
-  return prisma.$transaction(async (tx: any) => {
+  return runFinancialTransaction(prisma, async (tx: any) => {
+    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+    await lockReturnRequestForUpdate(tx, requestId);
+    const productIds = await lockReturnItemsForUpdate(tx, requestId);
+    await lockProductsForUpdate(tx, productIds);
     const request = await tx.returnRequest.findUnique({
       where: { id: requestId },
       include: returnRequestInclude,
@@ -477,9 +493,17 @@ export async function reverseApprovedReturnRequest(
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
   const reversalNote = normalizeNote(note);
+  const requestIdentity = await prisma.returnRequest.findUnique({
+    where: { id: requestId },
+    select: { invoiceId: true },
+  });
+  if (!requestIdentity) throw new Error("Return request not found.");
 
-  return prisma.$transaction(async (tx: any) => {
-    await tx.$queryRaw`SELECT id FROM ReturnRequest WHERE id = ${requestId} FOR UPDATE`;
+  return runFinancialTransaction(prisma, async (tx: any) => {
+    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+    await lockReturnRequestForUpdate(tx, requestId);
+    const productIds = await lockReturnItemsForUpdate(tx, requestId);
+    await lockProductsForUpdate(tx, productIds);
 
     const request = await tx.returnRequest.findUnique({
       where: { id: requestId },
@@ -605,8 +629,15 @@ export async function rejectReturnRequest(
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
   const rejectionNote = normalizeNote(note);
+  const requestIdentity = await prisma.returnRequest.findUnique({
+    where: { id: requestId },
+    select: { invoiceId: true },
+  });
+  if (!requestIdentity) throw new Error("Return request not found.");
 
-  return prisma.$transaction(async (tx: any) => {
+  return runFinancialTransaction(prisma, async (tx: any) => {
+    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+    await lockReturnRequestForUpdate(tx, requestId);
     const request = await tx.returnRequest.findUnique({
       where: { id: requestId },
       include: {

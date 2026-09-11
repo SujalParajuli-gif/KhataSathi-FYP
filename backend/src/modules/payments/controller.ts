@@ -7,6 +7,13 @@ import {
 import * as paymentService from "./service";
 import { formatZodIssues } from "../../lib/requestValidation";
 import { voidPaymentBodySchema } from "./validation";
+import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
+
+function sendTransactionConflict(res: Response, err: unknown) {
+  if (!(err instanceof FinancialTransactionConflictError)) return false;
+  res.status(409).json({ error: err.message, code: err.code });
+  return true;
+}
 
 // building a redirect URL for eSewa failures — this sends the user to the frontend result page with an error message
 function buildGenericEsewaFailureRedirect(message: string) {
@@ -67,6 +74,7 @@ export async function addPayment(req: Request, res: Response) {
 
     res.status(201).json(payment);
   } catch (err: any) {
+    if (sendTransactionConflict(res, err)) return;
     // checking for various business rule violations
     if (
       err.message.includes("amount") ||
@@ -102,6 +110,7 @@ export async function initiateEsewaPayment(req: Request, res: Response) {
     );
     res.status(201).json(result); // returning the form fields the frontend needs to redirect to eSewa
   } catch (err: any) {
+    if (sendTransactionConflict(res, err)) return;
     if (
       err.message.includes("invoiceId") ||
       err.message.includes("amount") ||
@@ -197,6 +206,7 @@ export async function voidPayment(req: Request, res: Response) {
     );
     res.json(result);
   } catch (err: any) {
+    if (sendTransactionConflict(res, err)) return;
     if (
       err.message.includes("not found") ||
       err.message.includes("does not belong") ||

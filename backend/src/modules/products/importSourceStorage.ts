@@ -29,6 +29,7 @@ function importMimeType(fileName: string, provided?: string) {
   const byExtension: Record<string, string> = {
     ".csv": "text/csv",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    ".xlsm": "application/vnd.ms-excel.sheet.macroenabled.12",
     ".pdf": "application/pdf",
     ".png": "image/png",
     ".jpg": "image/jpeg",

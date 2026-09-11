@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Navigate, Outlet, useLocation } from "react-router";
+import { Navigate, Outlet, useLocation, useNavigate } from "react-router";
 import AppShell from "~/components/layout/AppShell";
 import { AppStartupState, ConnectionStatusBanner } from "~/components/ui/AppStatus";
+import { useToast } from "~/components/ui/Toast";
+import { ImportFloatingPill } from "~/components/blocks/products/ImportFloatingPill";
 import {
   getBusinessCapabilitiesApi,
   type BusinessCapabilities,
@@ -197,7 +199,82 @@ export default function AppLayout() {
         }
       >
         <Outlet />
+        <GlobalImportFloatingPill />
       </AppShell>
     </BusinessCapabilitiesProvider>
+  );
+}
+
+function GlobalImportFloatingPill() {
+  const navigate = useNavigate();
+  const location = useLocation();
+  const { showToast } = useToast();
+  const [activeBatchId, setActiveBatchId] = useState<string | null>(() => {
+    if (typeof window === "undefined") return null;
+    return sessionStorage.getItem("active_product_import_batch_id");
+  });
+  const [isModalOpen, setIsModalOpen] = useState(false);
+
+  useEffect(() => {
+    function handleImportChange(event: Event) {
+      const custom = event as CustomEvent<{ batchId?: string | null }>;
+      const nextBatchId =
+        custom.detail?.batchId !== undefined
+          ? custom.detail.batchId
+          : sessionStorage.getItem("active_product_import_batch_id");
+      setActiveBatchId(nextBatchId || null);
+    }
+
+    function handleModalState(event: Event) {
+      const custom = event as CustomEvent<{ open?: boolean }>;
+      setIsModalOpen(Boolean(custom.detail?.open));
+    }
+
+    window.addEventListener("active_product_import_changed", handleImportChange);
+    window.addEventListener("active_product_import_modal_state", handleModalState);
+    return () => {
+      window.removeEventListener("active_product_import_changed", handleImportChange);
+      window.removeEventListener("active_product_import_modal_state", handleModalState);
+    };
+  }, []);
+
+  const shouldShow =
+    Boolean(activeBatchId) &&
+    !(location.pathname === "/products" && isModalOpen);
+
+  if (!shouldShow || !activeBatchId) return null;
+
+  return (
+    <ImportFloatingPill
+      batchId={activeBatchId}
+      onClick={() => {
+        if (location.pathname === "/products") {
+          window.dispatchEvent(new CustomEvent("reopen_product_import_modal"));
+        } else {
+          navigate("/products?openImport=true");
+        }
+      }}
+      onComplete={(completedBatchId) => {
+        sessionStorage.removeItem("active_product_import_batch_id");
+        setActiveBatchId(null);
+        window.dispatchEvent(
+          new CustomEvent("active_product_import_changed", {
+            detail: { batchId: null },
+          })
+        );
+        showToast("success", "Rate list extracted successfully! Ready for review.");
+        navigate(`/products/imports/${encodeURIComponent(completedBatchId)}`);
+      }}
+      onError={(message) => {
+        sessionStorage.removeItem("active_product_import_batch_id");
+        setActiveBatchId(null);
+        window.dispatchEvent(
+          new CustomEvent("active_product_import_changed", {
+            detail: { batchId: null },
+          })
+        );
+        showToast("danger", message || "Extraction was stopped or could not be completed.");
+      }}
+    />
   );
 }

@@ -16,6 +16,43 @@ test("a blank first PDF price does not relabel the second price", () => {
   assert.deepEqual(result.rows[0].extractedPrices, [{ key: "mrp", label: "MRP", value: 150 }]);
 });
 
+test("PDF continuation pages reuse the detected header instead of falling back to OCR", () => {
+  const result = parsePdfTextCatalogPages([{
+    pageNumber: 2,
+    headerContext: "Description\tCode\tPKG\tMRP",
+    text: "DUSTPAN\tDustpan\t144\t58.00\nDELUX BASIN 17\"\tBasin-117\t30\t383.00",
+  }]);
+
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].productName, "DUSTPAN");
+  assert.equal(result.rows[0].productCodeVariant, "Dustpan");
+  assert.equal(result.rows[0].packageQuantity, 144);
+  assert.deepEqual(result.rows[0].extractedPrices, [{ key: "mrp", label: "MRP", value: 58 }]);
+});
+
+test("serial/code/rate continuation pages reuse their first-page header", () => {
+  const result = parsePdfTextCatalogPages([{
+    pageNumber: 2,
+    headerContext: "S.N Jar Name Product code Rate rs.",
+    text: [
+      "30 120ml salt jar 29 19",
+      "53 Plastic jug 68",
+      "54 Plastic Box 68",
+      "55 Cookies Jar 48 50",
+      "Salt Jar",
+      "Cosmeti Jar",
+    ].join("\n"),
+  }]);
+
+  assert.equal(result.rows.length, 4);
+  assert.deepEqual(result.rows.map((row) => [row.productName, row.productCodeVariant, row.extractedPrices[0]?.value]), [
+    ["120ml salt jar", "29", 19],
+    ["Plastic jug", "", 68],
+    ["Plastic Box", "", 68],
+    ["Cookies Jar", "48", 50],
+  ]);
+});
+
 test("PDF text catalog rejects United headings and separates structured fields", () => {
     const result = parsePdfTextCatalogPages([{ pageNumber: 1, text: [
       "UNITED PLASTIC INDUSTRIES PVT.LTD.",
