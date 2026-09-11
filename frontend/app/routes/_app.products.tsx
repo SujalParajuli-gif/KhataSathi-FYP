@@ -63,6 +63,11 @@ import {
 } from "~/lib/api/requestPolicy";
 import type { ProductDeleteSafety } from "~/lib/api/endpoints";
 import ProductsFiltersCard from "~/components/blocks/products/ProductsFilters";
+import type {
+  ProductSortBy,
+  ProductPricingStatus,
+  ProductPhotoStatus,
+} from "~/lib/domain/products/products.types";
 import ProductsTableCard from "~/components/blocks/products/ProductsTable";
 import ProductsModals from "~/components/blocks/products/ProductsModals";
 import ProductSearchInsightsModal from "~/components/blocks/products/ProductSearchInsightsModal";
@@ -130,6 +135,9 @@ type PendingProductFilterChange =
   | { kind: "category"; value: string }
   | { kind: "stockStatus"; value: "all" | "in" | "low" | "out" }
   | { kind: "status"; value: "all" | "active" | "inactive" }
+  | { kind: "sortBy"; value: ProductSortBy }
+  | { kind: "pricingStatus"; value: ProductPricingStatus }
+  | { kind: "photoStatus"; value: ProductPhotoStatus }
   | { kind: "lowOnly"; value: boolean }
   | { kind: "clear" };
 
@@ -138,6 +146,9 @@ function describeProductFilterChange(change: PendingProductFilterChange | null) 
   if (change.kind === "search") return change.value.trim() ? `the search to “${change.value.trim()}”` : "clearing the search";
   if (change.kind === "clear") return "clearing all product filters";
   if (change.kind === "lowOnly") return change.value ? "showing only low-stock products" : "removing the low-stock-only filter";
+  if (change.kind === "sortBy") return "the sort order";
+  if (change.kind === "pricingStatus") return "the pricing status filter";
+  if (change.kind === "photoStatus") return "the photo filter";
   return `the ${change.kind === "stockStatus" ? "stock" : change.kind} filter`;
 }
 
@@ -346,6 +357,9 @@ export default function ProductsPage() {
   );
   const [status, setStatus] = useState<"all" | "active" | "inactive">("all"); // active vs inactive filter
   const [lowOnly, setLowOnly] = useState(false); // quick toggle for low stock products only
+  const [sortBy, setSortBy] = useState<ProductSortBy>("photos_first");
+  const [pricingStatus, setPricingStatus] = useState<ProductPricingStatus>("all");
+  const [photoStatus, setPhotoStatus] = useState<ProductPhotoStatus>("all");
 
   React.useEffect(() => {
     if (stockTracked) return;
@@ -426,6 +440,9 @@ export default function ProductsPage() {
     lowOnly,
     page,
     tablePageSize,
+    sortBy,
+    pricingStatus,
+    photoStatus,
   ]);
 
   const [openAddEdit, setOpenAddEdit] = useState(false); // controls the create/edit modal
@@ -1079,6 +1096,9 @@ export default function ProductsPage() {
         lowOnly,
         page,
         pageSize: tablePageSize,
+        sortBy,
+        pricingStatus,
+        photoStatus,
       },
       { signal: options?.signal },
     );
@@ -1218,6 +1238,9 @@ export default function ProductsPage() {
     lowOnly,
     page,
     tablePageSize,
+    sortBy,
+    pricingStatus,
+    photoStatus,
     productRecoveryKey,
     productLookupEditHandoff,
   ]);
@@ -1451,6 +1474,12 @@ export default function ProductsPage() {
       setStockStatus(change.value);
     } else if (change.kind === "status") {
       setStatus(change.value);
+    } else if (change.kind === "sortBy") {
+      setSortBy(change.value);
+    } else if (change.kind === "pricingStatus") {
+      setPricingStatus(change.value);
+    } else if (change.kind === "photoStatus") {
+      setPhotoStatus(change.value);
     } else if (change.kind === "lowOnly") {
       setLowOnly(change.value);
     } else {
@@ -1460,6 +1489,9 @@ export default function ProductsPage() {
       setCategory("All Categories");
       setStockStatus("all");
       setStatus("all");
+      setSortBy("photos_first");
+      setPricingStatus("all");
+      setPhotoStatus("all");
       setLowOnly(false);
     }
   }
@@ -1499,6 +1531,18 @@ export default function ProductsPage() {
 
   function updateStatus(value: "all" | "active" | "inactive") {
     requestProductFilterChange({ kind: "status", value });
+  }
+
+  function updateSortBy(value: ProductSortBy) {
+    requestProductFilterChange({ kind: "sortBy", value });
+  }
+
+  function updatePricingStatus(value: ProductPricingStatus) {
+    requestProductFilterChange({ kind: "pricingStatus", value });
+  }
+
+  function updatePhotoStatus(value: ProductPhotoStatus) {
+    requestProductFilterChange({ kind: "photoStatus", value });
   }
 
   function updateLowOnly(value: boolean) {
@@ -3710,6 +3754,12 @@ export default function ProductsPage() {
           setStockStatus={updateStockStatus}
           status={status}
           setStatus={updateStatus}
+          sortBy={sortBy}
+          setSortBy={updateSortBy}
+          pricingStatus={pricingStatus}
+          setPricingStatus={updatePricingStatus}
+          photoStatus={photoStatus}
+          setPhotoStatus={updatePhotoStatus}
           onClear={clearFilters}
           onAdd={openAdd}
           onImport={() => {

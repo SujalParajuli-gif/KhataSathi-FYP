@@ -38,6 +38,9 @@ export interface ProductFilters {
     includeDraftReservations?: boolean;
     page?: number;
     pageSize?: number;
+    sortBy?: "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest";
+    pricingStatus?: "all" | "ready" | "pending";
+    photoStatus?: "all" | "with_photo" | "without_photo";
 }
 
 type ProductDeleteReference = {
@@ -114,6 +117,9 @@ export async function listProducts(filters: ProductFilters) {
         includeDraftReservations,
         page = 1,
         pageSize = 50,
+        sortBy = "photos_first",
+        pricingStatus = "all",
+        photoStatus = "all",
     } = filters;
 
     const where: any = {};
@@ -123,6 +129,18 @@ export async function listProducts(filters: ProductFilters) {
     if (brand) where.brandId = brand; // filtering by brand ID
     if (category) where.category = category; // filtering by category
     if (isActive !== undefined) where.isActive = isActive; // filtering by active status
+
+    if (pricingStatus === "ready") {
+        where.sellingPriceStatus = "READY";
+    } else if (pricingStatus === "pending") {
+        where.sellingPriceStatus = "PENDING";
+    }
+
+    if (photoStatus === "with_photo") {
+        where.imageUrl = { not: null, gt: "" };
+    } else if (photoStatus === "without_photo") {
+        where.OR = [{ imageUrl: null }, { imageUrl: "" }];
+    }
 
     const skip = (page - 1) * pageSize; // calculating how many records to skip for pagination
     const settings = await getBusinessSettings(); // fetching business settings to resolve thresholds
@@ -184,11 +202,31 @@ export async function listProducts(filters: ProductFilters) {
         };
     } else {
         // normal listing with database-level pagination
+        let orderBy: any = [
+            { imageUrl: "desc" },
+            { brand: { name: "asc" } },
+            { name: "asc" },
+        ];
+
+        if (sortBy === "name_asc") {
+            orderBy = [{ name: "asc" }];
+        } else if (sortBy === "name_desc") {
+            orderBy = [{ name: "desc" }];
+        } else if (sortBy === "brand_asc") {
+            orderBy = [{ brand: { name: "asc" } }, { name: "asc" }];
+        } else if (sortBy === "price_asc") {
+            orderBy = [{ retailPrice: "asc" }, { name: "asc" }];
+        } else if (sortBy === "price_desc") {
+            orderBy = [{ retailPrice: "desc" }, { name: "asc" }];
+        } else if (sortBy === "newest") {
+            orderBy = [{ createdAt: "desc" }];
+        }
+
         const [products, total] = await Promise.all([
             prisma.product.findMany({
                 where,
                 include: { brand: { select: { id: true, name: true } } },
-                orderBy: { createdAt: "desc" },
+                orderBy,
                 skip,
                 take: pageSize,
             }),

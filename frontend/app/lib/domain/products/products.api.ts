@@ -189,6 +189,9 @@ export async function fetchProducts(
     draftReservations: q.includeDraftReservations ? "true" : undefined,
     page: q.page,
     pageSize: q.pageSize,
+    sortBy: q.sortBy,
+    pricingStatus: q.pricingStatus && q.pricingStatus !== "all" ? q.pricingStatus : undefined,
+    photoStatus: q.photoStatus && q.photoStatus !== "all" ? q.photoStatus : undefined,
   }, options);
 
   const mapped = (response.products ?? []).map(toFrontendProduct);
@@ -215,6 +218,9 @@ export async function fetchPriceLookupProducts(
     draftReservations: q.includeDraftReservations ? "true" : undefined,
     page: q.page,
     pageSize: q.pageSize,
+    sortBy: q.sortBy,
+    pricingStatus: q.pricingStatus && q.pricingStatus !== "all" ? q.pricingStatus : undefined,
+    photoStatus: q.photoStatus && q.photoStatus !== "all" ? q.photoStatus : undefined,
   }, options);
 
   const mapped = (response.products ?? []).map(toFrontendProduct);

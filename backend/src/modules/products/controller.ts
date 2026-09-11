@@ -90,6 +90,19 @@ function readProductListFilters(req: Request) {
         ? (req.query.stockStatus as "in" | "low" | "out")
         : undefined,
     includeDraftReservations: req.query.draftReservations === "true",
+    sortBy:
+      typeof req.query.sortBy === "string" &&
+      ["photos_first", "name_asc", "name_desc", "brand_asc", "price_asc", "price_desc", "newest"].includes(req.query.sortBy)
+        ? (req.query.sortBy as any)
+        : "photos_first",
+    pricingStatus:
+      req.query.pricingStatus === "ready" || req.query.pricingStatus === "pending"
+        ? (req.query.pricingStatus as any)
+        : "all",
+    photoStatus:
+      req.query.photoStatus === "with_photo" || req.query.photoStatus === "without_photo"
+        ? (req.query.photoStatus as any)
+        : "all",
     page:
       Number.isInteger(requestedPage) && requestedPage > 0
         ? requestedPage

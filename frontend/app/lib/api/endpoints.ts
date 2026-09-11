@@ -255,6 +255,9 @@ interface ProductFilters {
     draftReservations?: string;
     page?: number;
     pageSize?: number;
+    sortBy?: "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest";
+    pricingStatus?: "all" | "ready" | "pending";
+    photoStatus?: "all" | "with_photo" | "without_photo";
 }
 
 const PRODUCT_SEARCH_SESSION_KEY = "khatasathi:product-search-session";

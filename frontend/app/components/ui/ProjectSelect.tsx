@@ -72,6 +72,7 @@ export type ProjectSelectProps = Omit<
   "multiple" | "size"
 > & {
   children: ReactNode;
+  compact?: boolean;
 };
 
 export default function ProjectSelect({
@@ -91,6 +92,7 @@ export default function ProjectSelect({
   "aria-invalid": ariaInvalid,
   title,
   tabIndex,
+  compact: compactProp,
 }: ProjectSelectProps) {
   const generatedId = useId();
   const controlId = id || `project-select-${generatedId.replace(/:/g, "")}`;
@@ -106,7 +108,12 @@ export default function ProjectSelect({
   const currentValue = controlled ? String(value ?? "") : uncontrolledValue;
   const selectedIndex = Math.max(0, options.findIndex((option) => option.value === currentValue));
   const selectedOption = options.find((option) => option.value === currentValue);
-  const compact = Boolean(className && /(?:h-8\b|h-9\b|h-\[(?:3[0-9])px\])/.test(className));
+  const compact = Boolean(
+    compactProp !== undefined
+      ? compactProp
+      : className && /(?:h-8\b|h-8\.5\b|h-9\b|h-9\.5\b|h-10\b|h-\[(?:3[0-9]|40)px\]|text-\[1[12]px\]|compact\b)/.test(className)
+  );
+  const heightClass = className?.match(/\b(h-8|h-8\.5|h-9|h-9\.5|h-10|h-11|h-\[[^\]]+\])\b/)?.[1];
   const hasError = Boolean(
     ariaInvalid || (className && /border-(?:rose|red)-/.test(className)),
   );
@@ -291,8 +298,9 @@ export default function ProjectSelect({
           if (!disabled) setOpen((current) => !current);
         }}
         className={cn(
-          "flex w-full items-center justify-between gap-3 rounded-lg border bg-white text-left font-semibold text-slate-900 outline-none transition-all",
-          compact ? "h-[34px] px-3 text-[12px]" : "h-11 px-4 text-sm",
+          "flex w-full items-center justify-between rounded-lg border bg-white text-left font-semibold text-slate-900 outline-none transition-all",
+          heightClass || (compact ? "h-10" : "h-11"),
+          compact ? "px-2.5 text-[12px] gap-1.5" : "px-4 text-sm gap-3",
           open
             ? hasError
               ? "border-transparent ring-2 ring-rose-400"
@@ -304,7 +312,7 @@ export default function ProjectSelect({
         )}
       >
         <span className="min-w-0 flex-1 truncate">{selectedOption?.label ?? "Select..."}</span>
-        <Icon name={open ? "expand_less" : "expand_more"} sizePx={18} className="shrink-0 text-slate-400" />
+        <Icon name={open ? "expand_less" : "expand_more"} sizePx={compact ? 16 : 18} className="shrink-0 text-slate-400" />
       </button>
 
       {open && typeof document !== "undefined"

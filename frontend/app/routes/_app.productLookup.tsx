@@ -33,6 +33,9 @@ import {
 import type {
   Product,
   ProductLookupEditHandoff,
+  ProductSortBy,
+  ProductPricingStatus,
+  ProductPhotoStatus,
 } from "~/lib/domain/products/products.types";
 import {
   readProductLookupRestore,
@@ -60,6 +63,28 @@ function formatPriceNumber(value: number) {
     maximumFractionDigits: 2,
   });
 }
+
+const sortOptions: Array<{ value: ProductSortBy; label: string }> = [
+  { value: "photos_first", label: "Sort: Photos First" },
+  { value: "name_asc", label: "Sort: Name (A-Z)" },
+  { value: "name_desc", label: "Sort: Name (Z-A)" },
+  { value: "brand_asc", label: "Sort: Brand (A-Z)" },
+  { value: "price_asc", label: "Sort: Price (Low-High)" },
+  { value: "price_desc", label: "Sort: Price (High-Low)" },
+  { value: "newest", label: "Sort: Newest First" },
+];
+
+const pricingOptions: Array<{ value: ProductPricingStatus; label: string }> = [
+  { value: "all", label: "Pricing: All" },
+  { value: "ready", label: "Pricing: Ready" },
+  { value: "pending", label: "Pricing: Pending" },
+];
+
+const photoOptions: Array<{ value: ProductPhotoStatus; label: string }> = [
+  { value: "all", label: "Photos: All" },
+  { value: "with_photo", label: "Photos: With Photo" },
+  { value: "without_photo", label: "Photos: Missing" },
+];
 
 function CompactPrice({
   value,
@@ -982,12 +1007,36 @@ export default function ProductLookupPage() {
       return value === "in" || value === "low" || value === "out" ? value : "all";
     },
   );
+  const [sortBy, setSortBy] = useState<ProductSortBy>(
+    () => (lookupSearchParams.get("sort") as ProductSortBy) || "photos_first",
+  );
+  const [pricingStatus, setPricingStatus] = useState<ProductPricingStatus>(
+    () => (lookupSearchParams.get("pricing") as ProductPricingStatus) || "all",
+  );
+  const [photoStatus, setPhotoStatus] = useState<ProductPhotoStatus>(
+    () => (lookupSearchParams.get("photo") as ProductPhotoStatus) || "all",
+  );
   const [mobileFiltersOpen, setMobileFiltersOpen] = useState(false);
   const [draftBrand, setDraftBrand] = useState("All Brands");
   const [draftCategory, setDraftCategory] = useState("All Categories");
   const [draftStockStatus, setDraftStockStatus] = useState<
     "all" | "in" | "low" | "out"
   >("all");
+  const [draftSortBy, setDraftSortBy] = useState<ProductSortBy>("photos_first");
+  const [draftPricingStatus, setDraftPricingStatus] = useState<ProductPricingStatus>("all");
+  const [draftPhotoStatus, setDraftPhotoStatus] = useState<ProductPhotoStatus>("all");
+
+  const brandOptions = useMemo(() => {
+    return [
+      {
+        value: "All Brands",
+        label: `All Brands (${Math.max(0, brands.length - 1)})`,
+      },
+      ...brands
+        .filter((b) => b !== "All Brands")
+        .map((b) => ({ value: b, label: b })),
+    ];
+  }, [brands]);
 
   useEffect(() => {
     if (stockTracked || stockStatus === "all") return;
@@ -1119,6 +1168,12 @@ export default function ProductLookupPage() {
       stockParam === "in" || stockParam === "low" || stockParam === "out"
         ? stockParam
         : "all";
+    const sortParam = lookupSearchParams.get("sort") as ProductSortBy | null;
+    const nextSort = sortParam || "photos_first";
+    const pricingParam = lookupSearchParams.get("pricing") as ProductPricingStatus | null;
+    const nextPricing = pricingParam === "ready" || pricingParam === "pending" ? pricingParam : "all";
+    const photoParam = lookupSearchParams.get("photo") as ProductPhotoStatus | null;
+    const nextPhoto = photoParam === "with_photo" || photoParam === "without_photo" ? photoParam : "all";
     const pageParam = Number(lookupSearchParams.get("page"));
     const nextPage = Number.isInteger(pageParam) && pageParam > 0 ? pageParam : 1;
     const pageSizeParam = Number(lookupSearchParams.get("pageSize"));
@@ -1133,6 +1188,9 @@ export default function ProductLookupPage() {
     setBrand(nextBrand);
     setCategory(nextCategory);
     setStockStatus(nextStock);
+    setSortBy(nextSort);
+    setPricingStatus(nextPricing);
+    setPhotoStatus(nextPhoto);
     setPage(nextPage);
     setPageSize(nextPageSize);
   }, [lookupSearchParamKey, isStaff]);
@@ -1153,6 +1211,9 @@ export default function ProductLookupPage() {
     brand,
     category,
     stockStatus,
+    sortBy,
+    pricingStatus,
+    photoStatus,
     pageSize,
   ]);
 
@@ -1167,7 +1228,7 @@ export default function ProductLookupPage() {
     setMobileProducts([]);
     setMobileLoadedPage(1);
     setLoading(true);
-  }, [debouncedQuery, brand, category, stockStatus, pageSize]);
+  }, [debouncedQuery, brand, category, stockStatus, sortBy, pricingStatus, photoStatus, pageSize]);
 
   function openImagePreview(product: Product, trigger: HTMLButtonElement) {
     if (!product.imageUrl) return;
@@ -1189,6 +1250,9 @@ export default function ProductLookupPage() {
       brand?: string;
       category?: string;
       stockStatus?: "all" | "in" | "low" | "out";
+      sortBy?: ProductSortBy;
+      pricingStatus?: ProductPricingStatus;
+      photoStatus?: ProductPhotoStatus;
       page?: number;
       pageSize?: number;
     },
@@ -1199,6 +1263,9 @@ export default function ProductLookupPage() {
     const nextBrand = next.brand ?? brand;
     const nextCategory = next.category ?? category;
     const nextStock = next.stockStatus ?? stockStatus;
+    const nextSort = next.sortBy ?? sortBy;
+    const nextPricing = next.pricingStatus ?? pricingStatus;
+    const nextPhoto = next.photoStatus ?? photoStatus;
     const nextPage = next.page ?? page;
     const nextPageSize = next.pageSize ?? pageSize;
 
@@ -1210,6 +1277,12 @@ export default function ProductLookupPage() {
     else params.delete("category");
     if (nextStock !== "all") params.set("stock", nextStock);
     else params.delete("stock");
+    if (nextSort !== "photos_first") params.set("sort", nextSort);
+    else params.delete("sort");
+    if (nextPricing !== "all") params.set("pricing", nextPricing);
+    else params.delete("pricing");
+    if (nextPhoto !== "all") params.set("photo", nextPhoto);
+    else params.delete("photo");
     if (nextPage > 1) params.set("page", String(nextPage));
     else params.delete("page");
     params.set("pageSize", String(nextPageSize));
@@ -1235,6 +1308,24 @@ export default function ProductLookupPage() {
     setStockStatus(value);
     setPage(1);
     writeLookupUrl({ stockStatus: value, page: 1 });
+  }
+
+  function applyDesktopSort(value: ProductSortBy) {
+    setSortBy(value);
+    setPage(1);
+    writeLookupUrl({ sortBy: value, page: 1 });
+  }
+
+  function applyDesktopPricing(value: ProductPricingStatus) {
+    setPricingStatus(value);
+    setPage(1);
+    writeLookupUrl({ pricingStatus: value, page: 1 });
+  }
+
+  function applyDesktopPhoto(value: ProductPhotoStatus) {
+    setPhotoStatus(value);
+    setPage(1);
+    writeLookupUrl({ photoStatus: value, page: 1 });
   }
 
   function changeDesktopPage(nextPage: number) {
@@ -1304,6 +1395,9 @@ export default function ProductLookupPage() {
         brand,
         category,
         stockStatus,
+        sortBy,
+        pricingStatus,
+        photoStatus,
         status: "active",
         page,
         pageSize,
@@ -1349,6 +1443,9 @@ export default function ProductLookupPage() {
           brand,
           category,
           stockStatus,
+          sortBy,
+          pricingStatus,
+          photoStatus,
           status: "active",
           page: nextPage,
           pageSize,
@@ -1460,7 +1557,18 @@ export default function ProductLookupPage() {
       window.removeEventListener("focus", refreshLookupVisibility);
       document.removeEventListener("visibilitychange", refreshLookupVisibility);
     };
-  }, [debouncedQuery, brand, category, stockStatus, page, pageSize, productMetaReady]);
+  }, [
+    debouncedQuery,
+    brand,
+    category,
+    stockStatus,
+    sortBy,
+    pricingStatus,
+    photoStatus,
+    page,
+    pageSize,
+    productMetaReady,
+  ]);
 
   useEffect(() => {
     if (!productMetaReady) return undefined;
@@ -1495,6 +1603,9 @@ export default function ProductLookupPage() {
     brand,
     category,
     stockStatus,
+    sortBy,
+    pricingStatus,
+    photoStatus,
     page,
     pageSize,
     rateLimitRecoveryKey,
@@ -1562,12 +1673,18 @@ export default function ProductLookupPage() {
     query.trim() ||
     brand !== "All Brands" ||
     category !== "All Categories" ||
-    stockStatus !== "all",
+    stockStatus !== "all" ||
+    pricingStatus !== "all" ||
+    photoStatus !== "all" ||
+    sortBy !== "photos_first",
   );
   const mobileFilterCount = [
     brand !== "All Brands",
     category !== "All Categories",
     stockStatus !== "all",
+    pricingStatus !== "all",
+    photoStatus !== "all",
+    sortBy !== "photos_first",
   ].filter(Boolean).length;
   const mobileFilterChips: MobileFilterChip[] = [
     ...(debouncedQuery
@@ -1606,6 +1723,47 @@ export default function ProductLookupPage() {
         },
       ]
       : []),
+    ...(pricingStatus !== "all"
+      ? [
+        {
+          id: "pricing",
+          label:
+            pricingStatus === "ready"
+              ? "Price Ready"
+              : "Price Pending",
+          onRemove: () => {
+            applyDesktopPricing("all");
+          },
+        },
+      ]
+      : []),
+    ...(photoStatus !== "all"
+      ? [
+        {
+          id: "photo",
+          label:
+            photoStatus === "with_photo"
+              ? "With Photo"
+              : "Missing Photo",
+          onRemove: () => {
+            applyDesktopPhoto("all");
+          },
+        },
+      ]
+      : []),
+    ...(sortBy !== "photos_first"
+      ? [
+        {
+          id: "sort",
+          label:
+            sortOptions.find((o) => o.value === sortBy)?.label ||
+            `Sort: ${sortBy}`,
+          onRemove: () => {
+            applyDesktopSort("photos_first");
+          },
+        },
+      ]
+      : []),
     ...(stockStatus !== "all"
       ? [
         {
@@ -1628,6 +1786,9 @@ export default function ProductLookupPage() {
     setDraftBrand(brand);
     setDraftCategory(category);
     setDraftStockStatus(stockStatus);
+    setDraftSortBy(sortBy);
+    setDraftPricingStatus(pricingStatus);
+    setDraftPhotoStatus(photoStatus);
     setMobileFiltersOpen(true);
   }
 
@@ -1635,11 +1796,17 @@ export default function ProductLookupPage() {
     setBrand(draftBrand);
     setCategory(draftCategory);
     setStockStatus(draftStockStatus);
+    setSortBy(draftSortBy);
+    setPricingStatus(draftPricingStatus);
+    setPhotoStatus(draftPhotoStatus);
     setPage(1);
     writeLookupUrl({
       brand: draftBrand,
       category: draftCategory,
       stockStatus: draftStockStatus,
+      sortBy: draftSortBy,
+      pricingStatus: draftPricingStatus,
+      photoStatus: draftPhotoStatus,
       page: 1,
     });
     setMobileFiltersOpen(false);
@@ -1650,6 +1817,9 @@ export default function ProductLookupPage() {
     setBrand("All Brands");
     setCategory("All Categories");
     setStockStatus("all");
+    setSortBy("photos_first");
+    setPricingStatus("all");
+    setPhotoStatus("all");
     setPage(1);
     setDebouncedQuery("");
     writeLookupUrl({
@@ -1657,6 +1827,9 @@ export default function ProductLookupPage() {
       brand: "All Brands",
       category: "All Categories",
       stockStatus: "all",
+      sortBy: "photos_first",
+      pricingStatus: "all",
+      photoStatus: "all",
       page: 1,
     });
   }
@@ -1815,11 +1988,11 @@ export default function ProductLookupPage() {
             />
           </div>
 
-          {/* Desktop Search & Filters in Single Row */}
+          {/* Desktop Search & Filters: Smart Proportional Full-Width Toolbar */}
           <div className="hidden p-3 lg:block">
-            <div className="flex items-center gap-2.5">
+            <div className="flex flex-wrap items-center gap-2.5">
               {/* Search input with search icon */}
-              <div className="relative min-w-[220px] flex-1">
+              <div className="relative min-w-[200px] flex-[1.6]">
                 <Icon
                   name="search"
                   className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]"
@@ -1829,7 +2002,7 @@ export default function ProductLookupPage() {
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Search name, SKU, barcode..."
-                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-8 text-[12.5px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10 placeholder:text-[#8C8889]"
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-8 text-[12px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10 placeholder:text-[#8C8889]"
                 />
                 {query ? (
                   <button
@@ -1844,20 +2017,23 @@ export default function ProductLookupPage() {
               </div>
 
               {/* Brand Filter */}
-              <div className="w-[180px] shrink-0">
-                <CreatableCombobox
+              <div className="min-w-[140px] flex-[1.1]">
+                <ProjectSelect
                   value={brand}
-                  onChange={applyDesktopBrand}
-                  options={brands}
-                  placeholder="All Brands"
-                  ariaLabel="Filter by brand"
-                  allowCreate={false}
-                  selectOnFocus
-                />
+                  onChange={(event) => applyDesktopBrand(event.target.value)}
+                  compact
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
+                >
+                  {brandOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
               </div>
 
               {/* Category Filter */}
-              <div className="w-[190px] shrink-0">
+              <div className="min-w-[140px] flex-[1.1]">
                 <CreatableCombobox
                   value={category}
                   onChange={applyDesktopCategory}
@@ -1866,18 +2042,69 @@ export default function ProductLookupPage() {
                   ariaLabel="Filter by category"
                   allowCreate={false}
                   selectOnFocus
+                  compact
+                  className="!h-10 !rounded-[10px] px-2.5 text-[12px] font-semibold"
                 />
+              </div>
+
+              {/* Sort By Filter */}
+              <div className="min-w-[145px] flex-[1.1]">
+                <ProjectSelect
+                  value={sortBy}
+                  onChange={(event) => applyDesktopSort(event.target.value as ProductSortBy)}
+                  compact
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
+                >
+                  {sortOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
+              </div>
+
+              {/* Pricing Status Filter */}
+              <div className="min-w-[120px] flex-1">
+                <ProjectSelect
+                  value={pricingStatus}
+                  onChange={(event) => applyDesktopPricing(event.target.value as ProductPricingStatus)}
+                  compact
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
+                >
+                  {pricingOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
+              </div>
+
+              {/* Photo Status Filter */}
+              <div className="min-w-[120px] flex-1">
+                <ProjectSelect
+                  value={photoStatus}
+                  onChange={(event) => applyDesktopPhoto(event.target.value as ProductPhotoStatus)}
+                  compact
+                  className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
+                >
+                  {photoOptions.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
               </div>
 
               {/* Stock Filter if tracked */}
               {stockTracked ? (
-                <div className="w-[130px] shrink-0">
+                <div className="w-[110px] shrink-0">
                   <ProjectSelect
                     value={stockStatus}
                     onChange={(event) =>
                       applyDesktopStock(event.target.value as "all" | "in" | "low" | "out")
                     }
-                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                    compact
+                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2 text-[12px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
                   >
                     <option value="all">All stock</option>
                     <option value="in">In stock</option>
@@ -1887,7 +2114,7 @@ export default function ProductLookupPage() {
                 </div>
               ) : null}
 
-              {/* Eye Button: Bigger with proper border */}
+              {/* Eye Button: Cost */}
               {canViewPurchaseCost ? (
                 <button
                   type="button"
@@ -1936,39 +2163,80 @@ export default function ProductLookupPage() {
           onApply={applyMobileFilters}
           clearLabel="Clear all"
         >
-          <div className="space-y-5">
-            <FilterFields
-              brands={brands}
-              categories={categories}
-              brand={draftBrand}
-              category={draftCategory}
-              stockStatus={draftStockStatus}
-              onBrand={setDraftBrand}
-              onCategory={setDraftCategory}
-              onStock={setDraftStockStatus}
-              hideStock
-            />
-            {stockTracked ? <fieldset className="space-y-2">
-              <legend className="text-[12px] font-black uppercase tracking-wide text-slate-500">
-                Stock
+          <div className="space-y-4">
+            {/* Brand */}
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Brand
+              </label>
+              <ProjectSelect
+                value={draftBrand}
+                onChange={(e) => setDraftBrand(e.target.value)}
+                className="h-11 w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold text-slate-800 outline-none"
+              >
+                {brandOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </ProjectSelect>
+            </div>
+
+            {/* Category */}
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Category
+              </label>
+              <CreatableCombobox
+                value={draftCategory}
+                onChange={setDraftCategory}
+                options={categories}
+                placeholder="Search categories"
+                ariaLabel="Filter products by category"
+                allowCreate={false}
+                selectOnFocus
+              />
+            </div>
+
+            {/* Sort Catalog By */}
+            <div className="space-y-1.5">
+              <label className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Sort Catalog By
+              </label>
+              <ProjectSelect
+                value={draftSortBy}
+                onChange={(e) => setDraftSortBy(e.target.value as ProductSortBy)}
+                className="h-11 w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold text-slate-800 outline-none"
+              >
+                {sortOptions.map((o) => (
+                  <option key={o.value} value={o.value}>
+                    {o.label}
+                  </option>
+                ))}
+              </ProjectSelect>
+            </div>
+
+            {/* Pricing Status */}
+            <fieldset className="space-y-1.5">
+              <legend className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Pricing Status
               </legend>
-              <div className="grid grid-cols-4 overflow-hidden rounded-xl border border-slate-200">
+              <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-slate-200">
                 {(
                   [
                     ["all", "All"],
-                    ["in", "In stock"],
-                    ["low", "Low"],
-                    ["out", "Out"],
+                    ["ready", "Ready"],
+                    ["pending", "Pending"],
                   ] as const
                 ).map(([value, label]) => (
                   <button
                     key={value}
                     type="button"
-                    onClick={() => setDraftStockStatus(value)}
+                    onClick={() => setDraftPricingStatus(value)}
                     className={cn(
-                      "min-h-[50px] border-r border-slate-200 px-1 text-[11px] font-bold last:border-r-0",
-                      draftStockStatus === value
-                        ? "bg-emerald-600 text-white"
+                      "min-h-[44px] border-r border-slate-200 px-1 text-[11.5px] font-bold last:border-r-0",
+                      draftPricingStatus === value
+                        ? "bg-[#11120d] text-white"
                         : "bg-white text-slate-700",
                     )}
                   >
@@ -1976,7 +2244,70 @@ export default function ProductLookupPage() {
                   </button>
                 ))}
               </div>
-            </fieldset> : null}
+            </fieldset>
+
+            {/* Photo Status */}
+            <fieldset className="space-y-1.5">
+              <legend className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                Photo Status
+              </legend>
+              <div className="grid grid-cols-3 overflow-hidden rounded-xl border border-slate-200">
+                {(
+                  [
+                    ["all", "All"],
+                    ["with_photo", "With Photo"],
+                    ["without_photo", "Missing"],
+                  ] as const
+                ).map(([value, label]) => (
+                  <button
+                    key={value}
+                    type="button"
+                    onClick={() => setDraftPhotoStatus(value)}
+                    className={cn(
+                      "min-h-[44px] border-r border-slate-200 px-1 text-[11.5px] font-bold last:border-r-0",
+                      draftPhotoStatus === value
+                        ? "bg-[#11120d] text-white"
+                        : "bg-white text-slate-700",
+                    )}
+                  >
+                    {label}
+                  </button>
+                ))}
+              </div>
+            </fieldset>
+
+            {/* Stock Status (if tracked) */}
+            {stockTracked ? (
+              <fieldset className="space-y-1.5">
+                <legend className="text-[12px] font-bold uppercase tracking-wide text-slate-600">
+                  Stock Status
+                </legend>
+                <div className="grid grid-cols-4 overflow-hidden rounded-xl border border-slate-200">
+                  {(
+                    [
+                      ["all", "All"],
+                      ["in", "In stock"],
+                      ["low", "Low"],
+                      ["out", "Out"],
+                    ] as const
+                  ).map(([value, label]) => (
+                    <button
+                      key={value}
+                      type="button"
+                      onClick={() => setDraftStockStatus(value)}
+                      className={cn(
+                        "min-h-[44px] border-r border-slate-200 px-1 text-[11px] font-bold last:border-r-0",
+                        draftStockStatus === value
+                          ? "bg-emerald-600 text-white"
+                          : "bg-white text-slate-700",
+                      )}
+                    >
+                      {label}
+                    </button>
+                  ))}
+                </div>
+              </fieldset>
+            ) : null}
           </div>
         </MobileFilterSheet>
 

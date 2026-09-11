@@ -76,6 +76,18 @@ export type ProductLookupEditHandoff = {
 // toast notification types used by the products page
 export type ToastKind = "info" | "success" | "danger";
 
+export type ProductSortBy =
+  | "photos_first"
+  | "name_asc"
+  | "name_desc"
+  | "brand_asc"
+  | "price_asc"
+  | "price_desc"
+  | "newest";
+
+export type ProductPricingStatus = "all" | "ready" | "pending";
+export type ProductPhotoStatus = "all" | "with_photo" | "without_photo";
+
 // the query parameters for fetching products with filters
 export type ProductsQuery = {
   q?: string; // search term
@@ -87,4 +99,7 @@ export type ProductsQuery = {
   includeDraftReservations?: boolean;
   page?: number;
   pageSize?: number;
+  sortBy?: ProductSortBy;
+  pricingStatus?: ProductPricingStatus;
+  photoStatus?: ProductPhotoStatus;
 };
