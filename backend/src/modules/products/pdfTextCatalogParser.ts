@@ -242,7 +242,7 @@ export function parsePdfTextCatalogPages(
   const detectedLabels = detectPriceLabels(pages);
   const serialCodePriceTable = hasSerialCodePriceTable(pages);
   const rows: ParsedPdfTextCatalogRow[] = [];
-  let currentCategory = "Uncategorized";
+  let currentCategory = "";
   let maximumPriceCount = 0;
   const allPriceColumns = new Map<string, { key: string; label: string }>();
 

@@ -102,12 +102,16 @@ test("review draft keeps an unknown package quantity null", () => {
   assert.equal(prepared.packageQuantity, null);
 });
 
-test("optional review fields receive safe import defaults", () => {
-  const prepared = prepareReviewedImportRowDraft(
-    validRow({ brand: "", category: "", sizeUnit: "", packageUnit: "" }),
+test("review requires a confirmed brand and preserves a missing category", () => {
+  assert.throws(
+    () => prepareReviewedImportRowDraft(validRow({ brand: "" })),
+    /Brand is required/,
   );
-  assert.equal(prepared.brand, "Unbranded");
-  assert.equal(prepared.category, "Uncategorized");
+  const prepared = prepareReviewedImportRowDraft(
+    validRow({ category: "", sizeUnit: "", packageUnit: "" }),
+  );
+  assert.equal(prepared.brand, "Bagmati Plastic");
+  assert.equal(prepared.category, undefined);
   assert.equal(prepared.sizeUnit, "STANDARD");
   assert.equal(prepared.packageUnit, "PIECE");
 });

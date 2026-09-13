@@ -9,6 +9,7 @@ test("runDueBinPurge purges only safe due records and writes a digest audit log"
     findMany: prisma.softDeleteRecord.findMany,
     update: prisma.softDeleteRecord.update,
     rowDeleteMany: prisma.productImportRow.deleteMany,
+    batchFindUnique: prisma.productImportBatch.findUnique,
     batchDeleteMany: prisma.productImportBatch.deleteMany,
     alertDeleteMany: prisma.userAlertRead.deleteMany,
     userFindFirst: prisma.user.findFirst,
@@ -35,6 +36,7 @@ test("runDueBinPurge purges only safe due records and writes a digest audit log"
     calls.push({ op: "productImportRow.deleteMany", args });
     return Promise.resolve({ count: 2 });
   };
+  (prisma.productImportBatch as any).findUnique = async () => null;
   (prisma.productImportBatch as any).deleteMany = (args: any) => {
     calls.push({ op: "productImportBatch.deleteMany", args });
     return Promise.resolve({ count: 1 });
@@ -79,6 +81,7 @@ test("runDueBinPurge purges only safe due records and writes a digest audit log"
     (prisma.softDeleteRecord as any).findMany = originals.findMany;
     (prisma.softDeleteRecord as any).update = originals.update;
     (prisma.productImportRow as any).deleteMany = originals.rowDeleteMany;
+    (prisma.productImportBatch as any).findUnique = originals.batchFindUnique;
     (prisma.productImportBatch as any).deleteMany = originals.batchDeleteMany;
     (prisma.userAlertRead as any).deleteMany = originals.alertDeleteMany;
     (prisma.user as any).findFirst = originals.userFindFirst;

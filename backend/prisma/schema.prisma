@@ -267,6 +267,7 @@ model Product {
   id                               String   @id @default(cuid())
   name                             String
   productName                      String?
+  catalogIdentityHash              String?  @unique @db.Char(64)
   sku                              String   @unique
   barcode                          String?  @unique
   barcodeOrigin                    String   @default("MANUFACTURER")

@@ -107,7 +107,7 @@ test("selected-row price reassignment keeps each product's own price", () => {
   assert.equal(swapped.payload.retailPrice, 8);
 });
 
-test("a single extracted supplier price appears as Rate instead of Coming soon", () => {
+test("an extracted price stays unmapped until its destination is confirmed", () => {
   const draft = importRowToDraft(
     { fileName: "Panas Jars.pdf", supplier: "Panas Jars", sourceType: "PDF" },
     {
@@ -123,6 +123,30 @@ test("a single extracted supplier price appears as Rate instead of Coming soon",
         category: "Uncategorized",
         extractedPrices: [{ key: "rate", label: "Rate rs.", value: 10 }],
         availabilityStatus: "COMING_SOON",
+      },
+    },
+  );
+
+  assert.equal(draft.ratePerPiece, null);
+  assert.equal(draft.availabilityStatus, "COMING_SOON");
+});
+
+test("a confirmed Rate mapping appears as catalog data", () => {
+  const draft = importRowToDraft(
+    { fileName: "Panas Jars.pdf", supplier: "Panas Jars", sourceType: "PDF" },
+    {
+      id: "row-1",
+      rowNumber: 1,
+      rawText: "1 35ml jar 1 10",
+      status: "READY",
+      parsed: {
+        sourceType: "PDF_TEXT_TABLE_ROW",
+        name: "35ml jar",
+        sku: "PANAS-1",
+        brand: "Panas Jars",
+        ratePerPiece: 10,
+        extractedPrices: [{ key: "rate", label: "Rate rs.", value: 10 }],
+        availabilityStatus: "CATALOG_LISTED",
       },
     },
   );

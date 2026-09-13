@@ -109,7 +109,7 @@ function rowRate(row: ProductImportRow) {
     ? Number((parsed.extractedPrices[0] as any)?.value)
     : Number.NaN;
   return Number.isFinite(extracted) && extracted > 0
-    ? `Rate NPR ${extracted.toLocaleString()}`
+    ? `Source NPR ${extracted.toLocaleString()}`
     : "Price coming soon";
 }
 
@@ -324,6 +324,9 @@ export default function ProductImportReviewPage() {
   const [categoryOptions, setCategoryOptions] = useState<string[]>([]);
   const [priceMappingDraft, setPriceMappingDraft] = useState<Record<string, string>>({});
   const [priceMappingBusy, setPriceMappingBusy] = useState(false);
+  const [batchBrandOpen, setBatchBrandOpen] = useState(false);
+  const [batchBrand, setBatchBrand] = useState("");
+  const [batchBrandBusy, setBatchBrandBusy] = useState(false);
   const [commitOpen, setCommitOpen] = useState(false);
   const [commitBusy, setCommitBusy] = useState(false);
   const [undoStack, setUndoStack] = useState<ReviewHistoryEntry[]>([]);
@@ -433,6 +436,10 @@ export default function ProductImportReviewPage() {
   }, [batchId, page, pageSize, search, filter]);
 
   const activeRow = review?.rows.find((row) => row.id === activeRowId) || null;
+  const fileBrandSuggestion = useMemo(() => {
+    if (review?.batch.supplier?.trim()) return "";
+    return review?.batch.fileName?.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ").trim() || "";
+  }, [review?.batch.fileName, review?.batch.supplier]);
 
   useEffect(() => {
     if (!review || !activeRow) {
@@ -1684,10 +1691,10 @@ export default function ProductImportReviewPage() {
                   ) : activeRow.reviewChanges?.length ? (
                     <span
                       className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[8.5px] font-bold text-amber-800"
-                      title={`Changed from extraction: ${activeRow.reviewChanges.join(", ")}`}
+                      title={`Changed by a user after extraction: ${activeRow.reviewChanges.join(", ")}`}
                     >
                       <Icon name="edit" sizePx={10} />
-                      Edited
+                      User changed
                     </span>
                   ) : (
                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[8.5px] font-bold text-emerald-800">
@@ -1729,6 +1736,14 @@ export default function ProductImportReviewPage() {
         </div>
 
         <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain bg-[#FAFAFB] p-3">
+          {draft.error ? (
+            <div role="alert" className={`rounded-[10px] border px-3 py-2.5 text-[10.5px] font-semibold leading-5 ${draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
+              <div className="flex items-start gap-2">
+                <Icon name={draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "error" : "warning"} sizePx={16} className="mt-0.5 shrink-0" />
+                <div><strong className="block font-extrabold">{draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "Resolve this conflict" : "Review required"}</strong>{draft.error}</div>
+              </div>
+            </div>
+          ) : null}
           <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
             <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
               <Icon name="sell" sizePx={16} className="text-[#11120d]" />
@@ -1749,6 +1764,12 @@ export default function ProductImportReviewPage() {
                 <Field label="Brand">
                   <CreatableCombobox value={draft.brand} onChange={(value) => updateDraft("brand", value)} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Product brand" selectOnFocus compact showCreateHelp={false} />
                 </Field>
+                {!draft.brand && fileBrandSuggestion ? (
+                  <div className="mt-1.5 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-950">
+                    File name suggests <strong>{fileBrandSuggestion}</strong>. Verify it before using it as the brand.
+                    <button type="button" className="ml-1 font-extrabold underline underline-offset-2" onClick={() => updateDraft("brand", fileBrandSuggestion)}>Use suggestion</button>
+                  </div>
+                ) : null}
               </div>
               <div>
                 <Field label="Category">
@@ -2029,6 +2050,38 @@ export default function ProductImportReviewPage() {
       </div>
     );
   }
+
+  async function applyBrandToBatch() {
+    if (!review || !batchBrand.trim()) return;
+    try {
+      setBatchBrandBusy(true);
+      const pageCount = Math.max(1, Math.ceil(review.batch.totalRows / 100));
+      const pages: ProductImportReviewPage[] = [];
+      for (let start = 1; start <= pageCount; start += 5) {
+        pages.push(...await Promise.all(
+          Array.from({ length: Math.min(5, pageCount - start + 1) }, (_, index) =>
+            getProductImportReviewApi(review.batch.id, { page: start + index, pageSize: 100 }),
+          ),
+        ));
+      }
+      const payloads = pages
+        .flatMap((result) => result.rows)
+        .filter((row) => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status))
+        .map((row) => ({
+          ...draftPayload(importRowToDraft(review.batch, row)),
+          brand: batchBrand.trim(),
+          resolution: null,
+        }));
+      await saveReviewPayloads(payloads);
+      setBatchBrandOpen(false);
+      showToast("success", `Brand confirmed for ${payloads.length.toLocaleString()} review rows. Catalog matches were refreshed.`);
+      await loadReview();
+    } catch (brandError: any) {
+      showToast("danger", brandError?.response?.data?.error || brandError?.message || "The batch brand could not be saved.");
+    } finally {
+      setBatchBrandBusy(false);
+    }
+  }
   return (
     <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden xl:gap-3">
       {blocker.state === "blocked" ? (
@@ -2084,6 +2137,12 @@ export default function ProductImportReviewPage() {
         {review.coverage.failedPages.map((entry) => entry.message ? <p key={entry.pageNumber} className="mt-1 text-amber-800">Page {entry.pageNumber}: {entry.message}</p> : null)}
         {typeof review.batch.extractionMeta?.jobError === "string" ? <p role="alert" className="mt-1 text-amber-800">{review.batch.extractionMeta.jobError}</p> : null}
       </div> : null}
+      {review && Number(review.reviewCounts?.missingBrand || 0) > 0 ? (
+        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-950">
+          <div><strong className="font-extrabold">Brand confirmation required.</strong> Catalog matching is incomplete until each product has a confirmed brand.</div>
+          <button type="button" disabled={dirty} onClick={() => { setBatchBrand(fileBrandSuggestion); setBatchBrandOpen(true); }} className="h-9 rounded-[9px] border border-amber-300 bg-white px-3 font-extrabold transition hover:bg-amber-100 disabled:opacity-40">Set one brand for all rows</button>
+        </div>
+      ) : null}
 
       {/* Universal 1-Row Responsive Header */}
       <header className="flex shrink-0 items-center justify-between gap-2 rounded-[14px] border border-[#D8DBE0] bg-white p-2 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
@@ -2258,7 +2317,7 @@ export default function ProductImportReviewPage() {
               {[
                 { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
                 { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
-                { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
+                { value: "EDITED" as const, label: "User changes", count: review?.reviewCounts?.edited ?? 0 },
               ].map((item) => {
                 const active = filter === item.value;
                 return (
@@ -2384,9 +2443,9 @@ export default function ProductImportReviewPage() {
                           {edited ? (
                             <span
                               className="inline-flex h-5 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[8.5px] font-extrabold text-amber-800"
-                              title={`Edited from extraction: ${row.reviewChanges?.join(", ")}`}
+                              title={`Changed by a user after extraction: ${row.reviewChanges?.join(", ")}`}
                             >
-                              <Icon name="edit" sizePx={10} /> Edited
+                              <Icon name="edit" sizePx={10} /> User changed
                             </span>
                           ) : null}
                           {ignored ? (
@@ -3752,6 +3811,29 @@ export default function ProductImportReviewPage() {
       </ModalFrame>
 
       {/* Final Import Confirmation Modal */}
+      <ModalFrame
+        open={batchBrandOpen}
+        onClose={() => { if (!batchBrandBusy) setBatchBrandOpen(false); }}
+        title="Confirm one brand for this import"
+        description="This saves the brand and automatically refreshes catalog matching for every uncommitted row."
+        maxWidthClass="max-w-[500px]"
+        mobileBottomSheet
+        footer={(
+          <div className="grid w-full grid-cols-2 gap-3">
+            <button type="button" disabled={batchBrandBusy} onClick={() => setBatchBrandOpen(false)} className="h-11 rounded-[11px] border border-[#D4D7DC] bg-white px-4 text-[11px] font-extrabold text-[#374151] hover:bg-[#F3F4F6]">Cancel</button>
+            <button type="button" disabled={batchBrandBusy || !batchBrand.trim()} onClick={() => void applyBrandToBatch()} className="h-11 rounded-[11px] bg-[#11120d] px-4 text-[11px] font-extrabold text-white disabled:opacity-40">{batchBrandBusy ? "Saving…" : "Save and analyze"}</button>
+          </div>
+        )}
+      >
+        <div className="space-y-3">
+          <div className="rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold leading-5 text-amber-950">Use this only when every row belongs to the same brand. Files containing several brands should be corrected row by row or with selected-row bulk editing.</div>
+          <Field label="Confirmed product brand">
+            <CreatableCombobox value={batchBrand} onChange={setBatchBrand} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Confirmed batch brand" selectOnFocus compact showCreateHelp={false} />
+          </Field>
+          {fileBrandSuggestion ? <p className="text-[10px] font-semibold text-[#64748B]">Suggested from filename: {fileBrandSuggestion}</p> : null}
+        </div>
+      </ModalFrame>
+
       {commitOpen && review ? (
         <ModalFrame open title="Confirm final import" description="This applies every saved decision in this batch." onClose={() => { if (!commitBusy) setCommitOpen(false); }} mobileBottomSheet>
           <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">

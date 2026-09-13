@@ -458,6 +458,10 @@ export async function create(req: Request, res: Response) {
         : redactInventoryFromProduct(product as Record<string, any>),
     );
   } catch (err: any) {
+    if (err.code === "PRODUCT_CATALOG_IDENTITY_CONFLICT") {
+      res.status(409).json({ error: err.message, existingProductId: err.existingProductId });
+      return;
+    }
     // checking for validation errors from our parse functions
     if (
       err.message.includes("required") ||
@@ -468,7 +472,8 @@ export async function create(req: Request, res: Response) {
     }
     // P2002 = unique constraint violation — SKU or barcode already exists
     if (err.code === "P2002") {
-      res.status(409).json({ error: "SKU or barcode already exists" });
+      const target = Array.isArray(err.meta?.target) ? err.meta.target.join(" ") : String(err.meta?.target || "");
+      res.status(409).json({ error: target.includes("catalogIdentityHash") ? "A product with this brand and name already exists" : "SKU or barcode already exists" });
       return;
     }
     // P2003 = foreign key constraint — the brand ID does not point to an existing brand
@@ -621,6 +626,10 @@ export async function update(req: Request, res: Response) {
         : redactInventoryFromProduct(product as Record<string, any>),
     );
   } catch (err: any) {
+    if (err.code === "PRODUCT_CATALOG_IDENTITY_CONFLICT") {
+      res.status(409).json({ error: err.message, existingProductId: err.existingProductId });
+      return;
+    }
     if (
       err.message.includes("required") ||
       err.message.includes("must be")
@@ -633,7 +642,8 @@ export async function update(req: Request, res: Response) {
       return;
     }
     if (err.code === "P2002") {
-      res.status(409).json({ error: "SKU or barcode already exists" });
+      const target = Array.isArray(err.meta?.target) ? err.meta.target.join(" ") : String(err.meta?.target || "");
+      res.status(409).json({ error: target.includes("catalogIdentityHash") ? "A product with this brand and name already exists" : "SKU or barcode already exists" });
       return;
     }
     if (err.code === "P2003") {

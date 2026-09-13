@@ -235,7 +235,7 @@ export function importRowToDraft(
   row: ProductImportRow,
 ): ImportReviewDraft {
   const parsed = parsedImportRow(row);
-  const fallbackSource = batch.supplier || batch.fileName?.replace(/\.[^.]+$/, "") || "Supplier";
+  const confirmedSource = batch.supplier?.trim() || "";
   const fallbackName = row.rawText?.trim() || `Import row ${row.rowNumber}`;
   const name = text(parsed, "name", text(parsed, "productName", fallbackName));
   const sizeUnit = text(parsed, "sizeUnit", "STANDARD");
@@ -247,11 +247,7 @@ export function importRowToDraft(
   const aliases = Array.isArray(parsed.searchAliases)
     ? parsed.searchAliases.map(String).map((value) => value.trim()).filter(Boolean)
     : [];
-  const extractedPrices = Array.isArray(parsed.extractedPrices) ? parsed.extractedPrices : [];
-  const singleExtractedRate = extractedPrices.length === 1
-    ? numberOrNull(object(extractedPrices[0]), "value")
-    : null;
-  const ratePerPiece = numberOrNull(parsed, "ratePerPiece") ?? singleExtractedRate;
+  const ratePerPiece = numberOrNull(parsed, "ratePerPiece");
   const automaticallyClassifiedSource = ["PDF_TEXT_TABLE_ROW", "PDF_SCANNED_AI_ROW", "IMAGE_AI_ROW"]
     .includes(text(parsed, "sourceType"));
 
@@ -268,10 +264,10 @@ export function importRowToDraft(
     name,
     sku: text(parsed, "sku", `IMPORT-${row.rowNumber}`),
     barcode: text(parsed, "barcode"),
-    brand: text(parsed, "brand", fallbackSource),
-    category: text(parsed, "category", "Uncategorized"),
-    categoryGroup: text(parsed, "categoryGroup", text(parsed, "category", "Uncategorized")),
-    vendorSource: text(parsed, "vendorSource", fallbackSource),
+    brand: text(parsed, "brand", confirmedSource),
+    category: text(parsed, "category"),
+    categoryGroup: text(parsed, "categoryGroup", text(parsed, "category")),
+    vendorSource: text(parsed, "vendorSource", confirmedSource),
     productCodeVariant: text(parsed, "productCodeVariant"),
     sizeValue: numberOrNull(parsed, "sizeValue"),
     sizeUnit,

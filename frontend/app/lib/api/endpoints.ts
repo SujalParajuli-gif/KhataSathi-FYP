@@ -831,6 +831,7 @@ export type ProductImportReviewPage = {
         all: number;
         edited: number;
         attention: number;
+        missingBrand?: number;
     };
     decisionCounts: {
         create: number;

@@ -115,7 +115,7 @@ test("PDF text catalog recognizes serial-name-code-Rate rs tables without a unit
     rawText: "1 35ml jar 1 10",
     productName: "35ml jar",
     productCodeVariant: "1",
-    category: "Uncategorized",
+    category: "",
     packageQuantity: null,
     packageUnit: "PIECE",
     extractedPrices: [{ key: "rate", label: "Rate", value: 10 }],

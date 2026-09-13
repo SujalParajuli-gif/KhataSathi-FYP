@@ -144,13 +144,13 @@ test("missing optional package data does not erase a known catalog package", () 
 test("the second occurrence of one brand product identity is an in-file duplicate", () => {
   const results = compareImportRowsToCatalog([
     { rowKey: "16:385", name: "PET JAR 2500 ML", brand: "Bagmati", ratePerPiece: 44 },
-    { rowKey: "16:386", name: "PET JAR 2500 ML", brand: "Bagmati", ratePerPiece: 45 },
+    { rowKey: "16:386", name: "PET JAR 2500 ML", brand: "Bagmati", ratePerPiece: 44 },
   ], []);
   assert.equal(results[0].comparisonStatus, "READY_NEW");
   assert.equal(results[1].comparisonStatus, "IN_FILE_DUPLICATE");
 });
 
-test("a supplier code can match a renamed product and expose the name change", () => {
+test("a supplier code cannot override a different brand-name identity", () => {
   const result = compareImportRowToCatalog({
     rowKey: "3:6",
     name: "BAGMATI BUCKET 13 LTR",
@@ -160,9 +160,8 @@ test("a supplier code can match a renamed product and expose the name change", (
     packageQuantity: 50,
     ratePerPiece: 235,
   }, [bagmatiBucket]);
-  assert.equal(result.comparisonStatus, "MATCHED_WITH_CHANGES");
-  assert.equal(result.changes[0]?.field, "name");
-  assert.match(result.message || "", /codes are not unique/i);
+  assert.equal(result.comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(result.message || "", /different brand or name/i);
 });
 
 test("reused supplier codes do not make different product names in-file duplicates", () => {
@@ -172,4 +171,63 @@ test("reused supplier codes do not make different product names in-file duplicat
   ], []);
   assert.equal(results[0].comparisonStatus, "READY_NEW");
   assert.equal(results[1].comparisonStatus, "READY_NEW");
+});
+
+test("brand and name stay authoritative when an unused incoming code changes", () => {
+  const result = compareImportRowToCatalog({
+    rowKey: "3:6",
+    name: "BUCKET 13 LTR",
+    brand: "Bagmati",
+    productCodeVariant: "NEW-1301",
+    ratePerPiece: 235,
+  }, [bagmatiBucket]);
+  assert.equal(result.comparisonStatus, "MATCHED_WITH_CHANGES");
+  assert.equal(result.matchedProductId, "product-1");
+  assert.equal(result.changes[0]?.field, "productCodeVariant");
+});
+
+test("an identifier pointing to another product is a conflict", () => {
+  const result = compareImportRowToCatalog({
+    rowKey: "1",
+    name: "BUCKET 13 LTR",
+    brand: "Bagmati",
+    barcode: "OTHER-1",
+    ratePerPiece: 235,
+  }, [
+    bagmatiBucket,
+    { ...bagmatiBucket, id: "product-2", name: "BOTTLE 1 LTR", barcode: "OTHER-1" },
+  ]);
+  assert.equal(result.comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(result.message || "", /belongs to another/i);
+});
+
+test("a conflicting size cannot silently become an exact duplicate", () => {
+  const result = compareImportRowToCatalog({
+    rowKey: "1",
+    name: "BUCKET",
+    brand: "Bagmati",
+    sizeValue: 10,
+    sizeUnit: "LTR",
+    ratePerPiece: 235,
+  }, [{ ...bagmatiBucket, name: "BUCKET", sizeValue: 5, sizeUnit: "LTR" }]);
+  assert.equal(result.comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(result.message || "", /size differs/i);
+});
+
+test("same in-file identity with different prices requires review", () => {
+  const results = compareImportRowsToCatalog([
+    { rowKey: "1", name: "PET JAR", brand: "Bagmati", ratePerPiece: 44 },
+    { rowKey: "2", name: "PET JAR", brand: "Bagmati", ratePerPiece: 45 },
+  ], []);
+  assert.equal(results[1].comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(results[1].message || "", /Rate differ/i);
+});
+
+test("one barcode attached to different in-file products is a conflict", () => {
+  const results = compareImportRowsToCatalog([
+    { rowKey: "1", name: "PET JAR", brand: "Bagmati", barcode: "123", ratePerPiece: 44 },
+    { rowKey: "2", name: "WATER BOTTLE", brand: "Bagmati", barcode: "123", ratePerPiece: 44 },
+  ], []);
+  assert.equal(results[1].comparisonStatus, "IDENTIFIER_CONFLICT");
+  assert.match(results[1].message || "", /product name differ/i);
 });

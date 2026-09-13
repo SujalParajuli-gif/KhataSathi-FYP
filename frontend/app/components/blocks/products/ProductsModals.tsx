@@ -4081,9 +4081,9 @@ export default function ProductsModals({
                 </div>
               )}
 
-              {importTab !== "csv" ? <label className="mb-3 block text-sm font-semibold">Supplier / brand
+              {importTab !== "csv" ? <label className="mb-3 block text-sm font-semibold">Default product brand (optional)
                 <input value={importSupplier} onChange={(event) => setImportSupplier(event.target.value)} placeholder="Brand shown on this file" className="mt-1 h-11 w-full rounded-lg border px-3" />
-                <span className="mt-1 block text-xs font-normal text-slate-600">The filename is retained only as a source reference.</span>
+                <span className="mt-1 block text-xs font-normal text-slate-600">Use only when every product has this brand. Leave blank for mixed or uncertain files; the review will ask for confirmation.</span>
               </label> : null}
               {importTab === "pdf" && (
                 <div className="space-y-3">
@@ -4427,6 +4427,8 @@ export default function ProductsModals({
                     ["Retail Price", formatOptionalSellingPrice(activeProduct.retailPrice)],
                     ["Wholesale Price", formatOptionalSellingPrice(activeProduct.wholesalePrice)],
                     ["Wholesale Threshold", `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}${activeProduct.thresholdQtyMode === "default" ? " (Default)" : ""}`],
+                    ["Price source", activeProduct.sourceCitation || "Not recorded"],
+                    ["Rate changed", activeProduct.rateUpdatedAt ? new Date(activeProduct.rateUpdatedAt).toLocaleDateString("en-GB") : "Not recorded"],
                   ],
                 },
                 {
@@ -4587,6 +4589,14 @@ export default function ProductsModals({
                               ? `${formatQty(activeProduct.thresholdQty)} ${activeProduct.saleUnit || "PIECE"}`
                               : "Disabled"}
                           </span>
+                        </div>
+                        <div className="flex items-start justify-between gap-3 pt-1 border-t border-[#F8FAFC] text-[11px] text-[#64748B]">
+                          <span className="shrink-0">Price source</span>
+                          <span className="min-w-0 break-words text-right font-medium text-[#475569]">{activeProduct.sourceCitation || "Not recorded"}</span>
+                        </div>
+                        <div className="flex items-center justify-between text-[11px] text-[#64748B]">
+                          <span>Rate changed</span>
+                          <span className="font-medium text-[#475569]">{activeProduct.rateUpdatedAt ? new Date(activeProduct.rateUpdatedAt).toLocaleDateString("en-GB") : "Not recorded"}</span>
                         </div>
                       </div>
                     </div>

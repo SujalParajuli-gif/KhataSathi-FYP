@@ -99,3 +99,18 @@ test("saved import edits expose the changed fields used by the Edited filter", (
   assert.deepEqual(importReviewChanges(parsed, extracted), ["Package quantity", "Rate"]);
   assert.deepEqual(importReviewChanges(extracted, extracted), []);
 });
+
+test("automatic availability before price mapping is not reported as a user edit", () => {
+  const extracted = {
+    sourceType: "PDF_TEXT_TABLE_ROW",
+    availabilityStatus: "CATALOG_LISTED",
+    ratePerPiece: null,
+    extractedPrices: [{ key: "mrp", label: "MRP", value: 132 }],
+  };
+  const parsed = { ...extracted, availabilityStatus: "COMING_SOON" };
+  assert.deepEqual(importReviewChanges(parsed, extracted), []);
+  assert.deepEqual(
+    importReviewChanges({ ...parsed, ratePerPiece: 132 }, extracted),
+    ["Rate", "Availability"],
+  );
+});

@@ -16,6 +16,7 @@ import {
     rebuildProductSearchDocument,
 } from "./searchAliasService";
 import { searchProductsWithDeterministicRanking } from "./productSearchService";
+import { assertProductCatalogIdentityAvailable } from "./catalogIdentity";
 import {
     normalizeUnitLabel,
     normalizePositiveNumber,
@@ -430,6 +431,10 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
             });
             brandId = brand.id;
         }
+        const catalogIdentityHash = await assertProductCatalogIdentityAvailable(tx, {
+            brandId: brandId!,
+            productName: data.name,
+        });
 
         const identifiers = await allocateProductIdentifiers(tx, data.sku, data.barcode);
 
@@ -437,6 +442,7 @@ export async function createProduct(data: CreateProductInput, actorId: string) {
           data: {
             name: data.name,
             productName: data.productName || data.name,
+            catalogIdentityHash,
             sku: identifiers.sku,
             barcode: identifiers.barcode,
             barcodeOrigin: identifiers.barcodeOrigin,
@@ -645,6 +651,13 @@ export async function updateProduct(
             updateData.brandId = brand.id;
         }
         delete updateData.brandName;
+        if (data.name !== undefined || data.brandId !== undefined || data.brandName !== undefined) {
+            updateData.catalogIdentityHash = await assertProductCatalogIdentityAvailable(tx, {
+                brandId: updateData.brandId || previousProduct.brandId,
+                productName: updateData.name || previousProduct.name,
+                excludeProductId: id,
+            });
+        }
         const updated = await tx.product.update({
             where: { id },
             data: updateData,

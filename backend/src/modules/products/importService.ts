@@ -32,6 +32,11 @@ import {
     storeImportSource,
 } from "./importSourceStorage";
 import { parsePdfTextCatalogPages } from "./pdfTextCatalogParser";
+import {
+    productCatalogIdentityHash,
+    ProductCatalogIdentityConflictError,
+    isProductCatalogIdentityUniqueError,
+} from "./catalogIdentity";
 import sharp from "sharp";
 import { assertExtractionActive, importCoverage, importExecution, importMetadata, persistImportPreview } from "./importExecution";
 
@@ -99,6 +104,7 @@ type ReviewedPdfImportRowInput = {
     rowId: string;
     name?: string;
     sku?: string;
+    skuWasGenerated?: boolean;
     barcode?: string;
     brand?: string;
     category?: string;
@@ -230,8 +236,8 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
         name,
         sku,
         barcode: reviewedDraftText(input.barcode, "Barcode"),
-        brand: reviewedDraftText(input.brand, "Brand") || "Unbranded",
-        category: reviewedDraftText(input.category, "Category") || "Uncategorized",
+        brand: reviewedDraftText(input.brand, "Brand", true)!,
+        category: reviewedDraftText(input.category, "Category"),
         categoryGroup: reviewedDraftText(input.categoryGroup, "Category group"),
         vendorSource: reviewedDraftText(input.vendorSource, "Supplier / source"),
         productCodeVariant: reviewedDraftText(input.productCodeVariant, "Variant / code"),
@@ -797,14 +803,12 @@ export function normalizeCsvImportRow(
             category:
                 normalizeCsvText(defaults.category) ||
                 reviewedCategory ||
-                vendorSource ||
-                "Supplier",
+                undefined,
             categoryGroup:
                 normalizeCsvText(defaults.categoryGroup) ||
                 reviewedCategoryGroup ||
                 normalizeCsvText(defaults.category) ||
                 reviewedCategory ||
-                vendorSource ||
                 null,
             vendorSource: vendorSource || null,
             productCodeVariant: variant || null,
@@ -994,10 +998,19 @@ export async function importProductsFromCsv(
         : null;
 
     // pre-loading all existing brands into the cache
-    const existingBrands = await prisma.brand.findMany({
-        select: { id: true, name: true },
-    });
+    const [existingBrands, existingCatalogProducts] = await Promise.all([
+        prisma.brand.findMany({ select: { id: true, name: true } }),
+        prisma.product.findMany({
+            select: { id: true, name: true, brandId: true, brand: { select: { name: true } } },
+        }),
+    ]);
     existingBrands.forEach((brand) => brandCache.set(brand.name.toLowerCase(), brand.id));
+    const catalogIdentityCache = new Map<string, { id: string; name: string; brandName: string }>(
+        existingCatalogProducts.map((product) => [
+            productCatalogIdentityHash(product.brandId, product.name),
+            { id: product.id, name: product.name, brandName: product.brand.name },
+        ]),
+    );
 
     // processing each row — rowNumber starts at 2 because row 1 is the CSV header
     for (let index = 0; index < rawRows.length; index += 1) {
@@ -1006,9 +1019,19 @@ export async function importProductsFromCsv(
 
         try {
             const row = normalizeCsvImportRow(rawRow, rowNumber); // parsing and validating the raw row
-
+            let createdIdentityHash = "";
             const created = await prisma.$transaction(async (tx) => {
                 const brandId = await resolveBrandIdForImport(tx, row, rowNumber, brandCache); // resolving or creating the brand
+                const catalogIdentityHash = productCatalogIdentityHash(brandId, row.name);
+                const existingIdentity = catalogIdentityCache.get(catalogIdentityHash);
+                if (existingIdentity) {
+                    throw new ProductCatalogIdentityConflictError(
+                        existingIdentity.id,
+                        existingIdentity.name,
+                        existingIdentity.brandName,
+                    );
+                }
+                createdIdentityHash = catalogIdentityHash;
 
                 let finalSku = row.sku;
 
@@ -1074,6 +1097,7 @@ export async function importProductsFromCsv(
                     data: {
                         name: row.name,
                         productName: row.productName || row.name,
+                        catalogIdentityHash,
                         sku: identifiers.sku,
                         barcode: identifiers.barcode,
                         barcodeOrigin: identifiers.barcodeOrigin,
@@ -1140,6 +1164,11 @@ export async function importProductsFromCsv(
                 return created;
             });
 
+            catalogIdentityCache.set(createdIdentityHash, {
+                id: created.id,
+                name: created.name,
+                brandName: row.brand || row.vendorSource || "",
+            });
             createdProducts.push(created);
         } catch (err: any) {
             // collecting the error so we can report it without stopping the entire import
@@ -1150,7 +1179,9 @@ export async function importProductsFromCsv(
                     normalizeCsvText((rawRow as any).name) ||
                     normalizeCsvText((rawRow as any).Product_Name) ||
                     undefined,
-                message: err?.message || `Row ${rowNumber}: import failed.`,
+                message: isProductCatalogIdentityUniqueError(err)
+                    ? `Row ${rowNumber}: ${normalizeCsvText((rawRow as any).name) || normalizeCsvText((rawRow as any).Product_Name) || "this product"} was created by another catalog operation. Review the existing product instead.`
+                    : err?.message || `Row ${rowNumber}: import failed.`,
             });
         }
     }
@@ -1170,10 +1201,11 @@ function csvImportRowToParsedProduct(row: CsvImportRow) {
         name: row.name,
         productName: row.productName || row.name,
         sku: row.sku,
+        skuWasGenerated: row.skuWasGenerated === true,
         barcode: row.barcode || "",
         brand: row.brand || row.vendorSource || "Supplier",
-        category: row.category || row.vendorSource || "Supplier",
-        categoryGroup: row.categoryGroup || row.category || row.vendorSource || "",
+        category: row.category || "",
+        categoryGroup: row.categoryGroup || row.category || "",
         vendorSource: row.vendorSource || "",
         productCodeVariant: row.productCodeVariant || "",
         sizeValue: row.sizeValue ?? null,
@@ -1207,7 +1239,7 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
             parsed.warnings = [
                 ...(Array.isArray(parsed.warnings) ? parsed.warnings : []),
                 ...(Array.isArray(parsed.uncertainFields) && parsed.uncertainFields.length ? [`Check unreadable fields: ${parsed.uncertainFields.join(", ")}.`] : []),
-                ...(!parsed.brand ? ["Confirm the supplier / brand before importing."] : []),
+                ...(!parsed.brand ? ["Confirm the product brand before importing."] : []),
                 ...(![parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice].some((value) => Number(value) > 0) ? ["No price captured. Check the source before marking this product as coming soon."] : []),
             ];
         }
@@ -1216,10 +1248,14 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
             rowKey: String(row.rowNumber),
             name: String(parsed.name || ""),
             brand: String(parsed.brand || ""),
+            sku: typeof parsed.sku === "string" ? parsed.sku : null,
+            skuWasGenerated: parsed.skuWasGenerated === true,
             barcode: typeof parsed.barcode === "string" ? parsed.barcode : null,
             productCodeVariant:
                 typeof parsed.productCodeVariant === "string" ? parsed.productCodeVariant : null,
             category: typeof parsed.category === "string" ? parsed.category : null,
+            sizeValue: typeof parsed.sizeValue === "number" ? parsed.sizeValue : null,
+            sizeUnit: typeof parsed.sizeUnit === "string" ? parsed.sizeUnit : null,
             packageQuantity:
                 typeof parsed.packageQuantity === "number" ? parsed.packageQuantity : null,
             ratePerPiece: typeof parsed.ratePerPiece === "number" ? parsed.ratePerPiece : null,
@@ -1236,10 +1272,13 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
         select: {
             id: true,
             name: true,
+            sku: true,
             barcode: true,
             barcodeOrigin: true,
             productCodeVariant: true,
             category: true,
+            sizeValue: true,
+            sizeUnit: true,
             packageQuantity: true,
             ratePerPiece: true,
             retailPrice: true,
@@ -1259,11 +1298,12 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
     comparisons.forEach((comparison, comparisonIndex) => {
         const row = rows[comparableIndexes[comparisonIndex]];
         const parsed = row.parsed as Record<string, unknown>;
-        row.extracted = row.parsed;
-        row.parsed = {
+        const classifiedParsed = {
             ...parsed,
             availabilityStatus: comparison.availabilityStatus,
         } as Prisma.InputJsonValue;
+        if (row.extracted === undefined) row.extracted = classifiedParsed;
+        row.parsed = classifiedParsed;
         row.comparisonStatus = comparison.comparisonStatus;
         row.matchedProductId = comparison.matchedProductId;
         row.changeSet = comparison.changes as Prisma.InputJsonValue;
@@ -2031,10 +2071,11 @@ export async function createScannedPdfImportPreview(input: {
                 englishName || productName,
                 code,
             ),
+            skuWasGenerated: true,
             barcode: "",
             brand: sourceName,
-            category: normalizeCsvText(item.category || item.group) || "Uncategorized",
-            categoryGroup: normalizeCsvText(item.category || item.group) || "Uncategorized",
+            category: normalizeCsvText(item.category || item.group),
+            categoryGroup: normalizeCsvText(item.category || item.group),
             vendorSource: sourceName,
             productCodeVariant: code,
             sizeValue: parsedSize.sizeValue,
@@ -2343,8 +2384,11 @@ export async function createImageImportPreview(input: {
             ? null
             : Number(packageInput);
         const supplierName = normalizeCsvText(aiDocument?.supplierName) || sourceName;
-        const brandName = normalizeCsvText(aiDocument?.brandName) || supplierName;
-        const category = normalizeCsvText(item.category || item.group) || "Uncategorized";
+        // A supplier can sell several brands. Only use a brand explicitly read
+        // from the source or confirmed by the user; do not promote the detected
+        // supplier name into product identity.
+        const brandName = normalizeCsvText(aiDocument?.brandName) || sourceName;
+        const category = normalizeCsvText(item.category || item.group);
         const productName = cleanImportedProductName(completeProductName);
 
         if (!productName) {
@@ -2376,6 +2420,7 @@ export async function createImageImportPreview(input: {
             name: productName,
             productName,
             sku: buildSupplierSku(supplierName, String(item.serial || index + 1), englishName || productName, code),
+            skuWasGenerated: true,
             barcode: "",
             brand: brandName,
             category,
@@ -2441,12 +2486,13 @@ export async function createImageImportPreview(input: {
     await classifyProductPreviewRows(rows);
 
     const failedRows = rows.filter((row) => row.status === "FAILED").length;
-    const detectedSupplier = normalizeCsvText(aiDocument?.supplierName) || sourceName;
     const batch = await persistImportPreview({
         data: {
             sourceType: "IMAGE",
             fileName: input.fileName || null,
-            supplier: detectedSupplier,
+            // Keep the batch-level value reserved for a user-confirmed supplier/
+            // brand. The detected supplier remains on each row as provenance.
+            supplier: sourceName,
             status: rows.length > 0 && failedRows < rows.length ? "DRAFT" : "FAILED",
             totalRows: rows.length,
             importedRows: 0,
@@ -2544,6 +2590,7 @@ export async function createPdfImportPreview(input: {
                     name: productName,
                     productName,
                     sku: buildSupplierSku(sourceName, String(index + 1), productName),
+                    skuWasGenerated: true,
                     barcode: "",
                     brand: sourceName,
                     category: row.category,
@@ -2570,7 +2617,7 @@ export async function createPdfImportPreview(input: {
                     availabilityStatus: row.extractedPrices.length > 0 ? "CATALOG_LISTED" : "COMING_SOON",
                     stock: 0,
                     extractedPrices: row.extractedPrices,
-                    warnings: [...(row.warnings || []), ...(!sourceName ? ["Confirm the supplier / brand before importing."] : [])],
+                    warnings: [...(row.warnings || []), ...(!sourceName ? ["Confirm the product brand before importing."] : [])],
                 },
             };
         });
@@ -2911,6 +2958,10 @@ export async function getProductImportReview(input: {
         || (row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed) && Array.isArray((row.parsed as any).warnings) && (row.parsed as any).warnings.length > 0),
     ).map((row) => row.id);
     const editedIds = reviewMetricRows.filter((row) => (reviewChangesById.get(row.id)?.length || 0) > 0).map((row) => row.id);
+    const missingBrandCount = reviewMetricRows.filter((row) => {
+        const parsed = importMetadata(row.parsed);
+        return !normalizeCsvText(parsed.brand);
+    }).length;
 
     const where: Prisma.ProductImportRowWhereInput = { batchId: input.batchId };
     if (input.comparisonStatus) {
@@ -3000,6 +3051,7 @@ export async function getProductImportReview(input: {
             all: reviewMetricRows.length,
             edited: editedIds.length,
             attention: attentionIds.length,
+            missingBrand: missingBrandCount,
         },
         decisionCounts,
         priceMapping,
@@ -3011,6 +3063,13 @@ export function importReviewChanges(parsedValue: unknown, extractedValue: unknow
         || !extractedValue || typeof extractedValue !== "object" || Array.isArray(extractedValue)) return [];
     const parsed = parsedValue as Record<string, unknown>;
     const extracted = extractedValue as Record<string, unknown>;
+    const sourceType = String(parsed.sourceType || extracted.sourceType || "");
+    const derivedUnmappedAvailability = ["PDF_TEXT_TABLE_ROW", "PDF_SCANNED_AI_ROW", "IMAGE_AI_ROW"].includes(sourceType)
+        && parsed.availabilityStatus === "COMING_SOON"
+        && extracted.availabilityStatus === "CATALOG_LISTED"
+        && Array.isArray(extracted.extractedPrices)
+        && extracted.extractedPrices.length > 0
+        && ![parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice].some((value) => Number(value) > 0);
     const fields: Array<[string, string]> = [
         ["productName", "Product name"], ["sku", "SKU"], ["barcode", "Barcode"],
         ["brand", "Brand"], ["category", "Category"], ["productCodeVariant", "Product code"],
@@ -3019,7 +3078,10 @@ export function importReviewChanges(parsedValue: unknown, extractedValue: unknow
         ["retailPrice", "Retail price"], ["wholesalePrice", "Wholesale price"],
         ["availabilityStatus", "Availability"],
     ];
-    return fields.filter(([key]) => JSON.stringify(parsed[key] ?? null) !== JSON.stringify(extracted[key] ?? null)).map(([, label]) => label);
+    return fields
+        .filter(([key]) => !(key === "availabilityStatus" && derivedUnmappedAvailability))
+        .filter(([key]) => JSON.stringify(parsed[key] ?? null) !== JSON.stringify(extracted[key] ?? null))
+        .map(([, label]) => label);
 }
 
 type ImportPriceDestination = "ratePerPiece" | "retailPrice" | "wholesalePrice";
@@ -3355,6 +3417,7 @@ export async function saveReviewedProductImportRows(
     }
     const reviewedDrafts: ProductImportPreviewRowDraft[] = preparedRows.map((row, index) => {
         const { rowId: _rowId, resolution, ...parsedDraft } = row;
+        const storedParsed = importMetadata(batchRows.get(row.rowId)?.parsed);
         return {
             rowNumber: batchRows.get(row.rowId)?.rowNumber ?? index + 1,
             rawText: batchRows.get(row.rowId)?.rawText ?? null,
@@ -3362,6 +3425,7 @@ export async function saveReviewedProductImportRows(
             resolution: resolution || null,
             parsed: JSON.parse(JSON.stringify({
                 sourceType: "REVIEWED_ROW_DRAFT",
+                skuWasGenerated: storedParsed.skuWasGenerated === true,
                 ...parsedDraft,
             })) as Prisma.InputJsonValue,
         };
@@ -3666,10 +3730,11 @@ export function reviewedImportRowToCsvRow(input: ReviewedPdfImportRowInput) {
     return {
         name: input.name,
         sku: input.sku,
+        skuWasGenerated: input.skuWasGenerated === true ? "true" : "false",
         barcode: input.barcode,
         brand: input.brand || input.vendorSource,
-        category: input.category || input.vendorSource,
-        categoryGroup: input.categoryGroup || input.category || input.vendorSource,
+        category: input.category || undefined,
+        categoryGroup: input.categoryGroup || input.category || undefined,
         vendorSource: input.vendorSource,
         productCodeVariant: input.productCodeVariant,
         sizeValue: input.sizeValue ?? undefined,
@@ -3718,6 +3783,8 @@ async function updateMatchedProductFromImport(input: {
                 category: true,
                 categoryGroup: true,
                 productCodeVariant: true,
+                sizeValue: true,
+                sizeUnit: true,
                 packageQuantity: true,
                 ratePerPiece: true,
                 retailPrice: true,
@@ -3745,6 +3812,12 @@ async function updateMatchedProductFromImport(input: {
         }
         if (allowedChanges.has("productCodeVariant")) {
             data.productCodeVariant = input.row.productCodeVariant || null;
+        }
+        if (allowedChanges.has("sizeValue")) {
+            data.sizeValue = input.row.sizeValue;
+        }
+        if (allowedChanges.has("sizeUnit")) {
+            data.sizeUnit = normalizeUnitLabel(input.row.sizeUnit, "STANDARD");
         }
         if (allowedChanges.has("packageQuantity")) {
             data.packageQuantity = input.row.packageQuantity;
@@ -3854,6 +3927,7 @@ async function executeReviewedPdfRows(
     const preparedRows = rows.map(prepareReviewedImportRowDraft);
     const classifiedRows: ProductImportPreviewRowDraft[] = preparedRows.map((row) => {
         const { rowId, resolution, ...parsed } = row;
+        const storedParsed = importMetadata(existingRowsById.get(rowId)?.parsed);
         return {
             rowNumber: existingRowsById.get(rowId)?.rowNumber || 0,
             rawText: existingRowsById.get(rowId)?.rawText || null,
@@ -3861,6 +3935,7 @@ async function executeReviewedPdfRows(
             resolution: resolution || null,
             parsed: {
                 sourceType: "FINAL_REVIEWED_ROW",
+                skuWasGenerated: storedParsed.skuWasGenerated === true,
                 ...parsed,
             } as Prisma.InputJsonValue,
         };
