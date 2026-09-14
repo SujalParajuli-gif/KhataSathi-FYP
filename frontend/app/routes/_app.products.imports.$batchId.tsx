@@ -1,4 +1,4 @@
-import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { useToast } from "~/components/ui/Toast";
@@ -7,6 +7,20 @@ import ProjectSelect from "~/components/ui/ProjectSelect";
 import Switch from "~/components/ui/Switch";
 import { ModalFrame } from "~/components/ui/Modal";
 import { ImportProcessingWidget } from "~/components/blocks/products/ImportProcessingWidget";
+import { ImportReviewHeader } from "~/components/blocks/products/import-review/ImportReviewHeader";
+import { ImportRowList } from "~/components/blocks/products/import-review/ImportRowList";
+import { ImportRowEditor } from "~/components/blocks/products/import-review/ImportRowEditor";
+import { ImportSourcePanel } from "~/components/blocks/products/import-review/ImportSourcePanel";
+import {
+  Field,
+  inputClass,
+  numberInput,
+  cellsFromRow,
+  rowName,
+  reviewFilterParams,
+  type MobilePanel,
+  type ReviewFilter,
+} from "~/components/blocks/products/import-review/shared";
 import {
   fetchProductImportSourceBlobApi,
   fetchProductImportSourcePageBlobApi,
@@ -26,14 +40,11 @@ import {
 } from "~/lib/api/endpoints";
 import {
   applyImportBulkEdit,
-  comparisonLabel,
   describeReviewPayloadChanges,
   displayImportSourceRegion,
   draftPayload,
   importRowToDraft,
   changeImportDraft,
-  importRowNeedsAttention,
-  importRowPriceLabel,
   validateImportDraft,
   parsedImportRow,
   readableSourceHeader,
@@ -44,7 +55,6 @@ import {
   type ImportReviewDraft,
 } from "~/features/product-imports/reviewModel";
 
-type MobilePanel = "list" | "editor" | "source";
 type ReviewHistoryEntry = {
   id: string;
   label: string;
@@ -74,66 +84,6 @@ type BulkEditPreview = {
   skippedRows: number;
   priceConflicts: number;
 };
-
-type ReviewFilter = "ALL" | "EDITED" | "ATTENTION" | NonNullable<ProductImportRow["comparisonStatus"]>;
-
-const COMPARISON_FILTERS: Array<{
-  value: NonNullable<ProductImportRow["comparisonStatus"]>;
-  label: string;
-}> = [
-    { value: "READY_NEW", label: "New" },
-    { value: "MATCHED_WITH_CHANGES", label: "Catalog updates" },
-    { value: "EXACT_DUPLICATE", label: "Exact matches" },
-    { value: "IDENTIFIER_CONFLICT", label: "Conflicts" },
-    { value: "IN_FILE_DUPLICATE", label: "File duplicates" },
-    { value: "FAILED", label: "Failed" },
-    { value: "NEEDS_REVIEW", label: "Needs attention" },
-  ];
-
-function reviewFilterParams(filter: ReviewFilter) {
-  if (filter === "EDITED" || filter === "ATTENTION") return { reviewState: filter } as const;
-  if (filter === "ALL") return {};
-  return { comparisonStatus: filter };
-}
-
-function rowName(row: ProductImportRow) {
-  const parsed = parsedImportRow(row);
-  return String(parsed.name || parsed.productName || row.rawText || `Row ${row.rowNumber}`);
-}
-
-function rowSku(row: ProductImportRow) {
-  return String(parsedImportRow(row).sku || "No SKU");
-}
-
-
-function statusTone(status?: ProductImportRow["comparisonStatus"]) {
-  if (status === "READY_NEW") return "border-emerald-200 bg-emerald-50 text-emerald-800";
-  if (status === "MATCHED_WITH_CHANGES" || status === "NEEDS_REVIEW") {
-    return "border-amber-200 bg-amber-50 text-amber-800";
-  }
-  if (status === "FAILED" || status === "IDENTIFIER_CONFLICT") {
-    return "border-rose-200 bg-rose-50 text-rose-800";
-  }
-  if (status === "IN_FILE_DUPLICATE") return "border-violet-200 bg-violet-50 text-violet-800";
-  return "border-slate-200 bg-slate-50 text-slate-700";
-}
-
-function cellsFromRow(row: Pick<ProductImportRow, "rawText" | "sourceLocator">) {
-  const located = row.sourceLocator?.cells;
-  if (located && typeof located === "object") return located;
-  try {
-    const parsed = JSON.parse(row.rawText || "{}");
-    return parsed && typeof parsed === "object" ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-function numberInput(value: string) {
-  if (!value.trim()) return null;
-  const parsed = Number(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
 
 function reviewPrice(value: number | null | undefined) {
   return Number(value) > 0 ? `NPR ${Number(value).toLocaleString()}` : "Empty";
@@ -245,21 +195,6 @@ function getPriceColumnDetails(
     activeValue,
   };
 }
-
-function Field({ label, children, field, issue }: { label: string; children: React.ReactNode; field?: string; issue?: { message: string; severity: "error" | "warning" } }) {
-  const issueId = field ? `review-issue-${field}` : undefined;
-  return (
-    <label id={field ? `review-field-${field}` : undefined} className={`grid min-w-0 gap-1 text-[11px] font-extrabold text-[#4B5563] xl:text-[10px] ${issue ? issue.severity === "error" ? "[&_input]:border-rose-400 [&_input]:bg-rose-50/40" : "[&_input]:border-amber-400 [&_input]:bg-amber-50/40" : ""}`}>
-      <span>{label}</span>
-      {isValidElement(children) && typeof children.type === "string" ? cloneElement(children as React.ReactElement<any>, {
-        "aria-label": label, "aria-invalid": issue?.severity === "error" || undefined, "aria-describedby": issue ? issueId : undefined,
-      }) : children}
-      {issue ? <span id={issueId} className={`text-[10px] font-semibold leading-4 ${issue.severity === "error" ? "text-rose-800" : "text-amber-800"}`}>{issue.message}</span> : null}
-    </label>
-  );
-}
-
-const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/15";
 
 export default function ProductImportReviewPage() {
   const { batchId = "" } = useParams();
@@ -1481,558 +1416,6 @@ export default function ProductImportReviewPage() {
     bulkDirty,
   ]);
 
-  function renderSourcePanel() {
-    const isSpreadsheet = ["CSV", "XLSX"].includes(review?.batch.sourceType || "");
-    return (
-      <section className={`${mobilePanel === "source" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-        <div className="flex min-h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[#E2E4E8] bg-white px-3 py-2 sm:px-3.5">
-          <div className="min-w-0 shrink-0">
-            <div className="flex items-center gap-1.5">
-              <h2 className="text-[13px] font-extrabold text-[#11120d] whitespace-nowrap">Source document</h2>
-              {isSpreadsheet && activeRow ? (
-                <span className="shrink-0 whitespace-nowrap rounded-full border border-[#D8DBE0] bg-[#F1F3F5] px-2 py-0.5 text-[9.5px] font-extrabold text-[#11120d]">
-                  Row {activeRow.sourceLocator?.rowNumber || activeRow.rowNumber}
-                </span>
-              ) : null}
-            </div>
-            <p className="truncate text-[10.5px] font-medium text-[#64748B]">
-              {activeRow?.sourceLocator?.sheetName || (sourceMimeType === "application/pdf" ? `Page ${sourcePageNumber}` : isSpreadsheet ? "Spreadsheet context" : review?.batch.fileName)}
-            </p>
-          </div>
-
-          <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
-            {productNameHeader ? (
-              <button
-                type="button"
-                onClick={() => {
-                  const nameCell = document.getElementById(`source-cell-name-${activeRowId}`);
-                  if (nameCell) {
-                    nameCell.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "center" });
-                  } else {
-                    const rowElem = document.getElementById(`source-row-${activeRowId}`);
-                    if (rowElem) {
-                      rowElem.scrollIntoView({ behavior: "smooth", block: "nearest", inline: "start" });
-                    }
-                  }
-                }}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-amber-300/80 bg-amber-50/70 px-2 sm:px-2.5 text-[10.5px] sm:text-[11px] font-bold text-amber-900 transition hover:bg-amber-100 shadow-sm shrink-0 whitespace-nowrap"
-                title="Scroll table directly to the Product Name column"
-              >
-                <Icon name="center_focus_strong" sizePx={14} className="text-amber-600 shrink-0" />
-                <span>Snap to Name</span>
-              </button>
-            ) : null}
-            {activeSourceEntries.length > 0 ? (
-              <button
-                type="button"
-                onClick={() => setSourceDetailsOpen(true)}
-                className="inline-flex h-8 items-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-2 sm:px-2.5 text-[10.5px] sm:text-[11px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6] shrink-0 whitespace-nowrap"
-                title="View all extracted raw values for this row"
-              >
-                <Icon name="visibility" sizePx={14} className="shrink-0" />
-                <span>Details ({activeSourceEntries.length})</span>
-              </button>
-            ) : null}
-            {isSpreadsheet && sourceRows.length > 0 ? (
-              <span className="hidden rounded-full border border-[#D8DBE0] bg-[#F7F8FA] px-2 py-0.5 text-[9px] font-extrabold text-[#5F6570] 2xl:inline-block shrink-0 whitespace-nowrap">
-                {sourceRows.length} rows
-              </span>
-            ) : null}
-          </div>
-        </div>
-
-        <div className="flex min-h-0 flex-1 flex-col overflow-hidden bg-[#F7F8FA] p-2 sm:p-2.5">
-          {isSpreadsheet ? (
-            displaySourceHeaders.length > 0 ? (
-              <div className="flex h-full min-h-0 flex-1 flex-col overflow-hidden rounded-[12px] border border-[#D8DBE0] bg-white">
-                <div className="min-h-0 flex-1 overflow-auto overscroll-contain [scrollbar-gutter:stable]">
-                  <table
-                    aria-label="Original spreadsheet rows"
-                    className="table-fixed border-separate border-spacing-0 text-left text-[11px]"
-                    style={{ width: `${sourceTableWidth}px`, minWidth: "100%" }}
-                  >
-                    <colgroup>
-                      <col style={{ width: "56px" }} />
-                      {displaySourceHeaders.map((header) => (
-                        <col key={header} style={{ width: `${sourcePreviewColumnWidth(header)}px` }} />
-                      ))}
-                    </colgroup>
-                    <thead className="sticky top-0 z-10 bg-[#EFF2F5] text-[#4B5563]">
-                      <tr>
-                        <th scope="col" className="sticky left-0 z-20 overflow-hidden border-b border-r border-[#D8DBE0] bg-[#EFF2F5] px-2.5 py-2 font-extrabold">Row</th>
-                        {displaySourceHeaders.map((header) => (
-                          <th
-                            key={header}
-                            scope="col"
-                            className={`overflow-hidden border-b border-r border-[#D8DBE0] px-2.5 py-2 font-extrabold ${header === productNameHeader ? "bg-amber-100/60 text-amber-950 border-b-amber-300" : ""}`}
-                          >
-                            <div className="truncate flex items-center gap-1" title={readableSourceHeader(header)}>
-                              {header === productNameHeader ? <Icon name="star" sizePx={12} className="text-amber-600 shrink-0" /> : null}
-                              <span>{readableSourceHeader(header)}</span>
-                            </div>
-                          </th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {sourceRows.map((row) => {
-                        const cells = cellsFromRow(row);
-                        const selected = row.id === activeRowId;
-                        return (
-                          <tr
-                            key={row.id}
-                            id={`source-row-${row.id}`}
-                            onClick={() => {
-                              const match = review?.rows.find((r) => r.id === row.id);
-                              if (match) chooseRow(match);
-                            }}
-                            aria-selected={selected}
-                            className={`cursor-pointer transition hover:bg-amber-50/60 ${selected ? "bg-amber-100 outline outline-2 -outline-offset-2 outline-amber-500" : "bg-white"}`}
-                          >
-                            <td className={`sticky left-0 z-[5] overflow-hidden whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-extrabold ${selected ? "bg-amber-100 text-amber-950" : "bg-white text-[#374151]"}`}>
-                              {row.sourceLocator?.rowNumber || row.rowNumber}
-                            </td>
-                            {displaySourceHeaders.map((header) => {
-                              const value = cells[header];
-                              const isName = header === productNameHeader;
-                              return (
-                                <td
-                                  key={header}
-                                  id={isName && selected ? `source-cell-name-${row.id}` : undefined}
-                                  className={`overflow-hidden border-b border-r border-[#E2E4E8] px-2.5 py-2 font-semibold ${isName ? (selected ? "bg-amber-200/70 text-amber-950 font-bold" : "bg-amber-50/30 font-semibold text-[#11120d]") : ""
-                                    } ${sourceCellHasValue(value) ? (selected ? "text-amber-950 font-bold" : "text-[#374151]") : "text-[#C4C8CE]"}`}
-                                >
-                                  <div className="truncate" title={sourceCellHasValue(value) ? String(value) : undefined}>
-                                    {sourceCellHasValue(value) ? String(value) : "—"}
-                                  </div>
-                                </td>
-                              );
-                            })}
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            ) : (
-              <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold text-amber-900">
-                This older review has no structured spreadsheet cells. Re-upload the source after the migration to enable exact Excel-row preview.
-              </div>
-            )
-          ) : sourceLoading ? (
-            <div className="flex h-full min-h-[320px] items-center justify-center text-[12px] font-extrabold text-[#7A7F89]">
-              Rendering source page…
-            </div>
-          ) : sourcePreviewUrl && sourceMimeType === "application/pdf" && !region ? (
-            <iframe
-              title="Supplier PDF source"
-              src={`${sourcePreviewUrl}#page=${sourcePageNumber}&zoom=page-width&search=${encodeURIComponent(activeRow?.sourceLocator?.searchText || (activeRow ? rowName(activeRow) : ""))}`}
-              className="h-full min-h-[420px] w-full rounded-[10px] border border-[#D8DBE0] bg-white"
-            />
-          ) : sourcePreviewUrl ? (
-            <div className="flex h-full min-h-0 items-center justify-center overflow-auto rounded-[10px] border border-[#D8DBE0] bg-white p-2">
-              <div className="relative mx-auto w-[820px] max-w-none">
-                <img src={sourcePreviewUrl} alt="Supplier catalog source" className="block h-auto w-full max-w-none object-contain" />
-                {region ? (
-                  <div
-                    ref={sourceHighlightRef}
-                    className="pointer-events-none absolute border-2 border-amber-500 bg-amber-300/25 shadow-[0_0_0_9999px_rgba(15,23,42,0.10)]"
-                    style={{
-                      top: `${(region.top / regionScale) * 100}%`,
-                      left: `${(region.left / regionScale) * 100}%`,
-                      width: `${((region.right - region.left) / regionScale) * 100}%`,
-                      height: `${((region.bottom - region.top) / regionScale) * 100}%`,
-                    }}
-                  />
-                ) : null}
-              </div>
-            </div>
-          ) : (
-            <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-4 text-[12px] font-semibold leading-5 text-amber-900">
-              The protected original is unavailable for this older review. New uploads retain it automatically.
-            </div>
-          )}
-        </div>
-      </section>
-    );
-  }
-
-  function renderEditor() {
-    if (!draft || !activeRow) return <div className="flex h-full items-center justify-center rounded-[18px] border border-[#D8DBE0] bg-white p-6 text-[13px] font-bold text-[#7A7F89]">Select a row to review.</div>;
-    const activeIndex = review?.rows.findIndex((row) => row.id === activeRowId) ?? -1;
-    const filteredPosition = review && activeIndex >= 0
-      ? (review.pagination.page - 1) * review.pagination.pageSize + activeIndex + 1
-      : 0;
-    const canMovePrevious = Boolean(review && filteredPosition > 1);
-    const canMoveNext = Boolean(review && filteredPosition < review.pagination.total);
-    const baseline = draftPayload(importRowToDraft(review!.batch, activeRow));
-    const comparisonStale = Object.entries(draftPayload(draft)).some(([key, value]) =>
-      !["resolution", "acknowledgeWarnings"].includes(key) && JSON.stringify(value) !== JSON.stringify(baseline[key as keyof typeof baseline]));
-    const issues = [
-      ...validateImportDraft(draft, Boolean(review?.priceMapping?.required && !review.priceMapping.complete)),
-      ...(!comparisonStale && draft.resolution !== "IGNORE" ? activeRow.reviewIssues || [] : []),
-    ];
-    const committed = ["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(activeRow.status);
-    return (
-      <section className={`${mobilePanel === "editor" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-        <div className="shrink-0 border-b border-[#E2E4E8] bg-white px-3 sm:px-3.5 py-2.5 sm:py-3">
-          <div className="flex items-center justify-between gap-2 sm:gap-3">
-            <div className="flex min-w-0 items-center gap-2">
-              <button
-                type="button"
-                onClick={() => setMobilePanel("list")}
-                className="inline-flex h-8.5 w-8.5 shrink-0 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120d] transition active:bg-[#F3F4F6] touch-manipulation xl:hidden"
-                aria-label="Back to product list"
-                title="Back to list"
-              >
-                <Icon name="arrow_back" sizePx={16} />
-              </button>
-              <div className="min-w-0">
-                <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap sm:flex-nowrap">
-                  <h2 className="text-[13.5px] sm:text-[14px] font-extrabold text-[#11120d] whitespace-nowrap">Review item</h2>
-                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[8.5px] sm:text-[9px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
-                    {comparisonStale ? "Comparison pending" : comparisonLabel(draft.comparisonStatus)}
-                  </span>
-                  {dirty ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[8.5px] font-bold text-amber-800">
-                      <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                      Unsaved
-                    </span>
-                  ) : activeRow.reviewChanges?.length ? (
-                    <span
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[8.5px] font-bold text-slate-700"
-                      title={`Product corrections after import setup: ${activeRow.reviewChanges.join(", ")}`}
-                    >
-                      <Icon name="edit" sizePx={10} />
-                      User changed
-                    </span>
-                  ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[8.5px] font-bold text-emerald-800">
-                      <Icon name="check" sizePx={10} className="text-emerald-600" />
-                      {committed ? "Applied" : "Draft saved"}
-                    </span>
-                  )}
-                </div>
-                <p className="mt-0.5 truncate text-[10.5px] sm:text-[11px] font-semibold text-[#7A7F89]">
-                  {filteredPosition.toLocaleString()} of {review?.pagination.total.toLocaleString() || 0} · source row {draft.sourceLocator?.rowNumber || draft.rowNumber}
-                </p>
-              </div>
-            </div>
-            <div className="flex shrink-0 items-center gap-1">
-              <button
-                type="button"
-                onClick={() => moveActiveRow(-1)}
-                disabled={!canMovePrevious}
-                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2 sm:px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
-                aria-label="Previous product row"
-                title="Previous product row"
-              >
-                <Icon name="chevron_left" sizePx={16} />
-                <span className="hidden sm:inline">Prev</span>
-              </button>
-              <button
-                type="button"
-                onClick={() => moveActiveRow(1)}
-                disabled={!canMoveNext}
-                className="inline-flex h-8.5 items-center justify-center gap-1 rounded-[8px] border border-[#D4D7DC] bg-white px-2 sm:px-2.5 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35"
-                aria-label="Next product row"
-                title="Next product row"
-              >
-                <span className="hidden sm:inline">Next</span>
-                <Icon name="chevron_right" sizePx={16} />
-              </button>
-            </div>
-          </div>
-        </div>
-
-        <div role="status" className="max-h-36 shrink-0 overflow-y-auto border-b border-[#E2E4E8] bg-[#F8FAFC] px-3 py-2 text-[11px] leading-5">
-          <p className="font-bold text-[#374151]">
-            {committed ? "This row has already been applied. It is read-only."
-              : draft.resolution === "IGNORE" ? "This row will be skipped. No catalog data will change."
-              : comparisonStale ? "Unsaved changes — save this row to refresh its catalog comparison."
-              : draft.comparisonStatus === "EXACT_DUPLICATE" ? activeRow.pendingWarnings?.length
-                ? "Already in your catalog. Check the extraction warnings below before finishing."
-                : "Already in your catalog. Existing values will be kept; no duplicate will be created."
-              : draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? "An existing product matches. Review the differences below before choosing what to keep."
-              : draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "Conflicting product details. Correct the highlighted fields before importing."
-              : issues.length ? "Check the highlighted fields against the source."
-              : "Draft only — the catalog will change after Final import."}
-          </p>
-          {issues.length && !committed ? <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-            {[...new Map(issues.map(issue => [issue.field || issue.message, issue])).values()].map(issue =>
-              <button key={issue.field || issue.message} type="button" onClick={() => focusReviewField(issue.field)}
-                className="text-left font-semibold text-amber-900 underline decoration-amber-300 underline-offset-2">
-                {issue.field ? `Check ${readableSourceHeader(issue.field)}` : issue.message}
-              </button>)}
-          </div> : null}
-        </div>
-        <fieldset disabled={committed} className="min-h-0 min-w-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain bg-[#FAFAFB] p-3">
-          {!comparisonStale && draft.error ? (
-            <div role="alert" className={`rounded-[10px] border px-3 py-2.5 text-[10.5px] font-semibold leading-5 ${draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
-              <div className="flex items-start gap-2">
-                <Icon name={draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "error" : "warning"} sizePx={16} className="mt-0.5 shrink-0" />
-                <div><strong className="block font-extrabold">{draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "Resolve this conflict" : "Review required"}</strong>{draft.error}</div>
-              </div>
-            </div>
-          ) : null}
-          {!!activeRow.pendingWarnings?.length && draft.resolution !== "IGNORE" ? (
-            <label className="flex items-start gap-2 rounded-[10px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-950">
-              <input type="checkbox" checked={draft.acknowledgeWarnings === true} onChange={event => updateDraft("acknowledgeWarnings", event.target.checked)} className="mt-1 shrink-0" />
-              <span>I checked the extraction warnings against the source. Save this row to confirm.
-                <span className="mt-1 block text-[10px] font-normal">{activeRow.pendingWarnings.join(" ")}</span>
-              </span>
-            </label>
-          ) : null}
-          {!comparisonStale && draft.changeSet && draft.changeSet.length > 0 ? (
-            <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-3">
-              <div className="text-[12px] font-extrabold text-amber-950">Catalog comparison: existing → incoming</div>
-              <div className="mt-2 grid gap-2">
-                {draft.changeSet.map((change) => (
-                  <div key={change.field} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-[9px] bg-white/80 px-3 py-2 text-[10px] font-bold">
-                    <span><span className="block text-xs text-slate-600">{readableSourceHeader(change.field)}</span>{String(change.currentValue ?? "Not entered")}</span>
-                    <Icon name="arrow_forward" sizePx={15} />
-                    <span className="text-amber-900">{String(change.incomingValue ?? "Not entered")}
-                      {typeof change.currentValue === "number" && change.currentValue > 0 && typeof change.incomingValue === "number" && /price|rate/i.test(change.field) ? <span className="ml-2 font-semibold">({((change.incomingValue / change.currentValue - 1) * 100).toFixed(1)}%)</span> : null}
-                    </span>
-                  </div>
-                ))}
-              </div>
-            </div>
-          ) : null}
-
-          {!comparisonStale && draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
-            <div className="rounded-[12px] border border-amber-300/80 bg-amber-50/60 p-3">
-              <div className="flex items-center justify-between gap-2">
-                <div className="flex items-center gap-1.5">
-                  <Icon name="published_with_changes" sizePx={16} className="text-amber-900" />
-                  <span className="text-[11.5px] font-extrabold text-amber-950">Resolution Decision</span>
-                </div>
-                <span className="rounded-full bg-amber-100/90 border border-amber-200 px-2 py-0.5 text-[9px] font-bold text-amber-900">
-                  {draft.resolution === "KEEP_EXISTING" ? "Keeping store data" : draft.resolution === "IGNORE" ? "Row ignored" : draft.resolution === "UPDATE_MATCHED" ? "Update selected" : "Choose a decision"}
-                </span>
-              </div>
-              <p className="mt-1 text-[10.5px] font-medium text-amber-900/80">
-                Differences found between source file and existing catalog item. Select your resolution:
-              </p>
-
-              <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
-                <button
-                  type="button"
-                  onClick={() => updateDraft("resolution", "KEEP_EXISTING")}
-                  className={`group relative flex flex-col items-start gap-1 rounded-[9px] border p-2.5 text-left transition ${draft.resolution === "KEEP_EXISTING"
-                      ? "border-slate-800 bg-white ring-2 ring-slate-800/10 shadow-sm"
-                      : "border-slate-200 bg-white/80 hover:bg-white hover:border-slate-300"
-                    }`}
-                >
-                  <div className="flex w-full items-center justify-between">
-                    <span className="flex items-center gap-1.5 text-[11px] font-extrabold text-[#11120d]">
-                      <Icon name={draft.resolution === "KEEP_EXISTING" ? "radio_button_checked" : "radio_button_unchecked"} sizePx={15} className={draft.resolution === "KEEP_EXISTING" ? "text-slate-900" : "text-slate-400"} />
-                      Keep existing
-                    </span>
-                    {draft.resolution === "KEEP_EXISTING" ? (
-                      <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[8.5px] font-extrabold text-slate-700">Selected</span>
-                    ) : null}
-                  </div>
-                  <span className="text-[9.5px] font-semibold text-slate-500 leading-normal pl-5">
-                    Preserve current database values; ignore incoming changes.
-                  </span>
-                </button>
-
-                <button
-                  type="button"
-                  onClick={() => updateDraft("resolution", "UPDATE_MATCHED")}
-                  className={`group relative flex flex-col items-start gap-1 rounded-[9px] border p-2.5 text-left transition ${draft.resolution === "UPDATE_MATCHED"
-                      ? "border-[#11120d] bg-[#11120d] text-white shadow-sm ring-2 ring-slate-900/10"
-                      : "border-amber-300/80 bg-white hover:border-amber-400"
-                    }`}
-                >
-                  <div className="flex w-full items-center justify-between">
-                    <span className={`flex items-center gap-1.5 text-[11px] font-extrabold ${draft.resolution === "UPDATE_MATCHED" ? "text-white" : "text-[#11120d]"}`}>
-                      <Icon name={draft.resolution === "UPDATE_MATCHED" ? "check_circle" : "radio_button_unchecked"} sizePx={15} className={draft.resolution === "UPDATE_MATCHED" ? "text-emerald-400" : "text-slate-400"} />
-                      Apply displayed changes
-                    </span>
-                    {draft.resolution === "UPDATE_MATCHED" ? (
-                      <span className="rounded bg-white/20 px-1.5 py-0.2 text-[8.5px] font-extrabold text-white">Selected</span>
-                    ) : null}
-                  </div>
-                  <span className={`text-[9.5px] font-semibold leading-normal pl-5 ${draft.resolution === "UPDATE_MATCHED" ? "text-slate-200" : "text-slate-600"}`}>
-                    Update catalog product with the new source file values above.
-                  </span>
-                </button>
-              </div>
-            </div>
-          ) : null}
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="sell" sizePx={16} className="text-[#11120d]" />
-              Basic information
-            </div>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <div className="sm:col-span-3">
-                <Field label="Product name" field="name" issue={issues.find(issue => issue.field === "name")}>
-                  <input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} className={inputClass} />
-                </Field>
-              </div>
-              <div className="sm:col-span-3">
-                <Field label="SKU" field="sku" issue={issues.find(issue => issue.field === "sku")}>
-                  <input value={draft.sku} onChange={(event) => updateDraft("sku", event.target.value)} className={inputClass} placeholder="Generated when saved if blank" />
-                </Field>
-              </div>
-              <div>
-                <Field label="Brand" field="brand" issue={issues.find(issue => issue.field === "brand")}>
-                  <CreatableCombobox value={draft.brand} onChange={(value) => updateDraft("brand", value)} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Product brand" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-                {!draft.brand && fileBrandSuggestion ? (
-                  <div className="mt-1.5 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-950">
-                    File name suggests <strong>{fileBrandSuggestion}</strong>. Verify it before using it as the brand.
-                    <button type="button" className="ml-1 font-extrabold underline underline-offset-2" onClick={() => updateDraft("brand", fileBrandSuggestion)}>Use suggestion</button>
-                  </div>
-                ) : null}
-              </div>
-              <div>
-                <Field label="Category" field="category" issue={issues.find(issue => issue.field === "category")}>
-                  <CreatableCombobox value={draft.category} onChange={(value) => { updateDraft("category", value); updateDraft("categoryGroup", value); }} options={categoryOptions} placeholder="Search or enter category" ariaLabel="Product category" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-              </div>
-              <div>
-                <Field label="Vendor source" field="vendorSource" issue={issues.find(issue => issue.field === "vendorSource")}>
-                  <CreatableCombobox value={draft.vendorSource || ""} onChange={(value) => updateDraft("vendorSource", value)} options={supplierOptions} placeholder="Search or enter supplier" ariaLabel="Vendor source" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-              </div>
-            </div>
-            <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
-              <Field label="Barcode" field="barcode" issue={issues.find(issue => issue.field === "barcode")}>
-                <input value={draft.barcode || ""} onChange={event => updateDraft("barcode", event.target.value)} className={inputClass} placeholder="Optional" />
-              </Field>
-              <Field label="Product code" field="productCodeVariant" issue={issues.find(issue => issue.field === "productCodeVariant")}>
-                <input value={draft.productCodeVariant || ""} onChange={event => updateDraft("productCodeVariant", event.target.value)} className={inputClass} placeholder="Optional" />
-              </Field>
-            </div>
-          </div>
-
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="inventory_2" sizePx={16} className="text-[#11120d]" />
-              Packaging and units
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <Field label="Size" field="sizeValue" issue={issues.find(issue => issue.field === "sizeValue")}>
-                <input type="number" value={draft.sizeValue ?? ""} onChange={(event) => updateDraft("sizeValue", numberInput(event.target.value))} className={inputClass} placeholder="e.g. 5" />
-              </Field>
-              <Field label="Size unit" field="sizeUnit" issue={issues.find(issue => issue.field === "sizeUnit")}>
-                <CreatableCombobox value={draft.sizeUnit || ""} onChange={(value) => updateDraft("sizeUnit", value.toUpperCase())} options={unitOptions} placeholder="Unit (Ltr, Kg...)" ariaLabel="Size unit" selectOnFocus compact showCreateHelp={false} />
-              </Field>
-              <Field label="Package quantity" field="packageQuantity" issue={issues.find(issue => issue.field === "packageQuantity")}>
-                <input type="number" value={draft.packageQuantity ?? ""} onChange={(event) => updateDraft("packageQuantity", numberInput(event.target.value))} className={inputClass} placeholder="Pieces in pack" />
-              </Field>
-              <Field label="Sale unit" field="saleUnit" issue={issues.find(issue => issue.field === "saleUnit")}>
-                <CreatableCombobox value={draft.saleUnit || ""} onChange={(value) => updateDraft("saleUnit", value.toUpperCase())} options={unitOptions} placeholder="Sale unit" ariaLabel="Sale unit" selectOnFocus compact showCreateHelp={false} />
-              </Field>
-            </div>
-          </div>
-
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="payments" sizePx={16} className="text-[#11120d]" />
-              Pricing
-            </div>
-            <label className="mb-2.5 flex items-center justify-between gap-3 rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 py-2">
-              <span className="min-w-0">
-                <span className="block text-[11px] font-extrabold text-[#11120d]">Coming soon</span>
-                <span className="block text-[9px] font-semibold leading-4 text-[#6B7280]">Keep this product in the catalog with its price pending.</span>
-              </span>
-              <Switch
-                checked={draft.availabilityStatus === "COMING_SOON"}
-                onChange={(checked) => updateDraft("availabilityStatus", checked ? "COMING_SOON" : "CATALOG_LISTED")}
-                ariaLabel="Coming soon"
-              />
-            </label>
-            <div className="grid grid-cols-3 gap-2">
-              <Field label="Rate" field="ratePerPiece" issue={issues.find(issue => issue.field === "ratePerPiece")}>
-                <input type="number" value={draft.ratePerPiece ?? ""} onChange={(event) => updateDraft("ratePerPiece", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder={draft.availabilityStatus === "COMING_SOON" ? "Later" : "Rate"} />
-              </Field>
-              <Field label="Retail (opt)" field="retailPrice" issue={issues.find(issue => issue.field === "retailPrice")}>
-                <input type="number" value={draft.retailPrice ?? ""} onChange={(event) => updateDraft("retailPrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
-              </Field>
-              <Field label="Wholesale (opt)" field="wholesalePrice" issue={issues.find(issue => issue.field === "wholesalePrice")}>
-                <input type="number" value={draft.wholesalePrice ?? ""} onChange={(event) => updateDraft("wholesalePrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
-              </Field>
-            </div>
-            {draft.availabilityStatus === "COMING_SOON" && !(review?.priceMapping?.required && !review.priceMapping.complete) ? (
-              <div className="mt-2.5 rounded-[9px] border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] font-bold text-sky-900">
-                This product will remain searchable and display Coming soon until its price and availability are confirmed.
-              </div>
-            ) : null}
-          </div>
-
-        </fieldset>
-
-        {/* Docked Triage Action Bar */}
-        <div className="shrink-0 border-t border-[#E2E4E8] bg-white px-3 py-2.5 sm:py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.03)]">
-          <div className="flex items-center justify-between gap-2">
-            {/* Left: Ignore / Restore Row */}
-            <button
-              type="button"
-              onClick={() => updateDraft("resolution", draft.resolution === "IGNORE" ? restoreResolution(activeRow) : "IGNORE")}
-              disabled={committed || saving}
-              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border px-3 text-[11px] font-extrabold transition shrink-0 ${draft.resolution === "IGNORE"
-                  ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200"
-                  : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
-                }`}
-              title={draft.resolution === "IGNORE" ? "Restore row to import" : "Skip this row completely from import"}
-            >
-              <Icon name={draft.resolution === "IGNORE" ? "undo" : "close"} sizePx={15} />
-              <span>{draft.resolution === "IGNORE" ? "Restore" : "Ignore"}</span>
-              <span className="hidden sm:inline"> row</span>
-            </button>
-
-            {/* Right: Actions Cluster */}
-            <div className="flex items-center gap-1.5 sm:gap-2 justify-end shrink-0">
-              {/* Save Only (without advancing, visible when dirty) */}
-              {dirty && !committed ? (
-                <button
-                  type="button"
-                  onClick={() => void saveDraft()}
-                  disabled={saving}
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border border-amber-300 bg-amber-50/80 px-3 text-[11px] font-extrabold text-amber-950 transition hover:bg-amber-100 disabled:opacity-45 shrink-0 shadow-sm"
-                  title="Save current row without advancing"
-                >
-                  <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
-                  <Icon name="save" sizePx={15} className="text-amber-800" />
-                  <span>{saving ? "Saving…" : "Save"}</span>
-                </button>
-              ) : null}
-
-              {dirty && !committed ? (
-                <button
-                  type="button"
-                  disabled={saving}
-                  onClick={() => void saveAndAdvance()}
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-4 sm:px-5 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
-                >
-                  <Icon name="save" sizePx={15} />
-                  <span>{saving ? "Saving…" : canMoveNext ? "Save & Next" : "Save row"}</span>
-                  {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
-                </button>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => moveActiveRow(1)}
-                  disabled={!canMoveNext}
-                  className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-4 sm:px-5 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-35 shadow-sm shrink-0"
-                >
-                  <span>Next item</span>
-                  <Icon name="arrow_forward" sizePx={14} />
-                </button>
-              )}
-            </div>
-          </div>
-        </div>
-      </section>
-    );
-  }
-
   if (error && !review) {
     return <div className="rounded-[18px] border border-rose-200 bg-rose-50 p-6"><h1 className="text-[18px] font-extrabold text-rose-900">Import review unavailable</h1><p className="mt-2 text-[13px] font-semibold text-rose-800">{error}</p><button type="button" onClick={() => navigate("/products")} className="mt-4 h-11 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white">Back to products</button></div>;
   }
@@ -2131,365 +1514,107 @@ export default function ProductImportReviewPage() {
           </div>
         </ModalFrame>
       ) : null}
-      {commitUnknown ? <div role="alert" className="shrink-0 rounded-lg bg-amber-50 p-3 text-sm">A previous import attempt needs a status check before another submission. <button className="font-bold underline" onClick={() => void recoverCommit()}>Check saved result</button></div> : null}
-      {review?.coverage && (review.coverage.total > 0 || review.coverage.requiresAcknowledgement) ? <div className="shrink-0 rounded-lg border bg-white p-3 text-sm">
-        <span>{review.coverage.completed} / {review.coverage.total || "unknown"} source pages processed.</span>
-        {review.coverage.requiresAcknowledgement ? <span className="ml-2 text-amber-800">Some source pages remain unread or incomplete. {review.coverage.failedPages.map((entry) => `Page ${entry.pageNumber}`).join(", ")}. {review.coverage.canRetry ? <button disabled={processingAction || dirty} className="font-bold underline" onClick={() => void changeProcessing("retry")}>Retry failed or unvisited pages</button> : <span>Upload a crop or the missing source area as a new import.</span>}</span> : null}
-        {review.coverage.canReprocessEmpty ? <button disabled={processingAction || dirty} className="ml-2 font-bold text-amber-800 underline" onClick={() => void changeProcessing("reprocess_empty", review.coverage.emptyPageNumbers)}>Recheck pages marked empty</button> : null}
-        {review.coverage.failedPages.map((entry) => entry.message ? <p key={entry.pageNumber} className="mt-1 text-amber-800">Page {entry.pageNumber}: {entry.message}</p> : null)}
-        {typeof review.batch.extractionMeta?.jobError === "string" ? <p role="alert" className="mt-1 text-amber-800">{review.batch.extractionMeta.jobError}</p> : null}
-      </div> : null}
-      {review && Number(review.reviewCounts?.missingBrand || 0) > 0 ? (
-        <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-950">
-          <div><strong className="font-extrabold">Brand confirmation required.</strong> Catalog matching is incomplete until each product has a confirmed brand.</div>
-          <button type="button" disabled={dirty} onClick={() => { setBatchBrand(fileBrandSuggestion); setBatchBrandOpen(true); }} className="h-9 rounded-[9px] border border-amber-300 bg-white px-3 font-extrabold transition hover:bg-amber-100 disabled:opacity-40">Fill missing brands</button>
-        </div>
-      ) : null}
 
-      {/* Universal 1-Row Responsive Header */}
-      <header className="flex shrink-0 items-center justify-between gap-2 rounded-[14px] border border-[#D8DBE0] bg-white p-2 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
-          <button
-            type="button"
-            onClick={() => setExitConfirmOpen(true)}
-            className="inline-flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#11120d] transition hover:bg-[#F3F4F6] sm:h-10 sm:w-10 sm:rounded-[11px]"
-            aria-label="Back to products"
-          >
-            <Icon name="arrow_back" sizePx={18} />
-          </button>
-          <div className="min-w-0">
-            <h1 className="truncate text-[14px] font-extrabold leading-tight text-[#11120d] sm:text-[18px] xl:text-[20px]">
-              {review?.batch.fileName || "Product import review"}
-            </h1>
-            <p className="mt-0.5 truncate text-[10.5px] font-medium text-[#64748B] sm:text-[11px]">
-              {review ? `${review.batch.totalRows.toLocaleString()} extracted rows · ${review.batch.supplier || review.batch.sourceType}` : "Loading review…"}
-            </p>
-          </div>
-        </div>
-
-        {/* Mobile Right CTA Actions */}
-        <div className="flex shrink-0 items-center gap-1.5 sm:hidden">
-          <button
-            type="button"
-            onClick={() => setCommitOpen(true)}
-            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
-            title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
-            className="inline-flex h-11 items-center gap-1 rounded-[9px] bg-[#11120d] px-3 text-[11px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40"
-          >
-            <Icon name="publish" sizePx={15} />
-            <span>Import</span>
-          </button>
-          <button
-            type="button"
-            onClick={() => setMobileMenuOpen(true)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-[9px] border border-[#CFCFD3] bg-white text-[#11120d] transition hover:bg-[#F3F4F6]"
-            aria-label="More import actions"
-          >
-            <Icon name="more_vert" sizePx={19} />
-          </button>
-        </div>
-
-        {/* Desktop Action Toolbar */}
-        <div className="hidden sm:flex sm:items-center sm:gap-2">
-          <button
-            type="button"
-            onClick={() => void downloadSource()}
-            disabled={!review?.batch.source?.available}
-            className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[11px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6] disabled:opacity-40 xl:px-3.5"
-            title="Download original source"
-          >
-            <Icon name="download" sizePx={16} />
-            <span className="hidden md:inline">Source</span>
-          </button>
-
-          {review?.priceMapping.required ? (
-            <button
-              type="button"
-              onClick={() => setPriceSetupOpen(true)}
-              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border px-3 text-[11px] font-bold transition ${!review.priceMapping.complete
-                  ? "border-amber-300 bg-amber-50 text-amber-900 hover:bg-amber-100"
-                  : "border-[#D4D7DC] bg-white text-[#374151] hover:bg-[#F3F4F6]"
-                }`}
-              title={!review.priceMapping.complete ? "Required: Map extracted price columns before final import" : "View or customize file column mapping definitions"}
-            >
-              <Icon name={!review.priceMapping.complete ? "warning" : "tune"} sizePx={16} className={!review.priceMapping.complete ? "text-amber-700" : "text-[#64748B]"} />
-              <span className="hidden md:inline">{!review.priceMapping.complete ? "Map price columns" : "Column mapping"}</span>
-              {!review.priceMapping.complete ? (
-                <span className="rounded-full bg-amber-200/80 px-1.5 py-0.2 text-[9.5px] font-extrabold text-amber-900">
-                  Required
-                </span>
-              ) : null}
-            </button>
-          ) : null}
-
-          <div className="inline-flex rounded-[10px] border border-[#CFCFD3] bg-white p-0.5">
-            <button
-              type="button"
-              onClick={() => requestHistoryAction("undo")}
-              disabled={historyBusy || undoStack.length === 0}
-              className="inline-flex h-8.5 w-8.5 items-center justify-center rounded-[8px] text-[#11120d] transition hover:bg-[#F3F4F6] disabled:opacity-30"
-              title={undoStack.length ? `Undo: ${undoStack.at(-1)?.label}` : "Nothing to undo"}
-              aria-label={undoStack.length ? `Undo ${undoStack.at(-1)?.label}` : "Nothing to undo"}
-            >
-              <Icon name="undo" sizePx={16} />
-            </button>
-            <button
-              type="button"
-              onClick={() => requestHistoryAction("redo")}
-              disabled={historyBusy || redoStack.length === 0}
-              className="inline-flex h-8.5 w-8.5 items-center justify-center rounded-[8px] text-[#11120d] transition hover:bg-[#F3F4F6] disabled:opacity-30"
-              title={redoStack.length ? `Redo: ${redoStack.at(-1)?.label}` : "Nothing to redo"}
-              aria-label={redoStack.length ? `Redo ${redoStack.at(-1)?.label}` : "Nothing to redo"}
-            >
-              <Icon name="redo" sizePx={16} />
-            </button>
-          </div>
-
-          <button
-            type="button"
-            onClick={() => setCommitOpen(true)}
-            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
-            title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
-            className="hidden h-10 items-center gap-2 rounded-[10px] bg-[#11120d] px-4 text-[12px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40 sm:inline-flex"
-          >
-            <Icon name="publish" sizePx={16} />
-            <span>Final import</span>
-          </button>
-        </div>
-      </header>
-
-      {commitResult ? (
-        <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[11px] font-bold text-emerald-900">
-          <span>Last commit: {commitResult.createdCount} created · {commitResult.updatedCount || 0} updated · {commitResult.keptCount || 0} kept · {commitResult.ignoredCount || 0} ignored · {commitResult.errorCount} failed</span>
-          <button type="button" onClick={() => navigate("/products")} className="rounded-[9px] bg-emerald-800 px-3 py-2 text-white">View products</button>
-        </div>
-      ) : null}
-
-      {/* Compact Segmented Mobile View Switcher */}
-      <div className="flex shrink-0 gap-1 rounded-[10px] border border-[#D8DBE0] bg-[#F1F3F5] p-1 xl:hidden">
-        {(["list", "editor", "source"] as MobilePanel[]).map((panel) => (
-          <button
-            key={panel}
-            type="button"
-            onClick={() => setMobilePanel(panel)}
-            disabled={panel !== "list" && !activeRow}
-            className={`h-10 flex-1 rounded-[7px] text-[11px] font-extrabold capitalize transition ${mobilePanel === panel
-                ? "bg-white text-[#11120d]"
-                : "text-[#64748B] hover:text-[#11120d]"
-              }`}
-          >
-            {panel === "list" ? `List (${review?.pagination.total || 0})` : panel === "editor" ? "Item Editor" : "Source Doc"}
-          </button>
-        ))}
-      </div>
+      <ImportReviewHeader
+        review={review}
+        commitUnknown={commitUnknown}
+        recoverCommit={recoverCommit}
+        processingAction={processingAction}
+        dirty={dirty}
+        changeProcessing={changeProcessing}
+        fileBrandSuggestion={fileBrandSuggestion}
+        setBatchBrand={setBatchBrand}
+        setBatchBrandOpen={setBatchBrandOpen}
+        setExitConfirmOpen={setExitConfirmOpen}
+        setCommitOpen={setCommitOpen}
+        setMobileMenuOpen={setMobileMenuOpen}
+        downloadSource={downloadSource}
+        setPriceSetupOpen={setPriceSetupOpen}
+        requestHistoryAction={requestHistoryAction}
+        historyBusy={historyBusy}
+        undoStack={undoStack}
+        redoStack={redoStack}
+        commitResult={commitResult}
+        navigate={navigate}
+        mobilePanel={mobilePanel}
+        setMobilePanel={setMobilePanel}
+        activeRow={activeRow}
+      />
 
       <main className="min-h-0 flex-1 xl:grid xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)] xl:gap-3">
-        {/* Product List Panel */}
-        <section className={`${mobilePanel === "list" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-          <div className="shrink-0 space-y-2 border-b border-[#E2E4E8] p-2.5">
-            <div className="relative">
-              <Icon name="search" sizePx={17} className="absolute left-3 top-2.5 text-[#7A7F89]" />
-              <input
-                value={searchInput}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  requestReviewNavigation(() => setSearchInput(value), "Change the product search and discard the changes to the current product.");
-                }}
-                placeholder="Search name, SKU or source row…"
-                className="h-9 w-full rounded-[9px] border border-[#D4D7DC] pl-9 pr-9 text-[12px] font-semibold outline-none focus:border-[#11120d] xl:text-[11px]"
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    requestReviewNavigation(() => {
-                      setSearchInput("");
-                      setSearch("");
-                    }, "Clear the product search and discard the changes to the current product.");
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full text-[#7A7F89] hover:bg-slate-100 hover:text-[#11120d] transition"
-                  aria-label="Clear search"
-                >
-                  <Icon name="close" sizePx={15} />
-                </button>
-              )}
-            </div>
+        <ImportRowList
+          review={review}
+          loading={loading}
+          mobilePanel={mobilePanel}
+          searchInput={searchInput}
+          setSearchInput={setSearchInput}
+          filter={filter}
+          setFilter={setFilter}
+          setPage={setPage}
+          requestReviewNavigation={requestReviewNavigation}
+          activeRowId={activeRowId}
+          chooseRow={chooseRow}
+          selectedIds={selectedIds}
+          excludedSelectedIds={excludedSelectedIds}
+          allMatchingSelected={allMatchingSelected}
+          selectedCount={selectedCount}
+          allPageRowsSelected={allPageRowsSelected}
+          togglePageSelection={togglePageSelection}
+          toggleRowSelection={toggleRowSelection}
+          clearSelection={clearSelection}
+          setAllMatchingSelected={setAllMatchingSelected}
+          setSelectedIds={setSelectedIds}
+          setExcludedSelectedIds={setExcludedSelectedIds}
+          pageSize={pageSize}
+          setPageSize={setPageSize}
+          pageRangeStart={pageRangeStart}
+          pageRangeEnd={pageRangeEnd}
+        />
 
-            <div className="grid grid-cols-3 gap-1.5">
-              {[
-                { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
-                { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
-                { value: "EDITED" as const, label: "User changes", count: review?.reviewCounts?.edited ?? 0 },
-              ].map((item) => {
-                const active = filter === item.value;
-                return (
-                  <button
-                    key={item.value}
-                    type="button"
-                    onClick={() => requestReviewNavigation(() => { setFilter(item.value); setPage(1); }, `Open the ${item.label} list and discard the changes to the current product.`)}
-                    className={`inline-flex h-9 min-w-0 items-center justify-center gap-1 rounded-[9px] border px-2 text-[10.5px] font-extrabold transition touch-manipulation active:scale-[0.97] ${active
-                        ? "border-[#11120d] bg-[#11120d] text-white"
-                        : "border-[#D4D7DC] bg-white text-[#4B5563] hover:bg-[#F3F4F6]"
-                      }`}
-                  >
-                    <span className="truncate">{item.label}</span>
-                    <span className={`rounded-full px-1.5 py-0.2 text-[9px] font-extrabold ${active ? "bg-white/20 text-white" : "bg-slate-100 text-[#4B5563]"}`}>
-                      {item.count.toLocaleString()}
-                    </span>
-                  </button>
-                );
-              })}
-            </div>
-
-            <ProjectSelect
-              className="h-9 w-full"
-              value={COMPARISON_FILTERS.some((item) => item.value === filter) ? filter : ""}
-              onChange={(event) => {
-                const value = event.target.value as ReviewFilter;
-                requestReviewNavigation(() => {
-                  setFilter(value || "ALL");
-                  setPage(1);
-                }, "Change the comparison filter and discard the changes to the current product.");
-              }}
-              aria-label="More product comparison filters"
-            >
-              <option value="">More filters: product status</option>
-              {COMPARISON_FILTERS.map((item) => (
-                <option key={item.value} value={item.value}>
-                  {item.label} ({review?.comparisonCounts[item.value] ?? 0})
-                </option>
-              ))}
-            </ProjectSelect>
-
-            <div className="flex min-h-[38px] items-center justify-between gap-2 text-[11px] font-extrabold text-[#5F6570]">
-              <label className="inline-flex min-h-[38px] cursor-pointer items-center gap-2 py-1 px-1 -ml-1 rounded-lg transition hover:bg-slate-100 active:bg-slate-200 touch-manipulation select-none">
-                <input type="checkbox" checked={allPageRowsSelected} onChange={togglePageSelection} className="h-4.5 w-4.5 rounded accent-[#11120d]" />
-                <span>Select page</span>
-              </label>
-              {review && review.pagination.total > 0 ? (
-                allMatchingSelected ? (
-                  <button type="button" onClick={clearSelection} className="inline-flex min-h-[38px] items-center px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation">
-                    All {selectedCount.toLocaleString()} selected · Clear
-                  </button>
-                ) : (
-                  <button type="button" onClick={() => { setAllMatchingSelected(true); setSelectedIds(new Set()); setExcludedSelectedIds(new Set()); }} className="inline-flex min-h-[38px] items-center px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation">
-                    Select all {review.pagination.total.toLocaleString()}
-                  </button>
-                )
-              ) : null}
-            </div>
-          </div>
-
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-[#E8EAED]">
-            {loading ? (
-              <div className="p-6 text-center text-[12px] font-extrabold text-[#7A7F89]">Loading rows…</div>
-            ) : review?.rows.length ? (
-              review.rows.map((row) => {
-                const selected = allMatchingSelected ? !excludedSelectedIds.has(row.id) : selectedIds.has(row.id);
-                const active = row.id === activeRowId;
-                const ignored = row.resolution === "IGNORE";
-                const edited = Boolean(row.reviewChanges?.length);
-                const rowBgClass = active && selected
-                  ? "border-l-[3px] border-l-[#11120d] bg-[#EDF3FA]"
-                  : active
-                    ? "border-l-[3px] border-l-[#11120d] bg-[#F1F3F5]"
-                    : selected
-                      ? "border-l-[3px] border-l-blue-400 bg-blue-50/40 hover:bg-blue-50/60"
-                      : ignored
-                        ? "border-l-[3px] border-l-transparent bg-rose-50/40"
-                        : importRowNeedsAttention(row)
-                          ? "border-l-[3px] border-l-amber-400 bg-amber-50/45 hover:bg-amber-50/70"
-                          : "border-l-[3px] border-l-transparent bg-white hover:bg-[#F8FAFC]";
-
-                return (
-                  <div
-                    key={row.id}
-                    className={`flex min-h-[64px] items-stretch transition ${rowBgClass}`}
-                  >
-                    {/* Checkbox Tap Zone: Dedicated 48px wide touch target */}
-                    <label
-                      className="flex w-12 shrink-0 self-stretch cursor-pointer items-center justify-center touch-manipulation select-none active:bg-black/[0.06]"
-                      onClick={(e) => e.stopPropagation()}
-                      title="Select for bulk editing"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={selected}
-                        onChange={() => toggleRowSelection(row.id)}
-                        className="h-5 w-5 rounded-[5px] accent-[#11120d] cursor-pointer"
-                        aria-label={`Select ${rowName(row)} for bulk editing`}
-                      />
-                    </label>
-
-                    {/* Product Row Hit Target: 100% of the rest of the row is a single, continuous button */}
-                    <button
-                      type="button"
-                      onClick={() => chooseRow(row)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2.5 py-2.5 pr-2.5 text-left touch-manipulation select-none active:bg-black/[0.04] focus:outline-none"
-                      aria-label={`Review ${rowName(row)}`}
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div className={`truncate text-[13px] font-extrabold leading-snug sm:text-[12px] xl:text-[11.5px] ${ignored ? "text-[#7A7F89] line-through" : "text-[#11120d]"}`}>
-                          {rowName(row)}
-                        </div>
-                        <div className="mt-0.5 truncate font-mono text-[10.5px] font-semibold text-[#7A7F89] xl:text-[9.5px]">
-                          {rowSku(row)}
-                        </div>
-                      </div>
-
-                      <div className="flex shrink-0 flex-col items-end justify-center gap-1 min-w-[76px] text-right">
-                        <span className={`text-[12px] font-bold tabular-nums sm:text-[11px] ${ignored ? "text-[#7A7F89] line-through" : "text-[#11120d]"}`}>
-                          {importRowPriceLabel(row)}
-                        </span>
-                        <div className="flex items-center gap-1">
-                          {edited ? (
-                            <span
-                              className="inline-flex h-5 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-1.5 text-[8.5px] font-extrabold text-slate-700"
-                              title={`Product corrections after import setup: ${row.reviewChanges?.join(", ")}`}
-                            >
-                              <Icon name="edit" sizePx={10} /> User changed
-                            </span>
-                          ) : null}
-                          {ignored ? (
-                            <span className="inline-flex h-5 items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-1.5 text-[8.5px] font-extrabold text-rose-700" title="Ignored">
-                              Ignored
-                            </span>
-                          ) : (
-                            <span className={`inline-flex rounded-full border px-1.5 py-0.2 text-[8.5px] font-extrabold ${statusTone(row.comparisonStatus)}`}>
-                              {comparisonLabel(row.comparisonStatus)}
-                            </span>
-                          )}
-                          <Icon name="chevron_right" sizePx={16} className="text-[#9CA3AF]" />
-                        </div>
-                      </div>
-                    </button>
-                  </div>
-                );
-              })
-            ) : (
-              <div className="p-6 text-center text-[12px] font-bold text-[#7A7F89]">No rows match this filter.</div>
-            )}
-          </div>
-
-          <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#E2E4E8] bg-white p-2.5 text-[10px] font-bold text-[#5F6570]">
-            <div className="flex min-w-0 items-center gap-2">
-              <span className="shrink-0 whitespace-nowrap text-[10px] sm:text-[11px]">{review ? `${pageRangeStart.toLocaleString()}–${pageRangeEnd.toLocaleString()} of ${review.pagination.total.toLocaleString()}` : "0 rows"}</span>
-              <ProjectSelect className="h-9 w-[104px] shrink-0" value={String(pageSize)} onChange={(event) => { const value = Number(event.target.value); requestReviewNavigation(() => { setPage(1); setPageSize(value); }, "Change the number of products shown and discard the current unsaved changes."); }} aria-label="Rows per page">
-                <option value="25">25 rows</option>
-                <option value="50">50 rows</option>
-                <option value="100">100 rows</option>
-              </ProjectSelect>
-            </div>
-            <nav className="flex items-center gap-1.5" aria-label="Import rows pagination">
-              <button type="button" disabled={!review || review.pagination.page <= 1} onClick={() => requestReviewNavigation(() => setPage((value) => Math.max(1, value - 1)), "Open the previous product page and discard the current unsaved changes.")} className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120d] transition active:bg-[#F3F4F6] disabled:opacity-35 touch-manipulation" title="Previous page" aria-label="Previous page"><Icon name="chevron_left" sizePx={18} /></button>
-              <span className="min-w-[54px] whitespace-nowrap text-center text-[9.5px] font-extrabold text-[#374151]">Page {review?.pagination.page || 1} of {review?.pagination.totalPages || 1}</span>
-              <button type="button" disabled={!review || review.pagination.page >= review.pagination.totalPages} onClick={() => requestReviewNavigation(() => setPage((value) => value + 1), "Open the next product page and discard the current unsaved changes.")} className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120d] transition active:bg-[#F3F4F6] disabled:opacity-35 touch-manipulation" title="Next page" aria-label="Next page"><Icon name="chevron_right" sizePx={18} /></button>
-            </nav>
-          </div>
-        </section>
-
-        <div className={`${mobilePanel === "editor" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderEditor()}</div>
-        <div className={`${mobilePanel === "source" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderSourcePanel()}</div>
+        <div className={`${mobilePanel === "editor" ? "block" : "hidden"} h-full min-h-0 xl:block`}>
+          <ImportRowEditor
+            draft={draft}
+            activeRow={activeRow}
+            review={review}
+            mobilePanel={mobilePanel}
+            setMobilePanel={setMobilePanel}
+            moveActiveRow={moveActiveRow}
+            dirty={dirty}
+            saving={saving}
+            updateDraft={updateDraft}
+            brandOptions={brandOptions}
+            categoryOptions={categoryOptions}
+            supplierOptions={supplierOptions}
+            unitOptions={unitOptions}
+            fileBrandSuggestion={fileBrandSuggestion}
+            focusReviewField={focusReviewField}
+            saveDraft={saveDraft}
+            saveAndAdvance={saveAndAdvance}
+            restoreResolution={restoreResolution}
+          />
+        </div>
+        <div className={`${mobilePanel === "source" ? "block" : "hidden"} h-full min-h-0 xl:block`}>
+          <ImportSourcePanel
+            mobilePanel={mobilePanel}
+            review={review}
+            activeRow={activeRow}
+            activeRowId={activeRowId}
+            productNameHeader={productNameHeader}
+            activeSourceEntries={activeSourceEntries}
+            setSourceDetailsOpen={setSourceDetailsOpen}
+            sourceRows={sourceRows}
+            displaySourceHeaders={displaySourceHeaders}
+            sourceTableWidth={sourceTableWidth}
+            chooseRow={chooseRow}
+            sourceMimeType={sourceMimeType}
+            sourcePageNumber={sourcePageNumber}
+            sourceLoading={sourceLoading}
+            sourcePreviewUrl={sourcePreviewUrl}
+            region={region}
+            regionScale={regionScale}
+            sourceHighlightRef={sourceHighlightRef}
+          />
+        </div>
       </main>
 
       {/* Bulk Selection Bar: Clean Single-Line, Docked without Covering Pagination */}
