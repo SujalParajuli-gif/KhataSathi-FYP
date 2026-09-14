@@ -10,7 +10,6 @@ import {
   normalizeCsvImportRow,
 } from "../modules/products/importService";
 import { parseProductSpreadsheet } from "../modules/products/spreadsheetImport";
-import { hasConfirmation } from "./cleanPilotBundle";
 
 const APPROVED_SHA256 = "487d1e463a90616eaf29b0dfce4b43016b801f31156a4bbdf9b747568a24b319";
 const EXPECTED_PRODUCTS = 1536;
@@ -25,6 +24,13 @@ const EXPECTED_BRANDS: Record<string, number> = {
   JSR: 74,
   "KI Mop": 17,
 };
+
+function hasConfirmation(args: string[], expected: string) {
+  const inline = args.find((argument) => argument.startsWith("--confirmation="));
+  if (inline) return inline.slice("--confirmation=".length) === expected;
+  const index = args.indexOf("--confirmation");
+  return index >= 0 && args[index + 1] === expected;
+}
 
 function check(condition: unknown, message: string): asserts condition {
   if (!condition) throw new Error(`APPROVED CATALOG IMPORT REFUSED: ${message}`);
@@ -80,7 +86,7 @@ function reviewedPayload(row: Awaited<ReturnType<typeof getProductImportBatch>>[
   };
 }
 
-async function assertCleanPilot() {
+async function assertCatalogImportTarget() {
   const [users, products, brands, invoices, customers, batches, documents, sessions] =
     await Promise.all([
       prisma.user.findMany({
@@ -100,7 +106,7 @@ async function assertCleanPilot() {
       users.filter((user) => user.role === role).length,
     ]),
   );
-  check(users.every((user) => user.isActive), "the pilot contains an inactive account");
+  check(users.every((user) => user.isActive), "the target contains an inactive account");
   check(users.length === 5, `expected 5 active approved accounts, found ${users.length}`);
   check(
     roleCounts.ADMIN === 1 &&
@@ -113,7 +119,7 @@ async function assertCleanPilot() {
     [products, brands, invoices, customers, batches, documents, sessions].every(
       (count) => count === 0,
     ),
-    "the isolated pilot already contains business data",
+    "the target already contains business data",
   );
   const admin = users.find((user) => user.role === "ADMIN");
   check(admin?.name === "Durga Parajuli", "the approved Admin is not Durga Parajuli");
@@ -135,7 +141,7 @@ async function main() {
     "--file must reference the approved CSV",
   );
 
-  const actor = await assertCleanPilot();
+  const actor = await assertCatalogImportTarget();
   const buffer = fs.readFileSync(sourcePath);
   const fingerprint = fingerprintImportFile(buffer);
   check(fingerprint === APPROVED_SHA256, "the catalog file does not match the approved SHA-256");

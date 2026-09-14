@@ -75,3 +75,23 @@ backend/document-storage/
 # optional generated assets if not source-controlled
 frontend/build/client/
 frontend/build/server/
+
+# repository hygiene
+*.md
+!README.md
+/.agents/
+/document-storage/
+/scripts/
+/deploy/production.env.example
+/backend/check_db.ts
+/frontend/public/.well-known/appspecific/com.chrome.devtools.json
+/deploy/compose.pilot-review.yml
+/deploy/scripts/prepare-clean-pilot.ps1
+/deploy/scripts/prepare-local-rehearsal.ps1
+/backend/src/scripts/auditCleanPilot.ts
+/backend/src/scripts/cleanPilotBundle.ts
+/backend/src/scripts/cleanPilotSource.ts
+/backend/src/scripts/exportCleanPilotIdentities.ts
+/backend/src/scripts/importCleanPilotIdentities.ts
+/backend/src/scripts/rehearseNeutralRateCatalog.ts
+/backend/src/tests/cleanPilotBundle.test.ts
