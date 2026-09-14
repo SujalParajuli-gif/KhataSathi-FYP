@@ -8,19 +8,12 @@
     "build": "tsc",
     "start": "node dist/server.js",
     "test": "pnpm build && node --test dist/tests/*.test.js",
-    "prepare:supplier-review": "ts-node-dev --transpile-only --exit-child src/scripts/importSupplierProducts.ts",
-    "catalog:prepare-approved": "ts-node-dev --transpile-only --exit-child src/scripts/prepareApprovedNeutralRateCatalog.ts",
-    "catalog:import-approved": "ts-node-dev --transpile-only --exit-child src/scripts/importApprovedNeutralRateCatalog.ts",
-    "fulfill:supplier-stock": "ts-node-dev --transpile-only --exit-child src/scripts/fulfillSupplierStock.ts",
     "search:seed-aliases": "ts-node-dev --transpile-only --exit-child src/scripts/seedProductSearchAliases.ts",
     "search:rebuild": "ts-node-dev --transpile-only --exit-child src/scripts/rebuildProductSearchDocuments.ts",
-    "search:benchmark-typos": "ts-node-dev --transpile-only --exit-child src/scripts/benchmarkProductSearchTypoTolerance.ts",
     "auth:audit-identities": "ts-node-dev --transpile-only --exit-child src/scripts/auditUserIdentityData.ts",
-    "auth:remediate-archived-phones": "ts-node-dev --transpile-only --exit-child src/scripts/remediateArchivedUserPhones.ts",
     "products:backfill-media": "node dist/scripts/backfillProductMedia.js",
     "documents:backfill-thumbnails": "ts-node-dev --transpile-only --exit-child src/scripts/backfillDocumentThumbnails.ts",
-    "postinstall": "prisma generate",
-    "imports:benchmark": "node dist/scripts/benchmarkImportExtraction.js"
+    "postinstall": "prisma generate"
   },
   "prisma": {
     "seed": "ts-node-dev prisma/seed.ts"

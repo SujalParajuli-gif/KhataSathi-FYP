@@ -95,3 +95,10 @@ frontend/build/server/
 /backend/src/scripts/importCleanPilotIdentities.ts
 /backend/src/scripts/rehearseNeutralRateCatalog.ts
 /backend/src/tests/cleanPilotBundle.test.ts
+/backend/src/scripts/benchmarkImportExtraction.ts
+/backend/src/scripts/benchmarkProductSearchTypoTolerance.ts
+/backend/src/scripts/fulfillSupplierStock.ts
+/backend/src/scripts/importApprovedNeutralRateCatalog.ts
+/backend/src/scripts/importSupplierProducts.ts
+/backend/src/scripts/prepareApprovedNeutralRateCatalog.ts
+/backend/src/scripts/remediateArchivedUserPhones.ts
