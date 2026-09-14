@@ -9,7 +9,57 @@ import {
   sourcePreviewColumnWidth,
   sourceCellHasValue,
   importRowToDraft,
+  importRowNeedsAttention,
+  importRowPriceLabel,
+  validateImportDraft,
+  comparisonLabel,
+  changeImportDraft,
+  draftPayload,
 } from "../app/features/product-imports/reviewModel.ts";
+
+test("attention styling indicates unresolved issues, not user corrections", () => {
+  const row = { status: "READY", comparisonStatus: "READY_NEW", resolution: "CREATE_NEW", reviewChanges: ["Rate"] };
+  assert.equal(importRowNeedsAttention(row), false);
+  assert.equal(importRowNeedsAttention({ ...row, comparisonStatus: "MATCHED_WITH_CHANGES", resolution: null }), true);
+  assert.equal(importRowNeedsAttention({ ...row, comparisonStatus: "IDENTIFIER_CONFLICT" }), true);
+  assert.equal(importRowNeedsAttention({ ...row, comparisonStatus: "IN_FILE_DUPLICATE", resolution: "IGNORE" }), false);
+  assert.equal(importRowNeedsAttention({ ...row, status: "IMPORTED", error: "Historical warning" }), false);
+});
+test("price labels distinguish retail, wholesale, unmapped source and genuinely missing prices", () => {
+  assert.equal(importRowPriceLabel({ parsed: { retailPrice: 120 } }), "Retail NPR 120");
+  assert.equal(importRowPriceLabel({ parsed: { wholesalePrice: 95 } }), "Wholesale NPR 95");
+  assert.equal(importRowPriceLabel({ parsed: { extractedPrices: [{ value: 100 }] } }), "Source NPR 100");
+  assert.equal(importRowPriceLabel({ parsed: {} }), "Price missing");
+  assert.equal(comparisonLabel("MATCHED_WITH_CHANGES"), "Catalog differences");
+});
+test("draft validation points to fields and does not confuse unmapped prices with missing prices", () => {
+  const draft = { name: "", brand: "", ratePerPiece: null, availabilityStatus: "CATALOG_LISTED" };
+  assert.deepEqual(validateImportDraft(draft).map(issue => issue.field), ["name", "brand", "ratePerPiece"]);
+  assert.deepEqual(validateImportDraft(draft, true).map(issue => issue.field), ["name", "brand"]);
+  assert.deepEqual(validateImportDraft({ ...draft, resolution: "IGNORE" }), []);
+  assert.equal(validateImportDraft({ ...draft, name: "Jar", brand: "Example", retailPrice: 100 }).length, 0);
+});
+test("a supplier is not silently substituted for a missing product brand", () => {
+  const draft = importRowToDraft({ fileName: "multi-brand.pdf", supplier: "Distributor", sourceType: "PDF" },
+    { id: "row", rowNumber: 1, parsed: { name: "Jar" } });
+  assert.equal(draft.brand, "");
+});
+test("missing extracted identity fields remain empty instead of inventing a product name or SKU", () => {
+  const draft = importRowToDraft({ fileName: "catalog.pdf", sourceType: "PDF" },
+    { id: "row", rowNumber: 1, rawText: "Unrecognized header text", parsed: {} });
+  assert.equal(draft.name, "");
+  assert.equal(draft.sku, "");
+  assert.ok(validateImportDraft(draft).some(issue => issue.field === "name"));
+});
+
+test("focus or unchanged selections do not dirty a row; reverting corrections restores its saved decision", () => {
+  const baseline = importRowToDraft({ fileName: "catalog.pdf", sourceType: "PDF" },
+    { id: "row", rowNumber: 1, resolution: "KEEP_EXISTING", parsed: { name: "Jar", brand: "Example", ratePerPiece: 100 } });
+  assert.equal(changeImportDraft(baseline, baseline, "brand", "Example"), baseline);
+  const changed = changeImportDraft(baseline, baseline, "name", "Large Jar");
+  assert.equal(changed.resolution, null);
+  assert.deepEqual(draftPayload(changeImportDraft(changed, baseline, "name", "Jar")), draftPayload(baseline));
+});
 
 test("image highlights keep the extractor's exact source row", () => {
   assert.deepEqual(displayImportSourceRegion({

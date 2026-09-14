@@ -1,6 +1,51 @@
 import { test, expect, type Page } from "@playwright/test";
 
 const user = { id: "browser-admin", name: "Review admin", role: "admin" };
+
+for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844 }]) {
+  test(`catalog findings are visible first and fit at ${viewport.width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize(viewport);
+    const state: any = review();
+    state.reviewCounts = { all: 1, attention: 1, edited: 0, missingBrand: 0 };
+    Object.assign(state.rows[0], { comparisonStatus: "MATCHED_WITH_CHANGES", resolution: null,
+      changeSet: [{ field: "ratePerPiece", currentValue: 90, incomingValue: 100 }], reviewChanges: [] });
+    await mockApp(page, state);
+    await page.goto("/products/imports/test-batch");
+    if (viewport.width < 1280) await page.getByRole("button", { name: /Test bucket/ }).first().click();
+    await expect(page.getByText("An existing product matches.", { exact: false })).toBeVisible();
+    await expect(page.getByText("Choose a decision", { exact: true })).toBeVisible();
+    await expect(page.getByText("User changed", { exact: true })).toHaveCount(0);
+    const findings = await page.getByText("Catalog comparison: existing → incoming", { exact: true }).boundingBox();
+    const name = await page.getByRole("textbox", { name: "Product name", exact: true }).boundingBox();
+    expect(findings!.y).toBeLessThan(name!.y);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`review-${viewport.width}.png`) });
+    await page.getByRole("textbox", { name: "Product name", exact: true }).fill("Corrected container");
+    await expect(page.getByText("Unsaved changes — save this row", { exact: false })).toBeVisible();
+    await expect(page.getByText("Catalog comparison: existing → incoming", { exact: true })).toHaveCount(0);
+  });
+}
+
+test("identifier findings focus a highlighted correctable field", async ({ page }) => {
+  const state: any = review();
+  Object.assign(state.rows[0], { comparisonStatus: "IDENTIFIER_CONFLICT", resolution: null,
+    error: "Barcode belongs to another product.", reviewIssues: [{ field: "barcode", message: "Barcode belongs to another product.", severity: "error" }] });
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("button", { name: "Check Barcode", exact: true }).click();
+  const barcode = page.getByRole("textbox", { name: "Barcode", exact: true });
+  await expect(barcode).toBeFocused();
+  await expect(barcode).toHaveAttribute("aria-invalid", "true");
+});
+
+test("an unchanged existing match is explained without a user-edited tag", async ({ page }) => {
+  const state: any = review();
+  Object.assign(state.rows[0], { comparisonStatus: "EXACT_DUPLICATE", resolution: "KEEP_EXISTING", reviewChanges: [] });
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await expect(page.getByText("Already in your catalog.", { exact: false })).toBeVisible();
+  await expect(page.getByText("User changed", { exact: true })).toHaveCount(0);
+});
 const row = {id:"row-1",batchId:"test-batch",rowNumber:1,status:"READY",resolution:"CREATE_NEW",comparisonStatus:"READY_NEW",parsed:{name:"Test bucket",brand:"Test supplier",category:"Buckets",sku:"TEST-1",ratePerPiece:100,retailPrice:null,wholesalePrice:null,availabilityStatus:"CATALOG_LISTED",stock:0}};
 function review(status = "DRAFT", incomplete = false) {
   return {batch:{id:"test-batch",sourceType:"PDF",fileName:"test-catalog.pdf",supplier:"Test supplier",status,totalRows:1,createdAt:new Date().toISOString(),source:{available:false}},

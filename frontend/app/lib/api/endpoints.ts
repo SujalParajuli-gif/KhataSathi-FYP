@@ -774,6 +774,8 @@ export type ProductImportRow = {
         incomingValue: string | number | null;
     }> | null;
     reviewChanges?: string[];
+    reviewIssues?: Array<{ field: string | null; message: string; severity: "error" | "warning" }>;
+    pendingWarnings?: string[];
     resolution?: "CREATE_NEW" | "UPDATE_MATCHED" | "KEEP_EXISTING" | "IGNORE" | null;
     createdAt: string;
 };
@@ -868,6 +870,7 @@ export type CsvImportResult = {
 };
 
 export type ReviewedPdfImportRowPayload = {
+    acknowledgeWarnings?: boolean;
     rowId: string;
     name: string;
     sku: string;

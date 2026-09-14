@@ -236,8 +236,7 @@ export function importRowToDraft(
 ): ImportReviewDraft {
   const parsed = parsedImportRow(row);
   const confirmedSource = batch.supplier?.trim() || "";
-  const fallbackName = row.rawText?.trim() || `Import row ${row.rowNumber}`;
-  const name = text(parsed, "name", text(parsed, "productName", fallbackName));
+  const name = text(parsed, "name", text(parsed, "productName"));
   const sizeUnit = text(parsed, "sizeUnit", "STANDARD");
   const saleUnit = text(
     parsed,
@@ -262,9 +261,9 @@ export function importRowToDraft(
     sourceLocator: row.sourceLocator,
     resolution: defaultResolution(row),
     name,
-    sku: text(parsed, "sku", `IMPORT-${row.rowNumber}`),
+    sku: text(parsed, "sku"),
     barcode: text(parsed, "barcode"),
-    brand: text(parsed, "brand", confirmedSource),
+    brand: text(parsed, "brand"),
     category: text(parsed, "category"),
     categoryGroup: text(parsed, "categoryGroup", text(parsed, "category")),
     vendorSource: text(parsed, "vendorSource", confirmedSource),
@@ -307,11 +306,60 @@ export function comparisonLabel(status?: ProductImportRow["comparisonStatus"]) {
   const labels: Record<string, string> = {
     READY_NEW: "New product",
     EXACT_DUPLICATE: "Exact existing product",
-    MATCHED_WITH_CHANGES: "Existing product changed",
+    MATCHED_WITH_CHANGES: "Catalog differences",
     IDENTIFIER_CONFLICT: "Identifier conflict",
     IN_FILE_DUPLICATE: "Duplicate in this file",
     NEEDS_REVIEW: "Needs review",
     FAILED: "Extraction failed",
   };
   return labels[status || ""] || "Needs review";
+}
+
+export function importRowNeedsAttention(row: ProductImportRow): boolean {
+  if (row.resolution === "IGNORE" || ["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status)) return false;
+  return Boolean(row.error || row.reviewIssues?.length || row.pendingWarnings?.length
+    || ["NEEDS_REVIEW", "IDENTIFIER_CONFLICT", "FAILED"].includes(row.comparisonStatus || "")
+    || (row.comparisonStatus === "MATCHED_WITH_CHANGES" && !row.resolution));
+}
+
+export function importRowPriceLabel(row: ProductImportRow): string {
+  const parsed = parsedImportRow(row);
+  for (const [field, label] of [["ratePerPiece", "Rate"], ["retailPrice", "Retail"], ["wholesalePrice", "Wholesale"]]) {
+    const value = Number(parsed[field]);
+    if (Number.isFinite(value) && value > 0) return `${label} NPR ${value.toLocaleString()}`;
+  }
+  const candidate = Array.isArray(parsed.extractedPrices) ? parsed.extractedPrices[0] : null;
+  if (Number(candidate?.value) > 0) return `Source NPR ${Number(candidate.value).toLocaleString()}`;
+  return parsed.availabilityStatus === "COMING_SOON" ? "Price coming soon" : "Price missing";
+}
+
+export function validateImportDraft(draft: ImportReviewDraft, mappingPending = false): NonNullable<ProductImportRow["reviewIssues"]> {
+  if (draft.resolution === "IGNORE") return [];
+  const issues: NonNullable<ProductImportRow["reviewIssues"]> = [];
+  const add = (field: string, message: string) => issues.push({ field, message, severity: "error" });
+  if (!draft.name.trim()) add("name", "Enter the product name.");
+  if (!draft.brand.trim()) add("brand", "Confirm the product brand.");
+  if (!mappingPending && draft.availabilityStatus !== "COMING_SOON" && ![draft.ratePerPiece, draft.retailPrice, draft.wholesalePrice].some(price => Number(price) > 0))
+    add("ratePerPiece", "Enter a price or choose Coming soon.");
+  for (const [field, label, min] of [["ratePerPiece", "Rate", 0.01], ["retailPrice", "Retail price", 0.01], ["wholesalePrice", "Wholesale price", 0.01], ["packageQuantity", "Package quantity", 0.001], ["sizeValue", "Size", 0]] as const) {
+    const value = draft[field];
+    if (value != null && (!Number.isFinite(value) || value < min)) add(field, `${label} must be ${min === 0 ? "zero or greater" : "greater than zero"}.`);
+  }
+  return issues;
+}
+
+export function changeImportDraft<K extends keyof ImportReviewDraft>(
+  current: ImportReviewDraft, baseline: ImportReviewDraft, key: K, value: ImportReviewDraft[K],
+): ImportReviewDraft {
+  if (JSON.stringify(current[key]) === JSON.stringify(value)) return current;
+  const next = { ...current, [key]: value };
+  if (key === "resolution" || key === "acknowledgeWarnings") return next;
+  const original = draftPayload(baseline);
+  const changed = Object.entries(draftPayload(next)).some(([field, fieldValue]) =>
+    !["resolution", "acknowledgeWarnings"].includes(field) &&
+    JSON.stringify(fieldValue) !== JSON.stringify(original[field as keyof typeof original]));
+  next.resolution = changed ? null : baseline.resolution;
+  // Confirmation applies only to the values the user checked.
+  delete next.acknowledgeWarnings;
+  return next;
 }

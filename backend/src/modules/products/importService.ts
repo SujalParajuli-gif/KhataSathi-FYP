@@ -7,6 +7,8 @@ import {
     type ProductImportRow,
 } from "@prisma/client";
 import prisma from "../../db/prisma";
+import { importReviewChanges, importReviewIssues, mergeReviewedImportEvidence, pendingImportWarnings } from "./importReviewState";
+export { importReviewChanges } from "./importReviewState";
 import { getBusinessSettings } from "../settings/service";
 import {
     getEnabledSearchSynonymRules,
@@ -101,6 +103,7 @@ type CsvImportError = {
 };
 
 type ReviewedPdfImportRowInput = {
+    acknowledgeWarnings?: boolean;
     rowId: string;
     name?: string;
     sku?: string;
@@ -235,6 +238,7 @@ export function prepareReviewedImportRowDraft(input: ReviewedPdfImportRowInput) 
         rowId,
         name,
         sku,
+        skuWasGenerated: !reviewedDraftText(input.sku, "SKU"),
         barcode: reviewedDraftText(input.barcode, "Barcode"),
         brand: reviewedDraftText(input.brand, "Brand", true)!,
         category: reviewedDraftText(input.category, "Category"),
@@ -1233,15 +1237,20 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
     const comparableIndexes: number[] = [];
 
     rows.forEach((row, index) => {
+        if (row.resolution === "IGNORE") {
+            row.status = "IGNORED";
+            row.error = null;
+            return;
+        }
         if (row.status === "FAILED" || !row.parsed || typeof row.parsed !== "object") return;
         const parsed = row.parsed as Record<string, unknown>;
         if (String(parsed.sourceType).includes("AI_ROW")) {
-            parsed.warnings = [
+            parsed.warnings = [...new Set([
                 ...(Array.isArray(parsed.warnings) ? parsed.warnings : []),
                 ...(Array.isArray(parsed.uncertainFields) && parsed.uncertainFields.length ? [`Check unreadable fields: ${parsed.uncertainFields.join(", ")}.`] : []),
                 ...(!parsed.brand ? ["Confirm the product brand before importing."] : []),
                 ...(![parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice].some((value) => Number(value) > 0) ? ["No price captured. Check the source before marking this product as coming soon."] : []),
-            ];
+            ])];
         }
         comparableIndexes.push(index);
         comparableRows.push({
@@ -1320,11 +1329,11 @@ async function classifyProductPreviewRows(rows: ProductImportPreviewRowDraft[]) 
                         (requestedResolution === "UPDATE_MATCHED" || requestedResolution === "KEEP_EXISTING")
                         ? requestedResolution
                         : null;
-        if (Array.isArray(parsed.warnings) && parsed.warnings.length && !requestedResolution) {
+        const warnings = pendingImportWarnings(parsed);
+        if (warnings.length && resolution !== "IGNORE" && comparison.comparisonStatus !== "IDENTIFIER_CONFLICT" && comparison.comparisonStatus !== "FAILED") {
             row.resolution = null;
-            row.comparisonStatus = "NEEDS_REVIEW";
             row.status = "DUPLICATE";
-            row.error = parsed.warnings.map(String).join(" ");
+            row.error = warnings.join(" ");
             return;
         }
         row.resolution = resolution;
@@ -2935,32 +2944,29 @@ export async function getProductImportReview(input: {
         include: { createdBy: { select: { id: true, name: true, role: true } } },
     });
     if (!batch) throw new Error("Product import batch was not found.");
-    const extractionMeta = batch.extractionMeta && typeof batch.extractionMeta === "object" && !Array.isArray(batch.extractionMeta)
-        ? batch.extractionMeta as Record<string, unknown>
-        : {};
-    const hasPriceColumnMetadata = Array.isArray(extractionMeta.priceColumns)
-        && extractionMeta.priceColumns.some((column) => {
-            if (!column || typeof column !== "object" || Array.isArray(column)) return false;
-            return Boolean(normalizeCsvText((column as any).key) && normalizeCsvText((column as any).label));
-        });
-
-    const reviewMetricRows = await prisma.productImportRow.findMany({
+    const storedReviewMetricRows = await prisma.productImportRow.findMany({
         where: { batchId: input.batchId },
-        select: { id: true, parsed: true, extracted: true, comparisonStatus: true, status: true, error: true },
+        select: { id: true, rowNumber: true, rawText: true, resolution: true, parsed: true, extracted: true, comparisonStatus: true, status: true, error: true },
     });
+    // Old review saves discarded source metadata. Surface recoverable warnings
+    // before final import, which also revalidates them.
+    const reviewMetricRows = storedReviewMetricRows.map(row => ({
+        ...row, parsed: { ...importMetadata(row.extracted), ...importMetadata(row.parsed) },
+    }));
     const reviewChangesById = new Map<string, string[]>(
         reviewMetricRows.map((row): [string, string[]] => [row.id, importReviewChanges(row.parsed, row.extracted)]),
     );
-    const attentionIds = reviewMetricRows.filter((row) =>
+    const attentionIds = reviewMetricRows.filter((row) => row.resolution !== "IGNORE" && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status) && (
         row.status === "FAILED"
         || Boolean(row.error)
-        || ["NEEDS_REVIEW", "IDENTIFIER_CONFLICT", "IN_FILE_DUPLICATE", "FAILED"].includes(row.comparisonStatus)
-        || (row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed) && Array.isArray((row.parsed as any).warnings) && (row.parsed as any).warnings.length > 0),
+        || ["NEEDS_REVIEW", "IDENTIFIER_CONFLICT", "FAILED"].includes(row.comparisonStatus)
+        || (row.comparisonStatus === "MATCHED_WITH_CHANGES" && !row.resolution)
+        || pendingImportWarnings(row.parsed).length > 0),
     ).map((row) => row.id);
     const editedIds = reviewMetricRows.filter((row) => (reviewChangesById.get(row.id)?.length || 0) > 0).map((row) => row.id);
     const missingBrandCount = reviewMetricRows.filter((row) => {
         const parsed = importMetadata(row.parsed);
-        return !normalizeCsvText(parsed.brand);
+        return row.resolution !== "IGNORE" && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status) && !normalizeCsvText(parsed.brand);
     }).length;
 
     const where: Prisma.ProductImportRowWhereInput = { batchId: input.batchId };
@@ -2971,13 +2977,14 @@ export async function getProductImportReview(input: {
     if (input.reviewState) where.id = { in: input.reviewState === "EDITED" ? editedIds : attentionIds };
     const search = normalizeCsvText(input.search);
     if (search) {
-        where.OR = [
-            { rawText: { contains: search } },
-            { error: { contains: search } },
-        ];
+        const query = search.toLocaleLowerCase();
+        const allowedIds = input.reviewState === "EDITED" ? editedIds : input.reviewState ? attentionIds : null;
+        where.id = { in: reviewMetricRows.filter(row => (!allowedIds || allowedIds.includes(row.id)) &&
+            [row.rowNumber, row.rawText, row.error, ...["name", "productName", "sku", "barcode", "productCodeVariant"].map(key => importMetadata(row.parsed)[key])]
+                .some(value => String(value ?? "").toLocaleLowerCase().includes(query))).map(row => row.id) };
     }
 
-    const [rows, total, grouped, decisionGroups, priceInferenceRows] = await Promise.all([
+    const [rows, total, grouped] = await Promise.all([
         prisma.productImportRow.findMany({
             where,
             orderBy: { rowNumber: "asc" },
@@ -2990,17 +2997,6 @@ export async function getProductImportReview(input: {
             where: { batchId: input.batchId },
             _count: { _all: true },
         }),
-        prisma.productImportRow.groupBy({
-            by: ["resolution", "status"],
-            where: { batchId: input.batchId },
-            _count: { _all: true },
-        }),
-        hasPriceColumnMetadata
-            ? Promise.resolve([] as Array<{ parsed: Prisma.JsonValue | null }>)
-            : prisma.productImportRow.findMany({
-                where: { batchId: input.batchId },
-                select: { parsed: true },
-            }),
     ]);
 
     const decisionCounts = {
@@ -3011,27 +3007,32 @@ export async function getProductImportReview(input: {
         unresolved: 0,
         committed: 0,
     };
-    for (const group of decisionGroups) {
-        const count = group._count._all;
-        if (["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(group.status)) {
-            decisionCounts.committed += count;
-        } else if (group.resolution === "CREATE_NEW") decisionCounts.create += count;
-        else if (group.resolution === "UPDATE_MATCHED") decisionCounts.update += count;
-        else if (group.resolution === "KEEP_EXISTING") decisionCounts.keep += count;
-        else if (group.resolution === "IGNORE" || group.status === "IGNORED") decisionCounts.ignore += count;
-        else decisionCounts.unresolved += count;
+    for (const row of reviewMetricRows) {
+        if (["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status)) {
+            decisionCounts.committed += 1;
+        } else if (row.resolution === "IGNORE" || row.status === "IGNORED") decisionCounts.ignore += 1;
+        else if (pendingImportWarnings(row.parsed).length) decisionCounts.unresolved += 1;
+        else if (row.resolution === "CREATE_NEW") decisionCounts.create += 1;
+        else if (row.resolution === "UPDATE_MATCHED") decisionCounts.update += 1;
+        else if (row.resolution === "KEEP_EXISTING") decisionCounts.keep += 1;
+        else decisionCounts.unresolved += 1;
     }
 
-    const priceMapping = getImportPriceMappingState({ ...batch, rows: priceInferenceRows });
+    const priceMapping = getImportPriceMappingState({ ...batch, rows: reviewMetricRows });
+    const evidenceRows = rows.map(row => ({ ...row, parsed: {
+        ...importMetadata(row.extracted), ...importMetadata(row.parsed),
+    } as Prisma.JsonValue }));
     const mappedRows = priceMapping.complete
-        ? rows.map((row) => ({
+        ? evidenceRows.map((row) => ({
             ...row,
             parsed: parsedWithImportPriceMapping(row.parsed, priceMapping.mapping) as Prisma.JsonValue,
         }))
-        : rows;
+        : evidenceRows;
     const displayRows = mappedRows.map((row) => ({
         ...row,
         reviewChanges: reviewChangesById.get(row.id) || [],
+        reviewIssues: importReviewIssues(row),
+        pendingWarnings: pendingImportWarnings(row.parsed),
     }));
 
     return {
@@ -3056,32 +3057,6 @@ export async function getProductImportReview(input: {
         decisionCounts,
         priceMapping,
     };
-}
-
-export function importReviewChanges(parsedValue: unknown, extractedValue: unknown): string[] {
-    if (!parsedValue || typeof parsedValue !== "object" || Array.isArray(parsedValue)
-        || !extractedValue || typeof extractedValue !== "object" || Array.isArray(extractedValue)) return [];
-    const parsed = parsedValue as Record<string, unknown>;
-    const extracted = extractedValue as Record<string, unknown>;
-    const sourceType = String(parsed.sourceType || extracted.sourceType || "");
-    const derivedUnmappedAvailability = ["PDF_TEXT_TABLE_ROW", "PDF_SCANNED_AI_ROW", "IMAGE_AI_ROW"].includes(sourceType)
-        && parsed.availabilityStatus === "COMING_SOON"
-        && extracted.availabilityStatus === "CATALOG_LISTED"
-        && Array.isArray(extracted.extractedPrices)
-        && extracted.extractedPrices.length > 0
-        && ![parsed.ratePerPiece, parsed.retailPrice, parsed.wholesalePrice].some((value) => Number(value) > 0);
-    const fields: Array<[string, string]> = [
-        ["productName", "Product name"], ["sku", "SKU"], ["barcode", "Barcode"],
-        ["brand", "Brand"], ["category", "Category"], ["productCodeVariant", "Product code"],
-        ["sizeValue", "Size"], ["sizeUnit", "Size unit"], ["packageQuantity", "Package quantity"],
-        ["packageUnit", "Package unit"], ["saleUnit", "Sale unit"], ["ratePerPiece", "Rate"],
-        ["retailPrice", "Retail price"], ["wholesalePrice", "Wholesale price"],
-        ["availabilityStatus", "Availability"],
-    ];
-    return fields
-        .filter(([key]) => !(key === "availabilityStatus" && derivedUnmappedAvailability))
-        .filter(([key]) => JSON.stringify(parsed[key] ?? null) !== JSON.stringify(extracted[key] ?? null))
-        .map(([, label]) => label);
 }
 
 type ImportPriceDestination = "ratePerPiece" | "retailPrice" | "wholesalePrice";
@@ -3234,6 +3209,7 @@ export async function setProductImportPriceMapping(input: {
         include: { rows: { orderBy: { rowNumber: "asc" } } },
     });
     if (!batch) throw new Error("Product import batch was not found.");
+    const expectedReviewState = importReviewSnapshot(batch.rows);
     const state = getImportPriceMappingState(batch);
     if (!state.required) throw new Error("This import has no extracted price columns to map.");
 
@@ -3255,13 +3231,17 @@ export async function setProductImportPriceMapping(input: {
     }
 
     const targetRowIdSet = input.rowIds && input.rowIds.length > 0 ? new Set(input.rowIds) : null;
+    if (targetRowIdSet && (!state.complete || Object.keys(mapping).some(key => mapping[key] !== state.mapping[key]))) {
+        throw new ReviewedImportRowValidationError("Price-column meaning applies to the whole file. Choose all rows when changing the mapping.");
+    }
     const rowsToProcess = batch.rows.filter((row) => (!targetRowIdSet || targetRowIdSet.has(row.id)) && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status));
 
     const drafts: ProductImportPreviewRowDraft[] = rowsToProcess.map((row) => {
         const parsed = row.parsed && typeof row.parsed === "object" && !Array.isArray(row.parsed)
             ? { ...(row.parsed as Record<string, unknown>) }
             : {};
-        const prices = importPriceCandidates(parsed);
+        const prices = importPriceCandidates({ ...importMetadata(row.extracted), ...parsed,
+            extractedPrices: parsed.extractedPrices || importMetadata(row.extracted).extractedPrices });
         parsed.extractedPrices = prices;
         for (const previousDestination of Object.values(state.mapping)) {
             if (["ratePerPiece", "retailPrice", "wholesalePrice"].includes(previousDestination)) {
@@ -3275,6 +3255,19 @@ export async function setProductImportPriceMapping(input: {
             if (destination && Number.isFinite(value) && value > 0) parsed[destination] = roundCurrency(value);
         }
         const mappedParsed = parsedWithImportPriceMapping(parsed, mapping);
+        const derivedAvailability = !importReviewChanges(parsed, row.extracted).includes("Availability");
+        if (derivedAvailability) {
+            mappedParsed.availabilityStatus = [mappedParsed.ratePerPiece, mappedParsed.retailPrice, mappedParsed.wholesalePrice]
+                .some(value => Number(value) > 0) ? "CATALOG_LISTED" : "COMING_SOON";
+        }
+        // Column mapping is setup, not a manual correction to each product.
+        mappedParsed.reviewSetupBaseline = {
+            ...importMetadata(parsed.reviewSetupBaseline),
+            ...Object.fromEntries([...new Set([...Object.values(state.mapping), ...Object.values(mapping), ...(derivedAvailability ? ["availabilityStatus"] : [])])]
+                .filter(key => ["ratePerPiece", "retailPrice", "wholesalePrice", "availabilityStatus"].includes(key))
+                .map(key => [key, mappedParsed[key] ?? null])),
+        };
+        mappedParsed.reviewAcknowledgedWarnings = [];
         return {
             rowNumber: row.rowNumber,
             rawText: row.rawText,
@@ -3289,27 +3282,37 @@ export async function setProductImportPriceMapping(input: {
             resolution: row.resolution,
         };
     });
-    await classifyProductPreviewRows(drafts);
+    const mappedByNumber = new Map(drafts.map(draft => [draft.rowNumber, draft]));
+    const comparisonDrafts: ProductImportPreviewRowDraft[] = batch.rows
+        .filter(row => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status))
+        .map(row => mappedByNumber.get(row.rowNumber) || {
+            ...row, parsed: row.parsed ? structuredClone(row.parsed) : undefined, extracted: row.extracted || undefined,
+            changeSet: row.changeSet || undefined, sourceLocator: row.sourceLocator || undefined,
+        });
+    await classifyProductPreviewRows(comparisonDrafts);
 
     await prisma.$transaction(async (tx) => {
         await lockEditableImportBatch(tx, batch.id);
+        await assertImportReviewUnchanged(tx, batch.id, expectedReviewState);
         await tx.productImportBatch.update({
             where: { id: batch.id },
             data: { priceMapping: mapping },
         });
-        await Promise.all(rowsToProcess.map((row, index) => tx.productImportRow.update({
+        await Promise.all(comparisonDrafts.map((draft) => {
+            const row = batch.rows.find(row => row.rowNumber === draft.rowNumber)!;
+            return tx.productImportRow.update({
             where: { id: row.id, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
             data: {
-                parsed: drafts[index].parsed || Prisma.DbNull,
-                extracted: row.extracted || drafts[index].extracted || Prisma.DbNull,
-                status: drafts[index].status,
-                error: drafts[index].error || null,
-                comparisonStatus: drafts[index].comparisonStatus,
-                matchedProductId: drafts[index].matchedProductId || null,
-                changeSet: drafts[index].changeSet || Prisma.DbNull,
-                resolution: drafts[index].resolution || null,
+                parsed: draft.parsed || Prisma.DbNull,
+                extracted: row.extracted || draft.extracted || Prisma.DbNull,
+                status: draft.status,
+                error: draft.error || null,
+                comparisonStatus: draft.comparisonStatus,
+                matchedProductId: draft.matchedProductId || null,
+                changeSet: draft.changeSet || Prisma.DbNull,
+                resolution: draft.resolution || null,
             },
-        })));
+        }); }));
         await tx.auditLog.create({
             data: {
                 actorId: input.actorId,
@@ -3325,6 +3328,23 @@ export async function setProductImportPriceMapping(input: {
         priceMapping: mapping,
         rows: drafts.map((draft) => ({ parsed: draft.parsed || null })),
     });
+}
+
+// Page extraction cannot identify repetitions on another page until the batch is assembled.
+export async function refreshExtractedImportComparisons(batchId: string) {
+    const rows = await prisma.productImportRow.findMany({ where: { batchId, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } }, orderBy: { rowNumber: "asc" } });
+    const drafts: ProductImportPreviewRowDraft[] = rows.map(row => ({
+        ...row, parsed: row.parsed || undefined, extracted: row.extracted || undefined,
+        changeSet: row.changeSet || undefined, sourceLocator: row.sourceLocator || undefined,
+    }));
+    await classifyProductPreviewRows(drafts);
+    await prisma.$transaction(rows.map((row, index) => prisma.productImportRow.update({
+        where: { id: row.id },
+        data: { status: drafts[index].status, error: drafts[index].error || null,
+            comparisonStatus: drafts[index].comparisonStatus, matchedProductId: drafts[index].matchedProductId,
+            changeSet: drafts[index].changeSet, resolution: drafts[index].resolution,
+            parsed: drafts[index].parsed, extracted: row.extracted || drafts[index].extracted },
+    })));
 }
 
 export async function getProductImportSourceContext(input: {
@@ -3378,6 +3398,7 @@ export async function saveReviewedProductImportRows(
         include: { rows: true },
     });
     if (!batch) throw new Error("Product import batch was not found.");
+    const expectedReviewState = importReviewSnapshot(batch.rows);
     if (["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status)) throw new Error("Wait for import processing to finish before editing.");
     const batchRows = new Map<string, ProductImportRow>(
         batch.rows.map((row) => [row.id, row]),
@@ -3396,56 +3417,44 @@ export async function saveReviewedProductImportRows(
         }
     }
 
-    const duplicateSku = preparedRows.find(
-        (row, index) =>
-            preparedRows.findIndex(
-                (candidate) => candidate.sku.toLowerCase() === row.sku.toLowerCase(),
-            ) !== index,
-    );
-    if (duplicateSku) {
-        throw new ReviewedImportRowValidationError(
-            `SKU ${duplicateSku.sku} appears more than once in the rows being saved.`,
-        );
-    }
-    const barcodes = preparedRows
-        .map((row) => row.barcode)
-        .filter((barcode): barcode is string => !!barcode);
-    if (new Set(barcodes.map((barcode) => barcode.toLowerCase())).size !== barcodes.length) {
-        throw new ReviewedImportRowValidationError(
-            "The same barcode appears more than once in the rows being saved.",
-        );
-    }
-    const reviewedDrafts: ProductImportPreviewRowDraft[] = preparedRows.map((row, index) => {
-        const { rowId: _rowId, resolution, ...parsedDraft } = row;
-        const storedParsed = importMetadata(batchRows.get(row.rowId)?.parsed);
+    const preparedById = new Map(preparedRows.map(row => [row.rowId, row]));
+    const acknowledgeById = new Map(inputRows.map(row => [row.rowId, row.acknowledgeWarnings === true]));
+    // Classify the whole pending batch, not just this page or a 200-row save chunk.
+    const pendingRows = batch.rows.filter(row => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status))
+        .sort((a, b) => a.rowNumber - b.rowNumber);
+    const reviewedDrafts: ProductImportPreviewRowDraft[] = pendingRows.map(stored => {
+        const prepared = preparedById.get(stored.id);
         return {
-            rowNumber: batchRows.get(row.rowId)?.rowNumber ?? index + 1,
-            rawText: batchRows.get(row.rowId)?.rawText ?? null,
-            status: "READY",
-            resolution: resolution || null,
-            parsed: JSON.parse(JSON.stringify({
-                sourceType: "REVIEWED_ROW_DRAFT",
-                skuWasGenerated: storedParsed.skuWasGenerated === true,
-                ...parsedDraft,
-            })) as Prisma.InputJsonValue,
+            rowNumber: stored.rowNumber, rawText: stored.rawText,
+            status: prepared ? "READY" : stored.status,
+            error: stored.error, comparisonStatus: stored.comparisonStatus,
+            matchedProductId: stored.matchedProductId, changeSet: stored.changeSet || undefined,
+            extracted: stored.extracted || undefined,
+            resolution: prepared ? prepared.resolution || null : stored.resolution,
+            parsed: prepared ? JSON.parse(JSON.stringify(mergeReviewedImportEvidence(
+                stored.parsed, stored.extracted, prepared, acknowledgeById.get(stored.id),
+            ))) : stored.parsed ? structuredClone(stored.parsed) : undefined,
         };
     });
     await classifyProductPreviewRows(reviewedDrafts);
 
     const savedRows = await prisma.$transaction(async (tx) => {
         await lockEditableImportBatch(tx, batchId);
+        await assertImportReviewUnchanged(tx, batchId, expectedReviewState);
         const results: ProductImportRow[] = [];
-        for (let index = 0; index < preparedRows.length; index += 1) {
-            const row = preparedRows[index];
+        for (let index = 0; index < pendingRows.length; index += 1) {
+            const row = pendingRows[index];
             const classified = reviewedDrafts[index];
+            if (!preparedById.has(row.id) && ["parsed", "status", "error", "comparisonStatus", "matchedProductId", "changeSet", "resolution"]
+                .every(key => JSON.stringify((row as any)[key] ?? null) === JSON.stringify((classified as any)[key] ?? null))) continue;
             results.push(
                 await tx.productImportRow.update({
-                    where: { id: row.rowId, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
+                    where: { id: row.id, status: { notIn: ["IMPORTED", "UPDATED", "KEPT_EXISTING"] } },
                     data: {
                         status: classified.status,
                         error: classified.error || null,
                         parsed: classified.parsed,
-                        extracted: batchRows.get(row.rowId)?.extracted || classified.extracted,
+                        extracted: row.extracted || classified.extracted,
                         comparisonStatus: classified.comparisonStatus,
                         matchedProductId: classified.matchedProductId,
                         changeSet: classified.changeSet,
@@ -3473,7 +3482,7 @@ export async function saveReviewedProductImportRows(
                 },
             },
         });
-        return results;
+        return preparedRows.map(row => results.find(result => result.id === row.rowId)!);
     });
     return { rows: savedRows, savedCount: savedRows.length };
 }
@@ -3566,6 +3575,20 @@ export async function listProductImportBatches(filters?: {
         },
     });
     return batches.map(omitPrivateImportStorage);
+}
+
+function importReviewSnapshot(rows: Array<{ id: string; parsed: unknown; status: string; resolution: unknown }>) {
+    return JSON.stringify(rows.map(row => ({ id: row.id, parsed: row.parsed, status: row.status, resolution: row.resolution }))
+        .sort((a, b) => a.id.localeCompare(b.id)));
+}
+
+async function assertImportReviewUnchanged(tx: Prisma.TransactionClient, batchId: string, expected: string) {
+    const current = await tx.productImportRow.findMany({
+        where: { batchId }, select: { id: true, parsed: true, status: true, resolution: true },
+    });
+    if (importReviewSnapshot(current) !== expected) {
+        throw new ReviewedImportRowValidationError("This review changed in another operation. Reload it and try again; your changes were not applied.");
+    }
 }
 
 async function lockEditableImportBatch(tx: Prisma.TransactionClient, batchId: string) {
@@ -3927,17 +3950,16 @@ async function executeReviewedPdfRows(
     const preparedRows = rows.map(prepareReviewedImportRowDraft);
     const classifiedRows: ProductImportPreviewRowDraft[] = preparedRows.map((row) => {
         const { rowId, resolution, ...parsed } = row;
-        const storedParsed = importMetadata(existingRowsById.get(rowId)?.parsed);
+        const stored = existingRowsById.get(rowId)!;
         return {
             rowNumber: existingRowsById.get(rowId)?.rowNumber || 0,
             rawText: existingRowsById.get(rowId)?.rawText || null,
             status: "READY",
             resolution: resolution || null,
-            parsed: {
+            parsed: JSON.parse(JSON.stringify({
+                ...mergeReviewedImportEvidence(stored.parsed, stored.extracted, row),
                 sourceType: "FINAL_REVIEWED_ROW",
-                skuWasGenerated: storedParsed.skuWasGenerated === true,
-                ...parsed,
-            } as Prisma.InputJsonValue,
+            })) as Prisma.InputJsonValue,
         };
     });
     await classifyProductPreviewRows(classifiedRows);

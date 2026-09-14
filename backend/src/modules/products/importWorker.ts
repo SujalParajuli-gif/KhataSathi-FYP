@@ -4,7 +4,7 @@ import sharp from "sharp";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import { getImportSourcePath } from "./importSourceStorage";
-import { attachProductImportSource, createImageImportPreview, createPdfImportPreview, createScannedPdfImportPreview } from "./importService";
+import { attachProductImportSource, createImageImportPreview, createPdfImportPreview, createScannedPdfImportPreview, refreshExtractedImportComparisons } from "./importService";
 import { extractPdfTextLineRegions } from "./pdfTextLocations";
 import { parsePdfTextCatalogPages, type PdfTextCatalogPage } from "./pdfTextCatalogParser";
 import { assertExtractionActive, importExecution, importMetadata, persistEmptyImportPage, type ImportPageProgress } from "./importExecution";
@@ -142,6 +142,7 @@ async function persistTerminalBatchState(id: string, jobError: string | null) {
       const current = await prisma.productImportBatch.findUniqueOrThrow({ where: { id } });
       const meta = importMetadata(current.extractionMeta);
       const count = await prisma.productImportRow.count({ where: { batchId: id } });
+      if (count) await refreshExtractedImportComparisons(id);
       await prisma.productImportBatch.update({ where: { id }, data: {
         status: count ? "DRAFT" : "FAILED",
         totalRows: count,

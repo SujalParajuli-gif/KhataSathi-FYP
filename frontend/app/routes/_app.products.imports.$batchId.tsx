@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import { useBlocker, useNavigate, useParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { useToast } from "~/components/ui/Toast";
@@ -31,6 +31,10 @@ import {
   displayImportSourceRegion,
   draftPayload,
   importRowToDraft,
+  changeImportDraft,
+  importRowNeedsAttention,
+  importRowPriceLabel,
+  validateImportDraft,
   parsedImportRow,
   readableSourceHeader,
   sourcePreviewColumnWidth,
@@ -101,17 +105,6 @@ function rowSku(row: ProductImportRow) {
   return String(parsedImportRow(row).sku || "No SKU");
 }
 
-function rowRate(row: ProductImportRow) {
-  const parsed = parsedImportRow(row);
-  const value = Number(parsed.ratePerPiece);
-  if (Number.isFinite(value) && value > 0) return `NPR ${value.toLocaleString()}`;
-  const extracted = Array.isArray(parsed.extractedPrices)
-    ? Number((parsed.extractedPrices[0] as any)?.value)
-    : Number.NaN;
-  return Number.isFinite(extracted) && extracted > 0
-    ? `Source NPR ${extracted.toLocaleString()}`
-    : "Price coming soon";
-}
 
 function statusTone(status?: ProductImportRow["comparisonStatus"]) {
   if (status === "READY_NEW") return "border-emerald-200 bg-emerald-50 text-emerald-800";
@@ -253,11 +246,15 @@ function getPriceColumnDetails(
   };
 }
 
-function Field({ label, children }: { label: string; children: React.ReactNode }) {
+function Field({ label, children, field, issue }: { label: string; children: React.ReactNode; field?: string; issue?: { message: string; severity: "error" | "warning" } }) {
+  const issueId = field ? `review-issue-${field}` : undefined;
   return (
-    <label className="grid min-w-0 gap-1 text-[11px] font-extrabold text-[#4B5563] xl:text-[10px]">
+    <label id={field ? `review-field-${field}` : undefined} className={`grid min-w-0 gap-1 text-[11px] font-extrabold text-[#4B5563] xl:text-[10px] ${issue ? issue.severity === "error" ? "[&_input]:border-rose-400 [&_input]:bg-rose-50/40" : "[&_input]:border-amber-400 [&_input]:bg-amber-50/40" : ""}`}>
       <span>{label}</span>
-      {children}
+      {isValidElement(children) && typeof children.type === "string" ? cloneElement(children as React.ReactElement<any>, {
+        "aria-label": label, "aria-invalid": issue?.severity === "error" || undefined, "aria-describedby": issue ? issueId : undefined,
+      }) : children}
+      {issue ? <span id={issueId} className={`text-[10px] font-semibold leading-4 ${issue.severity === "error" ? "text-rose-800" : "text-amber-800"}`}>{issue.message}</span> : null}
     </label>
   );
 }
@@ -851,7 +848,15 @@ export default function ProductImportReviewPage() {
   }
 
   function updateDraft<K extends keyof ImportReviewDraft>(key: K, value: ImportReviewDraft[K]) {
-    setDraft((current) => current ? { ...current, [key]: value } : current);
+    setDraft((current) => current && review && activeRow
+      ? changeImportDraft(current, importRowToDraft(review.batch, activeRow), key, value) : current);
+  }
+
+  function focusReviewField(field: string | null) {
+    if (!field) return;
+    const container = document.getElementById(`review-field-${field}`);
+    container?.scrollIntoView({ block: "center", behavior: "smooth" });
+    container?.querySelector<HTMLElement>("input, button, select")?.focus({ preventScroll: true });
   }
 
   async function saveReviewPayloads(payloads: ReviewedPdfImportRowPayload[]) {
@@ -916,12 +921,10 @@ export default function ProductImportReviewPage() {
   async function saveDraft(overrideDraft?: Partial<ImportReviewDraft>): Promise<boolean> {
     const activeDraft = overrideDraft && draft ? { ...draft, ...overrideDraft } : draft;
     if (!activeDraft || !review || !activeRow) return false;
-    if (activeDraft.resolution !== "IGNORE" && !activeDraft.name.trim()) {
-      showToast("danger", "Product name is required.");
-      return false;
-    }
-    if (activeDraft.resolution !== "IGNORE" && activeDraft.availabilityStatus !== "COMING_SOON" && ![activeDraft.ratePerPiece, activeDraft.retailPrice, activeDraft.wholesalePrice].some((price) => Number(price) > 0)) {
-      showToast("danger", "Enter an announced price or mark this product as Coming soon.");
+    const validation = validateImportDraft(activeDraft, Boolean(review.priceMapping?.required && !review.priceMapping.complete));
+    if (validation.length) {
+      showToast("danger", validation[0].message);
+      focusReviewField(validation[0].field);
       return false;
     }
     const before = draftPayload(importRowToDraft(review.batch, activeRow));
@@ -1663,6 +1666,14 @@ export default function ProductImportReviewPage() {
       : 0;
     const canMovePrevious = Boolean(review && filteredPosition > 1);
     const canMoveNext = Boolean(review && filteredPosition < review.pagination.total);
+    const baseline = draftPayload(importRowToDraft(review!.batch, activeRow));
+    const comparisonStale = Object.entries(draftPayload(draft)).some(([key, value]) =>
+      !["resolution", "acknowledgeWarnings"].includes(key) && JSON.stringify(value) !== JSON.stringify(baseline[key as keyof typeof baseline]));
+    const issues = [
+      ...validateImportDraft(draft, Boolean(review?.priceMapping?.required && !review.priceMapping.complete)),
+      ...(!comparisonStale && draft.resolution !== "IGNORE" ? activeRow.reviewIssues || [] : []),
+    ];
+    const committed = ["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(activeRow.status);
     return (
       <section className={`${mobilePanel === "editor" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
         <div className="shrink-0 border-b border-[#E2E4E8] bg-white px-3 sm:px-3.5 py-2.5 sm:py-3">
@@ -1681,7 +1692,7 @@ export default function ProductImportReviewPage() {
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap sm:flex-nowrap">
                   <h2 className="text-[13.5px] sm:text-[14px] font-extrabold text-[#11120d] whitespace-nowrap">Review item</h2>
                   <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[8.5px] sm:text-[9px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
-                    {comparisonLabel(draft.comparisonStatus)}
+                    {comparisonStale ? "Comparison pending" : comparisonLabel(draft.comparisonStatus)}
                   </span>
                   {dirty ? (
                     <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[8.5px] font-bold text-amber-800">
@@ -1690,8 +1701,8 @@ export default function ProductImportReviewPage() {
                     </span>
                   ) : activeRow.reviewChanges?.length ? (
                     <span
-                      className="inline-flex items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-2 py-0.5 text-[8.5px] font-bold text-amber-800"
-                      title={`Changed by a user after extraction: ${activeRow.reviewChanges.join(", ")}`}
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[8.5px] font-bold text-slate-700"
+                      title={`Product corrections after import setup: ${activeRow.reviewChanges.join(", ")}`}
                     >
                       <Icon name="edit" sizePx={10} />
                       User changed
@@ -1699,7 +1710,7 @@ export default function ProductImportReviewPage() {
                   ) : (
                     <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[8.5px] font-bold text-emerald-800">
                       <Icon name="check" sizePx={10} className="text-emerald-600" />
-                      Saved
+                      {committed ? "Applied" : "Draft saved"}
                     </span>
                   )}
                 </div>
@@ -1735,8 +1746,29 @@ export default function ProductImportReviewPage() {
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain bg-[#FAFAFB] p-3">
-          {draft.error ? (
+        <div role="status" className="max-h-36 shrink-0 overflow-y-auto border-b border-[#E2E4E8] bg-[#F8FAFC] px-3 py-2 text-[11px] leading-5">
+          <p className="font-bold text-[#374151]">
+            {committed ? "This row has already been applied. It is read-only."
+              : draft.resolution === "IGNORE" ? "This row will be skipped. No catalog data will change."
+              : comparisonStale ? "Unsaved changes — save this row to refresh its catalog comparison."
+              : draft.comparisonStatus === "EXACT_DUPLICATE" ? activeRow.pendingWarnings?.length
+                ? "Already in your catalog. Check the extraction warnings below before finishing."
+                : "Already in your catalog. Existing values will be kept; no duplicate will be created."
+              : draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? "An existing product matches. Review the differences below before choosing what to keep."
+              : draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "Conflicting product details. Correct the highlighted fields before importing."
+              : issues.length ? "Check the highlighted fields against the source."
+              : "Draft only — the catalog will change after Final import."}
+          </p>
+          {issues.length && !committed ? <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
+            {[...new Map(issues.map(issue => [issue.field || issue.message, issue])).values()].map(issue =>
+              <button key={issue.field || issue.message} type="button" onClick={() => focusReviewField(issue.field)}
+                className="text-left font-semibold text-amber-900 underline decoration-amber-300 underline-offset-2">
+                {issue.field ? `Check ${readableSourceHeader(issue.field)}` : issue.message}
+              </button>)}
+          </div> : null}
+        </div>
+        <fieldset disabled={committed} className="min-h-0 min-w-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain bg-[#FAFAFB] p-3">
+          {!comparisonStale && draft.error ? (
             <div role="alert" className={`rounded-[10px] border px-3 py-2.5 text-[10.5px] font-semibold leading-5 ${draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
               <div className="flex items-start gap-2">
                 <Icon name={draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "error" : "warning"} sizePx={16} className="mt-0.5 shrink-0" />
@@ -1744,104 +1776,17 @@ export default function ProductImportReviewPage() {
               </div>
             </div>
           ) : null}
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="sell" sizePx={16} className="text-[#11120d]" />
-              Basic information
-            </div>
-            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
-              <div className="sm:col-span-3">
-                <Field label="Product name">
-                  <input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} className={inputClass} />
-                </Field>
-              </div>
-              <div className="sm:col-span-3">
-                <Field label="SKU">
-                  <input value={draft.sku} onChange={(event) => updateDraft("sku", event.target.value)} className={inputClass} />
-                </Field>
-              </div>
-              <div>
-                <Field label="Brand">
-                  <CreatableCombobox value={draft.brand} onChange={(value) => updateDraft("brand", value)} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Product brand" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-                {!draft.brand && fileBrandSuggestion ? (
-                  <div className="mt-1.5 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-950">
-                    File name suggests <strong>{fileBrandSuggestion}</strong>. Verify it before using it as the brand.
-                    <button type="button" className="ml-1 font-extrabold underline underline-offset-2" onClick={() => updateDraft("brand", fileBrandSuggestion)}>Use suggestion</button>
-                  </div>
-                ) : null}
-              </div>
-              <div>
-                <Field label="Category">
-                  <CreatableCombobox value={draft.category} onChange={(value) => { updateDraft("category", value); updateDraft("categoryGroup", value); }} options={categoryOptions} placeholder="Search or enter category" ariaLabel="Product category" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-              </div>
-              <div>
-                <Field label="Vendor source">
-                  <CreatableCombobox value={draft.vendorSource || ""} onChange={(value) => updateDraft("vendorSource", value)} options={supplierOptions} placeholder="Search or enter supplier" ariaLabel="Vendor source" selectOnFocus compact showCreateHelp={false} />
-                </Field>
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="inventory_2" sizePx={16} className="text-[#11120d]" />
-              Packaging and units
-            </div>
-            <div className="grid grid-cols-2 gap-2.5">
-              <Field label="Size">
-                <input type="number" value={draft.sizeValue ?? ""} onChange={(event) => updateDraft("sizeValue", numberInput(event.target.value))} className={inputClass} placeholder="e.g. 5" />
-              </Field>
-              <Field label="Size unit">
-                <CreatableCombobox value={draft.sizeUnit || ""} onChange={(value) => updateDraft("sizeUnit", value.toUpperCase())} options={unitOptions} placeholder="Unit (Ltr, Kg...)" ariaLabel="Size unit" selectOnFocus compact showCreateHelp={false} />
-              </Field>
-              <Field label="Package quantity">
-                <input type="number" value={draft.packageQuantity ?? ""} onChange={(event) => updateDraft("packageQuantity", numberInput(event.target.value))} className={inputClass} placeholder="Pieces in pack" />
-              </Field>
-              <Field label="Sale unit">
-                <CreatableCombobox value={draft.saleUnit || ""} onChange={(value) => updateDraft("saleUnit", value.toUpperCase())} options={unitOptions} placeholder="Sale unit" ariaLabel="Sale unit" selectOnFocus compact showCreateHelp={false} />
-              </Field>
-            </div>
-          </div>
-
-          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
-            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
-              <Icon name="payments" sizePx={16} className="text-[#11120d]" />
-              Pricing
-            </div>
-            <label className="mb-2.5 flex items-center justify-between gap-3 rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 py-2">
-              <span className="min-w-0">
-                <span className="block text-[11px] font-extrabold text-[#11120d]">Coming soon</span>
-                <span className="block text-[9px] font-semibold leading-4 text-[#6B7280]">Rate can be added later. This product cannot be sold yet.</span>
+          {!!activeRow.pendingWarnings?.length && draft.resolution !== "IGNORE" ? (
+            <label className="flex items-start gap-2 rounded-[10px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold text-amber-950">
+              <input type="checkbox" checked={draft.acknowledgeWarnings === true} onChange={event => updateDraft("acknowledgeWarnings", event.target.checked)} className="mt-1 shrink-0" />
+              <span>I checked the extraction warnings against the source. Save this row to confirm.
+                <span className="mt-1 block text-[10px] font-normal">{activeRow.pendingWarnings.join(" ")}</span>
               </span>
-              <Switch
-                checked={draft.availabilityStatus === "COMING_SOON"}
-                onChange={(checked) => updateDraft("availabilityStatus", checked ? "COMING_SOON" : "CATALOG_LISTED")}
-                ariaLabel="Coming soon"
-              />
             </label>
-            <div className="grid grid-cols-3 gap-2">
-              <Field label="Rate">
-                <input type="number" value={draft.ratePerPiece ?? ""} onChange={(event) => updateDraft("ratePerPiece", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder={draft.availabilityStatus === "COMING_SOON" ? "Later" : "Rate"} />
-              </Field>
-              <Field label="Retail (opt)">
-                <input type="number" value={draft.retailPrice ?? ""} onChange={(event) => updateDraft("retailPrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
-              </Field>
-              <Field label="Wholesale (opt)">
-                <input type="number" value={draft.wholesalePrice ?? ""} onChange={(event) => updateDraft("wholesalePrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
-              </Field>
-            </div>
-            {draft.availabilityStatus === "COMING_SOON" && !(review?.priceMapping?.required && !review.priceMapping.complete) ? (
-              <div className="mt-2.5 rounded-[9px] border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] font-bold text-sky-900">
-                This product will remain searchable, but billing stays disabled until it is changed from Coming soon.
-              </div>
-            ) : null}
-          </div>
-
-          {draft.changeSet && draft.changeSet.length > 0 ? (
+          ) : null}
+          {!comparisonStale && draft.changeSet && draft.changeSet.length > 0 ? (
             <div className="rounded-[12px] border border-amber-200 bg-amber-50 p-3">
-              <div className="text-[12px] font-extrabold text-amber-950">Changes from the existing product</div>
+              <div className="text-[12px] font-extrabold text-amber-950">Catalog comparison: existing → incoming</div>
               <div className="mt-2 grid gap-2">
                 {draft.changeSet.map((change) => (
                   <div key={change.field} className="grid grid-cols-[1fr_auto_1fr] items-center gap-2 rounded-[9px] bg-white/80 px-3 py-2 text-[10px] font-bold">
@@ -1856,7 +1801,7 @@ export default function ProductImportReviewPage() {
             </div>
           ) : null}
 
-          {draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
+          {!comparisonStale && draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
             <div className="rounded-[12px] border border-amber-300/80 bg-amber-50/60 p-3">
               <div className="flex items-center justify-between gap-2">
                 <div className="flex items-center gap-1.5">
@@ -1864,11 +1809,11 @@ export default function ProductImportReviewPage() {
                   <span className="text-[11.5px] font-extrabold text-amber-950">Resolution Decision</span>
                 </div>
                 <span className="rounded-full bg-amber-100/90 border border-amber-200 px-2 py-0.5 text-[9px] font-bold text-amber-900">
-                  {draft.resolution === "KEEP_EXISTING" ? "Keeping store data" : draft.resolution === "IGNORE" ? "Row ignored" : "Updating with incoming"}
+                  {draft.resolution === "KEEP_EXISTING" ? "Keeping store data" : draft.resolution === "IGNORE" ? "Row ignored" : draft.resolution === "UPDATE_MATCHED" ? "Update selected" : "Choose a decision"}
                 </span>
               </div>
               <p className="mt-1 text-[10.5px] font-medium text-amber-900/80">
-                Differences found between spreadsheet and existing catalog item. Select your resolution:
+                Differences found between source file and existing catalog item. Select your resolution:
               </p>
 
               <div className="mt-2.5 grid grid-cols-1 sm:grid-cols-2 gap-2">
@@ -1912,13 +1857,116 @@ export default function ProductImportReviewPage() {
                     ) : null}
                   </div>
                   <span className={`text-[9.5px] font-semibold leading-normal pl-5 ${draft.resolution === "UPDATE_MATCHED" ? "text-slate-200" : "text-slate-600"}`}>
-                    Update catalog product with the new spreadsheet values above.
+                    Update catalog product with the new source file values above.
                   </span>
                 </button>
               </div>
             </div>
           ) : null}
-        </div>
+          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
+            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
+              <Icon name="sell" sizePx={16} className="text-[#11120d]" />
+              Basic information
+            </div>
+            <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-3">
+              <div className="sm:col-span-3">
+                <Field label="Product name" field="name" issue={issues.find(issue => issue.field === "name")}>
+                  <input value={draft.name} onChange={(event) => updateDraft("name", event.target.value)} className={inputClass} />
+                </Field>
+              </div>
+              <div className="sm:col-span-3">
+                <Field label="SKU" field="sku" issue={issues.find(issue => issue.field === "sku")}>
+                  <input value={draft.sku} onChange={(event) => updateDraft("sku", event.target.value)} className={inputClass} placeholder="Generated when saved if blank" />
+                </Field>
+              </div>
+              <div>
+                <Field label="Brand" field="brand" issue={issues.find(issue => issue.field === "brand")}>
+                  <CreatableCombobox value={draft.brand} onChange={(value) => updateDraft("brand", value)} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Product brand" selectOnFocus compact showCreateHelp={false} />
+                </Field>
+                {!draft.brand && fileBrandSuggestion ? (
+                  <div className="mt-1.5 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1.5 text-[9px] font-semibold leading-4 text-amber-950">
+                    File name suggests <strong>{fileBrandSuggestion}</strong>. Verify it before using it as the brand.
+                    <button type="button" className="ml-1 font-extrabold underline underline-offset-2" onClick={() => updateDraft("brand", fileBrandSuggestion)}>Use suggestion</button>
+                  </div>
+                ) : null}
+              </div>
+              <div>
+                <Field label="Category" field="category" issue={issues.find(issue => issue.field === "category")}>
+                  <CreatableCombobox value={draft.category} onChange={(value) => { updateDraft("category", value); updateDraft("categoryGroup", value); }} options={categoryOptions} placeholder="Search or enter category" ariaLabel="Product category" selectOnFocus compact showCreateHelp={false} />
+                </Field>
+              </div>
+              <div>
+                <Field label="Vendor source" field="vendorSource" issue={issues.find(issue => issue.field === "vendorSource")}>
+                  <CreatableCombobox value={draft.vendorSource || ""} onChange={(value) => updateDraft("vendorSource", value)} options={supplierOptions} placeholder="Search or enter supplier" ariaLabel="Vendor source" selectOnFocus compact showCreateHelp={false} />
+                </Field>
+              </div>
+            </div>
+            <div className="mt-2.5 grid grid-cols-1 gap-2.5 sm:grid-cols-2">
+              <Field label="Barcode" field="barcode" issue={issues.find(issue => issue.field === "barcode")}>
+                <input value={draft.barcode || ""} onChange={event => updateDraft("barcode", event.target.value)} className={inputClass} placeholder="Optional" />
+              </Field>
+              <Field label="Product code" field="productCodeVariant" issue={issues.find(issue => issue.field === "productCodeVariant")}>
+                <input value={draft.productCodeVariant || ""} onChange={event => updateDraft("productCodeVariant", event.target.value)} className={inputClass} placeholder="Optional" />
+              </Field>
+            </div>
+          </div>
+
+          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
+            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
+              <Icon name="inventory_2" sizePx={16} className="text-[#11120d]" />
+              Packaging and units
+            </div>
+            <div className="grid grid-cols-2 gap-2.5">
+              <Field label="Size" field="sizeValue" issue={issues.find(issue => issue.field === "sizeValue")}>
+                <input type="number" value={draft.sizeValue ?? ""} onChange={(event) => updateDraft("sizeValue", numberInput(event.target.value))} className={inputClass} placeholder="e.g. 5" />
+              </Field>
+              <Field label="Size unit" field="sizeUnit" issue={issues.find(issue => issue.field === "sizeUnit")}>
+                <CreatableCombobox value={draft.sizeUnit || ""} onChange={(value) => updateDraft("sizeUnit", value.toUpperCase())} options={unitOptions} placeholder="Unit (Ltr, Kg...)" ariaLabel="Size unit" selectOnFocus compact showCreateHelp={false} />
+              </Field>
+              <Field label="Package quantity" field="packageQuantity" issue={issues.find(issue => issue.field === "packageQuantity")}>
+                <input type="number" value={draft.packageQuantity ?? ""} onChange={(event) => updateDraft("packageQuantity", numberInput(event.target.value))} className={inputClass} placeholder="Pieces in pack" />
+              </Field>
+              <Field label="Sale unit" field="saleUnit" issue={issues.find(issue => issue.field === "saleUnit")}>
+                <CreatableCombobox value={draft.saleUnit || ""} onChange={(value) => updateDraft("saleUnit", value.toUpperCase())} options={unitOptions} placeholder="Sale unit" ariaLabel="Sale unit" selectOnFocus compact showCreateHelp={false} />
+              </Field>
+            </div>
+          </div>
+
+          <div className="rounded-[12px] border border-[#D8DBE0] bg-white p-3">
+            <div className="mb-2.5 flex items-center gap-2 text-[12px] font-extrabold text-[#11120d]">
+              <Icon name="payments" sizePx={16} className="text-[#11120d]" />
+              Pricing
+            </div>
+            <label className="mb-2.5 flex items-center justify-between gap-3 rounded-[9px] border border-[#D4D7DC] bg-[#F8FAFC] px-2.5 py-2">
+              <span className="min-w-0">
+                <span className="block text-[11px] font-extrabold text-[#11120d]">Coming soon</span>
+                <span className="block text-[9px] font-semibold leading-4 text-[#6B7280]">Keep this product in the catalog with its price pending.</span>
+              </span>
+              <Switch
+                checked={draft.availabilityStatus === "COMING_SOON"}
+                onChange={(checked) => updateDraft("availabilityStatus", checked ? "COMING_SOON" : "CATALOG_LISTED")}
+                ariaLabel="Coming soon"
+              />
+            </label>
+            <div className="grid grid-cols-3 gap-2">
+              <Field label="Rate" field="ratePerPiece" issue={issues.find(issue => issue.field === "ratePerPiece")}>
+                <input type="number" value={draft.ratePerPiece ?? ""} onChange={(event) => updateDraft("ratePerPiece", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder={draft.availabilityStatus === "COMING_SOON" ? "Later" : "Rate"} />
+              </Field>
+              <Field label="Retail (opt)" field="retailPrice" issue={issues.find(issue => issue.field === "retailPrice")}>
+                <input type="number" value={draft.retailPrice ?? ""} onChange={(event) => updateDraft("retailPrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
+              </Field>
+              <Field label="Wholesale (opt)" field="wholesalePrice" issue={issues.find(issue => issue.field === "wholesalePrice")}>
+                <input type="number" value={draft.wholesalePrice ?? ""} onChange={(event) => updateDraft("wholesalePrice", numberInput(event.target.value))} disabled={Boolean(review?.priceMapping?.required && !review.priceMapping.complete)} className={`${inputClass} disabled:bg-[#F3F4F6] disabled:text-[#8C8889]`} placeholder="Pending" />
+              </Field>
+            </div>
+            {draft.availabilityStatus === "COMING_SOON" && !(review?.priceMapping?.required && !review.priceMapping.complete) ? (
+              <div className="mt-2.5 rounded-[9px] border border-sky-200 bg-sky-50 px-2.5 py-2 text-[10px] font-bold text-sky-900">
+                This product will remain searchable and display Coming soon until its price and availability are confirmed.
+              </div>
+            ) : null}
+          </div>
+
+        </fieldset>
 
         {/* Docked Triage Action Bar */}
         <div className="shrink-0 border-t border-[#E2E4E8] bg-white px-3 py-2.5 sm:py-3 shadow-[0_-4px_12px_rgba(0,0,0,0.03)]">
@@ -1927,6 +1975,7 @@ export default function ProductImportReviewPage() {
             <button
               type="button"
               onClick={() => updateDraft("resolution", draft.resolution === "IGNORE" ? restoreResolution(activeRow) : "IGNORE")}
+              disabled={committed || saving}
               className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border px-3 text-[11px] font-extrabold transition shrink-0 ${draft.resolution === "IGNORE"
                   ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200"
                   : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
@@ -1941,7 +1990,7 @@ export default function ProductImportReviewPage() {
             {/* Right: Actions Cluster */}
             <div className="flex items-center gap-1.5 sm:gap-2 justify-end shrink-0">
               {/* Save Only (without advancing, visible when dirty) */}
-              {dirty ? (
+              {dirty && !committed ? (
                 <button
                   type="button"
                   onClick={() => void saveDraft()}
@@ -1955,54 +2004,7 @@ export default function ProductImportReviewPage() {
                 </button>
               ) : null}
 
-              {/* Context-Aware Primary Actions */}
-              {draft.comparisonStatus === "MATCHED_WITH_CHANGES" ? (
-                draft.resolution === "KEEP_EXISTING" ? (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void saveAndAdvance({ resolution: "UPDATE_MATCHED" })}
-                      className="inline-flex h-10 items-center justify-center gap-1 rounded-[9px] border border-amber-300 bg-amber-50 px-2.5 sm:px-3 text-[10.5px] sm:text-[11px] font-extrabold text-amber-900 transition hover:bg-amber-100 disabled:opacity-45 shrink-0"
-                      title="Apply spreadsheet changes and move to next"
-                    >
-                      <span>Apply changes</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void saveAndAdvance({ resolution: "KEEP_EXISTING" })}
-                      className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-3.5 sm:px-4 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
-                    >
-                      <Icon name="check" sizePx={14} />
-                      <span>{saving ? "Saving…" : canMoveNext ? "Keep & Next" : "Keep existing"}</span>
-                      {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
-                    </button>
-                  </div>
-                ) : (
-                  <div className="flex items-center gap-1.5">
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void saveAndAdvance({ resolution: "KEEP_EXISTING" })}
-                      className="inline-flex h-10 items-center justify-center gap-1 rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 sm:px-3 text-[10.5px] sm:text-[11px] font-extrabold text-slate-700 transition hover:bg-slate-50 disabled:opacity-45 shrink-0"
-                      title="Keep existing catalog product and move to next"
-                    >
-                      <span>Keep existing</span>
-                    </button>
-                    <button
-                      type="button"
-                      disabled={saving}
-                      onClick={() => void saveAndAdvance({ resolution: "UPDATE_MATCHED" })}
-                      className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] bg-[#11120d] px-3.5 sm:px-4 text-[11px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-45 shadow-sm shrink-0"
-                    >
-                      <Icon name="published_with_changes" sizePx={14} />
-                      <span>{saving ? "Saving…" : canMoveNext ? "Apply & Next" : "Apply changes"}</span>
-                      {canMoveNext ? <Icon name="arrow_forward" sizePx={14} /> : null}
-                    </button>
-                  </div>
-                )
-              ) : dirty ? (
+              {dirty && !committed ? (
                 <button
                   type="button"
                   disabled={saving}
@@ -2066,7 +2068,7 @@ export default function ProductImportReviewPage() {
       }
       const payloads = pages
         .flatMap((result) => result.rows)
-        .filter((row) => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status))
+        .filter((row) => !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status) && row.resolution !== "IGNORE" && !String(parsedImportRow(row).brand || "").trim())
         .map((row) => ({
           ...draftPayload(importRowToDraft(review.batch, row)),
           brand: batchBrand.trim(),
@@ -2140,7 +2142,7 @@ export default function ProductImportReviewPage() {
       {review && Number(review.reviewCounts?.missingBrand || 0) > 0 ? (
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-950">
           <div><strong className="font-extrabold">Brand confirmation required.</strong> Catalog matching is incomplete until each product has a confirmed brand.</div>
-          <button type="button" disabled={dirty} onClick={() => { setBatchBrand(fileBrandSuggestion); setBatchBrandOpen(true); }} className="h-9 rounded-[9px] border border-amber-300 bg-white px-3 font-extrabold transition hover:bg-amber-100 disabled:opacity-40">Set one brand for all rows</button>
+          <button type="button" disabled={dirty} onClick={() => { setBatchBrand(fileBrandSuggestion); setBatchBrandOpen(true); }} className="h-9 rounded-[9px] border border-amber-300 bg-white px-3 font-extrabold transition hover:bg-amber-100 disabled:opacity-40">Fill missing brands</button>
         </div>
       ) : null}
 
@@ -2395,7 +2397,7 @@ export default function ProductImportReviewPage() {
                       ? "border-l-[3px] border-l-blue-400 bg-blue-50/40 hover:bg-blue-50/60"
                       : ignored
                         ? "border-l-[3px] border-l-transparent bg-rose-50/40"
-                        : edited
+                        : importRowNeedsAttention(row)
                           ? "border-l-[3px] border-l-amber-400 bg-amber-50/45 hover:bg-amber-50/70"
                           : "border-l-[3px] border-l-transparent bg-white hover:bg-[#F8FAFC]";
 
@@ -2437,13 +2439,13 @@ export default function ProductImportReviewPage() {
 
                       <div className="flex shrink-0 flex-col items-end justify-center gap-1 min-w-[76px] text-right">
                         <span className={`text-[12px] font-bold tabular-nums sm:text-[11px] ${ignored ? "text-[#7A7F89] line-through" : "text-[#11120d]"}`}>
-                          {rowRate(row)}
+                          {importRowPriceLabel(row)}
                         </span>
                         <div className="flex items-center gap-1">
                           {edited ? (
                             <span
-                              className="inline-flex h-5 items-center gap-1 rounded-full border border-amber-200 bg-amber-50 px-1.5 text-[8.5px] font-extrabold text-amber-800"
-                              title={`Changed by a user after extraction: ${row.reviewChanges?.join(", ")}`}
+                              className="inline-flex h-5 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-1.5 text-[8.5px] font-extrabold text-slate-700"
+                              title={`Product corrections after import setup: ${row.reviewChanges?.join(", ")}`}
                             >
                               <Icon name="edit" sizePx={10} /> User changed
                             </span>
@@ -3815,7 +3817,7 @@ export default function ProductImportReviewPage() {
         open={batchBrandOpen}
         onClose={() => { if (!batchBrandBusy) setBatchBrandOpen(false); }}
         title="Confirm one brand for this import"
-        description="This saves the brand and automatically refreshes catalog matching for every uncommitted row."
+        description="This fills missing brands and automatically refreshes catalog matching. Existing brands stay unchanged."
         maxWidthClass="max-w-[500px]"
         mobileBottomSheet
         footer={(
@@ -3826,7 +3828,7 @@ export default function ProductImportReviewPage() {
         )}
       >
         <div className="space-y-3">
-          <div className="rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold leading-5 text-amber-950">Use this only when every row belongs to the same brand. Files containing several brands should be corrected row by row or with selected-row bulk editing.</div>
+          <div className="rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-semibold leading-5 text-amber-950">This fills only missing brands and keeps existing brands unchanged. Use it only if all rows without a brand belong to this brand; otherwise confirm them individually.</div>
           <Field label="Confirmed product brand">
             <CreatableCombobox value={batchBrand} onChange={setBatchBrand} options={brandOptions} placeholder="Search or enter brand" ariaLabel="Confirmed batch brand" selectOnFocus compact showCreateHelp={false} />
           </Field>
