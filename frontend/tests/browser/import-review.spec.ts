@@ -55,6 +55,41 @@ test("review progress is explicit and an unavailable source does not leave an em
   await expect(progress.getByRole("listitem").filter({ hasText: "Review" })).toHaveAttribute("aria-current", "step");
   await expect(page.getByRole("heading", { name: "Source document" })).toHaveCount(0);
   await expect(page.getByText("The original file was not retained", { exact: false })).toBeVisible();
+  await expect(page.getByLabel("2 of 2 source pages processed")).toBeVisible();
+  await expect(page.getByText("2 / 2 source pages processed.", { exact: true })).toHaveCount(0);
+});
+
+test("coverage recovery stays compact and mobile review views survive reload", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state: any = review();
+  state.batch.source = { available: true, fileName: "test-catalog.pdf", mimeType: "application/pdf" };
+  state.coverage.canReprocessEmpty = true;
+  state.coverage.emptyPageNumbers = [2];
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  const recovery = page.getByRole("status").filter({ hasText: "marked empty" });
+  await expect(recovery).toBeVisible();
+  expect((await recovery.boundingBox())!.height).toBeLessThanOrEqual(48);
+  await expect(recovery.getByRole("button", { name: "Recheck" })).toBeVisible();
+  await page.getByRole("tab", { name: "Source" }).click();
+  await expect(page).toHaveURL(/view=source/);
+  await expect(page.getByRole("heading", { name: "Source document" })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("tab", { name: "Source" })).toHaveAttribute("aria-selected", "true");
+  await page.screenshot({ path: testInfo.outputPath("source-backed-mobile.png") });
+});
+
+test("source-backed review keeps all three desktop work areas in view", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 1440, height: 900 });
+  const state: any = review();
+  state.batch.source = { available: true, fileName: "test-catalog.pdf", mimeType: "application/pdf" };
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await expect(page.getByRole("heading", { name: "Source document" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Review item" })).toBeVisible();
+  await expect(page.getByRole("textbox", { name: "Search import rows" })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("source-backed-desktop.png") });
 });
 
 test("catalog search state survives reload through the URL", async ({ page }) => {
@@ -82,7 +117,7 @@ function review(status = "DRAFT", incomplete = false) {
   return {batch:{id:"test-batch",sourceType:"PDF",fileName:"test-catalog.pdf",supplier:"Test supplier",status,totalRows:1,createdAt:new Date().toISOString(),source:{available:false}},
     rows:status === "DRAFT" ? [structuredClone(row)] : [],pagination:{page:1,pageSize:50,total:1,totalPages:1},comparisonCounts:{READY_NEW:1},
     decisionCounts:{create:1,update:0,keep:0,ignore:0,unresolved:0,committed:0},priceMapping:{required:false,complete:true,columns:[],mapping:{}},
-    coverage:{total:2,completed:incomplete ? 1 : 2,failedPages:incomplete ? [{pageNumber:2,message:"This page could not be read."}] : [],requiresAcknowledgement:incomplete}};
+    coverage:{total:2,visited:2,completed:incomplete ? 1 : 2,partialPages:[],failedPages:incomplete ? [{pageNumber:2,message:"This page could not be read."}] : [],unvisitedPages:[],retryablePages:incomplete ? [2] : [],emptyPageNumbers:[],outcome:incomplete ? "PARTIAL" : "COMPLETE",canRetry:incomplete,canReprocessEmpty:false,requiresAcknowledgement:incomplete}};
 }
 async function mockApp(page: Page, state: ReturnType<typeof review>, options: {failFirstPoll?:boolean; batches?:unknown[]} = {}) {
   let reads = 0;
@@ -165,6 +200,7 @@ test("spreadsheet preview uploads multipart data and remains editable after a he
   await page.getByRole("button",{name:/^(upload_file )?Import$/}).click();
   const dialog = page.getByRole("dialog",{name:"Import Products from Spreadsheet, PDF, or Image"});
   await dialog.locator('input[type="file"]').first().setInputFiles({name:"catalog.csv",mimeType:"text/csv",buffer:Buffer.from("Name,Rate\nBucket,100")});
+  await expect(dialog.getByRole("navigation", { name: "Import progress" }).getByRole("listitem").filter({ hasText: "Extract" })).toHaveAttribute("aria-current", "step");
   const header = dialog.getByRole("spinbutton",{name:"Header row"});
   await expect(header).toHaveValue("1");
   expect(contentType).toContain("multipart/form-data; boundary=");

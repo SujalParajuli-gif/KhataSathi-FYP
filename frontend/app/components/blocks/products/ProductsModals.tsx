@@ -11,6 +11,7 @@ import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
 import { ImportPreparingWidget, ImportProcessingWidget } from "./ImportProcessingWidget";
+import ProductImportProgress from "~/features/product-imports/ProductImportProgress";
 import type {
   DocumentRecord,
   ImportedProductSummary,
@@ -3693,24 +3694,10 @@ export default function ProductsModals({
             )
           ) : (
           <div className="flex flex-col h-full bg-[#F8FAFC]">
-            <nav aria-label="Import progress" className="border-b border-[#E5E7EB] bg-white px-4 py-3 sm:px-5">
-              <ol className="grid grid-cols-4 gap-1" role="list">
-                {["Upload", "Extract", "Review", "Import"].map((label, index) => {
-                  const activeIndex = importFile ? 1 : 0;
-                  const done = index < activeIndex;
-                  const current = index === activeIndex;
-                  return (
-                    <li key={label} className="flex min-w-0 items-center gap-1.5" aria-current={current ? "step" : undefined}>
-                      <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${done ? "bg-[#179B4D] text-white" : current ? "bg-[#11120d] text-white" : "bg-[#ECEFF3] text-[#64748B]"}`}>
-                        {done ? <Icon name="check" sizePx={14} /> : index + 1}
-                      </span>
-                      <span className={`truncate text-[10px] font-bold sm:text-[11px] ${current || done ? "text-[#11120d]" : "text-[#7A7F89]"}`}>{label}</span>
-                      {index < 3 ? <span aria-hidden="true" className="hidden h-px min-w-2 flex-1 bg-[#D8DBE0] sm:block" /> : null}
-                    </li>
-                  );
-                })}
-              </ol>
-            </nav>
+            <ProductImportProgress
+              activeStage={importFile ? 1 : 0}
+              className="rounded-none border-x-0 border-t-0"
+            />
             {/* Tabs */}
             <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
               <button

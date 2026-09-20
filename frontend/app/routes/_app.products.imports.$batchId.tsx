@@ -7,6 +7,7 @@ import ProjectSelect from "~/components/ui/ProjectSelect";
 import Switch from "~/components/ui/Switch";
 import { ModalFrame } from "~/components/ui/Modal";
 import { ImportProcessingWidget } from "~/components/blocks/products/ImportProcessingWidget";
+import ProductImportProgress from "~/features/product-imports/ProductImportProgress";
 import {
   fetchProductImportSourceBlobApi,
   fetchProductImportSourcePageBlobApi,
@@ -261,7 +262,7 @@ function getPriceColumnDetails(
 function Field({ label, children, field, issue }: { label: string; children: React.ReactNode; field?: string; issue?: { message: string; severity: "error" | "warning" } }) {
   const issueId = field ? `review-issue-${field}` : undefined;
   return (
-    <label id={field ? `review-field-${field}` : undefined} className={`grid min-w-0 gap-1 text-[11px] font-extrabold text-[#4B5563] xl:text-[10px] ${issue ? issue.severity === "error" ? "[&_input]:border-rose-400 [&_input]:bg-rose-50/40" : "[&_input]:border-amber-400 [&_input]:bg-amber-50/40" : ""}`}>
+    <label id={field ? `review-field-${field}` : undefined} className={`grid min-w-0 gap-1 text-[11px] font-extrabold text-[#4B5563] ${issue ? issue.severity === "error" ? "[&_input]:border-rose-400 [&_input]:bg-rose-50/40" : "[&_input]:border-amber-400 [&_input]:bg-amber-50/40" : ""}`}>
       <span>{label}</span>
       {isValidElement(children) && typeof children.type === "string" ? cloneElement(children as React.ReactElement<any>, {
         "aria-label": label, "aria-invalid": issue?.severity === "error" || undefined, "aria-describedby": issue ? issueId : undefined,
@@ -271,7 +272,7 @@ function Field({ label, children, field, issue }: { label: string; children: Rea
   );
 }
 
-const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[11px] font-semibold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/15";
+const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[12px] font-semibold text-[#11120d] outline-none transition-colors focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/15";
 
 export default function ProductImportReviewPage() {
   const { batchId = "" } = useParams();
@@ -297,7 +298,10 @@ export default function ProductImportReviewPage() {
   const [selectedIds, setSelectedIds] = useState<Set<string>>(new Set());
   const [allMatchingSelected, setAllMatchingSelected] = useState(false);
   const [excludedSelectedIds, setExcludedSelectedIds] = useState<Set<string>>(new Set());
-  const [mobilePanel, setMobilePanel] = useState<MobilePanel>("list");
+  const [mobilePanel, setMobilePanel] = useState<MobilePanel>(() => {
+    const view = reviewSearchParams.get("view");
+    return view === "editor" || view === "source" ? view : "list";
+  });
   const [sourceContext, setSourceContext] = useState<Awaited<ReturnType<typeof getProductImportSourceContextApi>> | null>(null);
   const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
   const [sourceLoading, setSourceLoading] = useState(false);
@@ -400,9 +404,10 @@ export default function ProductImportReviewPage() {
       write("page", String(page), "1");
       write("pageSize", String(pageSize), "25");
       write("row", activeRowId);
+      write("view", mobilePanel, "list");
       return next.toString() === current.toString() ? current : next;
     }, { replace: true });
-  }, [activeRowId, filter, page, pageSize, search, setReviewSearchParams]);
+  }, [activeRowId, filter, mobilePanel, page, pageSize, search, setReviewSearchParams]);
 
   useEffect(() => {
     let active = true;
@@ -512,8 +517,8 @@ export default function ProductImportReviewPage() {
   const regionScale = Number(region?.scale || 1000);
 
   useEffect(() => {
-    if (!sourceAvailable && mobilePanel === "source") setMobilePanel("editor");
-  }, [mobilePanel, sourceAvailable]);
+    if (review && !sourceAvailable && mobilePanel === "source") setMobilePanel("editor");
+  }, [mobilePanel, review, sourceAvailable]);
 
   useEffect(() => {
     if (!activeRowId || !sourcePreviewUrl || !region) return;
@@ -1740,14 +1745,14 @@ export default function ProductImportReviewPage() {
                     </span>
                   ) : activeRow.reviewChanges?.length ? (
                     <span
-                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[8.5px] font-bold text-slate-700"
+                      className="inline-flex items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-2 py-0.5 text-[9.5px] font-bold text-slate-700"
                       title={`Product corrections after import setup: ${activeRow.reviewChanges.join(", ")}`}
                     >
                       <Icon name="edit" sizePx={10} />
                       User changed
                     </span>
                   ) : (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[8.5px] font-bold text-emerald-800">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[9.5px] font-bold text-emerald-800">
                       <Icon name="check" sizePx={10} className="text-emerald-600" />
                       {committed ? "Applied" : "Draft saved"}
                     </span>
@@ -2176,13 +2181,6 @@ export default function ProductImportReviewPage() {
         </ModalFrame>
       ) : null}
       {commitUnknown ? <div role="alert" className="shrink-0 rounded-lg bg-amber-50 p-3 text-sm">A previous import attempt needs a status check before another submission. <button className="font-bold underline" onClick={() => void recoverCommit()}>Check saved result</button></div> : null}
-      {review?.coverage && (review.coverage.total > 0 || review.coverage.requiresAcknowledgement) ? <div className="shrink-0 rounded-lg border bg-white p-3 text-sm">
-        <span>{review.coverage.completed} / {review.coverage.total || "unknown"} source pages processed.</span>
-        {review.coverage.requiresAcknowledgement ? <span className="ml-2 text-amber-800">Some source pages remain unread or incomplete. {review.coverage.failedPages.map((entry) => `Page ${entry.pageNumber}`).join(", ")}. {review.coverage.canRetry ? <button disabled={processingAction || dirty} className="font-bold underline" onClick={() => void changeProcessing("retry")}>Retry failed or unvisited pages</button> : <span>Upload a crop or the missing source area as a new import.</span>}</span> : null}
-        {review.coverage.canReprocessEmpty ? <button disabled={processingAction || dirty} className="ml-2 font-bold text-amber-800 underline" onClick={() => void changeProcessing("reprocess_empty", review.coverage.emptyPageNumbers)}>Recheck pages marked empty</button> : null}
-        {review.coverage.failedPages.map((entry) => entry.message ? <p key={entry.pageNumber} className="mt-1 text-amber-800">Page {entry.pageNumber}: {entry.message}</p> : null)}
-        {typeof review.batch.extractionMeta?.jobError === "string" ? <p role="alert" className="mt-1 text-amber-800">{review.batch.extractionMeta.jobError}</p> : null}
-      </div> : null}
       {review && Number(review.reviewCounts?.missingBrand || 0) > 0 ? (
         <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-[12px] border border-amber-200 bg-amber-50 px-3 py-2.5 text-[11px] text-amber-950">
           <div><strong className="font-extrabold">Brand confirmation required.</strong> Catalog matching is incomplete until each product has a confirmed brand.</div>
@@ -2192,7 +2190,7 @@ export default function ProductImportReviewPage() {
 
       {/* Universal 1-Row Responsive Header */}
       <header className="flex shrink-0 items-center justify-between gap-2 rounded-[14px] border border-[#D8DBE0] bg-white p-2 sm:rounded-none sm:border-0 sm:bg-transparent sm:p-0">
-        <div className="flex min-w-0 items-center gap-2 sm:gap-3">
+        <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <button
             type="button"
             onClick={() => setExitConfirmOpen(true)}
@@ -2201,13 +2199,21 @@ export default function ProductImportReviewPage() {
           >
             <Icon name="arrow_back" sizePx={18} />
           </button>
-          <div className="min-w-0">
+          <div className="min-w-0 flex-1">
             <h1 className="truncate text-[14px] font-extrabold leading-tight text-[#11120d] sm:text-[18px] xl:text-[20px]">
               {review?.batch.fileName || "Product import review"}
             </h1>
-            <p className="mt-0.5 truncate text-[10.5px] font-medium text-[#64748B] sm:text-[11px]">
-              {review ? `${review.batch.totalRows.toLocaleString()} extracted rows · ${review.batch.supplier || review.batch.sourceType}` : "Loading review…"}
-            </p>
+            <div className="mt-0.5 flex min-w-0 items-center gap-1.5 text-[10.5px] font-medium text-[#64748B] sm:text-[11px]">
+              <span className="truncate">
+                {review ? `${review.batch.totalRows.toLocaleString()} extracted rows · ${review.batch.supplier || review.batch.sourceType}` : "Loading review…"}
+              </span>
+              {review?.coverage && review.coverage.total > 0 ? (
+                <span aria-label={`${review.coverage.completed} of ${review.coverage.total} source pages processed`} className={`${review.coverage.requiresAcknowledgement || review.coverage.canReprocessEmpty ? "hidden sm:inline-flex" : "inline-flex"} shrink-0 items-center gap-1 rounded-full px-1.5 py-0.5 text-[9.5px] font-bold ${review.coverage.requiresAcknowledgement || review.coverage.canReprocessEmpty ? "bg-amber-50 text-amber-800" : "bg-emerald-50 text-emerald-800"}`}>
+                  <Icon name={review.coverage.requiresAcknowledgement || review.coverage.canReprocessEmpty ? "warning" : "check_circle"} sizePx={12} />
+                  {review.coverage.completed}/{review.coverage.total}<span className="hidden sm:inline"> pages</span>
+                </span>
+              ) : null}
+            </div>
           </div>
         </div>
 
@@ -2302,24 +2308,34 @@ export default function ProductImportReviewPage() {
         </div>
       </header>
 
-      <nav aria-label="Import progress" className="shrink-0 rounded-[12px] border border-[#D8DBE0] bg-white px-3 py-2.5">
-        <ol className="grid grid-cols-4 gap-1" role="list">
-          {[
-            { label: "Upload", state: "done" },
-            { label: "Extract", state: "done" },
-            { label: "Review", state: "current" },
-            { label: "Import", state: review?.batch.status === "IMPORTED" ? "done" : "next" },
-          ].map((step, index) => (
-            <li key={step.label} className="flex min-w-0 items-center gap-1.5" aria-current={step.state === "current" ? "step" : undefined}>
-              <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${step.state === "done" ? "bg-[#179B4D] text-white" : step.state === "current" ? "bg-[#11120d] text-white" : "bg-[#ECEFF3] text-[#64748B]"}`}>
-                {step.state === "done" ? <Icon name="check" sizePx={14} /> : index + 1}
-              </span>
-              <span className={`truncate text-[10px] font-bold sm:text-[11px] ${step.state === "next" ? "text-[#7A7F89]" : "text-[#11120d]"}`}>{step.label}</span>
-              {index < 3 ? <span aria-hidden="true" className="hidden h-px min-w-2 flex-1 bg-[#D8DBE0] sm:block" /> : null}
-            </li>
-          ))}
-        </ol>
-      </nav>
+      {review?.coverage && (review.coverage.requiresAcknowledgement || review.coverage.canReprocessEmpty || typeof review.batch.extractionMeta?.jobError === "string") ? (
+        <div role="status" aria-live="polite" className="flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10.5px] font-semibold text-amber-950 sm:px-3 sm:text-[11px]">
+          <Icon name="warning" sizePx={16} className="shrink-0 text-amber-700" />
+          <span
+            className="min-w-0 flex-1 line-clamp-2 sm:truncate"
+            title={[
+              ...review.coverage.failedPages.map((entry) => entry.message ? `Page ${entry.pageNumber}: ${entry.message}` : `Page ${entry.pageNumber}`),
+              typeof review.batch.extractionMeta?.jobError === "string" ? review.batch.extractionMeta.jobError : "",
+            ].filter(Boolean).join(" · ") || undefined}
+          >
+            {review.coverage.requiresAcknowledgement
+              ? `Some source pages were not fully read${review.coverage.failedPages.length ? ` (${review.coverage.failedPages.map((entry) => `page ${entry.pageNumber}`).join(", ")})` : ""}.${review.coverage.canRetry ? "" : " Upload the missing source area as a new import."}`
+              : typeof review.batch.extractionMeta?.jobError === "string"
+                ? review.batch.extractionMeta.jobError
+                : `${review.coverage.emptyPageNumbers.length || "Some"} source page${review.coverage.emptyPageNumbers.length === 1 ? " was" : "s were"} marked empty.`}
+          </span>
+          {review.coverage.canRetry ? (
+            <button type="button" disabled={processingAction || dirty} className="inline-flex h-8 shrink-0 items-center rounded-[8px] border border-amber-300 bg-white px-2.5 font-extrabold text-amber-900 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 disabled:opacity-45" onClick={() => void changeProcessing("retry")}>Retry pages</button>
+          ) : review.coverage.canReprocessEmpty ? (
+            <button type="button" disabled={processingAction || dirty} className="inline-flex h-8 shrink-0 items-center rounded-[8px] border border-amber-300 bg-white px-2.5 font-extrabold text-amber-900 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-amber-600 disabled:opacity-45" onClick={() => void changeProcessing("reprocess_empty", review.coverage.emptyPageNumbers)}>Recheck</button>
+          ) : null}
+        </div>
+      ) : null}
+
+      <ProductImportProgress
+        activeStage={review?.batch.status === "IMPORTED" ? 4 : 2}
+        className="rounded-[12px]"
+      />
 
       {commitResult ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[11px] font-bold text-emerald-900">
@@ -2329,19 +2345,21 @@ export default function ProductImportReviewPage() {
       ) : null}
 
       {/* Compact Segmented Mobile View Switcher */}
-      <div className="flex shrink-0 gap-1 rounded-[10px] border border-[#D8DBE0] bg-[#F1F3F5] p-1 xl:hidden">
+      <div className="flex shrink-0 gap-1 rounded-[10px] border border-[#D8DBE0] bg-[#F1F3F5] p-1 xl:hidden" role="tablist" aria-label="Import review views">
         {(["list", "editor", ...(sourceAvailable ? ["source" as const] : [])] as MobilePanel[]).map((panel) => (
           <button
             key={panel}
             type="button"
             onClick={() => setMobilePanel(panel)}
             disabled={panel !== "list" && !activeRow}
-            className={`h-10 flex-1 rounded-[7px] text-[11px] font-extrabold capitalize transition ${mobilePanel === panel
+            role="tab"
+            aria-selected={mobilePanel === panel}
+            className={`h-10 flex-1 rounded-[7px] text-[11px] font-extrabold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-inset ${mobilePanel === panel
                 ? "bg-white text-[#11120d]"
                 : "text-[#64748B] hover:text-[#11120d]"
               }`}
           >
-            {panel === "list" ? `List (${review?.pagination.total || 0})` : panel === "editor" ? "Item Editor" : "Source Doc"}
+            {panel === "list" ? `Products (${review?.pagination.total || 0})` : panel === "editor" ? "Edit" : "Source"}
           </button>
         ))}
       </div>
@@ -2491,14 +2509,14 @@ export default function ProductImportReviewPage() {
                     <button
                       type="button"
                       onClick={() => chooseRow(row)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2.5 py-2.5 pr-2.5 text-left touch-manipulation select-none active:bg-black/[0.04] focus:outline-none"
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2.5 py-2.5 pr-2.5 text-left touch-manipulation select-none active:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#11120d]"
                       aria-label={`Review ${rowName(row)}`}
                     >
                       <div className="min-w-0 flex-1">
-                        <div className={`truncate text-[13px] font-extrabold leading-snug sm:text-[12px] xl:text-[11.5px] ${ignored ? "text-[#7A7F89] line-through" : "text-[#11120d]"}`}>
+                        <div className={`truncate text-[13px] font-extrabold leading-snug sm:text-[12.5px] ${ignored ? "text-[#7A7F89] line-through" : "text-[#11120d]"}`}>
                           {rowName(row)}
                         </div>
-                        <div className="mt-0.5 truncate font-mono text-[10.5px] font-semibold text-[#7A7F89] xl:text-[9.5px]">
+                        <div className="mt-0.5 truncate font-mono text-[10.5px] font-semibold text-[#68707C]">
                           {rowSku(row)}
                         </div>
                       </div>
@@ -2510,18 +2528,18 @@ export default function ProductImportReviewPage() {
                         <div className="flex items-center gap-1">
                           {edited ? (
                             <span
-                              className="inline-flex h-5 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-1.5 text-[8.5px] font-extrabold text-slate-700"
+                              className="inline-flex h-5 items-center gap-1 rounded-full border border-slate-200 bg-slate-50 px-1.5 text-[9.5px] font-extrabold text-slate-700"
                               title={`Product corrections after import setup: ${row.reviewChanges?.join(", ")}`}
                             >
                               <Icon name="edit" sizePx={10} /> User changed
                             </span>
                           ) : null}
                           {ignored ? (
-                            <span className="inline-flex h-5 items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-1.5 text-[8.5px] font-extrabold text-rose-700" title="Ignored">
+                            <span className="inline-flex h-5 items-center justify-center rounded-full border border-rose-200 bg-rose-50 px-1.5 text-[9.5px] font-extrabold text-rose-700" title="Ignored">
                               Ignored
                             </span>
                           ) : (
-                            <span className={`inline-flex rounded-full border px-1.5 py-0.2 text-[8.5px] font-extrabold ${statusTone(row.comparisonStatus)}`}>
+                            <span className={`inline-flex rounded-full border px-1.5 py-0.5 text-[9.5px] font-extrabold leading-none ${statusTone(row.comparisonStatus)}`}>
                               {comparisonLabel(row.comparisonStatus)}
                             </span>
                           )}
@@ -2548,7 +2566,7 @@ export default function ProductImportReviewPage() {
             </div>
             <nav className="flex items-center gap-1.5" aria-label="Import rows pagination">
               <button type="button" disabled={!review || review.pagination.page <= 1} onClick={() => requestReviewNavigation(() => setPage((value) => Math.max(1, value - 1)), "Open the previous product page and discard the current unsaved changes.")} className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120d] transition active:bg-[#F3F4F6] disabled:opacity-35 touch-manipulation" title="Previous page" aria-label="Previous page"><Icon name="chevron_left" sizePx={18} /></button>
-              <span className="min-w-[54px] whitespace-nowrap text-center text-[9.5px] font-extrabold text-[#374151]">Page {review?.pagination.page || 1} of {review?.pagination.totalPages || 1}</span>
+              <span className="min-w-[58px] whitespace-nowrap text-center text-[10.5px] font-extrabold tabular-nums text-[#374151]">Page {review?.pagination.page || 1} of {review?.pagination.totalPages || 1}</span>
               <button type="button" disabled={!review || review.pagination.page >= review.pagination.totalPages} onClick={() => requestReviewNavigation(() => setPage((value) => value + 1), "Open the next product page and discard the current unsaved changes.")} className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120d] transition active:bg-[#F3F4F6] disabled:opacity-35 touch-manipulation" title="Next page" aria-label="Next page"><Icon name="chevron_right" sizePx={18} /></button>
             </nav>
           </div>
