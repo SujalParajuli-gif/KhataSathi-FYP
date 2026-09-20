@@ -257,8 +257,10 @@ export default function AppShell({ children, statusBanner }: Props) {
               data-app-scroll-container
               className={[
                 "min-h-0 flex-1 overscroll-contain bg-white",
-                usesFixedWorkspace
+                isBillingRoute
                   ? "overflow-hidden p-[12px] sm:p-[16px] lg:p-[18px]"
+                  : isImportReviewRoute
+                    ? "overflow-y-auto p-[12px] sm:p-[16px] lg:p-[18px] xl:overflow-hidden"
                   : "overflow-y-auto p-[12px] sm:p-[20px] lg:p-[24px]",
                 isStaff && !isBillingRoute
                   ? "pb-[calc(84px+env(safe-area-inset-bottom))] lg:pb-[24px]"

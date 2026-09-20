@@ -76,7 +76,38 @@ test("coverage recovery stays compact and mobile review views survive reload", a
   await expect(page.getByRole("heading", { name: "Source document" })).toBeVisible();
   await page.reload();
   await expect(page.getByRole("tab", { name: "Source" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.getByRole("button", { name: "Reset source zoom, currently 100%" })).toBeVisible();
+  await page.getByRole("button", { name: "Zoom in source" }).click();
+  await expect(page.getByRole("button", { name: "Reset source zoom, currently 125%" })).toBeVisible();
+  await expect(page.getByRole("link", { name: "Open source in a new tab" })).toHaveAttribute("target", "_blank");
   await page.screenshot({ path: testInfo.outputPath("source-backed-mobile.png") });
+});
+
+test("mobile product list uses page scrolling and keeps pagination reachable", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state: any = review();
+  state.rows = Array.from({ length: 25 }, (_, index) => ({
+    ...structuredClone(row),
+    id: `row-${index + 1}`,
+    rowNumber: index + 1,
+    parsed: { ...structuredClone(row.parsed), name: `Test bucket ${index + 1}`, sku: `TEST-${index + 1}` },
+  }));
+  state.pagination = { page: 1, pageSize: 25, total: 30, totalPages: 2 };
+  state.reviewCounts = { all: 30, attention: 5, edited: 2, missingBrand: 0 };
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch?view=list");
+
+  const rowList = page.locator("[data-import-row-list]");
+  await expect(rowList).toBeVisible();
+  expect(await rowList.evaluate((element) => getComputedStyle(element).overflowY)).toBe("visible");
+  const appScroller = page.locator("[data-app-scroll-container]");
+  expect(await appScroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
+  await page.locator("[data-import-pagination]").scrollIntoViewIfNeeded();
+  await expect(page.locator("[data-import-pagination]")).toBeInViewport();
+  await expect(page.getByRole("button", { name: /Needs attention 5/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Edited 2/ })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("mobile-list-page-scroll.png"), fullPage: true });
 });
 
 test("source-backed review keeps all three desktop work areas in view", async ({ page }, testInfo) => {
@@ -172,6 +203,20 @@ test("dirty review navigation asks to save and incomplete coverage blocks final 
   await expect(dialog.getByRole("button",{name:"Confirm and import"})).toBeEnabled();
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+});
+
+test("blocked final import leads directly back to unresolved products", async ({ page }) => {
+  const state: any = review();
+  state.decisionCounts = { create: 0, update: 0, keep: 0, ignore: 0, unresolved: 1, committed: 0 };
+  state.reviewCounts = { all: 1, attention: 1, edited: 0, missingBrand: 0 };
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("button", { name: /final import|commit batch|import saved/i }).filter({ visible: true }).first().click();
+  const dialog = page.getByRole("dialog", { name: "Confirm final import" });
+  await expect(dialog.getByText("Unresolved", { exact: true })).toBeVisible();
+  await dialog.getByRole("button", { name: "Review unresolved products" }).click();
+  await expect(dialog).toBeHidden();
+  await expect(page).toHaveURL(/filter=ATTENTION/);
 });
 
 test("a completed commit is recovered after reload without resubmitting products", async ({page}) => {

@@ -305,6 +305,7 @@ export default function ProductImportReviewPage() {
   const [sourceContext, setSourceContext] = useState<Awaited<ReturnType<typeof getProductImportSourceContextApi>> | null>(null);
   const [sourcePreviewUrl, setSourcePreviewUrl] = useState("");
   const [sourceLoading, setSourceLoading] = useState(false);
+  const [sourceZoom, setSourceZoom] = useState(100);
   const sourceHighlightRef = useRef<HTMLDivElement>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [priceSetupOpen, setPriceSetupOpen] = useState(false);
@@ -519,6 +520,10 @@ export default function ProductImportReviewPage() {
   useEffect(() => {
     if (review && !sourceAvailable && mobilePanel === "source") setMobilePanel("editor");
   }, [mobilePanel, review, sourceAvailable]);
+
+  useEffect(() => {
+    setSourceZoom(100);
+  }, [sourcePageNumber, sourcePreviewUrl]);
 
   useEffect(() => {
     if (!activeRowId || !sourcePreviewUrl || !region) return;
@@ -1528,7 +1533,7 @@ export default function ProductImportReviewPage() {
   function renderSourcePanel() {
     const isSpreadsheet = ["CSV", "XLSX"].includes(review?.batch.sourceType || "");
     return (
-      <section className={`${mobilePanel === "source" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
+      <section className={`${mobilePanel === "source" ? "flex" : "hidden"} min-h-[70dvh] flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:h-full xl:min-h-0 xl:rounded-[18px]`}>
         <div className="flex min-h-[52px] shrink-0 items-center justify-between gap-2 border-b border-[#E2E4E8] bg-white px-3 py-2 sm:px-3.5">
           <div className="min-w-0 shrink-0">
             <div className="flex items-center gap-1.5">
@@ -1545,6 +1550,51 @@ export default function ProductImportReviewPage() {
           </div>
 
           <div className="flex shrink-0 items-center gap-1.5 sm:gap-2">
+            {!isSpreadsheet && sourcePreviewUrl ? (
+              <div className="inline-flex items-center rounded-[9px] border border-[#D4D7DC] bg-white p-0.5" role="group" aria-label="Source zoom controls">
+                <button
+                  type="button"
+                  onClick={() => setSourceZoom((value) => Math.max(50, value - 25))}
+                  disabled={sourceZoom <= 50}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] text-[#374151] transition-colors hover:bg-[#F1F3F5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] disabled:opacity-35"
+                  aria-label="Zoom out source"
+                  title="Zoom out"
+                >
+                  <Icon name="zoom_out" sizePx={17} />
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSourceZoom(100)}
+                  className="h-8 min-w-10 rounded-[7px] px-1 text-[10px] font-extrabold tabular-nums text-[#374151] transition-colors hover:bg-[#F1F3F5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d]"
+                  aria-label={`Reset source zoom, currently ${sourceZoom}%`}
+                  title="Reset zoom"
+                >
+                  {sourceZoom}%
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setSourceZoom((value) => Math.min(250, value + 25))}
+                  disabled={sourceZoom >= 250}
+                  className="inline-flex h-8 w-8 items-center justify-center rounded-[7px] text-[#374151] transition-colors hover:bg-[#F1F3F5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] disabled:opacity-35"
+                  aria-label="Zoom in source"
+                  title="Zoom in"
+                >
+                  <Icon name="zoom_in" sizePx={17} />
+                </button>
+              </div>
+            ) : null}
+            {!isSpreadsheet && sourcePreviewUrl ? (
+              <a
+                href={sourcePreviewUrl}
+                target="_blank"
+                rel="noreferrer"
+                className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#374151] transition-colors hover:bg-[#F1F3F5] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d]"
+                aria-label="Open source in a new tab"
+                title="Open in new tab"
+              >
+                <Icon name="open_in_new" sizePx={16} />
+              </a>
+            ) : null}
             {productNameHeader ? (
               <button
                 type="button"
@@ -1626,12 +1676,19 @@ export default function ProductImportReviewPage() {
                           <tr
                             key={row.id}
                             id={`source-row-${row.id}`}
+                            tabIndex={0}
                             onClick={() => {
                               const match = review?.rows.find((r) => r.id === row.id);
                               if (match) chooseRow(match);
                             }}
+                            onKeyDown={(event) => {
+                              if (event.key !== "Enter" && event.key !== " ") return;
+                              event.preventDefault();
+                              const match = review?.rows.find((r) => r.id === row.id);
+                              if (match) chooseRow(match);
+                            }}
                             aria-selected={selected}
-                            className={`cursor-pointer transition hover:bg-amber-50/60 ${selected ? "bg-amber-100 outline outline-2 -outline-offset-2 outline-amber-500" : "bg-white"}`}
+                            className={`cursor-pointer transition hover:bg-amber-50/60 focus-visible:outline focus-visible:outline-2 focus-visible:-outline-offset-2 focus-visible:outline-[#11120d] ${selected ? "bg-amber-100 outline outline-2 -outline-offset-2 outline-amber-500" : "bg-white"}`}
                           >
                             <td className={`sticky left-0 z-[5] overflow-hidden whitespace-nowrap border-b border-r border-[#E2E4E8] px-2.5 py-2 font-extrabold ${selected ? "bg-amber-100 text-amber-950" : "bg-white text-[#374151]"}`}>
                               {row.sourceLocator?.rowNumber || row.rowNumber}
@@ -1671,13 +1728,13 @@ export default function ProductImportReviewPage() {
           ) : sourcePreviewUrl && sourceMimeType === "application/pdf" && !region ? (
             <iframe
               title="Supplier PDF source"
-              src={`${sourcePreviewUrl}#page=${sourcePageNumber}&zoom=page-width&search=${encodeURIComponent(activeRow?.sourceLocator?.searchText || (activeRow ? rowName(activeRow) : ""))}`}
+              src={`${sourcePreviewUrl}#page=${sourcePageNumber}&zoom=${sourceZoom}&search=${encodeURIComponent(activeRow?.sourceLocator?.searchText || (activeRow ? rowName(activeRow) : ""))}`}
               className="h-full min-h-[420px] w-full rounded-[10px] border border-[#D8DBE0] bg-white"
             />
           ) : sourcePreviewUrl ? (
             <div className="flex h-full min-h-0 items-center justify-center overflow-auto rounded-[10px] border border-[#D8DBE0] bg-white p-2">
-              <div className="relative mx-auto w-[820px] max-w-none">
-                <img src={sourcePreviewUrl} alt="Supplier catalog source" className="block h-auto w-full max-w-none object-contain" />
+              <div className="relative mx-auto max-w-none" style={{ width: `${sourceZoom}%`, minWidth: sourceZoom > 100 ? `${sourceZoom}%` : "100%" }}>
+                <img src={sourcePreviewUrl} alt="Supplier catalog source" width={820} height={1060} className="block h-auto w-full max-w-none object-contain" />
                 {region ? (
                   <div
                     ref={sourceHighlightRef}
@@ -1719,7 +1776,7 @@ export default function ProductImportReviewPage() {
     ];
     const committed = ["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(activeRow.status);
     return (
-      <section className={`${mobilePanel === "editor" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
+      <section className={`${mobilePanel === "editor" ? "flex" : "hidden"} flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:h-full xl:min-h-0 xl:rounded-[18px]`}>
         <div className="shrink-0 border-b border-[#E2E4E8] bg-white px-3 sm:px-3.5 py-2.5 sm:py-3">
           <div className="flex items-center justify-between gap-2 sm:gap-3">
             <div className="flex min-w-0 items-center gap-2">
@@ -1816,7 +1873,7 @@ export default function ProductImportReviewPage() {
               </button>)}
           </div> : null}
         </div>
-        <fieldset disabled={committed} className="min-h-0 min-w-0 flex-1 space-y-2.5 overflow-y-auto overscroll-contain bg-[#FAFAFB] p-3">
+        <fieldset disabled={committed} className="min-w-0 space-y-2.5 bg-[#FAFAFB] p-3 xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:overscroll-contain">
           {!comparisonStale && draft.error ? (
             <div role="alert" className={`rounded-[10px] border px-3 py-2.5 text-[10.5px] font-semibold leading-5 ${draft.comparisonStatus === "IDENTIFIER_CONFLICT" ? "border-rose-200 bg-rose-50 text-rose-950" : "border-amber-200 bg-amber-50 text-amber-950"}`}>
               <div className="flex items-start gap-2">
@@ -2134,7 +2191,7 @@ export default function ProductImportReviewPage() {
     }
   }
   return (
-    <div className="flex h-full min-h-0 flex-col gap-2 overflow-hidden xl:gap-3">
+    <div className={`flex min-h-full flex-col gap-2 xl:h-full xl:min-h-0 xl:overflow-hidden xl:gap-3 ${selectedCount > 0 ? "pb-20 xl:pb-0" : ""}`}>
       {blocker.state === "blocked" ? (
         <ModalFrame
           open
@@ -2222,8 +2279,8 @@ export default function ProductImportReviewPage() {
           <button
             type="button"
             onClick={() => setCommitOpen(true)}
-            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
-            title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
+            disabled={!review || review.batch.status === "IMPORTED" || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore + review.decisionCounts.unresolved === 0}
+            title="Review final import"
             className="inline-flex h-11 items-center gap-1 rounded-[9px] bg-[#11120d] px-3 text-[11px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40"
           >
             <Icon name="publish" sizePx={15} />
@@ -2298,8 +2355,8 @@ export default function ProductImportReviewPage() {
           <button
             type="button"
             onClick={() => setCommitOpen(true)}
-            disabled={!review || review.batch.status === "IMPORTED" || (review.priceMapping.required && !review.priceMapping.complete) || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore === 0}
-            title={review?.priceMapping.required && !review.priceMapping.complete ? "Map the extracted price columns first" : "Review final import"}
+            disabled={!review || review.batch.status === "IMPORTED" || review.decisionCounts.create + review.decisionCounts.update + review.decisionCounts.keep + review.decisionCounts.ignore + review.decisionCounts.unresolved === 0}
+            title="Review final import"
             className="hidden h-10 items-center gap-2 rounded-[10px] bg-[#11120d] px-4 text-[12px] font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-40 sm:inline-flex"
           >
             <Icon name="publish" sizePx={16} />
@@ -2364,10 +2421,10 @@ export default function ProductImportReviewPage() {
         ))}
       </div>
 
-      <section className={`min-h-0 flex-1 xl:grid xl:gap-3 ${sourceAvailable ? "xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)]" : "xl:grid-cols-[minmax(320px,0.85fr)_minmax(480px,1.35fr)]"}`} aria-label="Import review workspace">
+      <section className={`xl:min-h-0 xl:flex-1 xl:grid xl:gap-3 ${sourceAvailable ? "xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)]" : "xl:grid-cols-[minmax(320px,0.85fr)_minmax(480px,1.35fr)]"}`} aria-label="Import review workspace">
         {/* Product List Panel */}
-        <section className={`${mobilePanel === "list" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
-          <div className="shrink-0 space-y-2 border-b border-[#E2E4E8] p-2.5">
+        <section className={`${mobilePanel === "list" ? "flex" : "hidden"} flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:h-full xl:min-h-0 xl:rounded-[18px]`}>
+          <div className="shrink-0 space-y-1.5 border-b border-[#E2E4E8] p-2 sm:p-2.5">
             <div className="relative">
               <Icon name="search" sizePx={17} className="absolute left-3 top-2.5 text-[#7A7F89]" />
               <input
@@ -2402,8 +2459,8 @@ export default function ProductImportReviewPage() {
             <div className="grid grid-cols-3 gap-1.5">
               {[
                 { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
-                { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
-                { value: "EDITED" as const, label: "User changes", count: review?.reviewCounts?.edited ?? 0 },
+                { value: "ATTENTION" as const, label: "Needs attention", count: review?.reviewCounts?.attention ?? 0 },
+                { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
               ].map((item) => {
                 const active = filter === item.value;
                 return (
@@ -2437,7 +2494,7 @@ export default function ProductImportReviewPage() {
               }}
               aria-label="More product comparison filters"
             >
-              <option value="">More filters: product status</option>
+              <option value="">Product status: All</option>
               {COMPARISON_FILTERS.map((item) => (
                 <option key={item.value} value={item.value}>
                   {item.label} ({review?.comparisonCounts[item.value] ?? 0})
@@ -2464,7 +2521,7 @@ export default function ProductImportReviewPage() {
             </div>
           </div>
 
-          <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain divide-y divide-[#E8EAED]">
+          <div data-import-row-list className="divide-y divide-[#E8EAED] xl:min-h-0 xl:flex-1 xl:overflow-y-auto xl:overscroll-contain">
             {loading ? (
               <div className="p-6 text-center text-[12px] font-extrabold text-[#7A7F89]">Loading rows…</div>
             ) : review?.rows.length ? (
@@ -2555,7 +2612,7 @@ export default function ProductImportReviewPage() {
             )}
           </div>
 
-          <div className="flex shrink-0 items-center justify-between gap-2 border-t border-[#E2E4E8] bg-white p-2.5 text-[10px] font-bold text-[#5F6570]">
+          <div data-import-pagination className="flex shrink-0 items-center justify-between gap-2 border-t border-[#E2E4E8] bg-white p-2.5 text-[10px] font-bold text-[#5F6570]">
             <div className="flex min-w-0 items-center gap-2">
               <span className="shrink-0 whitespace-nowrap text-[10px] sm:text-[11px]">{review ? `${pageRangeStart.toLocaleString()}–${pageRangeEnd.toLocaleString()} of ${review.pagination.total.toLocaleString()}` : "0 rows"}</span>
               <ProjectSelect className="h-9 w-[104px] shrink-0" value={String(pageSize)} onChange={(event) => { const value = Number(event.target.value); requestReviewNavigation(() => { setPage(1); setPageSize(value); }, "Change the number of products shown and discard the current unsaved changes."); }} aria-label="Rows per page">
@@ -2572,13 +2629,13 @@ export default function ProductImportReviewPage() {
           </div>
         </section>
 
-        <div className={`${mobilePanel === "editor" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderEditor()}</div>
-        {sourceAvailable ? <div className={`${mobilePanel === "source" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderSourcePanel()}</div> : null}
+        <div className={`${mobilePanel === "editor" ? "block" : "hidden"} xl:h-full xl:min-h-0 xl:block`}>{renderEditor()}</div>
+        {sourceAvailable ? <div className={`${mobilePanel === "source" ? "block" : "hidden"} xl:h-full xl:min-h-0 xl:block`}>{renderSourcePanel()}</div> : null}
       </section>
 
       {/* Bulk Selection Bar: Clean Single-Line, Docked without Covering Pagination */}
       {selectedCount > 0 ? (
-        <div className="shrink-0 flex items-center justify-between gap-3 rounded-[14px] border border-[#D8DBE0] bg-white px-3.5 py-2.5">
+        <div className="fixed inset-x-3 bottom-[max(12px,env(safe-area-inset-bottom))] z-40 flex items-center justify-between gap-3 rounded-[14px] border border-[#D8DBE0] bg-white px-3.5 py-2.5 shadow-[0_10px_35px_rgba(15,23,42,0.18)] xl:static xl:z-auto xl:shrink-0 xl:shadow-none">
           <div className="flex items-center gap-2 min-w-0">
             <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[#11120d] px-1.5 text-[11px] font-extrabold text-white">
               {selectedCount.toLocaleString()}
@@ -2611,7 +2668,7 @@ export default function ProductImportReviewPage() {
         <ModalFrame
           open={mobileMenuOpen}
           onClose={() => setMobileMenuOpen(false)}
-          title="Batch Utilities"
+          title="Import actions"
           description={review?.batch.fileName || "Import review utilities"}
           maxWidthClass="max-w-[420px]"
           mobileBottomSheet
@@ -2925,13 +2982,13 @@ export default function ProductImportReviewPage() {
             <div className="sticky top-0 z-20 flex items-center justify-between border-b border-[#D8DBE0] bg-white px-5 py-3.5">
               <div>
                 <div className="flex items-center gap-2">
-                  <h2 className="text-base font-extrabold text-[#11120d]">Bulk Edit</h2>
+                  <h2 className="text-base font-extrabold text-[#11120d]">Bulk edit</h2>
                   <span className="rounded-full border border-[#D8DBE0] bg-[#F1F3F5] px-2.5 py-0.5 text-[11px] font-bold text-[#11120d]">
                     {selectedCount.toLocaleString()} selected
                   </span>
                 </div>
                 <p className="mt-0.5 text-xs text-[#64748B]">
-                  Apply updates across selection. To update the entire batch, select all products across the catalog.
+                  Apply the same changes to the selected products. Select all matching products to update the full batch.
                 </p>
               </div>
               <button
@@ -2975,10 +3032,12 @@ export default function ProductImportReviewPage() {
 
             {/* Tab Navigation */}
             <div className="border-b border-[#E2E4E8] bg-[#F8F9FA] px-5 py-2.5">
-              <nav className="flex rounded-xl border border-[#D8DBE0] bg-white p-1 gap-1" aria-label="Bulk edit tabs">
+              <nav className="flex rounded-xl border border-[#D8DBE0] bg-white p-1 gap-1" aria-label="Bulk edit sections" role="tablist">
                 <button
                   type="button"
                   onClick={() => setBulkTab("catalog")}
+                  role="tab"
+                  aria-selected={bulkTab === "catalog"}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "catalog"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
@@ -2992,6 +3051,8 @@ export default function ProductImportReviewPage() {
                 <button
                   type="button"
                   onClick={() => setBulkTab("percentage")}
+                  role="tab"
+                  aria-selected={bulkTab === "percentage"}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "percentage"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
@@ -3005,6 +3066,8 @@ export default function ProductImportReviewPage() {
                 <button
                   type="button"
                   onClick={() => setBulkTab("reassign")}
+                  role="tab"
+                  aria-selected={bulkTab === "reassign"}
                   className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "reassign"
                       ? "bg-[#11120d] text-white"
                       : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
@@ -3019,6 +3082,8 @@ export default function ProductImportReviewPage() {
                   <button
                     type="button"
                     onClick={() => setBulkTab("extracted")}
+                    role="tab"
+                    aria-selected={bulkTab === "extracted"}
                     className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition ${bulkTab === "extracted"
                         ? "bg-[#11120d] text-white"
                         : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"
@@ -3034,18 +3099,17 @@ export default function ProductImportReviewPage() {
             </div>
 
             {/* Scrollable Tab Content Body */}
-            <div className="flex-1 overflow-y-auto p-5 pb-6 space-y-4">
+            <div className="flex-1 overflow-y-auto p-3 pb-5 sm:p-5 sm:pb-6 space-y-3 sm:space-y-4 overscroll-contain">
               {/* Tab 1: Catalog Details */}
               {bulkTab === "catalog" && (
-                <div className="space-y-4">
+                <div className="space-y-3 sm:space-y-4">
                   {/* Organization Section */}
-                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-4">
+                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-3.5 sm:p-4">
                     <div className="mb-3 flex items-center justify-between">
                       <div>
-                        <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">Taxonomy & Organization</h3>
+                        <h3 className="text-xs font-extrabold text-[#11120d]">Taxonomy and organization</h3>
                         <p className="mt-0.5 text-xs font-medium text-[#11120d]">Assign standard brand, category, or supplier to selected products.</p>
                       </div>
-                      <span className="rounded-full bg-[#F1F3F5] px-2 py-0.5 text-[10px] font-bold text-[#64748B] border border-[#E2E4E8]">Optional</span>
                     </div>
                     <div className="grid gap-3 sm:grid-cols-2">
                       <Field label="Brand">
@@ -3090,13 +3154,12 @@ export default function ProductImportReviewPage() {
                   </div>
 
                   {/* Packaging Section */}
-                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-4">
+                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-3.5 sm:p-4">
                     <div className="mb-3 flex items-center justify-between">
                       <div>
-                        <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">Packaging & Units</h3>
+                        <h3 className="text-xs font-extrabold text-[#11120d]">Packaging and units</h3>
                         <p className="mt-0.5 text-xs font-medium text-[#11120d]">Set standard pack sizes across selected items.</p>
                       </div>
-                      <span className="rounded-full bg-[#F1F3F5] px-2 py-0.5 text-[10px] font-bold text-[#64748B] border border-[#E2E4E8]">Optional</span>
                     </div>
                     <div className="grid gap-3 grid-cols-2">
                       <Field label="Package quantity">
@@ -3124,9 +3187,9 @@ export default function ProductImportReviewPage() {
                   </div>
 
                   {/* Availability Section */}
-                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-4">
+                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-3.5 sm:p-4">
                     <div className="mb-3">
-                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">Product Availability</h3>
+                      <h3 className="text-xs font-extrabold text-[#11120d]">Product availability</h3>
                       <p className="mt-0.5 text-xs font-medium text-[#11120d]">Determine catalog status and whether a Rate is required.</p>
                     </div>
                     <div className="grid gap-2">
@@ -3523,7 +3586,7 @@ export default function ProductImportReviewPage() {
             </div>
 
             {/* Bottom Sticky Action Bar */}
-            <div className="sticky bottom-0 z-20 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4">
+            <div className="sticky bottom-0 z-20 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
               <button
                 type="button"
                 onClick={closeBulkEdit}
@@ -3922,10 +3985,34 @@ export default function ProductImportReviewPage() {
 
       {commitOpen && review ? (
         <ModalFrame open title="Confirm final import" description="This applies every saved decision in this batch." onClose={() => { if (!commitBusy) setCommitOpen(false); }} mobileBottomSheet>
-          <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-5">
-            {[{ label: "Create", value: review.decisionCounts.create }, { label: "Update", value: review.decisionCounts.update }, { label: "Keep", value: review.decisionCounts.keep }, { label: "Ignore", value: review.decisionCounts.ignore }, { label: "Unresolved", value: review.decisionCounts.unresolved }].map((item) => <div key={item.label} className={`rounded-[11px] border p-3 ${item.label === "Unresolved" && item.value > 0 ? "border-rose-200 bg-rose-50" : "border-[#D8DBE0] bg-[#F8F9FA]"}`}><div className="text-[18px] font-extrabold">{item.value}</div><div className="text-[9px] font-bold text-[#68707C]">{item.label}</div></div>)}
+          <div className="grid grid-cols-2 gap-2 sm:grid-cols-5">
+            {[{ label: "Create", value: review.decisionCounts.create }, { label: "Update", value: review.decisionCounts.update }, { label: "Keep", value: review.decisionCounts.keep }, { label: "Ignore", value: review.decisionCounts.ignore }, { label: "Unresolved", value: review.decisionCounts.unresolved }].map((item) => (
+              <div
+                key={item.label}
+                className={`rounded-[11px] border p-3 ${item.label === "Unresolved" ? "col-span-2 sm:col-span-1" : ""} ${item.label === "Unresolved" && item.value > 0 ? "border-rose-200 bg-rose-50" : "border-[#D8DBE0] bg-[#F8F9FA]"}`}
+              >
+                <div className="text-[18px] font-extrabold tabular-nums">{item.value}</div>
+                <div className="text-[10.5px] font-bold text-[#68707C]">{item.label}</div>
+              </div>
+            ))}
           </div>
-          {review.priceMapping.required && !review.priceMapping.complete ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked until every extracted price column is classified.</div> : review.decisionCounts.unresolved > 0 ? <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">Final import is blocked. Filter conflicts, file duplicates and failed rows; correct them or explicitly ignore them.</div> : <div className="mt-4 rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-bold leading-5 text-amber-950">Create and update decisions change product data. Keep and ignore decisions do not change existing products.</div>}
+          {review.priceMapping.required && !review.priceMapping.complete ? (
+            <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">
+              <p>Final import is blocked until every extracted price column is classified.</p>
+              <button type="button" onClick={() => { setCommitOpen(false); setPriceSetupOpen(true); }} className="mt-2 inline-flex min-h-9 items-center rounded-lg border border-rose-300 bg-white px-3 text-[11px] font-extrabold text-rose-900 hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-700">
+                Open column mapping
+              </button>
+            </div>
+          ) : review.decisionCounts.unresolved > 0 ? (
+            <div className="mt-4 rounded-[11px] border border-rose-200 bg-rose-50 p-3 text-[11px] font-bold leading-5 text-rose-900">
+              <p>Final import is blocked. Review conflicts, file duplicates, and failed rows; correct them or explicitly ignore them.</p>
+              <button type="button" onClick={() => { setCommitOpen(false); setFilter("ATTENTION"); setPage(1); setMobilePanel("list"); }} className="mt-2 inline-flex min-h-9 items-center rounded-lg border border-rose-300 bg-white px-3 text-[11px] font-extrabold text-rose-900 hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-700">
+                Review unresolved products
+              </button>
+            </div>
+          ) : (
+            <div className="mt-4 rounded-[11px] border border-amber-200 bg-amber-50 p-3 text-[11px] font-bold leading-5 text-amber-950">Create and update decisions change product data. Keep and ignore decisions do not change existing products.</div>
+          )}
           {review.coverage?.requiresAcknowledgement ? <label className="mt-4 flex items-start gap-3 rounded-lg bg-amber-50 p-3 text-sm"><input type="checkbox" checked={coverageAcknowledged} onChange={(event) => setCoverageAcknowledged(event.target.checked)} className="mt-1" />I checked the source and understand that unread pages are excluded from this import.</label> : null}
           <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || commitUnknown || (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
         </ModalFrame>
