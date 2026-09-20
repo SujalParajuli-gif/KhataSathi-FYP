@@ -20,19 +20,21 @@ function cn(...xs: Array<string | false | null | undefined>) {
 // desktop form field wrapper
 function Field({
   label,
+  htmlFor,
   children,
   className,
 }: {
   label?: string;
+  htmlFor?: string;
   children: React.ReactNode;
   className?: string;
 }) {
   return (
     <div className={className}>
       {label ? (
-        <div className="mb-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
+        <label htmlFor={htmlFor} className="mb-2 block text-[11px] font-extrabold uppercase text-[#8C8889]">
           {label}
-        </div>
+        </label>
       ) : null}
       {children}
     </div>
@@ -49,6 +51,12 @@ function TextInput({
   type = "text",
   onEnter,
   hasError,
+  id,
+  name,
+  autoComplete,
+  ariaLabel,
+  ariaDescribedBy,
+  spellCheck,
 }: {
   value: string;
   onChange: (v: string) => void;
@@ -58,6 +66,12 @@ function TextInput({
   type?: string;
   onEnter?: () => void;
   hasError?: boolean;
+  id: string;
+  name: string;
+  autoComplete: string;
+  ariaLabel: string;
+  ariaDescribedBy?: string;
+  spellCheck?: boolean;
 }) {
   return (
     <div
@@ -70,7 +84,14 @@ function TextInput({
     >
       {left}
       <input
+        id={id}
+        name={name}
         type={type}
+        autoComplete={autoComplete}
+        aria-label={ariaLabel}
+        aria-describedby={ariaDescribedBy}
+        aria-invalid={hasError || undefined}
+        spellCheck={spellCheck}
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -271,7 +292,11 @@ export default function LoginPage() {
               >
                 <Icon name="person" className="text-[20px] text-slate-400 transition-colors group-focus-within:text-slate-700" />
                 <input
+                  id="login-mobile-identifier"
+                  name="username"
                   type="text"
+                  autoComplete="username"
+                  spellCheck={false}
                   value={formData.identifier}
                   onChange={(e) =>
                     setFormData((current) => ({
@@ -281,6 +306,8 @@ export default function LoginPage() {
                   }
                   placeholder="Phone or Email"
                   aria-label="Phone or Email"
+                  aria-describedby={identifierError ? "login-mobile-identifier-error" : undefined}
+                  aria-invalid={Boolean(identifierError) || undefined}
                   className="h-full w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -290,7 +317,7 @@ export default function LoginPage() {
                 />
               </div>
               {identifierError ? (
-                <div className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
+                <div id="login-mobile-identifier-error" className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
                   {identifierError}
                 </div>
               ) : null}
@@ -308,7 +335,10 @@ export default function LoginPage() {
               >
                 <Icon name="lock" className="text-[20px] text-slate-400 transition-colors group-focus-within:text-slate-700" />
                 <input
+                  id="login-mobile-password"
+                  name="password"
                   type={showPw ? "text" : "password"}
+                  autoComplete="current-password"
                   value={formData.password}
                   onChange={(e) =>
                     setFormData((current) => ({
@@ -318,6 +348,8 @@ export default function LoginPage() {
                   }
                   placeholder="••••••••••••"
                   aria-label="Password"
+                  aria-describedby={passwordError ? "login-mobile-password-error" : undefined}
+                  aria-invalid={Boolean(passwordError) || undefined}
                   className="h-full w-full bg-transparent text-[14px] font-semibold text-slate-900 outline-none placeholder:font-normal placeholder:text-slate-400"
                   onKeyDown={(e) => {
                     if (e.key === "Enter") {
@@ -340,7 +372,7 @@ export default function LoginPage() {
                 </button>
               </div>
               {passwordError ? (
-                <div className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
+                <div id="login-mobile-password-error" className="mt-1.5 text-left text-[11px] font-bold text-rose-600">
                   {passwordError}
                 </div>
               ) : null}
@@ -424,8 +456,14 @@ export default function LoginPage() {
                   ) : null}
 
                   <form onSubmit={onLogin} className="space-y-5">
-                    <Field label="Phone or email">
+                    <Field label="Phone or email" htmlFor="login-desktop-identifier">
                       <TextInput
+                        id="login-desktop-identifier"
+                        name="username"
+                        autoComplete="username"
+                        ariaLabel="Phone or email"
+                        ariaDescribedBy={identifierError ? "login-desktop-identifier-error" : undefined}
+                        spellCheck={false}
                         value={formData.identifier}
                         onChange={(value) =>
                           setFormData((current) => ({ ...current, identifier: value }))
@@ -439,15 +477,20 @@ export default function LoginPage() {
                         }
                       />
                       {identifierError ? (
-                        <div className="mt-1 text-[11px] font-semibold text-rose-500">
+                        <div id="login-desktop-identifier-error" className="mt-1 text-[11px] font-semibold text-rose-500">
                           {identifierError}
                         </div>
                       ) : null}
                     </Field>
 
                     <div className="space-y-2">
-                      <Field label="Password">
+                      <Field label="Password" htmlFor="login-desktop-password">
                         <TextInput
+                          id="login-desktop-password"
+                          name="password"
+                          autoComplete="current-password"
+                          ariaLabel="Password"
+                          ariaDescribedBy={passwordError ? "login-desktop-password-error" : undefined}
                           value={formData.password}
                           onChange={(value) =>
                             setFormData((current) => ({
@@ -469,6 +512,7 @@ export default function LoginPage() {
                               onClick={() => setShowPw((value) => !value)}
                               className="text-[#8C8889] transition hover:text-[#000000]"
                               title={showPw ? "Hide password" : "Show password"}
+                              aria-label={showPw ? "Hide password" : "Show password"}
                             >
                               <Icon
                                 name={showPw ? "visibility" : "visibility_off"}
@@ -477,7 +521,7 @@ export default function LoginPage() {
                           }
                         />
                         {passwordError ? (
-                          <div className="mt-1 text-[11px] font-semibold text-rose-500">
+                          <div id="login-desktop-password-error" className="mt-1 text-[11px] font-semibold text-rose-500">
                             {passwordError}
                           </div>
                         ) : null}

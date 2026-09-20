@@ -3693,6 +3693,24 @@ export default function ProductsModals({
             )
           ) : (
           <div className="flex flex-col h-full bg-[#F8FAFC]">
+            <nav aria-label="Import progress" className="border-b border-[#E5E7EB] bg-white px-4 py-3 sm:px-5">
+              <ol className="grid grid-cols-4 gap-1" role="list">
+                {["Upload", "Extract", "Review", "Import"].map((label, index) => {
+                  const activeIndex = importFile ? 1 : 0;
+                  const done = index < activeIndex;
+                  const current = index === activeIndex;
+                  return (
+                    <li key={label} className="flex min-w-0 items-center gap-1.5" aria-current={current ? "step" : undefined}>
+                      <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${done ? "bg-[#179B4D] text-white" : current ? "bg-[#11120d] text-white" : "bg-[#ECEFF3] text-[#64748B]"}`}>
+                        {done ? <Icon name="check" sizePx={14} /> : index + 1}
+                      </span>
+                      <span className={`truncate text-[10px] font-bold sm:text-[11px] ${current || done ? "text-[#11120d]" : "text-[#7A7F89]"}`}>{label}</span>
+                      {index < 3 ? <span aria-hidden="true" className="hidden h-px min-w-2 flex-1 bg-[#D8DBE0] sm:block" /> : null}
+                    </li>
+                  );
+                })}
+              </ol>
+            </nav>
             {/* Tabs */}
             <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
               <button
@@ -3777,6 +3795,7 @@ export default function ProductsModals({
                         <div className="rounded-[14px] border border-[#E5E7EB] bg-white p-3.5 space-y-3">
                           <div className="grid grid-cols-1 gap-2.5 sm:grid-cols-2">
                             <ProjectSelect
+                              aria-label="Choose an import template"
                               value={importTemplateId}
                               onChange={(event) => setImportTemplateId(event.target.value)}
                               className="h-[38px] w-full rounded-[9px] border border-[#CFCFD3] bg-[#F8FAFC] px-3 text-[12px] font-bold outline-none focus:border-[#11120d]"
@@ -3856,7 +3875,7 @@ export default function ProductsModals({
                       {spreadsheetPreview ? <div className="grid gap-3 rounded-lg border border-slate-200 p-3 sm:grid-cols-2">
                         {spreadsheetPreview.headerConfidence === "LOW" && !headerSelection ? <p role="alert" className="rounded-lg bg-amber-50 p-3 text-sm text-amber-800 sm:col-span-2">The header could not be identified confidently. Confirm the header row below before continuing.</p> : null}
                         {spreadsheetPreview.sheets.length > 0 ? <label className="text-sm font-semibold">Worksheet
-                          <ProjectSelect value={spreadsheetPreview.sheetName || ""} onChange={(event) => { setSheetSelection(event.target.value); setHeaderSelection(undefined); }}>
+                          <ProjectSelect aria-label="Choose worksheet" value={spreadsheetPreview.sheetName || ""} onChange={(event) => { setSheetSelection(event.target.value); setHeaderSelection(undefined); }}>
                             {spreadsheetPreview.sheets.map((name) => <option key={name} value={name}>{name}</option>)}
                           </ProjectSelect>
                         </label> : null}
@@ -3907,6 +3926,7 @@ export default function ProductsModals({
                         {/* Supplier & Preset Template Bar */}
                         <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5 p-3.5 bg-slate-50/70 border-b border-slate-100">
                           <ProjectSelect
+                            aria-label="Choose an import template"
                             value={importTemplateId}
                             onChange={(event) => setImportTemplateId(event.target.value)}
                             className="h-[36px] w-full rounded-[9px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold outline-none focus:border-[#11120d]"
@@ -3989,6 +4009,7 @@ export default function ProductsModals({
 
                                   <div className="w-full sm:w-[260px] shrink-0">
                                     <ProjectSelect
+                                      aria-label={`Map ${col.header} column`}
                                       value={mappedFieldKey}
                                       onChange={(event) =>
                                         handleColumnMappingChange(col.header, event.target.value)

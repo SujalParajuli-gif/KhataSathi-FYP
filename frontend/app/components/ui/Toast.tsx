@@ -186,10 +186,10 @@ function ToastCard({
           <Icon name={tone.icon} className="text-[20px]" />
         </div>
         <div className="min-w-0 flex-1">
-          <div className="truncate text-[14px] font-extrabold leading-5">
+          <div className="break-words text-[14px] font-extrabold leading-5">
             {title.replace(/\.$/, "")}
           </div>
-          <div className="truncate text-[12px] font-semibold opacity-75">
+          <div className="mt-0.5 break-words text-[12px] font-semibold leading-5 opacity-75">
             {subtitle.replace(/\.$/, "")}
           </div>
         </div>

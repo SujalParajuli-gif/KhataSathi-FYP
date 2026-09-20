@@ -46,6 +46,37 @@ test("an unchanged existing match is explained without a user-edited tag", async
   await expect(page.getByText("Already in your catalog.", { exact: false })).toBeVisible();
   await expect(page.getByText("User changed", { exact: true })).toHaveCount(0);
 });
+
+test("review progress is explicit and an unavailable source does not leave an empty panel", async ({ page }) => {
+  await mockApp(page, review());
+  await page.goto("/products/imports/test-batch");
+  const progress = page.getByRole("navigation", { name: "Import progress" });
+  await expect(progress.getByText("Upload", { exact: true })).toBeVisible();
+  await expect(progress.getByRole("listitem").filter({ hasText: "Review" })).toHaveAttribute("aria-current", "step");
+  await expect(page.getByRole("heading", { name: "Source document" })).toHaveCount(0);
+  await expect(page.getByText("The original file was not retained", { exact: false })).toBeVisible();
+});
+
+test("catalog search state survives reload through the URL", async ({ page }) => {
+  await mockApp(page, review());
+  await page.goto("/products?q=bucket&sort=name_asc&pageSize=50");
+  const search = page.getByRole("textbox", { name: "Search products" });
+  await expect(search).toHaveValue("bucket");
+  await page.reload();
+  await expect(search).toHaveValue("bucket");
+  await expect(page).toHaveURL(/q=bucket/);
+  await expect(page).toHaveURL(/sort=name_asc/);
+  await expect(page).toHaveURL(/pageSize=50/);
+});
+
+test("unfinished imports are resumable from the product catalog", async ({ page }) => {
+  const state = review();
+  await mockApp(page, state, { batches: [state.batch] });
+  await page.goto("/products");
+  await expect(page.getByRole("heading", { name: "Imports that need attention" })).toBeVisible();
+  await page.getByRole("button", { name: /Ready to review: test-catalog\.pdf/ }).click();
+  await expect(page).toHaveURL(/\/products\/imports\/test-batch/);
+});
 const row = {id:"row-1",batchId:"test-batch",rowNumber:1,status:"READY",resolution:"CREATE_NEW",comparisonStatus:"READY_NEW",parsed:{name:"Test bucket",brand:"Test supplier",category:"Buckets",sku:"TEST-1",ratePerPiece:100,retailPrice:null,wholesalePrice:null,availabilityStatus:"CATALOG_LISTED",stock:0}};
 function review(status = "DRAFT", incomplete = false) {
   return {batch:{id:"test-batch",sourceType:"PDF",fileName:"test-catalog.pdf",supplier:"Test supplier",status,totalRows:1,createdAt:new Date().toISOString(),source:{available:false}},
@@ -53,7 +84,7 @@ function review(status = "DRAFT", incomplete = false) {
     decisionCounts:{create:1,update:0,keep:0,ignore:0,unresolved:0,committed:0},priceMapping:{required:false,complete:true,columns:[],mapping:{}},
     coverage:{total:2,completed:incomplete ? 1 : 2,failedPages:incomplete ? [{pageNumber:2,message:"This page could not be read."}] : [],requiresAcknowledgement:incomplete}};
 }
-async function mockApp(page: Page, state: ReturnType<typeof review>, options: {failFirstPoll?:boolean} = {}) {
+async function mockApp(page: Page, state: ReturnType<typeof review>, options: {failFirstPoll?:boolean; batches?:unknown[]} = {}) {
   let reads = 0;
   let contextReads = 0;
   await page.addInitScript((value) => localStorage.setItem("khatasathi_auth_user",JSON.stringify(value)),user);
@@ -70,7 +101,7 @@ async function mockApp(page: Page, state: ReturnType<typeof review>, options: {f
     if (path.endsWith("/alerts")) return respond({alerts:[],unreadCount:0});
     if (path.endsWith("/alerts/read")) return respond({readKeys:[]});
     if (path.endsWith("/products")) return respond({products:[],total:0,page:1,pageSize:50});
-    if (path.endsWith("/import-batches")) return respond({batches:[]});
+    if (path.endsWith("/import-batches")) return respond({batches:options.batches || []});
     if (path.endsWith("/import-templates")) return respond({templates:[]});
     return respond({});
   });

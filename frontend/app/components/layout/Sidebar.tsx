@@ -33,9 +33,10 @@ function SidebarLink({
       end={item.to === "/"}
       onClick={onNavigate}
       title={isCollapsed ? item.label : undefined}
+      aria-label={isCollapsed ? item.label : undefined}
       className={({ isActive }) =>
         [
-          "group flex h-11 items-center gap-3 rounded-[10px] border text-[14px] font-semibold transition-colors",
+          "group flex h-11 items-center gap-3 rounded-[10px] border text-[14px] font-semibold transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-offset-2",
           isCollapsed
             ? "px-3 lg:mx-auto lg:w-11 lg:justify-center lg:gap-0 lg:px-0"
             : "px-3",

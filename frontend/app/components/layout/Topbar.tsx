@@ -22,6 +22,7 @@ type Props = {
   showNotifications?: boolean;
   staffMode?: boolean;
   showDesktopCollapseToggle?: boolean;
+  contextLabel?: string;
 };
 
 // the top navigation bar — shows the page title, greeting, notification bell, and user profile link
@@ -39,6 +40,7 @@ export default function Topbar({
   showNotifications = true,
   staffMode = false,
   showDesktopCollapseToggle = true,
+  contextLabel,
 }: Props) {
   const [bellOpen, setBellOpen] = useState(false); // whether the notification dropdown is visible
   const [accountOpen, setAccountOpen] = useState(false);
@@ -138,9 +140,14 @@ export default function Topbar({
                 <h1 className="truncate text-[16px] font-bold  text-[#000000]">
                   {pageTitle}
                 </h1>
-                <p className="truncate text-[12px] font-medium text-[#8C8889] opacity-90">
-                  {greetingText}
-                </p>
+                <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-[#8C8889] opacity-90">
+                  <span className="hidden truncate sm:inline">{greetingText}</span>
+                  {contextLabel ? (
+                    <span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[9px] font-extrabold text-sky-800 sm:text-[10px]">
+                      {contextLabel}
+                    </span>
+                  ) : null}
+                </div>
               </div>
             </div>
           </div>

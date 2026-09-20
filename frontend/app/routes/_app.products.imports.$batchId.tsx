@@ -1,5 +1,5 @@
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
-import { useBlocker, useNavigate, useParams } from "react-router";
+import { useBlocker, useNavigate, useParams, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { useToast } from "~/components/ui/Toast";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
@@ -89,6 +89,18 @@ const COMPARISON_FILTERS: Array<{
     { value: "FAILED", label: "Failed" },
     { value: "NEEDS_REVIEW", label: "Needs attention" },
   ];
+
+function reviewFilterFromQuery(value: string | null): ReviewFilter {
+  if (value === "ALL" || value === "EDITED" || value === "ATTENTION") return value;
+  return COMPARISON_FILTERS.some((item) => item.value === value)
+    ? value as ReviewFilter
+    : "ALL";
+}
+
+function positiveReviewQueryNumber(value: string | null, fallback: number) {
+  const parsed = Number(value);
+  return Number.isInteger(parsed) && parsed > 0 ? parsed : fallback;
+}
 
 function reviewFilterParams(filter: ReviewFilter) {
   if (filter === "EDITED" || filter === "ATTENTION") return { reviewState: filter } as const;
@@ -264,16 +276,21 @@ const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white p
 export default function ProductImportReviewPage() {
   const { batchId = "" } = useParams();
   const navigate = useNavigate();
+  const [reviewSearchParams, setReviewSearchParams] = useSearchParams();
   const { showToast } = useToast();
   const [review, setReview] = useState<ProductImportReviewPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [page, setPage] = useState(1);
-  const [pageSize, setPageSize] = useState(25);
-  const [searchInput, setSearchInput] = useState("");
-  const [search, setSearch] = useState("");
-  const [filter, setFilter] = useState<ReviewFilter>("ALL");
-  const [activeRowId, setActiveRowId] = useState("");
+  const initialReviewSearch = reviewSearchParams.get("q") || "";
+  const [page, setPage] = useState(() => positiveReviewQueryNumber(reviewSearchParams.get("page"), 1));
+  const [pageSize, setPageSize] = useState(() => {
+    const value = positiveReviewQueryNumber(reviewSearchParams.get("pageSize"), 25);
+    return [25, 50, 100].includes(value) ? value : 25;
+  });
+  const [searchInput, setSearchInput] = useState(initialReviewSearch);
+  const [search, setSearch] = useState(initialReviewSearch.trim());
+  const [filter, setFilter] = useState<ReviewFilter>(() => reviewFilterFromQuery(reviewSearchParams.get("filter")));
+  const [activeRowId, setActiveRowId] = useState(() => reviewSearchParams.get("row") || "");
   const [draft, setDraft] = useState<ImportReviewDraft | null>(null);
   const [savedFingerprint, setSavedFingerprint] = useState("");
   const [saving, setSaving] = useState(false);
@@ -364,11 +381,28 @@ export default function ProductImportReviewPage() {
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
+      if (searchInput.trim() === search) return;
       setPage(1);
       setSearch(searchInput.trim());
     }, 250);
     return () => window.clearTimeout(timer);
-  }, [searchInput]);
+  }, [search, searchInput]);
+
+  useEffect(() => {
+    setReviewSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      const write = (key: string, value: string, defaultValue = "") => {
+        if (!value || value === defaultValue) next.delete(key);
+        else next.set(key, value);
+      };
+      write("q", search);
+      write("filter", filter, "ALL");
+      write("page", String(page), "1");
+      write("pageSize", String(pageSize), "25");
+      write("row", activeRowId);
+      return next.toString() === current.toString() ? current : next;
+    }, { replace: true });
+  }, [activeRowId, filter, page, pageSize, search, setReviewSearchParams]);
 
   useEffect(() => {
     let active = true;
@@ -472,9 +506,14 @@ export default function ProductImportReviewPage() {
   }, [batchId, activeRowId]);
 
   const sourceMimeType = review?.batch.source?.mimeType || "";
+  const sourceAvailable = Boolean(review?.batch.source?.available);
   const sourcePageNumber = Number(activeRow?.sourceLocator?.pageNumber || 1);
   const region = displayImportSourceRegion(activeRow?.sourceLocator);
   const regionScale = Number(region?.scale || 1000);
+
+  useEffect(() => {
+    if (!sourceAvailable && mobilePanel === "source") setMobilePanel("editor");
+  }, [mobilePanel, sourceAvailable]);
 
   useEffect(() => {
     if (!activeRowId || !sourcePreviewUrl || !region) return;
@@ -1691,11 +1730,11 @@ export default function ProductImportReviewPage() {
               <div className="min-w-0">
                 <div className="flex items-center gap-1.5 sm:gap-2 flex-wrap sm:flex-nowrap">
                   <h2 className="text-[13.5px] sm:text-[14px] font-extrabold text-[#11120d] whitespace-nowrap">Review item</h2>
-                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[8.5px] sm:text-[9px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
+                  <span className={`inline-flex shrink-0 items-center rounded-full border px-2 py-0.5 text-[10px] font-extrabold ${statusTone(draft.comparisonStatus)}`}>
                     {comparisonStale ? "Comparison pending" : comparisonLabel(draft.comparisonStatus)}
                   </span>
                   {dirty ? (
-                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[8.5px] font-bold text-amber-800">
+                    <span className="inline-flex items-center gap-1 rounded-full bg-amber-50 border border-amber-200 px-2 py-0.5 text-[10px] font-bold text-amber-800">
                       <span className="h-1.5 w-1.5 rounded-full bg-amber-500 animate-pulse" />
                       Unsaved
                     </span>
@@ -1745,6 +1784,11 @@ export default function ProductImportReviewPage() {
             </div>
           </div>
         </div>
+        {!sourceAvailable ? (
+          <div className="mx-3 mt-3 rounded-[10px] border border-amber-200 bg-amber-50 px-3 py-2 text-[11px] font-semibold leading-5 text-amber-900 sm:mx-3.5">
+            The original file was not retained for this older review. Check extracted values carefully before saving a decision.
+          </div>
+        ) : null}
 
         <div role="status" className="max-h-36 shrink-0 overflow-y-auto border-b border-[#E2E4E8] bg-[#F8FAFC] px-3 py-2 text-[11px] leading-5">
           <p className="font-bold text-[#374151]">
@@ -2258,6 +2302,25 @@ export default function ProductImportReviewPage() {
         </div>
       </header>
 
+      <nav aria-label="Import progress" className="shrink-0 rounded-[12px] border border-[#D8DBE0] bg-white px-3 py-2.5">
+        <ol className="grid grid-cols-4 gap-1" role="list">
+          {[
+            { label: "Upload", state: "done" },
+            { label: "Extract", state: "done" },
+            { label: "Review", state: "current" },
+            { label: "Import", state: review?.batch.status === "IMPORTED" ? "done" : "next" },
+          ].map((step, index) => (
+            <li key={step.label} className="flex min-w-0 items-center gap-1.5" aria-current={step.state === "current" ? "step" : undefined}>
+              <span className={`inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-full text-[10px] font-extrabold ${step.state === "done" ? "bg-[#179B4D] text-white" : step.state === "current" ? "bg-[#11120d] text-white" : "bg-[#ECEFF3] text-[#64748B]"}`}>
+                {step.state === "done" ? <Icon name="check" sizePx={14} /> : index + 1}
+              </span>
+              <span className={`truncate text-[10px] font-bold sm:text-[11px] ${step.state === "next" ? "text-[#7A7F89]" : "text-[#11120d]"}`}>{step.label}</span>
+              {index < 3 ? <span aria-hidden="true" className="hidden h-px min-w-2 flex-1 bg-[#D8DBE0] sm:block" /> : null}
+            </li>
+          ))}
+        </ol>
+      </nav>
+
       {commitResult ? (
         <div className="flex flex-wrap items-center justify-between gap-2 rounded-[14px] border border-emerald-200 bg-emerald-50 px-4 py-3 text-[11px] font-bold text-emerald-900">
           <span>Last commit: {commitResult.createdCount} created · {commitResult.updatedCount || 0} updated · {commitResult.keptCount || 0} kept · {commitResult.ignoredCount || 0} ignored · {commitResult.errorCount} failed</span>
@@ -2267,7 +2330,7 @@ export default function ProductImportReviewPage() {
 
       {/* Compact Segmented Mobile View Switcher */}
       <div className="flex shrink-0 gap-1 rounded-[10px] border border-[#D8DBE0] bg-[#F1F3F5] p-1 xl:hidden">
-        {(["list", "editor", "source"] as MobilePanel[]).map((panel) => (
+        {(["list", "editor", ...(sourceAvailable ? ["source" as const] : [])] as MobilePanel[]).map((panel) => (
           <button
             key={panel}
             type="button"
@@ -2283,13 +2346,16 @@ export default function ProductImportReviewPage() {
         ))}
       </div>
 
-      <main className="min-h-0 flex-1 xl:grid xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)] xl:gap-3">
+      <section className={`min-h-0 flex-1 xl:grid xl:gap-3 ${sourceAvailable ? "xl:grid-cols-[minmax(300px,0.9fr)_minmax(390px,1fr)_minmax(360px,1.05fr)]" : "xl:grid-cols-[minmax(320px,0.85fr)_minmax(480px,1.35fr)]"}`} aria-label="Import review workspace">
         {/* Product List Panel */}
         <section className={`${mobilePanel === "list" ? "flex" : "hidden"} h-full min-h-0 flex-col overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:flex xl:rounded-[18px]`}>
           <div className="shrink-0 space-y-2 border-b border-[#E2E4E8] p-2.5">
             <div className="relative">
               <Icon name="search" sizePx={17} className="absolute left-3 top-2.5 text-[#7A7F89]" />
               <input
+                name="import-review-search"
+                aria-label="Search import rows"
+                autoComplete="off"
                 value={searchInput}
                 onChange={(event) => {
                   const value = event.target.value;
@@ -2489,8 +2555,8 @@ export default function ProductImportReviewPage() {
         </section>
 
         <div className={`${mobilePanel === "editor" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderEditor()}</div>
-        <div className={`${mobilePanel === "source" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderSourcePanel()}</div>
-      </main>
+        {sourceAvailable ? <div className={`${mobilePanel === "source" ? "block" : "hidden"} h-full min-h-0 xl:block`}>{renderSourcePanel()}</div> : null}
+      </section>
 
       {/* Bulk Selection Bar: Clean Single-Line, Docked without Covering Pagination */}
       {selectedCount > 0 ? (

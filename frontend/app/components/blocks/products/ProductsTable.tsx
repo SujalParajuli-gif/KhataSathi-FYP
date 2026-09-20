@@ -369,8 +369,6 @@ export default function ProductsTableCard({
           return (
             <article
               key={product.id}
-              role="button"
-              tabIndex={0}
               onPointerDown={
                 selectionMode
                   ? undefined
@@ -402,19 +400,6 @@ export default function ProductsTableCard({
                 cancelLongPress();
                 longPressedProductId.current = product.id;
                 if (!isSelected) toggleOne(product.id, true);
-              }}
-              onClick={() => {
-                if (longPressedProductId.current === product.id) {
-                  longPressedProductId.current = null;
-                  return;
-                }
-                selectionMode ? toggleOne(product.id, !isSelected) : onView(product);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  selectionMode ? toggleOne(product.id, !isSelected) : onView(product);
-                }
               }}
               className={cn(
                 "relative flex items-start gap-3 rounded-[14px] border p-3 select-none [-webkit-touch-callout:none]",
@@ -463,7 +448,26 @@ export default function ProductsTableCard({
                 </div>
               </div>
 
-              <div className="min-w-0 flex-1">
+              <div
+                role="button"
+                tabIndex={0}
+                onClick={() => {
+                  if (longPressedProductId.current === product.id) {
+                    longPressedProductId.current = null;
+                    return;
+                  }
+                  selectionMode ? toggleOne(product.id, !isSelected) : onView(product);
+                }}
+                onKeyDown={(event) => {
+                  if (event.key !== "Enter" && event.key !== " ") return;
+                  event.preventDefault();
+                  selectionMode ? toggleOne(product.id, !isSelected) : onView(product);
+                }}
+                aria-label={selectionMode
+                  ? `${isSelected ? "Deselect" : "Select"} ${product.name}`
+                  : `View ${product.name}`}
+                className="min-w-0 flex-1 rounded-[10px] text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-offset-2"
+              >
                 <div className="line-clamp-2 text-[17px] font-black leading-snug text-[#000000]">{product.name}</div>
                 <div className="mt-0.5 truncate text-[11.5px] font-semibold text-[#64748B]">{product.brand || "Unbranded"}</div>
 

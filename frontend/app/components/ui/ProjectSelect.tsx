@@ -298,7 +298,7 @@ export default function ProjectSelect({
           if (!disabled) setOpen((current) => !current);
         }}
         className={cn(
-          "flex w-full items-center justify-between rounded-lg border bg-white text-left font-semibold text-slate-900 outline-none transition-all",
+          "flex w-full items-center justify-between rounded-lg border bg-white text-left font-semibold text-slate-900 outline-none transition-[border-color,box-shadow,background-color] focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1",
           heightClass || (compact ? "h-10" : "h-11"),
           compact ? "px-2.5 text-[12px] gap-1.5" : "px-4 text-sm gap-3",
           open

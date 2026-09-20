@@ -78,6 +78,9 @@ function Input({
         <GoogleIcon name={leftIcon} className="shrink-0 text-[#8C8889] text-[18px]" />
       ) : null}
       <input
+        name="productSearch"
+        aria-label="Search products"
+        autoComplete="off"
         value={value}
         onChange={(e) => onChange(e.target.value)}
         placeholder={placeholder}
@@ -102,17 +105,20 @@ function Select({
   onChange,
   options,
   className,
+  ariaLabel,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: Array<{ value: string; label: string }>;
   className?: string;
+  ariaLabel: string;
 }) {
   return (
     <ProjectSelect
       value={value}
       onChange={(e) => onChange(e.target.value)}
       compact
+      aria-label={ariaLabel}
       className={cn(
         "h-10 w-full rounded-[10px] border border-[#CFCFD3] bg-white px-2.5 text-[12px] font-semibold text-[#000000] outline-none",
         className,
@@ -354,6 +360,7 @@ export default function ProductsFiltersCard({
           <div className="block space-y-1.5">
             <label className="text-[13px] font-bold text-slate-900">Brand</label>
             <Select
+              ariaLabel="Filter products by brand"
               value={draftBrand}
               onChange={setDraftBrand}
               options={brandOptions}
@@ -378,6 +385,7 @@ export default function ProductsFiltersCard({
           <div className="block space-y-1.5">
             <label className="text-[13px] font-bold text-slate-900">Sort Catalog By</label>
             <Select
+              ariaLabel="Sort products"
               value={draftSortBy}
               onChange={(v) => setDraftSortBy(v as any)}
               options={sortOptions}
@@ -543,6 +551,7 @@ export default function ProductsFiltersCard({
               {/* Brand Selector */}
               <div className="min-w-[130px] flex-[1.1]">
                 <Select
+                  ariaLabel="Filter products by brand"
                   value={brand}
                   onChange={setBrand}
                   options={brandOptions}
@@ -567,6 +576,7 @@ export default function ProductsFiltersCard({
               {/* Sort By */}
               <div className="min-w-[135px] flex-[1.1]">
                 <Select
+                  ariaLabel="Sort products"
                   value={sortBy}
                   onChange={(v) => setSortBy?.(v as any)}
                   options={sortOptions}
@@ -576,6 +586,7 @@ export default function ProductsFiltersCard({
               {/* Pricing Status */}
               <div className="min-w-[110px] flex-1">
                 <Select
+                  ariaLabel="Filter products by pricing status"
                   value={pricingStatus}
                   onChange={(v) => setPricingStatus?.(v as any)}
                   options={pricingOptions}
@@ -585,6 +596,7 @@ export default function ProductsFiltersCard({
               {/* Photo Status */}
               <div className="min-w-[110px] flex-1">
                 <Select
+                  ariaLabel="Filter products by photo status"
                   value={photoStatus}
                   onChange={(v) => setPhotoStatus?.(v as any)}
                   options={photoOptions}

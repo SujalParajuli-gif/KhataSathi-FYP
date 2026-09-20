@@ -222,6 +222,21 @@ function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
+function positiveQueryNumber(params: URLSearchParams, key: string, fallback: number) {
+  const value = Number(params.get(key));
+  return Number.isInteger(value) && value > 0 ? value : fallback;
+}
+
+function queryChoice<T extends string>(
+  params: URLSearchParams,
+  key: string,
+  choices: readonly T[],
+  fallback: T,
+) {
+  const value = params.get(key) as T | null;
+  return value && choices.includes(value) ? value : fallback;
+}
+
 function roundMoney(value: number) {
   return Math.round(Number(value || 0) * 100) / 100;
 }
@@ -348,18 +363,28 @@ export default function ProductsPage() {
   const productRowsRecoveryNeededRef = React.useRef(false);
   const [productRecoveryKey, setProductRecoveryKey] = useState(0);
 
-  const [q, setQ] = useState(""); // text search across product data
-  const [debouncedQ, setDebouncedQ] = useState("");
-  const [brand, setBrand] = useState("All Brands"); // brand dropdown filter
-  const [category, setCategory] = useState("All Categories"); // category dropdown filter
+  const initialProductQuery = searchParams.get("q") || "";
+  const [q, setQ] = useState(initialProductQuery); // text search across product data
+  const [debouncedQ, setDebouncedQ] = useState(initialProductQuery.trim());
+  const [brand, setBrand] = useState(() => searchParams.get("brand") || "All Brands"); // brand dropdown filter
+  const [category, setCategory] = useState(() => searchParams.get("category") || "All Categories"); // category dropdown filter
   const [stockStatus, setStockStatus] = useState<"all" | "in" | "low" | "out">(
-    "all",
+    () => queryChoice(searchParams, "stock", ["all", "in", "low", "out"] as const, "all"),
   );
-  const [status, setStatus] = useState<"all" | "active" | "inactive">("all"); // active vs inactive filter
-  const [lowOnly, setLowOnly] = useState(false); // quick toggle for low stock products only
-  const [sortBy, setSortBy] = useState<ProductSortBy>("photos_first");
-  const [pricingStatus, setPricingStatus] = useState<ProductPricingStatus>("all");
-  const [photoStatus, setPhotoStatus] = useState<ProductPhotoStatus>("all");
+  const [status, setStatus] = useState<"all" | "active" | "inactive">(
+    () => queryChoice(searchParams, "status", ["all", "active", "inactive"] as const, "all"),
+  ); // active vs inactive filter
+  const [lowOnly, setLowOnly] = useState(() => searchParams.get("low") === "true"); // quick toggle for low stock products only
+  const [sortBy, setSortBy] = useState<ProductSortBy>(() => queryChoice(
+    searchParams,
+    "sort",
+    ["photos_first", "name_asc", "name_desc", "brand_asc", "price_asc", "price_desc", "newest"] as const,
+    "photos_first",
+  ));
+  const [pricingStatus, setPricingStatus] = useState<ProductPricingStatus>(() =>
+    queryChoice(searchParams, "pricing", ["all", "ready", "pending"] as const, "all"));
+  const [photoStatus, setPhotoStatus] = useState<ProductPhotoStatus>(() =>
+    queryChoice(searchParams, "photo", ["all", "with_photo", "without_photo"] as const, "all"));
 
   React.useEffect(() => {
     if (stockTracked) return;
@@ -429,8 +454,11 @@ export default function ProductsPage() {
     return () => observer.disconnect();
   }, [selectedCount]);
 
-  const [tablePageSize, setTablePageSize] = useState(20); // visible rows per table page
-  const [page, setPage] = useState(1); // current table page
+  const [tablePageSize, setTablePageSize] = useState(() => {
+    const requested = positiveQueryNumber(searchParams, "pageSize", 20);
+    return [20, 50, 100].includes(requested) ? requested : 20;
+  }); // visible rows per table page
+  const [page, setPage] = useState(() => positiveQueryNumber(searchParams, "page", 1)); // current table page
   productFilterIdentityRef.current = JSON.stringify([
     debouncedQ,
     brand,
@@ -1130,11 +1158,12 @@ export default function ProductsPage() {
   }, [productImagePreview]);
 
   React.useEffect(() => {
-    // Product rows are loaded by the filter-driven effect below. Import
-    // history/templates belong to the Import workspace and are loaded only
-    // when that workspace opens.
+    // Product rows are loaded by the filter-driven effect below. A lightweight
+    // batch request keeps unfinished import work visible from the catalog;
+    // templates still load only when the import workspace opens.
     const timer = window.setTimeout(() => {
       void (async () => {
+        void loadImportBatches().catch(() => undefined);
         try {
           await loadMeta();
           productMetaRecoveryNeededRef.current = false;
@@ -1179,6 +1208,42 @@ export default function ProductsPage() {
     }, 300);
     return () => window.clearTimeout(timer);
   }, [q, debouncedQ, isFilteredSelection]);
+
+  React.useEffect(() => {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      const write = (key: string, value: string, defaultValue = "") => {
+        if (!value || value === defaultValue) next.delete(key);
+        else next.set(key, value);
+      };
+      write("q", debouncedQ);
+      write("brand", brand, "All Brands");
+      write("category", category, "All Categories");
+      write("stock", stockTracked ? stockStatus : "all", "all");
+      write("status", status, "all");
+      write("low", stockTracked && lowOnly ? "true" : "", "");
+      write("sort", sortBy, "photos_first");
+      write("pricing", pricingStatus, "all");
+      write("photo", photoStatus, "all");
+      write("page", String(page), "1");
+      write("pageSize", String(tablePageSize), "20");
+      return next.toString() === current.toString() ? current : next;
+    }, { replace: true });
+  }, [
+    brand,
+    category,
+    debouncedQ,
+    lowOnly,
+    page,
+    photoStatus,
+    pricingStatus,
+    setSearchParams,
+    sortBy,
+    status,
+    stockStatus,
+    stockTracked,
+    tablePageSize,
+  ]);
 
   React.useEffect(() => {
     const visibleSelected = products.filter((product) => selected[product.id]);
@@ -1412,6 +1477,13 @@ export default function ProductsPage() {
   const pageItems = products;
   const pageStart = total === 0 ? 0 : (pageClamped - 1) * tablePageSize;
   const pageEnd = total === 0 ? 0 : pageStart + pageItems.length;
+  const actionableImportBatches = useMemo(
+    () => importBatches
+      .filter((batch) => batch.status !== "IMPORTED")
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
+      .slice(0, 3),
+    [importBatches],
+  );
   const effectiveSelected = useMemo(
     () =>
       isFilteredSelection
@@ -3776,6 +3848,53 @@ export default function ProductsPage() {
           onTogglePurchaseCost={isAdmin ? togglePurchaseCostVisibility : undefined}
         />
       </div>
+
+      {actionableImportBatches.length > 0 ? (
+        <section aria-labelledby="import-activity-heading" className="overflow-hidden rounded-[14px] border border-[#CFE1D5] bg-[#F7FBF8]">
+          <div className="flex items-center justify-between gap-3 border-b border-[#DCE9E0] px-3.5 py-2.5 sm:px-4">
+            <div className="min-w-0">
+              <h2 id="import-activity-heading" className="text-[13px] font-extrabold text-[#11120d]">Imports that need attention</h2>
+              <p className="mt-0.5 text-[11px] font-medium text-[#567060]">Resume extraction or review without starting over.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                resetImportState();
+                setOpenImport(true);
+                void Promise.allSettled([loadImportBatches(), loadImportTemplates()]);
+              }}
+              className="shrink-0 rounded-[9px] border border-[#9DD8B2] bg-white px-3 py-2 text-[11px] font-extrabold text-[#16753A] transition hover:bg-[#EAF8EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#179B4D] focus-visible:ring-offset-2"
+            >
+              View all
+            </button>
+          </div>
+          <div className="grid gap-px bg-[#DCE9E0] sm:grid-cols-2 xl:grid-cols-3">
+            {actionableImportBatches.map((batch) => {
+              const processing = ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status);
+              const needsAttention = ["FAILED", "INTERRUPTED"].includes(batch.status);
+              const statusLabel = processing ? "Processing" : needsAttention ? "Needs attention" : "Ready to review";
+              return (
+                <button
+                  key={batch.id}
+                  type="button"
+                  onClick={() => void openImportBatchById(batch.id)}
+                  className="flex min-w-0 items-center gap-3 bg-white px-3.5 py-3 text-left transition hover:bg-[#F3FBF6] focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#179B4D]"
+                  aria-label={`${statusLabel}: ${batch.fileName || "Untitled import"}. Open import.`}
+                >
+                  <span className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${needsAttention ? "bg-amber-100 text-amber-800" : processing ? "bg-blue-50 text-blue-700" : "bg-[#EAF8EF] text-[#16753A]"}`}>
+                    <Icon name={needsAttention ? "warning" : processing ? "progress_activity" : "fact_check"} sizePx={19} className={processing ? "animate-spin" : undefined} />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block truncate text-[12px] font-extrabold text-[#11120d]">{batch.fileName || "Untitled import"}</span>
+                    <span className="mt-0.5 block truncate text-[10.5px] font-semibold text-[#64748B]">{statusLabel} · {batch.totalRows.toLocaleString()} rows · {formatDocumentDate(batch.createdAt)}</span>
+                  </span>
+                  <Icon name="chevron_right" sizePx={18} className="shrink-0 text-[#64748B]" />
+                </button>
+              );
+            })}
+          </div>
+        </section>
+      ) : null}
 
       {selectedCount > 0 ? (
         <>

@@ -877,7 +877,7 @@ export default function HistoryPage() {
       <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
         {categoryTabs}
 
-        <main className="px-4 py-5 sm:px-7 sm:py-7">
+        <section className="px-4 py-5 sm:px-7 sm:py-7" aria-label="History overview">
           <div className="text-[13px] font-bold text-[#8C8889]">
             {new Date().toLocaleDateString(undefined, {
               weekday: "long",
@@ -1121,7 +1121,7 @@ export default function HistoryPage() {
               className="border-t border-[#E5E7EB]"
             />
           </div>
-        </main>
+        </section>
 
         <MobileFilterSheet
           open={mobileFiltersOpen}
@@ -1363,7 +1363,7 @@ export default function HistoryPage() {
     <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
       {categoryTabs}
 
-      <main className="px-4 py-5 sm:px-7 sm:py-7">
+      <section className="px-4 py-5 sm:px-7 sm:py-7" aria-label="History records">
         <div className="text-[13px] font-bold text-[#8C8889]">
           {new Date().toLocaleDateString(undefined, {
             weekday: "long",
@@ -1951,7 +1951,7 @@ export default function HistoryPage() {
             className="border-t border-[#E5E7EB]"
           />
         </div>
-      </main>
+      </section>
 
       <InvoiceDetailModal
         open={!!selectedInvoiceId}

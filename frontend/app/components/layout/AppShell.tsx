@@ -12,6 +12,7 @@ import { touchUserPresenceApi } from "~/lib/api/endpoints";
 import { AlertsProvider } from "~/lib/alerts/alerts-context";
 import { getAuthUser } from "~/lib/auth";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
+import { businessModeLabel } from "~/lib/capabilityRecovery";
 import { hasCapabilityRouteAccess } from "~/lib/routeAccess";
 
 type Props = {
@@ -210,6 +211,12 @@ export default function AppShell({ children, statusBanner }: Props) {
     >
       <ToastProvider>
         <RateLimitBanner />
+        <a
+          href="#app-main-content"
+          className="fixed left-3 top-3 z-[300] -translate-y-20 rounded-[10px] bg-[#11120d] px-4 py-2 text-sm font-bold text-white shadow-lg transition-transform focus:translate-y-0"
+        >
+          Skip to main content
+        </a>
         <div className="h-dvh overflow-hidden bg-white text-slate-900">
           <Sidebar
             role={role}
@@ -240,6 +247,7 @@ export default function AppShell({ children, statusBanner }: Props) {
               showNotifications={!isStaff}
               staffMode={isStaff}
               showDesktopCollapseToggle={!usesCompactDesktopRail}
+              contextLabel={businessModeLabel(capabilities.businessMode)}
             />
 
             {statusBanner}

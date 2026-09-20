@@ -1999,6 +1999,9 @@ export default function ProductLookupPage() {
                   sizePx={18}
                 />
                 <input
+                  name="productLookupSearch"
+                  aria-label="Search product catalog"
+                  autoComplete="off"
                   value={query}
                   onChange={(event) => setQuery(event.target.value)}
                   placeholder="Search name, SKU, barcode..."
@@ -2019,6 +2022,7 @@ export default function ProductLookupPage() {
               {/* Brand Filter */}
               <div className="min-w-[140px] flex-[1.1]">
                 <ProjectSelect
+                  aria-label="Filter products by brand"
                   value={brand}
                   onChange={(event) => applyDesktopBrand(event.target.value)}
                   compact
@@ -2050,6 +2054,7 @@ export default function ProductLookupPage() {
               {/* Sort By Filter */}
               <div className="min-w-[145px] flex-[1.1]">
                 <ProjectSelect
+                  aria-label="Sort products"
                   value={sortBy}
                   onChange={(event) => applyDesktopSort(event.target.value as ProductSortBy)}
                   compact
@@ -2066,6 +2071,7 @@ export default function ProductLookupPage() {
               {/* Pricing Status Filter */}
               <div className="min-w-[120px] flex-1">
                 <ProjectSelect
+                  aria-label="Filter products by pricing status"
                   value={pricingStatus}
                   onChange={(event) => applyDesktopPricing(event.target.value as ProductPricingStatus)}
                   compact
@@ -2082,6 +2088,7 @@ export default function ProductLookupPage() {
               {/* Photo Status Filter */}
               <div className="min-w-[120px] flex-1">
                 <ProjectSelect
+                  aria-label="Filter products by photo status"
                   value={photoStatus}
                   onChange={(event) => applyDesktopPhoto(event.target.value as ProductPhotoStatus)}
                   compact
@@ -2099,6 +2106,7 @@ export default function ProductLookupPage() {
               {stockTracked ? (
                 <div className="w-[110px] shrink-0">
                   <ProjectSelect
+                    aria-label="Filter products by stock status"
                     value={stockStatus}
                     onChange={(event) =>
                       applyDesktopStock(event.target.value as "all" | "in" | "low" | "out")
@@ -2170,6 +2178,7 @@ export default function ProductLookupPage() {
                 Brand
               </label>
               <ProjectSelect
+                aria-label="Filter products by brand"
                 value={draftBrand}
                 onChange={(e) => setDraftBrand(e.target.value)}
                 className="h-11 w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold text-slate-800 outline-none"
@@ -2204,6 +2213,7 @@ export default function ProductLookupPage() {
                 Sort Catalog By
               </label>
               <ProjectSelect
+                aria-label="Sort products"
                 value={draftSortBy}
                 onChange={(e) => setDraftSortBy(e.target.value as ProductSortBy)}
                 className="h-11 w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold text-slate-800 outline-none"
@@ -2343,7 +2353,7 @@ export default function ProductLookupPage() {
               : "lg:grid-cols-1",
           )}
         >
-          <main className="min-w-0 space-y-4">
+          <section className="min-w-0 space-y-4" aria-label="Product lookup results">
             <section className="flex min-h-[calc(100dvh-176px)] flex-col lg:min-h-0 lg:block lg:overflow-hidden lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:bg-white lg:shadow-xs">
               <div className="hidden overflow-x-auto lg:block">
                 <table className="w-full min-w-[900px] text-left">
@@ -2785,7 +2795,7 @@ export default function ProductLookupPage() {
                 />
               ) : null}
             </section>
-          </main>
+          </section>
 
           {isStaff && draftItems.length > 0 ? (
             <div className="hidden lg:block">
@@ -3034,6 +3044,7 @@ function FilterFields({
             Stock
           </span>
           <ProjectSelect
+            aria-label="Filter products by stock status"
             value={stockStatus}
             onChange={(event) =>
               onStock(event.target.value as "all" | "in" | "low" | "out")
