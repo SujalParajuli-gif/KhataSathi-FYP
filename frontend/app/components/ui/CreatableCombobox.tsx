@@ -271,22 +271,26 @@ export default function CreatableCombobox({
             }
           }}
           placeholder={placeholder}
-          className={`${compact ? "h-8.5 rounded-[8px] px-2.5 pr-8 text-[12px]" : "h-[44px] rounded-[11px] px-3 pr-12 text-[13px]"} block w-full min-w-0 bg-white font-semibold text-[#11120d] outline-none transition focus:ring-2 ${invalid ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#087F83] focus:ring-[#087F83]/15"} ${className || ""}`}
+          className={`${compact ? "h-9 rounded-[9px] px-2.5 pr-8 text-[12.5px]" : "h-[44px] rounded-[11px] px-3 pr-12 text-[13px]"} block w-full min-w-0 bg-white font-medium text-[#11120d] outline-none transition focus:ring-2 ${invalid ? "border-2 border-[#DC2626] bg-[#FFF1F2] focus:ring-red-100" : "border border-[#CFCFD3] focus:border-[#087F83] focus:ring-[#087F83]/15"} ${className || ""}`}
         />
         <button
           type="button"
           aria-label={`${open ? "Close" : "Open"} ${ariaLabel.toLocaleLowerCase()} options`}
           aria-expanded={open}
           aria-controls={listId}
-          onPointerDown={(event) => event.preventDefault()}
+          onPointerDown={(event) => {
+            if (event.pointerType !== "touch") {
+              event.preventDefault();
+            }
+          }}
           onClick={toggleList}
-          className={`absolute right-1 top-1/2 z-[1] inline-flex -translate-y-1/2 items-center justify-center text-[#6B7280] transition hover:bg-[#F3F4F6] hover:text-[#11120d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-offset-1 ${compact ? "h-6.5 w-6.5 rounded-[6px]" : "h-9 w-9 rounded-[9px]"}`}
+          className={`absolute right-1 top-1/2 z-[1] inline-flex -translate-y-1/2 items-center justify-center text-[#6B7280] transition hover:bg-[#F3F4F6] hover:text-[#11120d] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] focus-visible:ring-offset-1 touch-manipulation active:scale-[0.95] ${compact ? "h-7 w-7 rounded-[7px]" : "h-9 w-9 rounded-[9px]"}`}
         >
           <svg
             aria-hidden="true"
             viewBox="0 0 20 20"
             fill="none"
-            className={`${compact ? "h-3.5 w-3.5" : "h-5 w-5"} transition-transform ${open ? "rotate-180" : ""}`}
+            className={`${compact ? "h-4 w-4" : "h-5 w-5"} transition-transform ${open ? "rotate-180" : ""}`}
           >
             <path
               d="m6 8 4 4 4-4"
@@ -311,24 +315,28 @@ export default function CreatableCombobox({
                   <>
                     {choices.map((choice, index) => (
                       <button
-                      key={`${choice.created ? "new" : "existing"}-${choice.label}`}
-                      id={`${listId}-option-${index}`}
-                      type="button"
-                      role="option"
-                      tabIndex={-1}
-                      aria-selected={index === activeIndex}
-                      onPointerDown={(event) => event.preventDefault()}
-                      onClick={() => selectChoice(choice)}
-                      className={`flex ${compact ? "min-h-8 py-1.5 px-2.5 text-[11.5px]" : "min-h-10 px-3 text-[13px]"} w-full items-center justify-between gap-2.5 rounded-[8px] text-left font-semibold ${index === activeIndex ? "bg-[#EFF6FF] text-[#1D4ED8]" : "text-[#11120d] hover:bg-[#F3F4F6]"}`}
-                    >
-                      <span className="truncate">
-                        {choice.created ? `Create “${choice.label}”` : choice.label}
-                      </span>
-                      {choice.created ? (
-                        <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold uppercase text-blue-700">
-                          New
+                        key={`${choice.created ? "new" : "existing"}-${choice.label}`}
+                        id={`${listId}-option-${index}`}
+                        type="button"
+                        role="option"
+                        tabIndex={-1}
+                        aria-selected={index === activeIndex}
+                        onPointerDown={(event) => {
+                          if (event.pointerType !== "touch") {
+                            event.preventDefault();
+                          }
+                        }}
+                        onClick={() => selectChoice(choice)}
+                        className={`flex ${compact ? "min-h-8.5 py-1.5 px-2.5 text-[12px]" : "min-h-10 px-3 text-[13px]"} w-full items-center justify-between gap-2.5 rounded-[8px] text-left font-semibold touch-manipulation select-none active:bg-blue-50 ${index === activeIndex ? "bg-[#EFF6FF] text-[#1D4ED8]" : "text-[#11120d] hover:bg-[#F3F4F6]"}`}
+                      >
+                        <span className="truncate">
+                          {choice.created ? `Create “${choice.label}”` : choice.label}
                         </span>
-                      ) : null}
+                        {choice.created ? (
+                          <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10px] font-extrabold uppercase text-blue-700">
+                            New
+                          </span>
+                        ) : null}
                       </button>
                     ))}
                     {!normalizedSearch && uniqueOptions.length > matches.length ? (

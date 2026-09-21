@@ -1683,12 +1683,41 @@ function normalizedSourceRegion(value: unknown) {
     return { top, left, bottom, right, scale: 1000 };
 }
 
+export function projectCatalogSourceBoxes(
+    item: Record<string, unknown>,
+    crop: { left: number; top: number; width: number; height: number },
+    image: { width: number; height: number },
+) {
+    // Header and product evidence must use the same full-image coordinate system.
+    for (const key of ["boundingBox", "tableHeaderBoundingBox", "headerRowBoundingBox", "headerBox"]) {
+        const box = normalizedSourceRegion(item[key]);
+        if (!box) { if (key in item) item[key] = null; continue; }
+        item[key] = [
+            Math.round((crop.top + box.top / 1000 * crop.height) / image.height * 1000),
+            Math.round((crop.left + box.left / 1000 * crop.width) / image.width * 1000),
+            Math.round((crop.top + box.bottom / 1000 * crop.height) / image.height * 1000),
+            Math.round((crop.left + box.right / 1000 * crop.width) / image.width * 1000),
+        ];
+    }
+}
+
 export function normalizedImageSourceRegions(items: Array<Record<string, unknown>>) {
-    // Keep the source evidence exactly where the extractor placed it. A
-    // previous global "one row up" correction fixed one catalogue but moved
-    // already-correct tables onto the preceding product. Format-wide review
-    // must never guess a positional offset from row height alone.
-    return items.map((item) => normalizedSourceRegion(item.boundingBox));
+    // Coordinates belong to an individual product, never to its neighbour.
+    // A header collision is insufficient evidence to move every row in a table.
+    return items.map((item) => {
+        const region = normalizedSourceRegion(item.boundingBox);
+        if (!region) return null;
+        const header = normalizedSourceRegion(
+            item.tableHeaderBoundingBox || item.headerRowBoundingBox || item.headerBox
+        );
+        if (!header) return region;
+        const overlapWidth = Math.max(0, Math.min(region.right, header.right) - Math.max(region.left, header.left));
+        const overlapHeight = Math.max(0, Math.min(region.bottom, header.bottom) - Math.max(region.top, header.top));
+        const regionArea = (region.right - region.left) * (region.bottom - region.top);
+        // Reject a box mainly covering a header. Show the full source instead;
+        // do not fabricate coordinates or propagate a correction across tables.
+        return overlapWidth * overlapHeight > regionArea * 0.5 ? null : region;
+    });
 }
 
 function normalizeImportedCatalogUnit(value: unknown, fallback: string) {
@@ -1769,6 +1798,7 @@ Return strict JSON only in this shape:
       "rate": null,
       "rateText": "exact printed Rate cell or empty",
       "category": "section heading such as ROYAL BUCKET or BASIN - KING",
+      "headerRowBoundingBox": [100, 80, 120, 920],
       "variant": "variant or series if different from code",
       "boundingBox": [120, 80, 175, 920]
     }
@@ -1779,6 +1809,9 @@ Rules:
 - Extract EVERY visible product data row in top-to-bottom order. Do not summarize, sample, merge, or omit rows.
 - When multiple labeled panel images are attached, extract each panel independently, return sourcePanel exactly as labeled, and order rows by panel number then top-to-bottom.
 - Do not return document titles, table headers, section-only headings, addresses, or contact details as products.
+- CRITICAL BOUNDING BOX RULE: boundingBox is [top, left, bottom, right] on a 0-1000 image coordinate scale framing ONLY that specific product's own data cells (the row containing its serial, item name, code, and price).
+- NEVER frame table column headers (e.g. S.N, ITEMS, Particulars, MRP Code, Rate, WSP, Price, Qty) as the boundingBox for product serial 1.
+- If the table has a visible column header row above the products, put its coordinates in headerRowBoundingBox, and ensure product serial 1's boundingBox starts strictly BELOW the column header line.
 - Copy the complete product-name/ITEMS cell verbatim. Preserve every number, parenthesized size, inch mark, hyphen, model word and variant (for example, MOP (8\") T Mop must stay MOP (8\") T Mop).
 - Preserve non-English productName exactly. Put a useful English translation or transliteration in englishName without removing sizes, colors, or variants. Leave englishName empty rather than guessing an unclear name.
 - Never simplify or normalize product names. Two rows with similar names but different sizes or variants are separate products.
@@ -1940,7 +1973,8 @@ Rules:
 - Preserve the full product name. Numbers and sizes distinguish real variants.
 - Preserve non-English productName exactly. Put a searchable English translation or transliteration in englishName, and leave it empty rather than guessing unclear text.
 - pageNumber must match the page label supplied immediately before each image.
-- boundingBox is [top, left, bottom, right] for the complete source row on a 0-1000 page-image coordinate scale.
+- CRITICAL BOUNDING BOX RULE: boundingBox is [top, left, bottom, right] for the complete source row on a 0-1000 page-image coordinate scale framing ONLY that product's data cells.
+- NEVER frame table column headers (such as S.N, ITEMS, Particulars, Rate, MRP Code). Product serial 1's boundingBox must start strictly BELOW any table column header row.
 - If a cell is unreadable use null or an empty string and list its field name in uncertainFields.
 - Read all table rows, including rows whose serial numbers repeat on a later section or page.`;
     const parts: any[] = [{ text: prompt }];
@@ -2048,7 +2082,7 @@ export async function createScannedPdfImportPreview(input: {
             ? item.uncertainFields.map((field: unknown) => String(field || "").trim()).filter(Boolean)
             : [];
         const rowNumber = index + 1;
-        const sourceRegion = normalizedSourceRegion(item.boundingBox);
+        const sourceRegion = normalizedImageSourceRegions([item])[0];
 
         if (!productName) {
             previewRows.push({
@@ -2261,14 +2295,11 @@ export async function createImageImportPreview(input: {
                 for (const row of panelRows) {
                         const panelIndex = Number(row?.sourcePanel) - 1;
                         const panel = panelRanges[panelIndex];
-                        const box = Array.isArray(row?.boundingBox) ? row.boundingBox.map(Number) : null;
-                        if (panel && box?.length === 4 && box.every(Number.isFinite)) {
-                            row.boundingBox = [
-                                box[0],
-                                Math.round(((panel.left + (box[1] / 1000) * panel.width) / width) * 1000),
-                                box[2],
-                                Math.round(((panel.left + (box[3] / 1000) * panel.width) / width) * 1000),
-                            ];
+                        if (panel) {
+                            projectCatalogSourceBoxes(row, { left: panel.left, top: 0, width: panel.width, height }, { width, height });
+                        } else {
+                            // Unknown panel identity cannot be safely located on the full image.
+                            row.boundingBox = null;
                         }
                         aiRows.push(row);
                 }
@@ -2324,15 +2355,7 @@ export async function createImageImportPreview(input: {
                 if (!aiDocument && result.document) aiDocument = result.document;
                 if (result.error) aiError = aiError ? `${aiError} ${result.error}` : result.error;
                 for (const row of result.rows) {
-                    const box = Array.isArray(row?.boundingBox) ? row.boundingBox.map(Number) : null;
-                    if (box?.length === 4 && box.every(Number.isFinite)) {
-                        row.boundingBox = [
-                            Math.round(((tile.top + (box[0] / 1000) * tile.height) / height) * 1000),
-                            box[1],
-                            Math.round(((tile.top + (box[2] / 1000) * tile.height) / height) * 1000),
-                            box[3],
-                        ];
-                    }
+                    projectCatalogSourceBoxes(row, { left: 0, top: tile.top, width, height: tile.height }, { width, height });
                     positioned.push(row);
                 }
             });
@@ -2935,7 +2958,7 @@ export async function getProductImportReview(input: {
     search?: string;
     comparisonStatus?: string;
     rowStatus?: string;
-    reviewState?: "EDITED" | "ATTENTION";
+    reviewState?: "EDITED" | "ATTENTION" | "IGNORED";
 }) {
     const page = Math.max(1, Math.floor(input.page || 1));
     const pageSize = Math.max(1, Math.min(100, Math.floor(input.pageSize || 25)));
@@ -2964,6 +2987,7 @@ export async function getProductImportReview(input: {
         || pendingImportWarnings(row.parsed).length > 0),
     ).map((row) => row.id);
     const editedIds = reviewMetricRows.filter((row) => (reviewChangesById.get(row.id)?.length || 0) > 0).map((row) => row.id);
+    const ignoredIds = reviewMetricRows.filter((row) => row.resolution === "IGNORE" || row.status === "IGNORED").map((row) => row.id);
     const missingBrandCount = reviewMetricRows.filter((row) => {
         const parsed = importMetadata(row.parsed);
         return row.resolution !== "IGNORE" && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status) && !normalizeCsvText(parsed.brand);
@@ -2974,11 +2998,17 @@ export async function getProductImportReview(input: {
         where.comparisonStatus = input.comparisonStatus as any;
     }
     if (input.rowStatus) where.status = input.rowStatus;
-    if (input.reviewState) where.id = { in: input.reviewState === "EDITED" ? editedIds : attentionIds };
+    if (input.reviewState === "EDITED") {
+        where.id = { in: editedIds };
+    } else if (input.reviewState === "IGNORED") {
+        where.id = { in: ignoredIds };
+    } else if (input.reviewState === "ATTENTION") {
+        where.id = { in: attentionIds };
+    }
     const search = normalizeCsvText(input.search);
     if (search) {
         const query = search.toLocaleLowerCase();
-        const allowedIds = input.reviewState === "EDITED" ? editedIds : input.reviewState ? attentionIds : null;
+        const allowedIds = input.reviewState === "EDITED" ? editedIds : input.reviewState === "IGNORED" ? ignoredIds : input.reviewState === "ATTENTION" ? attentionIds : null;
         where.id = { in: reviewMetricRows.filter(row => (!allowedIds || allowedIds.includes(row.id)) &&
             [row.rowNumber, row.rawText, row.error, ...["name", "productName", "sku", "barcode", "productCodeVariant"].map(key => importMetadata(row.parsed)[key])]
                 .some(value => String(value ?? "").toLocaleLowerCase().includes(query))).map(row => row.id) };
@@ -3052,9 +3082,16 @@ export async function getProductImportReview(input: {
             all: reviewMetricRows.length,
             edited: editedIds.length,
             attention: attentionIds.length,
+            ignored: decisionCounts.ignore,
             missingBrand: missingBrandCount,
         },
         decisionCounts,
+        outcomeCounts: {
+            created: reviewMetricRows.filter(row => row.status === "IMPORTED").length,
+            updated: reviewMetricRows.filter(row => row.status === "UPDATED").length,
+            kept: reviewMetricRows.filter(row => row.status === "KEPT_EXISTING").length,
+            ignored: decisionCounts.ignore,
+        },
         priceMapping,
     };
 }
@@ -3574,7 +3611,19 @@ export async function listProductImportBatches(filters?: {
             },
         },
     });
-    return batches.map(omitPrivateImportStorage);
+    // The attention summary must not be limited by the history page. Fetch only
+    // summary fields, not extracted row payloads, for its three previews.
+    const attentionWhere = { ...where, AND: [{ status: { not: "IMPORTED" } }] };
+    const [attentionCount, attentionBatches] = await Promise.all([
+        prisma.productImportBatch.count({ where: attentionWhere }),
+        prisma.productImportBatch.findMany({
+            where: attentionWhere,
+            orderBy: { createdAt: "desc" },
+            take: 3,
+            select: { id: true, sourceType: true, fileName: true, status: true, totalRows: true, importedRows: true, failedRows: true, createdAt: true },
+        }),
+    ]);
+    return { batches: batches.map(omitPrivateImportStorage), attentionCount, attentionBatches };
 }
 
 function importReviewSnapshot(rows: Array<{ id: string; parsed: unknown; status: string; resolution: unknown }>) {
@@ -3927,6 +3976,9 @@ async function executeReviewedPdfRows(
     if (!batch) {
         throw new Error("Product import batch was not found.");
     }
+    if (batch.status === "IMPORTED") {
+        throw new Error("This import batch has already been completed and committed to your catalog.");
+    }
 
     if (importCoverage(batch.extractionMeta, batch.status).requiresAcknowledgement && input.acknowledgeIncomplete !== true) throw new Error("Some source pages remain unread or incomplete. Acknowledge the missing coverage before importing.");
     const existingRowsById = new Map<string, ProductImportRow>(
@@ -4228,7 +4280,13 @@ export async function importReviewedPdfRows(
     }
 
     const claimed = await prisma.productImportBatch.updateMany({ where: { id: batchId, deletedAt: null, status: { in: ["DRAFT", "FAILED", "INTERRUPTED"] } }, data: { status: "COMMITTING" } });
-    if (!claimed.count) throw new Error("This batch is processing, already committed, or another import is in progress. Reopen the review.");
+    if (!claimed.count) {
+        const currentBatch = await prisma.productImportBatch.findUnique({ where: { id: batchId }, select: { status: true } });
+        if (currentBatch?.status === "IMPORTED") {
+            throw new Error("This import batch has already been completed and committed to your catalog.");
+        }
+        throw new Error("This batch is processing, already committed, or another import is in progress. Reopen the review.");
+    }
     let commit;
     try { commit = await prisma.productImportCommit.create({
         data: {

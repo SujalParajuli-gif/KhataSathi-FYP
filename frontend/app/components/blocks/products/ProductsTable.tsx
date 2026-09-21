@@ -320,7 +320,7 @@ export default function ProductsTableCard({
         window.removeEventListener("pointerup", suppressRelease, { capture: true });
         window.removeEventListener("touchend", suppressRelease, { capture: true });
       }, 350);
-    }, 220);
+    }, 450);
   }
 
   function cancelLongPress() {
@@ -387,7 +387,7 @@ export default function ProductsTableCard({
                         Math.hypot(
                           event.clientX - origin.x,
                           event.clientY - origin.y,
-                        ) > 10
+                        ) > 15
                       )
                         cancelLongPress();
                     }

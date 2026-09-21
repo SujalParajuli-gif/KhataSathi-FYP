@@ -178,8 +178,8 @@ export default function ProductsFiltersCard({
   stockStatus: "all" | "in" | "low" | "out";
   setStockStatus: (v: "all" | "in" | "low" | "out") => void;
 
-  status: "all" | "active" | "inactive";
-  setStatus: (v: "all" | "active" | "inactive") => void;
+  status: "active" | "inactive" | "all";
+  setStatus: (v: "active" | "inactive") => void;
 
   sortBy?: ProductSortBy;
   setSortBy?: (v: ProductSortBy) => void;
@@ -190,7 +190,7 @@ export default function ProductsFiltersCard({
   photoStatus?: ProductPhotoStatus;
   setPhotoStatus?: (v: ProductPhotoStatus) => void;
 
-  onClear: () => void;
+  onClear?: () => void;
 
   onAdd: () => void;
   onImport: () => void;
@@ -205,7 +205,9 @@ export default function ProductsFiltersCard({
   const [draftBrand, setDraftBrand] = React.useState(brand);
   const [draftCategory, setDraftCategory] = React.useState(category);
   const [draftStockStatus, setDraftStockStatus] = React.useState(stockStatus);
-  const [draftStatus, setDraftStatus] = React.useState(status);
+  const [draftStatus, setDraftStatus] = React.useState<"active" | "inactive">(
+    status === "inactive" ? "inactive" : "active",
+  );
   const [draftSortBy, setDraftSortBy] = React.useState<ProductSortBy>(sortBy);
   const [draftPricingStatus, setDraftPricingStatus] = React.useState<ProductPricingStatus>(pricingStatus);
   const [draftPhotoStatus, setDraftPhotoStatus] = React.useState<ProductPhotoStatus>(photoStatus);
@@ -244,7 +246,7 @@ export default function ProductsFiltersCard({
     brand !== "All Brands",
     category !== "All Categories",
     stockTracked && stockStatus !== "all",
-    status !== "all",
+    status !== "active",
     sortBy !== "photos_first",
     pricingStatus !== "all",
     photoStatus !== "all",
@@ -254,7 +256,7 @@ export default function ProductsFiltersCard({
     setDraftBrand(brand);
     setDraftCategory(category);
     setDraftStockStatus(stockStatus);
-    setDraftStatus(status);
+    setDraftStatus(status === "inactive" ? "inactive" : "active");
     setDraftSortBy(sortBy);
     setDraftPricingStatus(pricingStatus);
     setDraftPhotoStatus(photoStatus);
@@ -276,7 +278,7 @@ export default function ProductsFiltersCard({
     setDraftBrand("All Brands");
     setDraftCategory("All Categories");
     setDraftStockStatus("all");
-    setDraftStatus("all");
+    setDraftStatus("active");
     setDraftSortBy("photos_first");
     setDraftPricingStatus("all");
     setDraftPhotoStatus("all");
@@ -293,7 +295,7 @@ export default function ProductsFiltersCard({
       label: stockStatus === "low" ? "Low Stock" : stockStatus === "in" ? "In Stock" : "Out of Stock",
       onRemove: () => setStockStatus("all"),
     }] : []),
-    ...(status !== "all" ? [{ id: "status", label: status === "active" ? "Active" : "Inactive", onRemove: () => setStatus("all") }] : []),
+    ...(status !== "active" ? [{ id: "status", label: "Status: Inactive", onRemove: () => setStatus("active") }] : []),
   ];
 
   return (
@@ -457,8 +459,8 @@ export default function ProductsFiltersCard({
           {/* Product Status */}
           <fieldset className="space-y-1.5">
             <legend className="text-[13px] font-bold text-slate-900">Product Status</legend>
-            <div className="grid grid-cols-3 overflow-hidden rounded-[12px] border border-[#CFCFD3]">
-              {([["all", "All"], ["active", "Active"], ["inactive", "Inactive"]] as const).map(([val, lbl]) => (
+            <div className="grid grid-cols-2 overflow-hidden rounded-[12px] border border-[#CFCFD3]">
+              {([["active", "Active"], ["inactive", "Inactive"]] as const).map(([val, lbl]) => (
                 <button
                   key={val}
                   type="button"
@@ -607,7 +609,6 @@ export default function ProductsFiltersCard({
               <div className="inline-flex shrink-0 items-center rounded-[10px] border border-[#CFCFD3] bg-white p-0.5">
                 {(
                   [
-                    ["all", "All"],
                     ["active", "Active"],
                     ["inactive", "Inactive"],
                   ] as const

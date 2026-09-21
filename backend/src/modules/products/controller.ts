@@ -1221,9 +1221,12 @@ export async function getImportBatchReview(req: Request, res: Response) {
           ? req.query.comparisonStatus
           : undefined,
       rowStatus: typeof req.query.rowStatus === "string" ? req.query.rowStatus : undefined,
-      reviewState: req.query.reviewState === "EDITED" || req.query.reviewState === "ATTENTION"
-        ? req.query.reviewState
-        : undefined,
+      reviewState:
+        req.query.reviewState === "EDITED" ||
+        req.query.reviewState === "ATTENTION" ||
+        req.query.reviewState === "IGNORED"
+          ? (req.query.reviewState as "EDITED" | "ATTENTION" | "IGNORED")
+          : undefined,
     });
     res.json(result);
   } catch (err: any) {
@@ -1312,7 +1315,7 @@ export async function getImportBatchSourceContext(req: Request, res: Response) {
 
 export async function listImportBatches(req: Request, res: Response) {
   try {
-    const batches = await productService.listProductImportBatches({
+    const result = await productService.listProductImportBatches({
       sourceType: req.query.sourceType as string | undefined,
       status: req.query.status as string | undefined,
       supplier: req.query.supplier as string | undefined,
@@ -1320,7 +1323,7 @@ export async function listImportBatches(req: Request, res: Response) {
       page: req.query.page ? Number(req.query.page) : undefined,
       pageSize: req.query.pageSize ? Number(req.query.pageSize) : undefined,
     });
-    res.json({ batches });
+    res.json(result);
   } catch (err: any) {
     console.error("List import batches error:", err);
     res.status(500).json({ error: err?.message || "Internal server error" });

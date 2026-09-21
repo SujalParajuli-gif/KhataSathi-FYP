@@ -300,7 +300,7 @@ export default function ProjectSelect({
         className={cn(
           "flex w-full items-center justify-between rounded-lg border bg-white text-left font-semibold text-slate-900 outline-none transition-[border-color,box-shadow,background-color] focus-visible:ring-2 focus-visible:ring-slate-900 focus-visible:ring-offset-1",
           heightClass || (compact ? "h-10" : "h-11"),
-          compact ? "px-2.5 text-[12px] gap-1.5" : "px-4 text-sm gap-3",
+          compact ? "px-2.5 text-[12.5px] font-medium gap-1.5" : "px-4 text-sm gap-3",
           open
             ? hasError
               ? "border-transparent ring-2 ring-rose-400"
@@ -342,7 +342,7 @@ export default function ProjectSelect({
                     onPointerEnter={() => setActiveIndex(index)}
                     onClick={() => selectValue(option.value)}
                     className={cn(
-                      "flex w-full items-center justify-between gap-3 px-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45",
+                      "flex w-full items-center justify-between gap-3 px-4 text-left transition-colors disabled:cursor-not-allowed disabled:opacity-45 touch-manipulation select-none active:bg-slate-100",
                       compact ? "min-h-[36px] text-[12px]" : "min-h-[42px] text-sm",
                       selected ? "bg-slate-50 font-bold text-slate-900" : "font-medium text-slate-700",
                       active && !selected && "bg-slate-50",

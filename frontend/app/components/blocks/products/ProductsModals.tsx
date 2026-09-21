@@ -1,3 +1,4 @@
+import { importBatchStatus } from "~/lib/importBatchStatus";
 import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import Icon from "~/components/ui/Icon";
@@ -236,6 +237,8 @@ function readParsedAliases(parsed: Record<string, unknown>) {
 function displaySourceType(sourceType?: string | null) {
   return (sourceType || "IMPORT").replace(/_/g, " ").toUpperCase();
 }
+
+const getImportBatchStatusMeta = importBatchStatus;
 
 function formatDocumentDate(value?: string | null) {
   if (!value) return "No date";
@@ -651,6 +654,7 @@ function Button({
   disabled,
   icon,
   size = "md",
+  className,
 }: {
   children: React.ReactNode;
   variant?: "primary" | "secondary" | "danger";
@@ -658,6 +662,7 @@ function Button({
   disabled?: boolean;
   icon?: string;
   size?: "sm" | "md";
+  className?: string;
 }) {
   const base =
     "inline-flex items-center justify-center gap-[8px] rounded-[12px] font-semibold border active:scale-[0.98] transition";
@@ -680,6 +685,7 @@ function Button({
         base,
         sizeClass,
         styles,
+        className,
         disabled && "opacity-50 pointer-events-none",
       )}
     >
@@ -2636,7 +2642,7 @@ export default function ProductsModals({
             ? `Review ${displaySourceType(pdfReviewBatch.sourceType)} Import`
             : activeImportBatchId
               ? "Extracting Supplier Catalog"
-              : "Import Products from Spreadsheet, PDF, or Image"
+              : "Import Products"
         }
         onClose={() => {
           if (activeImportBatchId) {
@@ -2662,7 +2668,7 @@ export default function ProductsModals({
         contentClassName={
           pdfReviewBatch
             ? "min-h-0 flex-1 overflow-hidden bg-white p-0 lg:bg-[#F8FAFC] lg:p-3"
-            : undefined
+            : "min-h-0 flex-1 bg-[#F8FAFC] p-0"
         }
         footerClassName={pdfReviewBatch && mobileReviewView === "editor" ? "hidden xl:block" : undefined}
         headerLeft={
@@ -2719,7 +2725,7 @@ export default function ProductsModals({
               </Button>
             </div>
           ) : (
-            <div className="flex flex-wrap w-full items-center justify-between gap-3">
+            <div className="flex flex-col sm:flex-row w-full sm:items-center sm:justify-between gap-2.5 sm:gap-3">
               <div className="text-[12px] font-semibold text-[#64748B]">
                 {importFile && detectedImportFileType !== importTab ? (
                   <span className="text-amber-700 flex items-center gap-1.5 font-bold">
@@ -2734,9 +2740,10 @@ export default function ProductsModals({
                   "Rate list image will be parsed into editable review rows."
                 )}
               </div>
-              <div className="flex items-center gap-[10px]">
+              <div className="flex w-full sm:w-auto items-center sm:justify-end gap-[10px]">
                 <Button
                   variant="primary"
+                  className="w-full sm:w-auto justify-center"
                   icon={importTab === "csv" ? "table_chart" : importTab === "pdf" ? "picture_as_pdf" : "image"}
                   onClick={() => onUploadCsvClick({ sheetName: spreadsheetPreview?.sheetName, headerRowNumber: headerSelection ?? spreadsheetPreview?.headerRowNumber })}
                   disabled={
@@ -3699,35 +3706,35 @@ export default function ProductsModals({
               className="rounded-none border-x-0 border-t-0"
             />
             {/* Tabs */}
-            <div className="flex border-b border-[#E5E7EB] bg-white px-[24px]">
+            <div className="flex border-b border-[#E5E7EB] bg-white px-3 sm:px-6">
               <button
                 type="button"
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "csv" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                className={`py-3 px-2.5 sm:px-4 text-[12.5px] sm:text-[13px] font-bold border-b-2 flex items-center gap-1.5 sm:gap-2 whitespace-nowrap transition ${importTab === "csv" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("csv")}
               >
-                <Icon name="table_chart" className="text-[18px]" />
-                Spreadsheet
+                <Icon name="table_chart" className="text-[17px] sm:text-[18px]" />
+                <span>Spreadsheet</span>
               </button>
               <button
                 type="button"
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "pdf" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                className={`py-3 px-2.5 sm:px-4 text-[12.5px] sm:text-[13px] font-bold border-b-2 flex items-center gap-1.5 sm:gap-2 whitespace-nowrap transition ${importTab === "pdf" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("pdf")}
               >
-                <Icon name="picture_as_pdf" className="text-[18px]" />
-                PDF Rate List
+                <Icon name="picture_as_pdf" className="text-[17px] sm:text-[18px]" />
+                <span>PDF<span className="hidden sm:inline"> Rate List</span></span>
               </button>
               <button
                 type="button"
-                className={`py-[16px] px-[16px] text-[13px] font-bold border-b-2 flex items-center gap-[8px] transition ${importTab === "image" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
+                className={`py-3 px-2.5 sm:px-4 text-[12.5px] sm:text-[13px] font-bold border-b-2 flex items-center gap-1.5 sm:gap-2 whitespace-nowrap transition ${importTab === "image" ? "border-[#11120d] text-[#11120d]" : "border-transparent text-[#8C8889] hover:text-[#565449]"}`}
                 onClick={() => setImportTab("image")}
               >
-                <Icon name="image" className="text-[18px]" />
-                Image Rate List
+                <Icon name="image" className="text-[17px] sm:text-[18px]" />
+                <span>Image<span className="hidden sm:inline"> Rate List</span></span>
               </button>
             </div>
 
             {importError && (
-              <div className="mx-[24px] mt-[18px] flex items-start justify-between gap-[12px] rounded-[14px] border border-[#FCA5A5] bg-[#FEF2F2] px-[14px] py-[12px] text-[12px] font-bold leading-5 text-[#DC2626]">
+              <div className="mx-4 mt-3 flex items-start justify-between gap-[12px] rounded-[14px] border border-[#FCA5A5] bg-[#FEF2F2] px-[14px] py-[12px] text-[12px] font-bold leading-5 text-[#DC2626] sm:mx-6">
                 <div className="flex items-start gap-[8px]">
                   <Icon name="error" className="mt-[1px] text-[17px]" />
                   <span>{importError}</span>
@@ -3736,7 +3743,7 @@ export default function ProductsModals({
             )}
 
             {/* Tab Content */}
-            <div className="space-y-[20px] p-[20px] sm:p-[24px]">
+            <div className="space-y-4 p-3.5 sm:space-y-5 sm:p-5">
               {importTab === "csv" && (
                 <div className="space-y-[20px]">
                   {/* Spreadsheet Upload Zone */}
@@ -4044,39 +4051,60 @@ export default function ProductsModals({
                   )}
 
                   {/* Import History */}
-                  <div className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white">
+                  <div id="recent-import-history" className="overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-white scroll-mt-4">
                     <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-[20px] py-[14px]">
                       <h4 className="text-[14px] font-bold text-[#11120d]">Recent Import History</h4>
                     </div>
                     {importBatches.length > 0 ? (
                       <div className="divide-y divide-[#E5E7EB]">
-                        {importBatches.map((batch) => (
-                          <div key={batch.id} className="flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors hover:bg-[#ECEFF3] sm:p-[16px]">
-                            <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
-                              <div className="flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[10px] border border-[#E2E8F0] bg-[#F1F5F9]">
-                                <Icon name={["CSV", "XLSX"].includes(String(batch.sourceType || "").toUpperCase()) ? "table_chart" : String(batch.sourceType || "").toUpperCase() === "PDF" ? "picture_as_pdf" : "image"} className="text-[20px] text-[#64748B]" />
+                        {importBatches.map((batch) => {
+                          const meta = getImportBatchStatusMeta(batch);
+                          return (
+                            <div key={batch.id} className={`flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors ${meta.rowHoverClass} sm:p-[16px]`}>
+                              <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
+                                <div className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[10px] border ${meta.iconBoxClass}`}>
+                                  <Icon
+                                    name={["CSV", "XLSX"].includes(String(batch.sourceType || "").toUpperCase()) ? "table_chart" : String(batch.sourceType || "").toUpperCase() === "PDF" ? "picture_as_pdf" : "image"}
+                                    className="text-[20px]"
+                                  />
+                                </div>
+                                <div className="min-w-0 flex-1">
+                                  <div className="flex flex-wrap items-center gap-2">
+                                    <span className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">
+                                      {batch.fileName || "Supplier import"}
+                                    </span>
+                                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-extrabold ${meta.badgeClass}`}>
+                                      <Icon name={meta.badgeIcon} sizePx={12} />
+                                      <span>{meta.badgeLabel}</span>
+                                    </span>
+                                  </div>
+                                  <div className="mt-[2px] text-[11px] font-medium text-[#64748B]">
+                                    {batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""} • {displaySourceType(batch.sourceType)}
+                                  </div>
+                                </div>
                               </div>
-                              <div className="min-w-0 flex-1">
-                                <div className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">{batch.fileName || "Supplier import"}</div>
-                                <div className="mt-[2px] text-[11px] font-medium text-[#64748B]">{batch.createdAt ? new Date(batch.createdAt).toLocaleDateString() : ""} • {displaySourceType(batch.sourceType)}</div>
+                              <div className="flex shrink-0 items-center gap-2 sm:gap-[20px]">
+                                <div className="hidden text-right sm:block">
+                                  <div className="text-[12px] font-bold text-[#334155]">{meta.processedText}</div>
+                                  <div className="mt-[2px] text-[10.5px] font-semibold text-[#64748B]">{meta.processedSubtext}</div>
+                                </div>
+                                <div className="flex shrink-0 items-center gap-[8px]">
+                                  <button type="button" onClick={() => setDeleteImportBatchId(batch.id)} className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#64748B] transition hover:bg-[#FEE2E2] hover:text-[#EF4444]" title="Delete import review" aria-label={`Delete import ${batch.fileName || "file"}`}>
+                                    <Icon name="delete" className="text-[18px]" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => onOpenImportBatch(batch.id)}
+                                    className={`flex h-[32px] items-center gap-1.5 justify-center rounded-[8px] px-[14px] text-[12px] font-bold transition ${meta.buttonClass}`}
+                                  >
+                                    <Icon name={meta.buttonIcon} sizePx={15} />
+                                    <span>{meta.buttonText}</span>
+                                  </button>
+                                </div>
                               </div>
                             </div>
-                            <div className="flex shrink-0 items-center gap-2 sm:gap-[20px]">
-                              <div className="hidden text-right sm:block">
-                                <div className="text-[12px] font-bold text-[#334155]">{batch.totalRows} Rows</div>
-                                <div className="mt-[2px] text-[11px] font-semibold text-[#64748B]">{batch.importedRows} Processed</div>
-                              </div>
-                              <div className="flex shrink-0 items-center gap-[8px]">
-                                <button type="button" onClick={() => setDeleteImportBatchId(batch.id)} className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#64748B] transition hover:bg-[#FEE2E2] hover:text-[#EF4444]" title="Delete import review" aria-label={`Delete import ${batch.fileName || "file"}`}>
-                                  <Icon name="delete" className="text-[18px]" />
-                                </button>
-                                <button type="button" onClick={() => onOpenImportBatch(batch.id)} className="flex h-[32px] items-center justify-center rounded-[8px] bg-[#11120d] px-[14px] text-[12px] font-bold text-white transition hover:bg-[#2a2c27]">
-                                  Open
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="p-[36px] text-center">

@@ -4,6 +4,7 @@ import {
   getImportPriceMappingState,
   normalizeCsvImportRow,
   normalizedImageSourceRegions,
+  projectCatalogSourceBoxes,
   normalizeSellingPrice,
   resolveSellingPriceStatus,
 } from "../modules/products/service";
@@ -88,6 +89,35 @@ test("image source regions keep the extractor's exact row coordinates", () => {
     right: 920,
     scale: 1000,
   });
+});
+
+test("cropped panels and tiles project both header and product coordinates together", () => {
+  const item = { headerRowBoundingBox: [100, 80, 110, 920], boundingBox: [110, 80, 120, 920] };
+  projectCatalogSourceBoxes(item, { left: 500, top: 1000, width: 500, height: 1000 }, { width: 1000, height: 2000 });
+  assert.deepEqual(item.headerRowBoundingBox, [550, 540, 555, 960]);
+  assert.deepEqual(item.boundingBox, [555, 540, 560, 960]);
+  assert.equal(normalizedImageSourceRegions([item])[0]?.top, 555);
+});
+
+test("dense rows immediately below a header retain their own coordinates", () => {
+  const regions = normalizedImageSourceRegions([
+    { headerRowBoundingBox: [100, 80, 110, 920], boundingBox: [110, 80, 120, 920] },
+    { boundingBox: [120, 80, 130, 920] },
+    { boundingBox: [130, 80, 140, 920] },
+  ]);
+  assert.deepEqual(regions.map(region => region?.top), [110, 120, 130]);
+});
+
+test("a header collision is suppressed without shifting neighbouring tables or inventing the final row", () => {
+  const regions = normalizedImageSourceRegions([
+    { headerRowBoundingBox: [100, 80, 110, 490], boundingBox: [100, 80, 110, 490] },
+    { boundingBox: [120, 80, 145, 490] },
+    { headerRowBoundingBox: [100, 80, 110, 490], boundingBox: [100, 510, 110, 920] },
+    { boundingBox: [800, 80, 840, 490] },
+  ]);
+  assert.equal(regions[0], null);
+  assert.deepEqual(regions.slice(1).map(region => region?.top), [120, 100, 800]);
+  assert.equal(regions[3]?.bottom, 840);
 });
 
 test("two-column image regions are not shifted by the single-column correction", () => {

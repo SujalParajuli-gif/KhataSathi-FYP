@@ -1,3 +1,5 @@
+import { importBatchStatus } from "~/lib/importBatchStatus";
+import type { ProductImportBatchSummary } from "~/lib/api/endpoints";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import { useQueryControls } from "~/hooks/useQueryControls";
@@ -135,7 +137,7 @@ type PendingProductFilterChange =
   | { kind: "brand"; value: string }
   | { kind: "category"; value: string }
   | { kind: "stockStatus"; value: "all" | "in" | "low" | "out" }
-  | { kind: "status"; value: "all" | "active" | "inactive" }
+  | { kind: "status"; value: "active" | "inactive" }
   | { kind: "sortBy"; value: ProductSortBy }
   | { kind: "pricingStatus"; value: ProductPricingStatus }
   | { kind: "photoStatus"; value: ProductPhotoStatus }
@@ -267,6 +269,22 @@ function todayInputDate() {
   return new Date().toISOString().slice(0, 10);
 }
 
+function displaySourceType(sourceType?: string | null) {
+  return (sourceType || "IMPORT").replace(/_/g, " ").toUpperCase();
+}
+
+function getActionableImportCardMeta(batch: Parameters<typeof importBatchStatus>[0] & { fileName?: string | null; sourceType?: string | null }) {
+  const type = String(batch.sourceType || "").toUpperCase();
+  const name = (batch.fileName || "").toLowerCase();
+  const isPdf = type === "PDF" || name.endsWith(".pdf");
+  const isSheet = ["CSV", "XLSX", "XLS"].includes(type) || /\.(csv|xlsx?)$/.test(name);
+  return {
+    ...importBatchStatus(batch),
+    fileIcon: isPdf ? "picture_as_pdf" : isSheet ? "table_chart" : "image",
+    fileIconBoxClass: isPdf ? "border-rose-200 bg-rose-50 text-rose-600" : isSheet ? "border-emerald-200 bg-emerald-50 text-emerald-700" : "border-sky-200 bg-sky-50 text-sky-700",
+  };
+}
+
 // this is the main product management page
 // it handles searching, filtering, adding, editing, importing, and soft-deleting product records
 export default function ProductsPage() {
@@ -371,8 +389,8 @@ export default function ProductsPage() {
   const [stockStatus, setStockStatus] = queryField<"all" | "in" | "low" | "out">(
     "stock", "all", (value) => value === "in" || value === "low" || value === "out" ? value : "all",
   );
-  const [status, setStatus] = queryField<"all" | "active" | "inactive">(
-    "status", "all", (value) => value === "active" || value === "inactive" ? value : "all",
+  const [status, setStatus] = queryField<"active" | "inactive">(
+    "status", "active", (value) => value === "inactive" ? "inactive" : "active",
   );
   const [lowOnly, setLowOnly] = queryField("low", false, (value) => value === "true");
   const [sortBy, setSortBy] = queryField<ProductSortBy>("sort", "photos_first", (value) =>
@@ -481,6 +499,7 @@ export default function ProductsPage() {
     imageUploadError: string;
   } | null>(null);
   const [openImport, setOpenImport] = useState(false); // controls the CSV import modal
+  const [actionableImportsExpanded, setActionableImportsExpanded] = useState(false);
   const [openSearchInsights, setOpenSearchInsights] = useState(false);
   const [openView, setOpenView] = useState(false); // controls the product detail modal
   const [openConfirmDelete, setOpenConfirmDelete] = useState(false); // controls the single-product soft delete confirmation
@@ -866,6 +885,7 @@ export default function ProductsPage() {
   const [pdfReviewBusy, setPdfReviewBusy] = useState(false); // disables review submit while selected import rows are importing
   const [activeImportBatchId, setActiveImportBatchId] = useState<string | null>(null);
   const [importBatches, setImportBatches] = useState<ProductImportBatch[]>([]); // recent CSV/PDF/image review batches shown in the import modal
+  const [importAttention, setImportAttention] = useState<{ count: number; batches: ProductImportBatchSummary[] } | null>(null);
   const [importDocuments, setImportDocuments] = useState<DocumentRecord[]>([]);
   const [importDocumentsLoading, setImportDocumentsLoading] = useState(false);
   const [importDocumentBusyId, setImportDocumentBusyId] = useState<string | null>(null);
@@ -1030,6 +1050,9 @@ export default function ProductsPage() {
   async function loadImportBatches() {
     const result = await listProductImportBatchesApi();
     setImportBatches(Array.isArray(result.batches) ? result.batches : []);
+    setImportAttention(typeof result.attentionCount === "number" && Array.isArray(result.attentionBatches)
+      ? { count: result.attentionCount, batches: result.attentionBatches }
+      : null);
   }
 
   async function loadImportTemplates() {
@@ -1443,11 +1466,10 @@ export default function ProductsPage() {
   const pageStart = total === 0 ? 0 : (pageClamped - 1) * tablePageSize;
   const pageEnd = total === 0 ? 0 : pageStart + pageItems.length;
   const actionableImportBatches = useMemo(
-    () => importBatches
+    () => importAttention?.batches ?? importBatches
       .filter((batch) => batch.status !== "IMPORTED")
-      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime())
-      .slice(0, 3),
-    [importBatches],
+      .sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
+    [importBatches, importAttention],
   );
   const effectiveSelected = useMemo(
     () =>
@@ -1470,8 +1492,7 @@ export default function ProductsPage() {
       search: debouncedQ || undefined,
       brand: brand === "All Brands" ? undefined : brand,
       category: category === "All Categories" ? undefined : category,
-      isActive:
-        status === "active" ? true : status === "inactive" ? false : undefined,
+      isActive: status === "active",
       lowStockOnly: lowOnly || stockStatus === "low" ? true : undefined,
       stockStatus: stockStatus !== "all" ? stockStatus : undefined,
     }),
@@ -1522,7 +1543,7 @@ export default function ProductsPage() {
       setBrand("All Brands");
       setCategory("All Categories");
       setStockStatus("all");
-      setStatus("all");
+      setStatus("active");
       setSortBy("photos_first");
       setPricingStatus("all");
       setPhotoStatus("all");
@@ -1563,7 +1584,7 @@ export default function ProductsPage() {
     requestProductFilterChange({ kind: "stockStatus", value });
   }
 
-  function updateStatus(value: "all" | "active" | "inactive") {
+  function updateStatus(value: "active" | "inactive") {
     requestProductFilterChange({ kind: "status", value });
   }
 
@@ -3811,50 +3832,101 @@ export default function ProductsPage() {
         />
       </div>
 
-      {actionableImportBatches.length > 0 ? (
-        <section aria-labelledby="import-activity-heading" className="overflow-hidden rounded-[14px] border border-[#CFE1D5] bg-[#F7FBF8]">
-          <div className="flex items-center justify-between gap-3 border-b border-[#DCE9E0] px-3.5 py-2.5 sm:px-4">
-            <div className="min-w-0">
-              <h2 id="import-activity-heading" className="text-[13px] font-extrabold text-[#11120d]">Imports that need attention</h2>
-              <p className="mt-0.5 text-[11px] font-medium text-[#567060]">Resume extraction or review without starting over.</p>
+      {(importAttention?.count ?? actionableImportBatches.length) > 0 ? (
+        <section aria-labelledby="import-activity-heading" className="overflow-hidden rounded-[12px] border border-[#CFE1D5] bg-[#F7FBF8] shadow-2xs transition-all">
+          <div className="flex items-center justify-between gap-1.5 sm:gap-2.5 px-2.5 py-2 sm:px-4 sm:py-2.5 flex-nowrap min-w-0">
+            <div className="flex items-center gap-2 sm:gap-2.5 min-w-0">
+              <span className="inline-flex h-6 min-w-6 items-center justify-center gap-1 rounded-full bg-amber-100 px-2 text-[11px] font-extrabold text-amber-900 border border-amber-200/90 shrink-0">
+                <span className="h-1.5 w-1.5 rounded-full bg-amber-600 animate-pulse" />
+                {importAttention?.count ?? actionableImportBatches.length}
+              </span>
+              <div className="min-w-0">
+                <h2 id="import-activity-heading" className="text-[12px] sm:text-[12.5px] font-bold text-[#11120d] truncate">
+                  Imports need attention
+                </h2>
+              </div>
+              <span className="hidden xl:inline text-[11px] font-medium text-[#567060] truncate">
+                — Resume extraction or review without starting over
+              </span>
             </div>
-            <button
-              type="button"
-              onClick={() => {
-                resetImportState();
-                setOpenImport(true);
-                void Promise.allSettled([loadImportBatches(), loadImportTemplates()]);
-              }}
-              className="shrink-0 rounded-[9px] border border-[#9DD8B2] bg-white px-3 py-2 text-[11px] font-extrabold text-[#16753A] transition hover:bg-[#EAF8EF] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#179B4D] focus-visible:ring-offset-2"
-            >
-              View all
-            </button>
+
+            <div className="flex items-center gap-1.5 sm:gap-2 shrink-0">
+              <button
+                type="button"
+                onClick={() => {
+                  resetImportState();
+                  setOpenImport(true);
+                  void Promise.allSettled([loadImportBatches(), loadImportTemplates()]).then(() => {
+                    setTimeout(() => {
+                      const el = document.getElementById("recent-import-history");
+                      if (el) {
+                        el.scrollIntoView({ behavior: "smooth", block: "start" });
+                      }
+                    }, 150);
+                  });
+                }}
+                className="inline-flex h-7.5 sm:h-8 items-center gap-1 sm:gap-1.5 rounded-[8px] bg-[#11120d] px-2 sm:px-3 text-[11px] sm:text-[11.5px] font-bold text-white transition hover:bg-[#2a2c27] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] shrink-0 whitespace-nowrap"
+                title="Open recent import history"
+              >
+                <Icon name="history" sizePx={14} />
+                <span>Recent imports</span>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setActionableImportsExpanded((current) => !current)}
+                className="inline-flex h-7.5 sm:h-8 items-center gap-1 rounded-[8px] border border-[#BBD7C5] bg-white px-2 sm:px-2.5 text-[11px] sm:text-[11.5px] font-bold text-[#16753A] transition hover:bg-[#EAF8EF] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#179B4D] shrink-0 whitespace-nowrap"
+                aria-expanded={actionableImportsExpanded}
+                title={actionableImportsExpanded ? "Hide the list of pending imports" : "Show the list of pending imports"}
+              >
+                <Icon name={actionableImportsExpanded ? "expand_less" : "expand_more"} sizePx={15} />
+                <span>{actionableImportsExpanded ? "Hide list" : "Show list"}</span>
+              </button>
+            </div>
           </div>
-          <div className="grid gap-px bg-[#DCE9E0] sm:grid-cols-2 xl:grid-cols-3">
-            {actionableImportBatches.map((batch) => {
-              const processing = ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(batch.status);
-              const needsAttention = ["FAILED", "INTERRUPTED"].includes(batch.status);
-              const statusLabel = processing ? "Processing" : needsAttention ? "Needs attention" : "Ready to review";
-              return (
-                <button
-                  key={batch.id}
-                  type="button"
-                  onClick={() => void openImportBatchById(batch.id)}
-                  className="flex min-w-0 items-center gap-3 bg-white px-3.5 py-3 text-left transition hover:bg-[#F3FBF6] focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#179B4D]"
-                  aria-label={`${statusLabel}: ${batch.fileName || "Untitled import"}. Open import.`}
-                >
-                  <span className={`inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] ${needsAttention ? "bg-amber-100 text-amber-800" : processing ? "bg-blue-50 text-blue-700" : "bg-[#EAF8EF] text-[#16753A]"}`}>
-                    <Icon name={needsAttention ? "warning" : processing ? "progress_activity" : "fact_check"} sizePx={19} className={processing ? "animate-spin" : undefined} />
-                  </span>
-                  <span className="min-w-0 flex-1">
-                    <span className="block truncate text-[12px] font-extrabold text-[#11120d]">{batch.fileName || "Untitled import"}</span>
-                    <span className="mt-0.5 block truncate text-[10.5px] font-semibold text-[#64748B]">{statusLabel} · {batch.totalRows.toLocaleString()} rows · {formatDocumentDate(batch.createdAt)}</span>
-                  </span>
-                  <Icon name="chevron_right" sizePx={18} className="shrink-0 text-[#64748B]" />
-                </button>
-              );
-            })}
-          </div>
+
+          {actionableImportsExpanded ? (
+            <div className="border-t border-[#DCE9E0] p-2 sm:p-2.5 grid gap-2 sm:grid-cols-2 xl:grid-cols-3 bg-[#F0F6F2]">
+              {actionableImportBatches.slice(0, 3).map((batch) => {
+                const meta = getActionableImportCardMeta(batch);
+                return (
+                  <button
+                    key={batch.id}
+                    type="button"
+                    onClick={() => void openImportBatchById(batch.id)}
+                    className={`flex min-w-0 items-center gap-3 rounded-[10px] border border-[#CFE1D5] bg-white p-3 text-left transition shadow-2xs hover:shadow-xs hover:border-[#179B4D]/60 ${meta.cardHoverClass} focus-visible:relative focus-visible:z-10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#179B4D]`}
+                    aria-label={`${meta.statusLabel}: ${batch.fileName || "Untitled import"}. Open import.`}
+                  >
+                    <div className={`flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] border ${meta.fileIconBoxClass}`}>
+                      <Icon
+                        name={meta.fileIcon}
+                        sizePx={20}
+                      />
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex items-center gap-1.5 min-w-0">
+                        <span className="truncate text-[12.5px] font-bold text-[#1E293B]">
+                          {batch.fileName || "Untitled import"}
+                        </span>
+                        <span className={`inline-flex items-center gap-1 rounded-full border px-1.5 py-0.5 text-[9px] font-extrabold shrink-0 ${meta.badgeClass}`}>
+                          <Icon name={meta.badgeIcon} sizePx={11} className={meta.spinning ? "animate-spin" : undefined} />
+                          <span>{meta.statusLabel}</span>
+                        </span>
+                      </div>
+                      <div className="mt-1 flex flex-wrap items-center gap-x-1.5 text-[10.5px] font-semibold text-[#64748B]">
+                        <span>{meta.statsText}</span>
+                        <span>•</span>
+                        <span>{formatDocumentDate(batch.createdAt)}</span>
+                        <span>•</span>
+                        <span className="uppercase">{displaySourceType(batch.sourceType)}</span>
+                      </div>
+                    </div>
+                    <Icon name="chevron_right" sizePx={18} className="shrink-0 text-[#94A3B8]" />
+                  </button>
+                );
+              })}
+            </div>
+          ) : null}
         </section>
       ) : null}
 

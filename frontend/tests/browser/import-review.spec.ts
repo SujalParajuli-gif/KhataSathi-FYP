@@ -104,7 +104,7 @@ test("mobile product list uses page scrolling and keeps pagination reachable", a
   expect(await appScroller.evaluate((element) => element.scrollHeight > element.clientHeight)).toBe(true);
   await page.locator("[data-import-pagination]").scrollIntoViewIfNeeded();
   await expect(page.locator("[data-import-pagination]")).toBeInViewport();
-  await expect(page.getByRole("button", { name: /Needs attention 5/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Attention 5/ })).toBeVisible();
   await expect(page.getByRole("button", { name: /Edited 2/ })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
   await page.screenshot({ path: testInfo.outputPath("mobile-list-page-scroll.png"), fullPage: true });
@@ -139,7 +139,11 @@ test("unfinished imports are resumable from the product catalog", async ({ page 
   const state = review();
   await mockApp(page, state, { batches: [state.batch] });
   await page.goto("/products");
-  await expect(page.getByRole("heading", { name: "Imports that need attention" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: /Imports.*need attention/i })).toBeVisible();
+  const showList = page.getByRole("button", { name: /Show list/i });
+  if (await showList.isVisible()) {
+    await showList.click();
+  }
   await page.getByRole("button", { name: /Ready to review: test-catalog\.pdf/ }).click();
   await expect(page).toHaveURL(/\/products\/imports\/test-batch/);
 });
@@ -162,7 +166,7 @@ async function mockApp(page: Page, state: ReturnType<typeof review>, options: {f
     if (path.endsWith("/rows") && route.request().method() === "PUT") { state.rows[0].parsed = {...state.rows[0].parsed,...route.request().postDataJSON().rows[0]}; return respond({savedCount:1,rows:state.rows}); }
     if (path.endsWith("/capabilities")) return respond({businessMode:"CATALOG_ONLY",catalogEnabled:true,inventoryEnabled:false,posEnabled:false,stockTracked:false,staffDraftRequestsEnabled:false});
     if (path.endsWith("/auth/me")) return respond({user});
-    if (path.endsWith("/brands")) return respond([{id:"brand-1",name:"Test supplier"}]);
+    if (path.endsWith("/brands")) return respond([{id:"brand-1",name:"Test supplier"}, {id:"brand-2",name:"Updated supplier"}]);
     if (path.endsWith("/categories")) return respond(["Buckets"]);
     if (path.endsWith("/alerts")) return respond({alerts:[],unreadCount:0});
     if (path.endsWith("/alerts/read")) return respond({readKeys:[]});
@@ -219,7 +223,7 @@ test("blocked final import leads directly back to unresolved products", async ({
   await expect(dialog).toBeHidden();
   const discard = page.getByRole("dialog", { name: "Unsaved product changes" });
   await expect(discard).toBeVisible();
-  await discard.getByRole("button", { name: "Discard and continue" }).click();
+  await discard.getByRole("button", { name: "Discard changes", exact: true }).click();
   await expect(page).toHaveURL(/filter=ATTENTION/);
   await expect(page.getByRole("textbox", { name: "Search import rows" })).toHaveValue("");
   await expect(page).not.toHaveURL(/q=/);
@@ -239,6 +243,7 @@ for (const width of [390, 1440]) {
     await page.goto("/products/imports/test-batch?view=source");
     const source = page.getByRole("img", { name: "Supplier catalog source" });
     await expect(source).toBeVisible();
+    await expect(page.getByText(/Exact product location is unavailable/)).toBeVisible();
     await expect.poll(() => source.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(820);
     const initial = (await source.boundingBox())!.width;
     await page.getByRole("button", { name: "Zoom out source" }).click();
@@ -300,7 +305,8 @@ test(`bulk drawer reuses modal focus and fetches only the selected page at ${wid
   expect(counters.reads).toBe(before);
   await page.keyboard.press("Shift+Tab");
   await expect(drawer.getByRole("button", { name: "Review changes" })).toBeFocused();
-  await drawer.getByRole("combobox", { name: "Bulk brand", exact: true }).fill("Updated brand");
+  await drawer.getByRole("combobox", { name: "Bulk brand", exact: true }).click();
+  await page.getByRole("option", { name: "Updated supplier", exact: true }).click();
   await drawer.getByRole("button", { name: "Review changes" }).click();
   await expect.poll(() => counters.reads).toBe(before + 1);
   const preview = page.getByRole("dialog", { name: "Confirm bulk changes", exact: true });
@@ -358,7 +364,7 @@ test("spreadsheet preview uploads multipart data and remains editable after a he
   });
   await page.goto("/products");
   await page.getByRole("button",{name:/^(upload_file )?Import$/}).click();
-  const dialog = page.getByRole("dialog",{name:"Import Products from Spreadsheet, PDF, or Image"});
+  const dialog = page.getByRole("dialog",{name:"Import Products",exact:true});
   await dialog.locator('input[type="file"]').first().setInputFiles({name:"catalog.csv",mimeType:"text/csv",buffer:Buffer.from("Name,Rate\nBucket,100")});
   await expect(dialog.getByRole("navigation", { name: "Import progress" }).getByRole("listitem").filter({ hasText: "Extract" })).toHaveAttribute("aria-current", "step");
   const header = dialog.getByRole("spinbutton",{name:"Header row"});
@@ -370,6 +376,63 @@ test("spreadsheet preview uploads multipart data and remains editable after a he
   await header.fill("1");
   await expect(dialog.getByRole("alert")).toBeHidden();
   await expect(dialog.getByRole("button",{name:"Review Spreadsheet"})).toBeEnabled();
+});
+
+for (const width of [390, 1440]) {
+  test(`selectors separate manual entry from selection at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 844 });
+    await mockApp(page, review());
+    await page.goto("/products/imports/test-batch?view=editor");
+    const brand = page.getByRole("combobox", { name: "Product brand", exact: true });
+    await brand.click();
+    await expect(page.getByRole("option", { name: "Test supplier", exact: true })).toBeVisible();
+    await page.keyboard.press("Escape");
+    const category = page.getByRole("combobox", { name: "Product category", exact: true });
+    await category.click();
+    const searchInput = page.getByRole("searchbox", { name: "Search Product category" });
+    await searchInput.fill("New category");
+    const customOption = page.getByRole("option", { name: /Use “New category”/i });
+    await expect(customOption).toBeVisible();
+    await customOption.click();
+    await expect(category).toContainText("New category");
+    await category.click();
+    await searchInput.fill("Discard this");
+    await page.keyboard.press("Escape");
+    await expect(category).toContainText("New category");
+    await expect(category).toBeFocused();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+    await page.screenshot({ path: testInfo.outputPath(`selectors-${width}.png`) });
+  });
+}
+
+test("large brand lists allow explicit search but not manual creation", async ({ page }) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await mockApp(page, review());
+  await page.route((url) => url.pathname.endsWith("/brands"), route => route.fulfill({ contentType: "application/json", body: JSON.stringify(Array.from({ length: 16 }, (_, index) => ({ id: `brand-${index}`, name: `Brand ${index}` }))) }));
+  await page.goto("/products/imports/test-batch?view=editor");
+  const field = page.locator("label").filter({ has: page.getByRole("combobox", { name: "Product brand", exact: true }) });
+  await expect(field.getByRole("textbox")).toHaveCount(0);
+  await expect(field.getByRole("button", { name: "Enter manually…" })).toHaveCount(0);
+  await expect(field.getByRole("button", { name: "Search options" })).toHaveCount(0);
+  const combobox = field.getByRole("combobox", { name: "Product brand", exact: true });
+  await combobox.click();
+  const searchInput = page.getByRole("searchbox", { name: "Search Product brand" });
+  await searchInput.fill("Brand 15");
+  const option = page.getByRole("option", { name: "Brand 15", exact: true });
+  await expect(option).toBeVisible();
+  await option.click();
+  await expect(combobox).toContainText("Brand 15");
+});
+
+test("completed review reports actual outcomes without inventing an import date", async ({ page }) => {
+  const state: any = review("IMPORTED");
+  state.outcomeCounts = { created: 2, updated: 3, kept: 4, ignored: 1 };
+  state.batch.totalRows = 10;
+  state.batch.importedRows = 9;
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await expect(page.getByText(/2 created · 3 updated · 4 kept · 1 ignored/)).toBeVisible();
+  await expect(page.getByText(/imported on|products from this file are active/)).toHaveCount(0);
 });
 
 test("mobile row editing and unsaved-change confirmation stay usable", async ({page}) => {

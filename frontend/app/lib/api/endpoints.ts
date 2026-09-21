@@ -833,8 +833,10 @@ export type ProductImportReviewPage = {
         all: number;
         edited: number;
         attention: number;
+        ignored?: number;
         missingBrand?: number;
     };
+    outcomeCounts?: { created: number; updated: number; kept: number; ignored: number };
     decisionCounts: {
         create: number;
         update: number;
@@ -924,7 +926,7 @@ export async function getProductImportReviewApi(
         search?: string;
         comparisonStatus?: ProductImportRow["comparisonStatus"];
         rowStatus?: string;
-        reviewState?: "EDITED" | "ATTENTION";
+        reviewState?: "EDITED" | "ATTENTION" | "IGNORED";
     } = {},
     options?: { signal?: AbortSignal },
 ) {
@@ -975,8 +977,10 @@ export async function fetchProductImportSourcePageBlobApi(batchId: string, pageN
 
 export async function listProductImportBatchesApi() {
     const res = await api.get("/api/products/import-batches");
-    return res.data as { batches: ProductImportBatch[] };
+    return res.data as { batches: ProductImportBatch[]; attentionCount?: number; attentionBatches?: ProductImportBatchSummary[] };
 }
+
+export type ProductImportBatchSummary = Pick<ProductImportBatch, "id" | "sourceType" | "fileName" | "status" | "totalRows" | "importedRows" | "failedRows" | "createdAt">;
 
 export async function deleteProductImportBatchApi(batchId: string) {
     const res = await api.delete(`/api/products/import-batches/${batchId}`);

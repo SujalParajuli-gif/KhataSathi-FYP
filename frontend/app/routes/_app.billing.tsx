@@ -6007,30 +6007,24 @@ export default function BillingPage() {
                 <label className="mb-2 block text-[11px] font-extrabold uppercase tracking-wide text-[#64748B]">
                   Reason
                 </label>
-                <div className="relative">
-                  <ProjectSelect
-                    value={priceOverrideDraftReason}
-                    onChange={(event) => {
-                      setPriceOverrideDraftReason(event.target.value);
-                      setPriceOverrideError("");
-                    }}
-                    className="h-[44px] w-full appearance-none rounded-[12px] border border-[#CFCFD3] bg-white px-3 pr-10 text-[13px] font-extrabold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10"
-                    aria-label="Price override reason"
-                  >
-                    <option value="" disabled>
-                      Select valid reason
+                <ProjectSelect
+                  value={priceOverrideDraftReason}
+                  onChange={(event) => {
+                    setPriceOverrideDraftReason(event.target.value);
+                    setPriceOverrideError("");
+                  }}
+                  className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[13px] font-extrabold text-[#11120d] outline-none transition focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/10"
+                  aria-label="Price override reason"
+                >
+                  <option value="" disabled>
+                    Select valid reason
+                  </option>
+                  {PRICE_OVERRIDE_REASONS.map((reason) => (
+                    <option key={reason} value={reason}>
+                      {reason}
                     </option>
-                    {PRICE_OVERRIDE_REASONS.map((reason) => (
-                      <option key={reason} value={reason}>
-                        {reason}
-                      </option>
-                    ))}
-                  </ProjectSelect>
-                  <Icon
-                    name="expand_more"
-                    className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-[18px] text-[#8C8889]"
-                  />
-                </div>
+                  ))}
+                </ProjectSelect>
               </div>
             </div>
 
