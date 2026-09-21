@@ -202,7 +202,6 @@ export default function AppShell({ children, statusBanner }: Props) {
   const profileHref = role === "admin" ? "/profile" : "/cashier-profile";
   const isBillingRoute = location.pathname === "/billing";
   const isImportReviewRoute = location.pathname.startsWith("/products/imports/");
-  const usesFixedWorkspace = isBillingRoute || isImportReviewRoute;
 
   return (
     <AlertsProvider

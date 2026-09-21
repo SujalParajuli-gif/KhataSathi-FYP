@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import { useQueryControls } from "~/hooks/useQueryControls";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import { useLocation, useNavigate, useSearchParams } from "react-router";
 import type {
@@ -222,18 +223,17 @@ function clampPage(n: number, min: number, max: number) {
   return Math.min(max, Math.max(min, n));
 }
 
-function positiveQueryNumber(params: URLSearchParams, key: string, fallback: number) {
-  const value = Number(params.get(key));
+function positiveQueryNumber(raw: string | null, fallback: number) {
+  const value = Number(raw);
   return Number.isInteger(value) && value > 0 ? value : fallback;
 }
 
 function queryChoice<T extends string>(
-  params: URLSearchParams,
-  key: string,
+  raw: string | null,
   choices: readonly T[],
   fallback: T,
 ) {
-  const value = params.get(key) as T | null;
+  const value = raw as T | null;
   return value && choices.includes(value) ? value : fallback;
 }
 
@@ -281,6 +281,7 @@ export default function ProductsPage() {
   const navigate = useNavigate();
   const location = useLocation();
   const [searchParams, setSearchParams] = useSearchParams();
+  const queryField = useQueryControls(searchParams, setSearchParams);
   const requestedImportBatchId = searchParams.get("importBatch");
   const requestedEditProductId = searchParams.get("editProduct");
   const requestedEditReturnTo = searchParams.get("returnTo") || "";
@@ -363,28 +364,25 @@ export default function ProductsPage() {
   const productRowsRecoveryNeededRef = React.useRef(false);
   const [productRecoveryKey, setProductRecoveryKey] = useState(0);
 
-  const initialProductQuery = searchParams.get("q") || "";
-  const [q, setQ] = useState(initialProductQuery); // text search across product data
-  const [debouncedQ, setDebouncedQ] = useState(initialProductQuery.trim());
-  const [brand, setBrand] = useState(() => searchParams.get("brand") || "All Brands"); // brand dropdown filter
-  const [category, setCategory] = useState(() => searchParams.get("category") || "All Categories"); // category dropdown filter
-  const [stockStatus, setStockStatus] = useState<"all" | "in" | "low" | "out">(
-    () => queryChoice(searchParams, "stock", ["all", "in", "low", "out"] as const, "all"),
+  const [debouncedQ, setDebouncedQ] = queryField("q", "", (value) => value?.trim() || "");
+  const [q, setQ] = useState(debouncedQ);
+  const [brand, setBrand] = queryField("brand", "All Brands", (value) => value || "All Brands");
+  const [category, setCategory] = queryField("category", "All Categories", (value) => value || "All Categories");
+  const [stockStatus, setStockStatus] = queryField<"all" | "in" | "low" | "out">(
+    "stock", "all", (value) => value === "in" || value === "low" || value === "out" ? value : "all",
   );
-  const [status, setStatus] = useState<"all" | "active" | "inactive">(
-    () => queryChoice(searchParams, "status", ["all", "active", "inactive"] as const, "all"),
-  ); // active vs inactive filter
-  const [lowOnly, setLowOnly] = useState(() => searchParams.get("low") === "true"); // quick toggle for low stock products only
-  const [sortBy, setSortBy] = useState<ProductSortBy>(() => queryChoice(
-    searchParams,
-    "sort",
-    ["photos_first", "name_asc", "name_desc", "brand_asc", "price_asc", "price_desc", "newest"] as const,
-    "photos_first",
-  ));
-  const [pricingStatus, setPricingStatus] = useState<ProductPricingStatus>(() =>
-    queryChoice(searchParams, "pricing", ["all", "ready", "pending"] as const, "all"));
-  const [photoStatus, setPhotoStatus] = useState<ProductPhotoStatus>(() =>
-    queryChoice(searchParams, "photo", ["all", "with_photo", "without_photo"] as const, "all"));
+  const [status, setStatus] = queryField<"all" | "active" | "inactive">(
+    "status", "all", (value) => value === "active" || value === "inactive" ? value : "all",
+  );
+  const [lowOnly, setLowOnly] = queryField("low", false, (value) => value === "true");
+  const [sortBy, setSortBy] = queryField<ProductSortBy>("sort", "photos_first", (value) =>
+    queryChoice(value, ["photos_first", "name_asc", "name_desc", "brand_asc", "price_asc", "price_desc", "newest"] as const, "photos_first"));
+  const [pricingStatus, setPricingStatus] = queryField<ProductPricingStatus>("pricing", "all", (value) =>
+    queryChoice(value, ["all", "ready", "pending"] as const, "all"));
+  const [photoStatus, setPhotoStatus] = queryField<ProductPhotoStatus>("photo", "all", (value) =>
+    queryChoice(value, ["all", "with_photo", "without_photo"] as const, "all"));
+
+  React.useEffect(() => { setQ(debouncedQ); }, [debouncedQ]);
 
   React.useEffect(() => {
     if (stockTracked) return;
@@ -454,11 +452,11 @@ export default function ProductsPage() {
     return () => observer.disconnect();
   }, [selectedCount]);
 
-  const [tablePageSize, setTablePageSize] = useState(() => {
-    const requested = positiveQueryNumber(searchParams, "pageSize", 20);
+  const [tablePageSize, setTablePageSize] = queryField("pageSize", 20, (value) => {
+    const requested = positiveQueryNumber(value, 20);
     return [20, 50, 100].includes(requested) ? requested : 20;
   }); // visible rows per table page
-  const [page, setPage] = useState(() => positiveQueryNumber(searchParams, "page", 1)); // current table page
+  const [page, setPage] = queryField("page", 1, (value) => positiveQueryNumber(value, 1));
   productFilterIdentityRef.current = JSON.stringify([
     debouncedQ,
     brand,
@@ -1139,6 +1137,8 @@ export default function ProductsPage() {
     })) {
       return false;
     }
+    const lastPage = Math.max(1, Math.ceil(res.total / tablePageSize));
+    if (page > lastPage) setPage(lastPage);
     setProducts(res.items);
     setTotal(res.total);
     setActiveSearchLogId(res.searchLogId);
@@ -1209,41 +1209,6 @@ export default function ProductsPage() {
     return () => window.clearTimeout(timer);
   }, [q, debouncedQ, isFilteredSelection]);
 
-  React.useEffect(() => {
-    setSearchParams((current) => {
-      const next = new URLSearchParams(current);
-      const write = (key: string, value: string, defaultValue = "") => {
-        if (!value || value === defaultValue) next.delete(key);
-        else next.set(key, value);
-      };
-      write("q", debouncedQ);
-      write("brand", brand, "All Brands");
-      write("category", category, "All Categories");
-      write("stock", stockTracked ? stockStatus : "all", "all");
-      write("status", status, "all");
-      write("low", stockTracked && lowOnly ? "true" : "", "");
-      write("sort", sortBy, "photos_first");
-      write("pricing", pricingStatus, "all");
-      write("photo", photoStatus, "all");
-      write("page", String(page), "1");
-      write("pageSize", String(tablePageSize), "20");
-      return next.toString() === current.toString() ? current : next;
-    }, { replace: true });
-  }, [
-    brand,
-    category,
-    debouncedQ,
-    lowOnly,
-    page,
-    photoStatus,
-    pricingStatus,
-    setSearchParams,
-    sortBy,
-    status,
-    stockStatus,
-    stockTracked,
-    tablePageSize,
-  ]);
 
   React.useEffect(() => {
     const visibleSelected = products.filter((product) => selected[product.id]);
@@ -1529,9 +1494,6 @@ export default function ProductsPage() {
     return () => window.removeEventListener("beforeunload", warnBeforeLeaving);
   }, [isProductEditorDirty]);
 
-  React.useEffect(() => {
-    if (page !== pageClamped) setPage(pageClamped);
-  }, [page, pageClamped]);
 
   function applyProductFilterChange(change: PendingProductFilterChange) {
     setPage(1);

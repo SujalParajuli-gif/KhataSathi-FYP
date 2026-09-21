@@ -210,13 +210,128 @@ test("blocked final import leads directly back to unresolved products", async ({
   state.decisionCounts = { create: 0, update: 0, keep: 0, ignore: 0, unresolved: 1, committed: 0 };
   state.reviewCounts = { all: 1, attention: 1, edited: 0, missingBrand: 0 };
   await mockApp(page, state);
-  await page.goto("/products/imports/test-batch");
+  await page.goto("/products/imports/test-batch?q=unrelated");
+  await page.getByRole("textbox", { name: "Product name", exact: true }).fill("Unsaved correction");
   await page.getByRole("button", { name: /final import|commit batch|import saved/i }).filter({ visible: true }).first().click();
   const dialog = page.getByRole("dialog", { name: "Confirm final import" });
   await expect(dialog.getByText("Unresolved", { exact: true })).toBeVisible();
   await dialog.getByRole("button", { name: "Review unresolved products" }).click();
   await expect(dialog).toBeHidden();
+  const discard = page.getByRole("dialog", { name: "Unsaved product changes" });
+  await expect(discard).toBeVisible();
+  await discard.getByRole("button", { name: "Discard and continue" }).click();
   await expect(page).toHaveURL(/filter=ATTENTION/);
+  await expect(page.getByRole("textbox", { name: "Search import rows" })).toHaveValue("");
+  await expect(page).not.toHaveURL(/q=/);
+});
+
+for (const width of [390, 1440]) {
+  test(`source image really shrinks and enlarges at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    const state: any = review();
+    state.batch.sourceType = "IMAGE";
+    state.batch.source = { available: true, mimeType: "image/svg+xml" };
+    await mockApp(page, state);
+    await page.route("**/test-batch/source", (route) => route.fulfill({
+      contentType: "image/svg+xml",
+      body: '<svg xmlns="http://www.w3.org/2000/svg" width="820" height="1060"><rect width="820" height="1060" fill="white"/><text x="40" y="80" font-size="32">Catalog source</text></svg>',
+    }));
+    await page.goto("/products/imports/test-batch?view=source");
+    const source = page.getByRole("img", { name: "Supplier catalog source" });
+    await expect(source).toBeVisible();
+    await expect.poll(() => source.evaluate((element: HTMLImageElement) => element.naturalWidth)).toBe(820);
+    const initial = (await source.boundingBox())!.width;
+    await page.getByRole("button", { name: "Zoom out source" }).click();
+    await expect.poll(async () => (await source.boundingBox())!.width / initial).toBeCloseTo(0.75, 1);
+    await page.getByRole("button", { name: "Reset source zoom, currently 75%" }).click();
+    await page.getByRole("button", { name: "Zoom in source" }).click();
+    await expect.poll(async () => (await source.boundingBox())!.width / initial).toBeCloseTo(1.25, 1);
+    await page.screenshot({ path: testInfo.outputPath(`image-zoom-${width}.png`) });
+  });
+}
+
+test("catalog restores page 3 only clamping after a successful response", async ({ page }) => {
+  await mockApp(page, review());
+  const pages: number[] = [];
+  await page.route("**/api/products?*", async (route) => {
+    const requested = Number(new URL(route.request().url()).searchParams.get("page"));
+    pages.push(requested);
+    await route.fulfill({ json: { products: [], total: 100, page: requested, pageSize: 20 } });
+  });
+  await page.goto("/products?page=3");
+  await expect.poll(() => pages.length).toBeGreaterThan(0);
+  await expect(page).toHaveURL(/page=3/);
+  expect(pages).not.toContain(1);
+  await page.reload();
+  await expect(page).toHaveURL(/page=3/);
+});
+
+for (const path of ["/products", "/products/imports/test-batch"]) {
+  test(`query controls follow browser history on ${path}`, async ({ page }) => {
+    await mockApp(page, review());
+    await page.goto(`${path}?q=bucket`);
+    const search = page.getByRole("textbox", { name: path === "/products" ? "Search products" : "Search import rows" });
+    await expect(search).toHaveValue("bucket");
+    await page.evaluate((url) => {
+      history.pushState(null, "", url);
+      dispatchEvent(new PopStateEvent("popstate"));
+    }, `${path}?q=jar`);
+    await expect(search).toHaveValue("jar");
+    await page.goBack();
+    await expect(search).toHaveValue("bucket");
+  });
+}
+
+for (const width of [390, 1440]) {
+test(`bulk drawer reuses modal focus and fetches only the selected page at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 844 });
+  const state = review();
+  state.pagination.total = 1000;
+  state.pagination.totalPages = 20;
+  const counters = await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("checkbox", { name: "Select Test bucket for bulk editing" }).check();
+  const trigger = page.getByRole("button", { name: "Bulk edit (1)" });
+  const before = counters.reads;
+  await trigger.click();
+  const drawer = page.getByRole("dialog", { name: /Bulk edit/ });
+  await expect(drawer).toBeVisible();
+  await expect(drawer.getByRole("button", { name: "Close dialog", exact: true })).toBeFocused();
+  expect(counters.reads).toBe(before);
+  await page.keyboard.press("Shift+Tab");
+  await expect(drawer.getByRole("button", { name: "Review changes" })).toBeFocused();
+  await drawer.getByRole("combobox", { name: "Bulk brand", exact: true }).fill("Updated brand");
+  await drawer.getByRole("button", { name: "Review changes" }).click();
+  await expect.poll(() => counters.reads).toBe(before + 1);
+  const preview = page.getByRole("dialog", { name: "Confirm bulk changes", exact: true });
+  await expect(preview.getByRole("button", { name: "Close dialog", exact: true })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  await expect(preview.getByRole("button", { name: "Confirm 1 changes" })).toBeFocused();
+  await page.screenshot({ path: testInfo.outputPath(`bulk-drawer-${width}.png`) });
+  await page.keyboard.press("Escape");
+  await page.keyboard.press("Escape");
+  const discard = page.getByRole("dialog", { name: "Discard bulk-edit changes?" });
+  await expect(discard).toBeVisible();
+  await discard.getByRole("button", { name: "Discard changes", exact: true }).click();
+  await expect(trigger).toBeFocused();
+});
+}
+
+test("column mapping contains keyboard focus and returns to its trigger", async ({ page }, testInfo) => {
+  const state: any = review();
+  state.priceMapping = { required: true, complete: false, columns: [{ key: "price", label: "Price" }], mapping: {} };
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  const trigger = page.getByRole("button", { name: /Map price columns/ });
+  await trigger.click();
+  const dialog = page.getByRole("dialog", { name: "File price column mapping", exact: true });
+  await expect(dialog.getByRole("button", { name: "Close dialog", exact: true })).toBeFocused();
+  await page.keyboard.press("Shift+Tab");
+  expect(await dialog.evaluate((element) => element.contains(document.activeElement))).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("column-mapping.png") });
+  await page.keyboard.press("Escape");
+  await expect(dialog).toBeHidden();
+  await expect(trigger).toBeFocused();
 });
 
 test("a completed commit is recovered after reload without resubmitting products", async ({page}) => {

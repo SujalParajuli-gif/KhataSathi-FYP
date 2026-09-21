@@ -23,6 +23,7 @@ type ModalFrameProps = {
   compact?: boolean;
   mobileFullScreen?: boolean;
   mobileBottomSheet?: boolean;
+  drawer?: boolean;
   layer?: "modal" | "critical";
   dialogClassName?: string;
   bodyClassName?: string;
@@ -43,6 +44,7 @@ export function ModalFrame({
   compact = false,
   mobileFullScreen = false,
   mobileBottomSheet = false,
+  drawer = false,
   layer = "modal",
   dialogClassName,
   bodyClassName,
@@ -132,7 +134,9 @@ export function ModalFrame({
 
       <div className={cn(
         "absolute inset-0 flex justify-center",
-        mobileFullScreen || mobileBottomSheet
+        drawer
+          ? "items-end p-0 sm:items-stretch sm:justify-end"
+          : mobileFullScreen || mobileBottomSheet
           ? "items-end p-0 lg:items-center lg:p-4"
           : "items-center p-2 sm:p-4",
       )}>
@@ -145,8 +149,9 @@ export function ModalFrame({
           data-modal-frame="true"
           tabIndex={-1}
           className={cn(
-            "relative flex max-h-[calc(100dvh-16px)] w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF] sm:max-h-[calc(100dvh-32px)]",
-            mobileFullScreen
+            "relative flex w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
+            drawer ? "h-[92dvh] max-h-[92dvh] rounded-t-[20px] sm:h-dvh sm:max-h-dvh sm:rounded-none" : "max-h-[calc(100dvh-16px)] sm:max-h-[calc(100dvh-32px)]",
+            drawer ? "" : mobileFullScreen
               ? cn("flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border", !dialogClassName?.includes("h-") && "lg:h-auto")
               : mobileBottomSheet
                 ? "flex max-h-[88dvh] flex-col rounded-t-[26px] border-x-0 border-b-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
