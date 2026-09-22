@@ -676,13 +676,12 @@ export async function cleanupStaleEsewaPayments(maxAgeMinutes = 30) {
         },
         data: {
           status: "FAILED",
-          reference: payment.reference || "Expired pending eSewa payment",
+          reference: payment.reference || null,
         },
       });
 
       if (updated.count === 0) continue;
       expired += 1;
-
       const next = await recomputePaymentStatusTx(tx, payment.invoiceId);
       await tx.auditLog.create({
         data: {

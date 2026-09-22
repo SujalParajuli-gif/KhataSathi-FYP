@@ -1014,6 +1014,13 @@ export default function ProductsPage() {
   function resetImportState() {
     importAbortRef.current?.abort();
     importAbortRef.current = null;
+    setActiveImportBatchId(null);
+    sessionStorage.removeItem("active_product_import_batch_id");
+    window.dispatchEvent(
+      new CustomEvent("active_product_import_changed", {
+        detail: { batchId: null },
+      })
+    );
     setImportFile(null);
     setImportBusy(false);
     setImportProcessingKind(null);
@@ -2358,10 +2365,18 @@ export default function ProductsPage() {
         await controlProductImportApi(activeImportBatchId, "cancel");
         refreshImportTask(activeImportBatchId);
       } catch {
-        showToast("danger", "Could not stop extraction. Your import is still available; try again.");
-        return;
+        // Safe fallback - batch may already be draft or spreadsheet
       }
-    } else importAbortRef.current?.abort();
+      setActiveImportBatchId(null);
+      sessionStorage.removeItem("active_product_import_batch_id");
+      window.dispatchEvent(
+        new CustomEvent("active_product_import_changed", {
+          detail: { batchId: null },
+        })
+      );
+    } else {
+      importAbortRef.current?.abort();
+    }
     setImportBusy(false);
     setImportProcessingKind(null);
     setOpenImport(false);
@@ -4371,6 +4386,15 @@ export default function ProductsPage() {
             const result = await deleteProductImportBatchApi(batchId);
             if (pdfReviewBatch?.id === batchId) {
               setPdfReviewBatch(null);
+            }
+            if (activeImportBatchId === batchId) {
+              setActiveImportBatchId(null);
+              sessionStorage.removeItem("active_product_import_batch_id");
+              window.dispatchEvent(
+                new CustomEvent("active_product_import_changed", {
+                  detail: { batchId: null },
+                })
+              );
             }
             await loadImportBatches();
             toastMsg("success", result.message || "Import review deleted.");

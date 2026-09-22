@@ -16,7 +16,32 @@ export default function ProductImportProgress({
       aria-label="Import progress"
       className={`shrink-0 border border-[#D8DBE0] bg-white px-2.5 py-2 sm:px-3 ${className}`}
     >
-      <ol className="grid grid-cols-4 gap-1" role="list">
+      <div className="flex items-center justify-between sm:hidden">
+        <div className="flex items-center gap-2">
+          <span className="inline-flex h-5 w-5 items-center justify-center rounded-full bg-[#11120d] text-[10px] font-extrabold text-white">
+            {Math.min(activeStage + 1, STAGES.length)}
+          </span>
+          <span className="text-[11px] font-extrabold text-[#11120d]">
+            Step {Math.min(activeStage + 1, STAGES.length)} of {STAGES.length}: {STAGES[Math.min(activeStage, STAGES.length - 1)]}
+          </span>
+        </div>
+        <div className="flex items-center gap-1">
+          {STAGES.map((label, idx) => (
+            <span
+              key={label}
+              className={`h-1.5 rounded-full transition-all ${
+                idx < activeStage
+                  ? "w-4 bg-[#179B4D]"
+                  : idx === activeStage
+                    ? "w-6 bg-[#11120d]"
+                    : "w-2 bg-[#ECEFF3]"
+              }`}
+            />
+          ))}
+        </div>
+      </div>
+
+      <ol className="hidden sm:grid sm:grid-cols-4 sm:gap-1" role="list">
         {STAGES.map((label, index) => {
           const done = index < activeStage;
           const current = index === activeStage;

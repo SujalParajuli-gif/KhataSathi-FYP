@@ -5,6 +5,6 @@
 export const overlayLayers = {
   modal: "z-[100]",
   popover: "z-[240]",
-  toast: "z-[300]",
   critical: "z-[320]",
+  toast: "z-[350]",
 } as const;

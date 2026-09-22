@@ -217,12 +217,17 @@ export async function controlImport(
   const batch = await prisma.productImportBatch.findFirst({ where: { id: batchId, deletedAt: null } });
   if (!batch) throw new Error("Import batch not found.");
   const meta = importMetadata(batch.extractionMeta);
-  if (meta.parser !== "PAGE_PIPELINE_V1" || !["PDF", "IMAGE"].includes(batch.sourceType)) throw new Error("Upload this source again to use resumable extraction.");
   if (action === "cancel") {
+    if (!["PDF", "IMAGE"].includes(batch.sourceType) || meta.parser !== "PAGE_PIPELINE_V1" || !["QUEUED", "PROCESSING"].includes(batch.status)) {
+      return { cancelled: true, status: batch.status };
+    }
     const result = await prisma.productImportBatch.updateMany({ where: { id: batchId, status: { in: ["QUEUED", "PROCESSING"] } }, data: { status: "CANCELLING" } });
     if (result.count && active?.id === batchId) active.controller.abort();
     else if (result.count) await prisma.productImportBatch.update({ where: { id: batchId }, data: { status: "INTERRUPTED" } });
-  } else if (action === "reprocess_empty") {
+    return { cancelled: true, status: "CANCELLING" };
+  }
+  if (meta.parser !== "PAGE_PIPELINE_V1" || !["PDF", "IMAGE"].includes(batch.sourceType)) throw new Error("Upload this source again to use resumable extraction.");
+  if (action === "reprocess_empty") {
     if (await prisma.productImportCommit.count({ where: { batchId } })) {
       throw new Error("This batch already has an import attempt. Upload the missing pages as a new batch.");
     }

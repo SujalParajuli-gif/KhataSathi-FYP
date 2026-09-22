@@ -3280,8 +3280,16 @@ export async function setProductImportPriceMapping(input: {
         const prices = importPriceCandidates({ ...importMetadata(row.extracted), ...parsed,
             extractedPrices: parsed.extractedPrices || importMetadata(row.extracted).extractedPrices });
         parsed.extractedPrices = prices;
+        const userChangedLabels = importReviewChanges(parsed, row.extracted);
+        const userHasManualRate = userChangedLabels.includes("Rate");
+        const userHasManualRetail = userChangedLabels.includes("Retail price");
+        const userHasManualWholesale = userChangedLabels.includes("Wholesale price");
+
         for (const previousDestination of Object.values(state.mapping)) {
             if (["ratePerPiece", "retailPrice", "wholesalePrice"].includes(previousDestination)) {
+                if (previousDestination === "ratePerPiece" && userHasManualRate) continue;
+                if (previousDestination === "retailPrice" && userHasManualRetail) continue;
+                if (previousDestination === "wholesalePrice" && userHasManualWholesale) continue;
                 parsed[previousDestination] = null;
             }
         }
@@ -3289,7 +3297,12 @@ export async function setProductImportPriceMapping(input: {
             const key = candidate.key;
             const value = candidate.value;
             const destination = mapping[key];
-            if (destination && Number.isFinite(value) && value > 0) parsed[destination] = roundCurrency(value);
+            if (destination && Number.isFinite(value) && value > 0) {
+                if (destination === "ratePerPiece" && userHasManualRate) continue;
+                if (destination === "retailPrice" && userHasManualRetail) continue;
+                if (destination === "wholesalePrice" && userHasManualWholesale) continue;
+                parsed[destination] = roundCurrency(value);
+            }
         }
         const mappedParsed = parsedWithImportPriceMapping(parsed, mapping);
         const derivedAvailability = !importReviewChanges(parsed, row.extracted).includes("Availability");

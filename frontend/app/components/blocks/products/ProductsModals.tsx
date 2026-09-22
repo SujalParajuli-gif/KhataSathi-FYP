@@ -1800,21 +1800,38 @@ export default function ProductsModals({
         onClose={() => { if (!productSaveBusy) setOpenAddEdit(false); }}
         maxWidthClass="max-w-[760px]"
         footer={
-          <div className="flex w-full items-center justify-between gap-2">
-            <div>
-              {editorStepIndex > 0 ? <Button onClick={goToPreviousProductStep} disabled={productSaveBusy}>Back</Button> : <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy}>Cancel</Button>}
+          <div className="flex w-full items-center justify-between gap-2.5">
+            <div className="flex items-center gap-2">
+              {editorStepIndex > 0 ? (
+                <Button onClick={goToPreviousProductStep} disabled={productSaveBusy} className="h-10 min-w-[76px]">
+                  Back
+                </Button>
+              ) : (
+                <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy} className="h-10 min-w-[76px]">
+                  Cancel
+                </Button>
+              )}
             </div>
-            {activeProductId ? (
-              <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy}>
-                {productSaveBusy ? "Saving..." : "Save Changes"}
-              </Button>
-            ) : mobileEditorTab === "review" ? (
-              <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy}>
-                {productSaveBusy ? "Saving..." : "Create Product"}
-              </Button>
-            ) : (
-              <Button variant="primary" icon="arrow_forward" onClick={goToNextProductStep}>Continue</Button>
-            )}
+            <div className="flex items-center gap-2">
+              {editorStepIndex > 0 ? (
+                <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy} className="hidden sm:inline-flex h-10">
+                  Cancel
+                </Button>
+              ) : null}
+              {activeProductId ? (
+                <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy} className="h-10">
+                  {productSaveBusy ? "Saving..." : "Save Changes"}
+                </Button>
+              ) : mobileEditorTab === "review" ? (
+                <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy} className="h-10">
+                  {productSaveBusy ? "Saving..." : "Create Product"}
+                </Button>
+              ) : (
+                <Button variant="primary" icon="arrow_forward" onClick={goToNextProductStep} className="h-10">
+                  Continue
+                </Button>
+              )}
+            </div>
           </div>
         }
       >
@@ -1829,13 +1846,14 @@ export default function ProductsModals({
             onChange={setMobileEditorTab}
             ariaLabel="Product form steps"
             controllerRef={productEditorTabRailRef}
+            className="overflow-x-hidden sm:overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
             railClassName="w-full min-w-full"
-            buttonClassName="h-[48px] min-w-0 flex-1 px-1 text-[14px] font-extrabold"
+            buttonClassName="h-[46px] min-w-0 flex-1 px-0.5 sm:px-1 text-[13px] sm:text-[14px] font-extrabold"
             activeClassName="text-[#11120D]"
             inactiveClassName="text-[#8C8889] hover:text-[#565449]"
           />
         </div>
-        <div {...productEditorSwipeGesture} data-product-editor className="min-h-0 overflow-y-auto px-4 py-4 sm:px-6 sm:py-5">
+        <div {...productEditorSwipeGesture} data-product-editor className="min-h-0 overflow-y-auto [scrollbar-gutter:stable] px-4 py-4 sm:px-6 sm:py-5">
           <div className="flex flex-col gap-4 sm:gap-5">
 
             {/* Basic Info Tab */}
@@ -1896,20 +1914,22 @@ export default function ProductsModals({
                     </div>
                   ) : null}
                   {productImagePreview || form.imageUrl ? (
-                    <div className="mt-2 flex w-full flex-wrap justify-center gap-2">
+                    <div className="mt-2 grid grid-cols-2 gap-1.5 w-full">
                       <button
                         type="button"
                         onClick={() => document.getElementById("product-image-dropzone")?.click()}
-                        className="min-h-11 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800"
+                        aria-label="Change photo"
+                        className="inline-flex h-7.5 sm:h-7 items-center justify-center rounded-[7px] border border-slate-300 bg-white px-1.5 text-[11px] font-bold text-slate-700 transition hover:bg-slate-50 hover:border-slate-400 active:scale-[0.98]"
                       >
-                        Change photo
+                        Change
                       </button>
                       <button
                         type="button"
                         onClick={onClearProductImage}
-                        className="min-h-11 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700"
+                        aria-label="Remove photo"
+                        className="inline-flex h-7.5 sm:h-7 items-center justify-center rounded-[7px] border border-rose-200 bg-rose-50/70 px-1.5 text-[11px] font-bold text-rose-700 transition hover:bg-rose-100 hover:border-rose-300 active:scale-[0.98]"
                       >
-                        Remove photo
+                        Remove
                       </button>
                     </div>
                   ) : null}
@@ -2430,10 +2450,11 @@ export default function ProductsModals({
                     {/* Thumbnail Frame */}
                     <div className="flex h-20 w-20 shrink-0 items-center justify-center overflow-hidden rounded-[12px] border border-[#CBD5E1] bg-[#F8FAFC]">
                       {productImagePreview || form.imageUrl ? (
-                        <img
+                        <PreviewableImage
                           src={productImagePreview || form.imageUrl}
                           alt={form.name || "Product"}
                           className="h-full w-full object-contain p-1"
+                          fallback={<GoogleIcon name="inventory_2" sizePx={34} className="text-[#94A3B8]" />}
                         />
                       ) : (
                         <GoogleIcon name="inventory_2" sizePx={34} className="text-[#94A3B8]" />
@@ -2625,11 +2646,17 @@ export default function ProductsModals({
           pdfReviewBatch
             ? `Review ${displaySourceType(pdfReviewBatch.sourceType)} Import`
             : activeImportBatchId
-              ? "Extracting Supplier Catalog"
+              ? (importBatches?.find(b => b.id === activeImportBatchId && !["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(b.status))
+                  ? "Import Summary"
+                  : "Extracting Supplier Catalog")
               : "Import Products"
         }
         onClose={() => {
-          if (activeImportBatchId) {
+          const activeBatch = activeImportBatchId ? importBatches?.find((b) => b.id === activeImportBatchId) : null;
+          const isActivelyExtracting = activeBatch
+            ? ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(activeBatch.status)
+            : Boolean(importProcessingKind);
+          if (activeImportBatchId && isActivelyExtracting) {
             setConfirmStopImport(true);
           } else {
             onCloseImport();
@@ -4042,11 +4069,18 @@ export default function ProductsModals({
                         {importBatches.map((batch) => {
                           const meta = getImportBatchStatusMeta(batch);
                           return (
-                            <div key={batch.id} className={`flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors ${meta.rowHoverClass} sm:p-[16px]`}>
+                            <div
+                              key={batch.id}
+                              className={`flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors sm:p-[16px] ${
+                                meta.tier === "completed"
+                                  ? "bg-emerald-50/40 border-l-[3px] border-l-emerald-500 hover:bg-emerald-100/40"
+                                  : "hover:bg-slate-50"
+                              }`}
+                            >
                               <div className="flex min-w-0 flex-1 items-center gap-[12px] sm:gap-[16px]">
-                                <div className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[10px] border ${meta.iconBoxClass}`}>
+                                <div className={`flex h-[40px] w-[40px] shrink-0 items-center justify-center rounded-[10px] border ${meta.fileIconBoxClass}`}>
                                   <Icon
-                                    name={["CSV", "XLSX"].includes(String(batch.sourceType || "").toUpperCase()) ? "table_chart" : String(batch.sourceType || "").toUpperCase() === "PDF" ? "picture_as_pdf" : "image"}
+                                    name={meta.fileIcon}
                                     className="text-[20px]"
                                   />
                                 </div>
@@ -4067,7 +4101,9 @@ export default function ProductsModals({
                               </div>
                               <div className="flex shrink-0 items-center gap-2 sm:gap-[20px]">
                                 <div className="hidden text-right sm:block">
-                                  <div className="text-[12px] font-bold text-[#334155]">{meta.processedText}</div>
+                                  <div className={`text-[12px] font-bold ${meta.tier === "completed" ? "text-emerald-800" : meta.tier === "pending" ? "text-amber-800" : "text-[#334155]"}`}>
+                                    {meta.processedText}
+                                  </div>
                                   <div className="mt-[2px] text-[10.5px] font-semibold text-[#64748B]">{meta.processedSubtext}</div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-[8px]">

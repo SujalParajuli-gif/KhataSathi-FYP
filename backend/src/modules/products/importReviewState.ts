@@ -48,7 +48,7 @@ export function pendingImportWarnings(parsedValue: unknown): string[] {
   return [...new Set<string>((Array.isArray(p.warnings) ? p.warnings : []).map(String))].filter(message => {
     if (acknowledged.has(message)) return false;
     if (/confirm.*brand/i.test(message) && String(p.brand || "").trim()) return false;
-    if (/no price captured/i.test(message) && [p.ratePerPiece, p.retailPrice, p.wholesalePrice].some(v => Number(v) > 0)) return false;
+    if (/no price captured/i.test(message) && (p.availabilityStatus === "COMING_SOON" || [p.ratePerPiece, p.retailPrice, p.wholesalePrice].some(v => Number(v) > 0))) return false;
     return true;
   });
 }
@@ -99,15 +99,27 @@ export function importReviewIssues(row: { parsed?: unknown; comparisonStatus?: s
   for (const message of pendingImportWarnings(p)) {
     if (/confirm.*brand/i.test(message)) continue;
     const uncertain = /unreadable fields/i.test(message) && Array.isArray(p.uncertainFields) ? p.uncertainFields : [];
-    if (uncertain.length) for (const field of uncertain) issues.push({ field: fieldFor(String(field)), message: `Verify ${field} against the source.`, severity: "warning" });
+    if (uncertain.length) for (const field of uncertain) issues.push({ field: fieldFor(String(field)), message: `Verify ${field} against source.`, severity: "warning" });
     else issues.push({ field: fieldFor(message), message, severity: "warning" });
   }
   if (row.comparisonStatus === "IDENTIFIER_CONFLICT" && row.error) {
-    const fields = [ /barcode/i.test(row.error) ? "barcode" : null, /sku/i.test(row.error) ? "sku" : null, /product.?code/i.test(row.error) ? "productCodeVariant" : null, /size/i.test(row.error) ? "sizeValue" : null,
-      /ratePerPiece/i.test(row.error) ? "ratePerPiece" : null, /retailPrice/i.test(row.error) ? "retailPrice" : null,
-      /wholesalePrice/i.test(row.error) ? "wholesalePrice" : null, /packageQuantity/i.test(row.error) ? "packageQuantity" : null,
+    const hasBarcode = Boolean(String(p.barcode || "").trim());
+    const hasSku = Boolean(String(p.sku || "").trim());
+    const hasCode = Boolean(String(p.productCodeVariant || "").trim());
+    const fields = [
+      hasBarcode && /barcode/i.test(row.error) ? "barcode" : null,
+      hasSku && /sku|identifier/i.test(row.error) ? "sku" : null,
+      hasCode && /product.?code/i.test(row.error) ? "productCodeVariant" : null,
+      /size/i.test(row.error) ? "sizeValue" : null,
+      /ratePerPiece/i.test(row.error) ? "ratePerPiece" : null,
+      /retailPrice/i.test(row.error) ? "retailPrice" : null,
+      /wholesalePrice/i.test(row.error) ? "wholesalePrice" : null,
+      /packageQuantity/i.test(row.error) ? "packageQuantity" : null,
     ].filter(Boolean) as string[];
-    for (const field of fields.length ? fields : ["name", "brand"]) issues.push({ field, message: row.error, severity: "error" });
+    const targetFields = fields.length ? fields : hasSku ? ["sku"] : hasBarcode ? ["barcode"] : ["name"];
+    for (const field of targetFields) {
+      issues.push({ field, message: "Matches another catalog product.", severity: "error" });
+    }
   } else if (row.error && issues.length === 0 && row.comparisonStatus !== "MATCHED_WITH_CHANGES") issues.push({ field: fieldFor(row.error), message: row.error, severity: "warning" });
   if (row.comparisonStatus === "MATCHED_WITH_CHANGES" && !row.resolution && Array.isArray(row.changeSet)) {
     for (const change of row.changeSet) {

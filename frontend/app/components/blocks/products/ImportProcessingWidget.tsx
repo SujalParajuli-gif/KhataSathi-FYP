@@ -54,7 +54,7 @@ export function ImportProcessingWidget({ batchId, fileName, onComplete, onMinimi
     <p className="mt-5 text-sm leading-6 text-slate-600">Processing continues on the server when minimized. Progress and saved results are available in Import History.</p>
     <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
       {!active && !unavailable ? <button className="min-h-11 rounded-lg bg-slate-900 px-4 text-sm font-semibold text-white" onClick={() => onComplete(batchId)}>{status === "DRAFT" ? "Review products" : "View saved results"}</button> : null}
-      {onMinimize ? <button className="min-h-11 rounded-lg border border-slate-300 px-4 text-sm font-medium" onClick={onMinimize}>Work in background</button> : null}
+      {active && onMinimize ? <button className="min-h-11 rounded-lg border border-slate-300 px-4 text-sm font-medium" onClick={onMinimize}>Work in background</button> : null}
       {!active && !unavailable && status !== "IMPORTED" && coverage?.canRetry ? <button disabled={pending} className="min-h-11 rounded-lg border border-slate-300 px-4 text-sm disabled:opacity-50" onClick={() => void control("retry")}>{pending ? "Requesting…" : "Retry remaining pages"}</button> : null}
       {active && status !== "COMMITTING" ? <button disabled={pending || status === "CANCELLING"} className="min-h-11 rounded-lg px-4 text-sm text-red-700 disabled:opacity-50" onClick={() => void control("cancel")}>{pending || status === "CANCELLING" ? "Stopping…" : "Stop extraction"}</button> : null}
     </div>

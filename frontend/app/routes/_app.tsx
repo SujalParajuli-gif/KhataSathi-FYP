@@ -241,7 +241,13 @@ function GlobalImportFloatingPill() {
     <ImportFloatingPill
       batchId={activeBatchId}
       hidden={(location.pathname === "/products" && isModalOpen) || location.pathname === `/products/imports/${activeBatchId}`}
-      onClick={() => navigate(`/products/imports/${encodeURIComponent(activeBatchId)}`)}
+      onClick={() => {
+        if (location.pathname === "/products") {
+          window.dispatchEvent(new CustomEvent("reopen_product_import_modal"));
+        } else {
+          navigate("/products?openImport=true");
+        }
+      }}
       onDismiss={() => {
         sessionStorage.removeItem("active_product_import_batch_id");
         setActiveBatchId(null);

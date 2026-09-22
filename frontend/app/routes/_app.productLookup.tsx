@@ -2483,9 +2483,11 @@ export default function ProductLookupPage() {
                                 {product.ratePerPiece === null
                                   ? "Not entered"
                                   : formatNpr(product.ratePerPiece)}
-                                <div className="mt-1 text-xs font-normal text-slate-500" title={product.sourceCitation || undefined}>
-                                  {product.rateUpdatedAt ? `Rate updated ${new Date(product.rateUpdatedAt).toLocaleDateString("en-GB")}` : "Rate date unknown"}
-                                </div>
+                                {product.rateUpdatedAt ? (
+                                  <div className="mt-1 text-xs font-normal text-slate-500" title={product.sourceCitation || undefined}>
+                                    Rate updated {new Date(product.rateUpdatedAt).toLocaleDateString("en-GB")}
+                                  </div>
+                                ) : null}
                               </td>
                             ) : null}
                             <td className="px-3.5 py-3.5 text-right font-extrabold text-[#000000] text-[13.5px]">
@@ -2631,34 +2633,33 @@ export default function ProductLookupPage() {
                             {/* 3-Column Dual-Tone Price Grid */}
                             <div className="grid grid-cols-3 gap-1.5 min-[380px]:gap-2">
                               {/* 1. Purchase / खरिद */}
-                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-white shadow-2xs">
-                                <div className="bg-[#F1F5F9] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#475569] min-[400px]:text-[10.5px]">
+                              <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-white shadow-2xs">
+                                <div className="bg-[#F1F5F9] px-1 py-0.5 text-center text-[10px] font-black uppercase tracking-wide text-[#475569] min-[400px]:text-[10.5px]">
                                   Cost
                                 </div>
-                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
                                   {!canViewPurchaseCost || !purchaseCostVisible ? (
-                                    <span className="tracking-widest text-[#94A3B8]">••••</span>
+                                    <span className="tracking-widest text-[#94A3B8] font-sans text-[13px]">••••</span>
                                   ) : product.ratePerPiece !== null ? (
                                     <>
-                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px] shrink-0">रु.</span>
                                       <span>{formatPriceNumber(product.ratePerPiece)}</span>
                                     </>
                                   ) : (
                                     "—"
                                   )}
                                 </div>
-                                {canViewPurchaseCost && purchaseCostVisible ? <div className="px-1 pb-1 text-center text-[9px] text-slate-500" title={product.sourceCitation || undefined}>{product.rateUpdatedAt ? new Date(product.rateUpdatedAt).toLocaleDateString("en-GB") : "Rate date unknown"}</div> : null}
                               </div>
 
                               {/* 2. Retail / खुद्रा */}
-                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#D7EEDB] bg-white shadow-2xs">
-                                <div className="bg-[#EAF7EE] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#1E6B3D] min-[400px]:text-[10.5px]">
+                              <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#D7EEDB] bg-white shadow-2xs">
+                                <div className="bg-[#EAF7EE] px-1 py-0.5 text-center text-[10px] font-black uppercase tracking-wide text-[#1E6B3D] min-[400px]:text-[10.5px]">
                                   Retail
                                 </div>
-                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
                                   {product.retailPrice !== null ? (
                                     <>
-                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px] shrink-0">रु.</span>
                                       <span>{formatPriceNumber(product.retailPrice)}</span>
                                     </>
                                   ) : (
@@ -2668,16 +2669,16 @@ export default function ProductLookupPage() {
                               </div>
 
                               {/* 3. Wholesale / थोक */}
-                              <div className="flex min-w-0 flex-col overflow-hidden rounded-[14px] border border-[#DEE7F5] bg-white shadow-2xs">
-                                <div className="bg-[#EEF3FA] px-1 py-1 text-center text-[10px] font-black uppercase tracking-wide text-[#234A7F] min-[400px]:text-[10.5px]">
+                              <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#DEE7F5] bg-white shadow-2xs">
+                                <div className="bg-[#EEF3FA] px-1 py-0.5 text-center text-[10px] font-black uppercase tracking-wide text-[#234A7F] min-[400px]:text-[10.5px]">
                                   Wholesale
                                 </div>
-                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1.5 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
+                                <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
                                   {!canViewWholesalePrice ? (
-                                    <span className="tracking-widest text-[#94A3B8]">••••</span>
+                                    <span className="tracking-widest text-[#94A3B8] font-sans text-[13px]">••••</span>
                                   ) : product.wholesalePrice !== null ? (
                                     <>
-                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px]">रु.</span>
+                                      <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px] shrink-0">रु.</span>
                                       <span>{formatPriceNumber(product.wholesalePrice)}</span>
                                     </>
                                   ) : (
@@ -2686,6 +2687,11 @@ export default function ProductLookupPage() {
                                 </div>
                               </div>
                             </div>
+                            {canViewPurchaseCost && purchaseCostVisible && product.rateUpdatedAt ? (
+                              <div className="mt-1 text-right text-[9.5px] font-medium text-slate-500" title={product.sourceCitation || undefined}>
+                                Rate updated {new Date(product.rateUpdatedAt).toLocaleDateString("en-GB")}
+                              </div>
+                            ) : null}
                           </div>
                         </div>
 

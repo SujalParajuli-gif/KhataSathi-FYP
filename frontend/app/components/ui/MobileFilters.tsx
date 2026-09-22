@@ -29,17 +29,17 @@ export function MobileFilterButton({
       type="button"
       onClick={onClick}
       className={cn(
-        "relative inline-flex h-[46px] shrink-0 items-center justify-center gap-1.5 rounded-xl border border-slate-200 bg-white px-2.5 text-[12px] font-bold text-[#11120d] transition-colors hover:border-slate-300 active:bg-slate-50",
+        "relative inline-flex h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#11120d] transition-colors hover:border-[#11120d] active:bg-slate-50",
         className,
       )}
       aria-label={`Open ${label.toLowerCase()}${activeCount ? `, ${activeCount} active` : ""}`}
     >
-      <GoogleIcon name="filter_alt" className="text-[16px]" />
+      <GoogleIcon name="filter_alt" className="text-[17px] text-[#565449]" />
       <span>{label}</span>
       <span
         className={cn(
-          "inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-full px-1 text-[10px] font-extrabold text-white",
-          activeCount ? "bg-emerald-600" : "bg-[#565449]",
+          "inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-full px-1.5 text-[10px] font-extrabold text-white",
+          activeCount ? "bg-[#179B4D]" : "bg-[#565449]",
         )}
       >
         {activeCount}

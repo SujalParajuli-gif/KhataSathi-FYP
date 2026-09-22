@@ -111,7 +111,7 @@ export default function SwipeableTabRail<T extends string>({
       aria-label={ariaLabel}
       data-horizontal-scroll
       className={cn(
-        "max-w-full overflow-x-auto overscroll-x-contain [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        "max-w-full overflow-x-auto overscroll-x-contain [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:w-0 [&::-webkit-scrollbar]:h-0",
         className,
       )}
     >

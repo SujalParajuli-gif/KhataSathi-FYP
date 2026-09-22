@@ -38,6 +38,18 @@ export default function InvoiceDetailModal({
 }: Props) {
   useBodyScrollLock(open);
 
+  React.useEffect(() => {
+    if (!open) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [open, onClose]);
+
   if (!open || !invoice || typeof document === "undefined") return null;
 
   const totalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);

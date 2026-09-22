@@ -264,7 +264,7 @@ function compareImportRowWithIndex(
       availabilityStatus,
       matchedProductId: null,
       changes: [],
-      message: "Brand and product name match one catalog product, but an incoming identifier belongs to another. Correct the barcode, SKU or product code before importing.",
+      message: "Identifier belongs to another product. Fix barcode, SKU, or code.",
     };
   }
   if (matches.length === 0 && identifierProductIds.size > 0) {
@@ -273,7 +273,7 @@ function compareImportRowWithIndex(
       availabilityStatus,
       matchedProductId: identifierProductIds.size === 1 ? identifierMatches[0].id : null,
       changes: [],
-      message: "An incoming barcode, SKU or product code belongs to a catalog product with a different brand or name. Verify the identity before importing.",
+      message: "Identifier matches a product with different brand or name.",
     };
   }
   if (matches.length === 1 && conflictingSize(row, matches[0])) {
@@ -282,7 +282,7 @@ function compareImportRowWithIndex(
       availabilityStatus,
       matchedProductId: matches[0].id,
       changes: [],
-      message: "Brand and product name match, but the product size differs. Correct the name or size before importing.",
+      message: "Product size differs from matching catalog item.",
     };
   }
   const incomingRate = comparableNumber(row.ratePerPiece);

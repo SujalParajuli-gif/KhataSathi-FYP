@@ -27,7 +27,7 @@ export function InvoiceStatusChip({
   return (
     <span
       className={cn(
-        "inline-flex items-center rounded-full border px-[12px] py-[5px] text-[11px] font-extrabold ",
+        "inline-flex shrink-0 items-center rounded-full border px-[9px] py-[3.5px] text-[10.5px] font-extrabold leading-none tracking-[0.02em]",
         styles[status],
         className,
       )}
@@ -75,13 +75,13 @@ export function PaymentMethodChip({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-[6px] rounded-[10px] border px-[8px] py-[4px] text-[11px] font-bold",
+        "inline-flex shrink-0 items-center gap-[5px] rounded-[9px] border px-[8px] py-[3.5px] text-[11px] font-bold leading-none",
         tone,
         className,
       )}
     >
-      {showIcon ? <Icon name={iconName} className="text-[13px]" /> : null}
-      {label}
+      {showIcon ? <Icon name={iconName} className="text-[13px] shrink-0" /> : null}
+      <span className="truncate">{label}</span>
     </span>
   );
 }

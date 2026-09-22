@@ -3862,13 +3862,13 @@ export default function BillingPage() {
       const isFKey = /^F[2-9]$/.test(e.key);
       const isTyping = isTypingTarget(e.target);
 
-      // We process F-keys, Esc, and Alt/Shift-modifiers universally.
-      // If none of those, and they are typing, we ignore global hotkeys.
+      const isCtrlK = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === "k";
       const isGlobalAction =
         isFKey ||
         e.key === "Escape" ||
         e.altKey ||
-        (e.shiftKey && e.key === "Enter");
+        (e.shiftKey && e.key === "Enter") ||
+        isCtrlK;
       if (isTyping && !isGlobalAction) return;
 
       if (pendingBillingConfirm === "park-cart" && e.key === "Enter") {
@@ -3879,9 +3879,10 @@ export default function BillingPage() {
 
       if (pendingBillingConfirm && e.key !== "Escape") return;
 
-      if (e.key === "F2") {
+      if (e.key === "F2" || isCtrlK) {
         e.preventDefault();
         searchRef.current?.focus();
+        searchRef.current?.select();
         return;
       }
       if (e.key === "F3") {
@@ -4147,7 +4148,7 @@ export default function BillingPage() {
         {/* TOP BAR */}
         <div
           className={cn(
-            "relative z-50 flex shrink-0 items-center justify-between border-b border-[#CFCFD3] bg-[#FFFFFF]",
+            "relative z-20 flex shrink-0 items-center justify-between border-b border-[#CFCFD3] bg-[#FFFFFF]",
             billingView.topBar,
           )}
         >
@@ -4170,7 +4171,7 @@ export default function BillingPage() {
 
               {/* SEARCH AUTOCOMPLETE DROPDOWN */}
               {productQuery.trim().length > 0 && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-[60] flex max-h-[62vh] w-[640px] flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)]">
+                <div className="absolute left-0 top-[calc(100%+8px)] z-30 flex max-h-[62vh] w-[640px] flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)]">
                   <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2">
                     <div>
                       <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
@@ -4715,7 +4716,7 @@ export default function BillingPage() {
                             <Icon name="more_vert" className="text-[18px]" />
                           </button>
                           {rowMenuOpen ? (
-                            <div className="absolute right-0 top-[calc(100%+6px)] z-[55] w-[168px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white py-1 shadow-[0_14px_30px_-18px_rgba(0,0,0,0.45)]">
+                            <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-[168px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white py-1 shadow-[0_14px_30px_-18px_rgba(0,0,0,0.45)]">
                               {canUsePriceOverride ? (
                                 <button
                                   type="button"
@@ -4835,7 +4836,7 @@ export default function BillingPage() {
                   </div>
 
                   {isCustomerSearchOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-50 mt-2 rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
+                    <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
                       <Input
                         value={customerQuery}
                         onChange={setCustomerQuery}

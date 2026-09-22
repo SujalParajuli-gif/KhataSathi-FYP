@@ -94,7 +94,7 @@ export default function Topbar({
   const previewAlerts = alerts.slice(0, 4);
 
   return (
-    <header className="relative z-[30] h-[68px] shrink-0 border-b border-[#CFCFD3] bg-white/95 backdrop-blur-md">
+    <header className="relative z-[60] h-[68px] shrink-0 border-b border-[#CFCFD3] bg-white/95 backdrop-blur-md">
       <div
         className={
           staffMode
@@ -173,19 +173,19 @@ export default function Topbar({
 
               {/* notification dropdown panel — shows a preview of recent alerts */}
               {bellOpen ? (
-                <div className="absolute -right-[54px] sm:-right-2 top-[48px] z-50 w-[calc(100vw-32px)] sm:w-[calc(100vw-40px)] max-w-[360px] overflow-hidden rounded-[22px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-lg">
-                  <div className="flex items-center justify-between border-b border-[#CFCFD3] px-[16px] py-[12px]">
-                    <span className="text-[13px] font-bold text-[#000000]">
+                <div className="fixed left-3 right-3 top-[58px] z-50 overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-2xl sm:absolute sm:left-auto sm:right-0 sm:top-[48px] sm:w-[360px] sm:max-w-[calc(100vw-24px)]">
+                  <div className="flex items-center justify-between border-b border-[#E5E7EB] px-4 py-3">
+                    <span className="text-[14px] font-extrabold text-[#000000]">
                       Notifications
                     </span>
                     {unreadCount > 0 ? (
-                      <span className="rounded-full border border-[#C5D7FF] bg-[#EEF4FF] px-[8px] py-[2px] text-[11px] font-bold text-[#2F67D8]">
+                      <span className="rounded-full border border-[#C5D7FF] bg-[#EEF4FF] px-2 py-0.5 text-[11px] font-extrabold text-[#2F67D8]">
                         {unreadCount} unread
                       </span>
                     ) : null}
                   </div>
 
-                  <div className="max-h-[320px] overflow-y-auto">
+                  <div className="max-h-[min(380px,calc(100dvh-140px))] overflow-y-auto">
                     {loading && previewAlerts.length === 0 ? (
                       <div className="p-6 text-center text-[13px] text-slate-400">
                         Loading...

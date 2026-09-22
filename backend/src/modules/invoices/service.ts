@@ -2730,6 +2730,20 @@ export async function getInvoice(id: string) {
           createdBy: { select: { id: true, name: true, role: true } },
         },
       },
+      returnRequests: {
+        where: { status: { in: ["PENDING", "APPROVED", "COMPLETED"] } },
+        select: {
+          id: true,
+          status: true,
+          refundAmount: true,
+          items: {
+            select: {
+              invoiceItemId: true,
+              qtyReturned: true,
+            },
+          },
+        },
+      },
     },
   });
 }

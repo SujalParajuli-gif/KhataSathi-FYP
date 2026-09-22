@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { Link } from "react-router";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import {
@@ -184,7 +185,7 @@ function ActionButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex h-[42px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
+        "inline-flex h-[44px] items-center justify-center gap-2 rounded-[14px] border px-4 text-[13px] font-extrabold transition disabled:cursor-not-allowed disabled:opacity-50",
         primary
           ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#2a2c27]"
           : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6] hover:text-[#000000]",
@@ -577,6 +578,7 @@ export default function AnalyticsPage() {
               <ActionButton
                 icon="sync"
                 label="Apply"
+                primary
                 onClick={() => apply(draftFilters)}
               />
               <ActionButton
@@ -644,13 +646,64 @@ export default function AnalyticsPage() {
           title={
             report?.summary.cancelledInvoiceCount
               ? "Only cancelled invoices matched"
-              : "No analytics data"
+              : "No analytics data found"
           }
         >
-          <div className="px-5 py-10 text-[14px] font-semibold text-[#8C8889]">
-            {report?.summary.cancelledInvoiceCount
-              ? "Cancelled invoices matched the current filters, but cancelled invoices are excluded from sales analytics totals."
-              : "No finalized invoice data was found for this range."}
+          <div className="flex flex-col items-center justify-center px-5 py-12 text-center">
+            <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#CFCFD3] bg-[#F8F9FA] text-[#565449]">
+              <Icon name="event_busy" className="text-[24px]" />
+            </div>
+            <div className="mt-4 text-[15px] font-extrabold text-[#11120d]">
+              {report?.summary.cancelledInvoiceCount
+                ? "No active sales in this period"
+                : "No finalized sales data found"}
+            </div>
+            <p className="mt-1.5 max-w-[480px] text-[13px] font-medium text-[#64748B]">
+              {report?.summary.cancelledInvoiceCount ? (
+                <>
+                  <span className="font-bold text-[#11120d]">{report.summary.cancelledInvoiceCount}</span> cancelled{" "}
+                  {report.summary.cancelledInvoiceCount === 1 ? "invoice" : "invoices"} fell within {filters.from} to {filters.to}, but cancelled sales are excluded from revenue totals.
+                </>
+              ) : (
+                <>
+                  No invoices were recorded between <span className="font-bold text-[#11120d]">{filters.from}</span> and <span className="font-bold text-[#11120d]">{filters.to}</span> with the selected filters.
+                </>
+              )}
+            </p>
+            <div className="mt-5 flex flex-wrap items-center justify-center gap-2.5">
+              {rangeSelection !== "quarter" ? (
+                <button
+                  type="button"
+                  onClick={() => pickPreset("quarter")}
+                  className="inline-flex h-[38px] items-center gap-1.5 rounded-[12px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white shadow-xs transition hover:bg-[#2a2c27] active:scale-95"
+                >
+                  <Icon name="date_range" className="text-[16px]" />
+                  Expand to Last 90 days
+                </button>
+              ) : null}
+              <button
+                type="button"
+                onClick={() => {
+                  const next = { ...getRangeFromPreset(initialPreset) };
+                  setRangeSelection(initialPreset);
+                  setDraftFilters(next);
+                  apply(next);
+                }}
+                className="inline-flex h-[38px] items-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] active:scale-95"
+              >
+                <Icon name="restart_alt" className="text-[16px]" />
+                Reset all filters
+              </button>
+              {report?.summary.cancelledInvoiceCount ? (
+                <Link
+                  to="/invoices?status=Cancelled"
+                  className="inline-flex h-[38px] items-center gap-1.5 rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] px-4 text-[12px] font-extrabold text-[#BE123C] transition hover:bg-[#FFE4E6] active:scale-95"
+                >
+                  <Icon name="cancel" className="text-[16px]" />
+                  View cancelled invoices
+                </Link>
+              ) : null}
+            </div>
           </div>
         </Panel>
       ) : (

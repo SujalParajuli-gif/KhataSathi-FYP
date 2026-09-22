@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
@@ -401,8 +402,48 @@ function InvoiceModifyModal({
   const [scanBusy, setScanBusy] = useState(false);
   const [scanStatus, setScanStatus] = useState("");
   const [scanError, setScanError] = useState("");
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   const searchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
+
+  useBodyScrollLock(Boolean(invoice));
+
+  const isDirty = useMemo(() => {
+    if (!invoice) return false;
+    if (reason && reason !== "CUSTOMER_REQUEST") return true;
+    if (lines.length !== invoice.items.length) return true;
+    for (let i = 0; i < lines.length; i++) {
+      const orig = invoice.items[i];
+      if (
+        !orig ||
+        orig.productId !== lines[i].productId ||
+        orig.qty !== lines[i].qty
+      ) {
+        return true;
+      }
+    }
+    return false;
+  }, [invoice, lines, reason]);
+
+  function handleAttemptClose() {
+    if (isDirty && !busy) {
+      setConfirmDiscardOpen(true);
+    } else {
+      onClose();
+    }
+  }
+
+  useEffect(() => {
+    if (!invoice) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleAttemptClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [invoice, isDirty, busy]);
 
   // debounced product search — waits 300ms after typing stops before calling the API
   useEffect(() => {
@@ -644,36 +685,46 @@ function InvoiceModifyModal({
     }
   }
 
-  return (
-    <div className="app-modal-layer fixed inset-0">
+  if (!invoice || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="app-modal-layer fixed inset-0 z-[120]">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
-        onClick={onClose}
+        onClick={handleAttemptClose}
         aria-label="Close"
       />
-      <div className="absolute left-1/2 top-1/2 flex max-h-[90vh] w-[1160px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-xl">
-        <div className="flex flex-col gap-3 border-b border-[#E5E7EB] p-4 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
-              Modify finalized invoice
+      <div className="absolute left-1/2 top-1/2 flex max-h-[92vh] max-h-[92dvh] w-[1160px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-2xl">
+        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[#E5E7EB] p-4 sm:p-5 bg-white">
+          <div className="min-w-0 flex-1">
+            <div className="flex items-center gap-2">
+              <span className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
+                Modify finalized invoice
+              </span>
+              <span className="text-[#CFCFD3]">·</span>
+              <span className="font-mono text-[12px] font-extrabold text-[#000000]">
+                {invoice.invoiceNo}
+              </span>
             </div>
-            <div className="mt-1 truncate text-[20px] font-extrabold text-[#000000]">
-              {invoice.invoiceNo}
-            </div>
-            <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
-              {invoice.customerName} | Original {formatNpr(invoice.netTotal)}
+            <div className="mt-0.5 flex flex-wrap items-baseline gap-x-3 gap-y-0.5">
+              <h2 className="truncate text-[20px] sm:text-[22px] font-black text-[#000000]">
+                {invoice.customerName}
+              </h2>
+              <span className="text-[12px] font-bold text-[#8C8889]">
+                Original Total: <strong className="font-mono text-[#11120d]">{formatNpr(invoice.netTotal)}</strong>
+              </span>
             </div>
           </div>
 
-          <div className="flex items-center gap-3">
-            <div className="hidden rounded-[14px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[12px] font-semibold text-[#B7791F] lg:block">
-              Credit note + replacement invoice
+          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
+            <div className="hidden rounded-[12px] border border-[#F6D28B] bg-[#FFF7E8] px-3 py-1.5 text-[11px] font-extrabold text-[#B7791F] md:block" title="Creates a credit note and replacement invoice with inventory allocation">
+              Credit Note · Replacement Issued
             </div>
             <button
               type="button"
-              onClick={onClose}
-              className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+              onClick={handleAttemptClose}
+              className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
               aria-label="Close"
             >
               <Icon name="close" />
@@ -681,31 +732,19 @@ function InvoiceModifyModal({
           </div>
         </div>
 
-        <div className="max-h-[calc(90vh-138px)] overflow-y-auto bg-[#FFFFFF] p-4">
-          <div className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_340px]">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
+          <div className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start">
             <div className="min-w-0 space-y-4">
               <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
-                <div className="flex flex-col gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3 md:flex-row md:items-center md:justify-between">
+                <div className="flex items-center justify-between gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
                   <div>
                     <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                       Add replacement item
                     </div>
                     <div className="mt-0.5 text-[11px] font-semibold text-[#8C8889]">
-                      Search, scan, or type a barcode/SKU.
+                      Search product name, or type/scan a barcode/SKU below.
                     </div>
                   </div>
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setScanModalOpen(true);
-                      setScanError("");
-                      setScanStatus("");
-                    }}
-                    className="flex h-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#11120d] bg-[#11120d] px-3 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27]"
-                  >
-                    <Icon name="qr_code_scanner" className="text-[16px]" />
-                    Scan
-                  </button>
                 </div>
 
                 <div className="grid gap-3 p-4 xl:grid-cols-[1fr_280px]">
@@ -833,100 +872,169 @@ function InvoiceModifyModal({
               </div>
 
               <div className="overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
-                <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
+                <div className="flex items-center justify-between gap-2 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
                   <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                     Replacement items
                   </div>
-                  <div className="text-[12px] font-bold text-[#8C8889]">
+                  <div className="shrink-0 text-[11px] sm:text-[12px] font-bold text-[#8C8889]">
                     {lines.length} line(s) | {nextUnits} unit(s)
                   </div>
                 </div>
 
-                <div className="overflow-x-auto">
-                  <div className="min-w-[620px]">
-                    <div className="grid grid-cols-[minmax(220px,1fr)_110px_120px_120px_40px] gap-3 border-b border-[#E5E7EB] px-4 py-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
-                      <div>Item</div>
-                      <div>Unit</div>
-                      <div>Qty</div>
-                      <div className="text-right">Total</div>
-                      <div />
-                    </div>
+                {/* Desktop Table View with internal bounded scroll */}
+                <div className="hidden sm:block max-h-[380px] overflow-y-auto">
+                  <div className="grid grid-cols-[minmax(200px,1fr)_100px_120px_110px_40px] gap-2 border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-2 text-[11px] font-extrabold uppercase text-[#8C8889] sticky top-0 z-10">
+                    <div>Item</div>
+                    <div>Unit</div>
+                    <div>Qty</div>
+                    <div className="text-right">Total</div>
+                    <div />
+                  </div>
 
-                    <div className="divide-y divide-[#E5E7EB]">
-                      {lines.map((line) => (
-                        <div
-                          key={line.productId}
-                          className="grid grid-cols-[minmax(220px,1fr)_110px_120px_120px_40px] items-center gap-3 px-4 py-3"
-                        >
-                          <div className="min-w-0">
-                            <div className="truncate text-[13px] font-extrabold text-[#000000]">
-                              {line.name}
-                            </div>
-                            <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
-                              {line.sku ? <span>SKU: {line.sku}</span> : null}
-                              {line.barcode ? <span>Barcode: {line.barcode}</span> : null}
-                            </div>
+                  <div className="divide-y divide-[#E5E7EB]">
+                    {lines.map((line) => (
+                      <div
+                        key={line.productId}
+                        className="grid grid-cols-[minmax(200px,1fr)_100px_120px_110px_40px] items-center gap-2 px-4 py-3 hover:bg-[#F9FAFB] transition"
+                      >
+                        <div className="min-w-0">
+                          <div className="truncate text-[13px] font-extrabold text-[#000000]">
+                            {line.name}
                           </div>
-                          <div className="font-mono text-[12px] font-extrabold text-[#000000]">
-                            {formatNpr(line.unitPrice)}
+                          <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                            {line.sku ? <span>SKU: {line.sku}</span> : null}
+                            {line.barcode ? <span>Barcode: {line.barcode}</span> : null}
                           </div>
-                          <div className="flex h-[38px] items-center rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6] p-1">
-                            <button
-                              type="button"
-                              onClick={() => onChangeQty(line.productId, line.qty - 1)}
-                              disabled={line.qty <= 1}
-                              className="flex h-[28px] w-[28px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF] disabled:opacity-40"
-                              aria-label={`Decrease ${line.name} quantity`}
-                              title="Decrease quantity"
-                            >
-                              <Icon name="remove" className="text-[16px]" />
-                            </button>
-                            <input
-                              type="number"
-                              min={1}
-                              value={line.qty}
-                              aria-label={`Quantity for ${line.name}`}
-                              onChange={(event) =>
-                                onChangeQty(line.productId, Number(event.target.value || 1))
-                              }
-                              className="h-[28px] w-[54px] bg-transparent text-center text-[13px] font-extrabold outline-none"
-                            />
-                            <button
-                              type="button"
-                              onClick={() => onChangeQty(line.productId, line.qty + 1)}
-                              className="flex h-[28px] w-[28px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF]"
-                              aria-label={`Increase ${line.name} quantity`}
-                              title="Increase quantity"
-                            >
-                              <Icon name="add" className="text-[16px]" />
-                            </button>
-                          </div>
-                          <div className="text-right font-mono text-[13px] font-extrabold text-[#000000]">
-                            {formatNpr(line.qty * line.unitPrice)}
-                          </div>
+                        </div>
+                        <div className="font-mono text-[12px] font-extrabold text-[#000000]">
+                          {formatNpr(line.unitPrice)}
+                        </div>
+                        <div className="flex h-[36px] items-center rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6] p-1">
                           <button
                             type="button"
-                            onClick={() => onRemoveLine(line.productId)}
-                            className="flex h-[36px] w-[36px] items-center justify-center rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] transition hover:bg-rose-100"
-                            aria-label={`Remove ${line.name}`}
-                            title="Remove"
+                            onClick={() => onChangeQty(line.productId, line.qty - 1)}
+                            disabled={line.qty <= 1}
+                            className="flex h-[26px] w-[26px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF] disabled:opacity-40"
+                            aria-label={`Decrease ${line.name} quantity`}
+                            title="Decrease quantity"
                           >
-                            <Icon name="delete" className="text-[16px]" />
+                            <Icon name="remove" className="text-[16px]" />
+                          </button>
+                          <input
+                            type="number"
+                            min={1}
+                            value={line.qty}
+                            aria-label={`Quantity for ${line.name}`}
+                            onChange={(event) =>
+                              onChangeQty(line.productId, Number(event.target.value || 1))
+                            }
+                            className="h-[26px] w-[46px] bg-transparent text-center text-[13px] font-extrabold outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onChangeQty(line.productId, line.qty + 1)}
+                            className="flex h-[26px] w-[26px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF]"
+                            aria-label={`Increase ${line.name} quantity`}
+                            title="Increase quantity"
+                          >
+                            <Icon name="add" className="text-[16px]" />
                           </button>
                         </div>
-                      ))}
-                      {lines.length === 0 ? (
-                        <div className="px-4 py-8 text-center text-[13px] font-semibold text-[#8C8889]">
-                          All items removed. Add a product before saving.
+                        <div className="text-right font-mono text-[13px] font-extrabold text-[#000000]">
+                          {formatNpr(line.qty * line.unitPrice)}
                         </div>
-                      ) : null}
-                    </div>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveLine(line.productId)}
+                          className="flex h-[34px] w-[34px] items-center justify-center rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] transition hover:bg-rose-100"
+                          aria-label={`Remove ${line.name}`}
+                          title="Remove"
+                        >
+                          <Icon name="delete" className="text-[15px]" />
+                        </button>
+                      </div>
+                    ))}
+                    {lines.length === 0 ? (
+                      <div className="px-4 py-8 text-center text-[13px] font-semibold text-[#8C8889]">
+                        All items removed. Add a product before saving.
+                      </div>
+                    ) : null}
                   </div>
+                </div>
+
+                {/* Mobile Card List View — zero horizontal overflow */}
+                <div className="sm:hidden divide-y divide-[#E5E7EB] max-h-[340px] overflow-y-auto">
+                  {lines.map((line) => (
+                    <div key={line.productId} className="p-3 space-y-2.5">
+                      <div className="flex items-start justify-between gap-2">
+                        <div className="min-w-0 flex-1">
+                          <div className="text-[13px] font-extrabold text-[#000000] truncate">
+                            {line.name}
+                          </div>
+                          <div className="text-[11px] font-semibold text-[#8C8889] mt-0.5">
+                            {line.sku ? `SKU: ${line.sku} · ` : ""}{formatNpr(line.unitPrice)} / unit
+                          </div>
+                        </div>
+                        <button
+                          type="button"
+                          onClick={() => onRemoveLine(line.productId)}
+                          className="flex h-[32px] w-[32px] shrink-0 items-center justify-center rounded-[10px] border border-[#FECDD3] bg-[#FFF1F2] text-[#BE123C] hover:bg-rose-100 transition"
+                          aria-label={`Remove ${line.name}`}
+                        >
+                          <Icon name="delete" className="text-[15px]" />
+                        </button>
+                      </div>
+
+                      <div className="flex items-center justify-between pt-1">
+                        <div className="flex h-[36px] w-[116px] items-center justify-between rounded-[10px] bg-[#F1F3F5] p-1">
+                          <button
+                            type="button"
+                            onClick={() => onChangeQty(line.productId, line.qty - 1)}
+                            disabled={line.qty <= 1}
+                            className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs disabled:opacity-30 disabled:shadow-none transition active:scale-90"
+                            aria-label={`Decrease ${line.name} quantity`}
+                          >
+                            <Icon name="remove" className="text-[14px]" />
+                          </button>
+                          <input
+                            type="number"
+                            min={1}
+                            value={line.qty}
+                            aria-label={`Quantity for ${line.name}`}
+                            onChange={(event) =>
+                              onChangeQty(line.productId, Number(event.target.value || 1))
+                            }
+                            className="h-[28px] w-[42px] min-w-0 bg-transparent text-center font-mono text-[13px] font-extrabold text-[#11120d] outline-none"
+                          />
+                          <button
+                            type="button"
+                            onClick={() => onChangeQty(line.productId, line.qty + 1)}
+                            className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs transition active:scale-90"
+                            aria-label={`Increase ${line.name} quantity`}
+                          >
+                            <Icon name="add" className="text-[14px]" />
+                          </button>
+                        </div>
+
+                        <div className="text-right">
+                          <div className="text-[10px] font-bold text-[#8C8889]">Line Total</div>
+                          <div className="font-mono text-[13px] font-extrabold text-[#000000]">
+                            {formatNpr(line.qty * line.unitPrice)}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  ))}
+                  {lines.length === 0 ? (
+                    <div className="px-4 py-8 text-center text-[13px] font-semibold text-[#8C8889]">
+                      All items removed. Add a product before saving.
+                    </div>
+                  ) : null}
                 </div>
               </div>
             </div>
 
-            <aside className="space-y-4">
+            <aside className="space-y-4 self-start xl:sticky xl:top-0">
               <div className="overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#F8FAFC] shadow-sm">
                 <div className="flex items-center gap-2 border-b border-[#DADDE3] bg-[#FFFFFF] px-4 py-3 text-[12px] font-extrabold uppercase tracking-[0.06em] text-[#565449]">
                   <Icon name="receipt_long" className="text-[18px] text-[#2F67D8]" />
@@ -935,18 +1043,18 @@ function InvoiceModifyModal({
 
                 <div className="grid grid-cols-2 gap-px border-b border-[#DADDE3] bg-[#DADDE3]">
                   <div className="bg-[#FFFFFF] p-3 text-center">
-                    <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                    <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">
                       Original Units
                     </div>
-                    <div className="mt-1 font-mono text-[14px] font-extrabold text-[#000000]">
+                    <div className="mt-1 font-mono text-[18px] font-black text-[#000000]">
                       {originalUnits}
                     </div>
                   </div>
                   <div className="bg-[#FFFFFF] p-3 text-center">
-                    <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
+                    <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">
                       Replacement Units
                     </div>
-                    <div className="mt-1 font-mono text-[14px] font-extrabold text-[#000000]">
+                    <div className="mt-1 font-mono text-[18px] font-black text-[#000000]">
                       {nextUnits}
                     </div>
                   </div>
@@ -954,48 +1062,81 @@ function InvoiceModifyModal({
 
                 <div className="space-y-3 p-4 text-[13px]">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Original total</span>
-                    <span className="font-mono font-extrabold text-[#000000]">
+                    <span className="font-bold text-[#64748B]">Original total</span>
+                    <span className="font-mono text-[14px] font-bold text-[#000000]">
                       {formatNpr(invoice.netTotal)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Original paid</span>
-                    <span className="font-mono font-extrabold text-[#000000]">
+                    <span className="font-bold text-[#64748B]">Original paid</span>
+                    <span className="font-mono text-[14px] font-bold text-[#000000]">
                       {formatNpr(invoice.paidAmount)}
                     </span>
                   </div>
                   <div className="my-2 border-t border-dashed border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Replacement estimate</span>
-                    <span className="font-mono font-extrabold text-[#000000]">
+                    <span className="font-bold text-[#64748B]">Replacement estimate</span>
+                    <span className="font-mono text-[14px] font-extrabold text-[#000000]">
                       {formatNpr(nextSubtotal)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Credit transfer est.</span>
-                    <span className="font-mono font-extrabold text-[#000000]">
+                    <span className="font-bold text-[#64748B]">Credit transfer est.</span>
+                    <span className="font-mono text-[14px] font-extrabold text-[#000000]">
                       {formatNpr(estimatedCreditTransfer)}
                     </span>
                   </div>
                   <div className="my-2 border-t border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Due after replacement</span>
-                    <span className="font-mono text-[15px] font-extrabold text-[#BE123C]">
+                    <span className="font-extrabold text-[#11120d]">Due after replacement</span>
+                    <span className="font-mono text-[16px] font-black text-[#BE123C]">
                       {formatNpr(estimatedDueAfterTransfer)}
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Customer credit est.</span>
-                    <span className="font-mono text-[15px] font-extrabold text-[#179B4D]">
+                    <span className="font-extrabold text-[#11120d]">Customer credit est.</span>
+                    <span className="font-mono text-[16px] font-black text-[#179B4D]">
                       {formatNpr(estimatedCustomerCredit)}
                     </span>
                   </div>
                 </div>
-              </div>
 
-              <div className="rounded-[12px] border border-[#F6D28B] bg-[#FFF7E8] px-4 py-3 text-[12px] font-semibold text-[#B7791F]">
-                This creates a credit note for the original invoice and finalizes a replacement invoice.
+                {/* Financial Settlement Callout Card */}
+                {estimatedDueAfterTransfer > 0 ? (
+                  <div className="mx-4 mb-4 rounded-[14px] border-2 border-[#FECDD3] bg-[#FFF1F2] p-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11.5px] font-black uppercase text-[#9F1239]">
+                        Additional Due
+                      </div>
+                      <div className="font-mono text-[16px] font-black text-[#BE123C]">
+                        +{formatNpr(estimatedDueAfterTransfer)}
+                      </div>
+                    </div>
+                    <div className="mt-1 text-[11px] font-semibold text-[#BE123C]/90">
+                      Cashier must collect this remaining balance to finalize replacement.
+                    </div>
+                  </div>
+                ) : estimatedCustomerCredit > 0 ? (
+                  <div className="mx-4 mb-4 rounded-[14px] border-2 border-[#9DD8B2] bg-[#EAF8EF] p-3.5">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-[11.5px] font-black uppercase text-[#166534]">
+                        Store Credit Due
+                      </div>
+                      <div className="font-mono text-[16px] font-black text-[#15803D]">
+                        {formatNpr(estimatedCustomerCredit)}
+                      </div>
+                    </div>
+                    <div className="mt-1 text-[11px] font-semibold text-[#15803D]/90">
+                      Will be refunded or credited to customer account.
+                    </div>
+                  </div>
+                ) : (
+                  <div className="mx-4 mb-4 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] p-3 text-center">
+                    <span className="text-[11.5px] font-black uppercase text-[#565449]">
+                      Even Exchange · Net Balance: NPR 0
+                    </span>
+                  </div>
+                )}
               </div>
 
               <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
@@ -1026,7 +1167,7 @@ function InvoiceModifyModal({
                   value={reason}
                   onChange={(event) => onChangeReason(event.target.value)}
                   placeholder="Type details or manual reason..."
-                  className="mt-3 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 py-3 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
+                  className="mt-3 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 py-2.5 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
                 />
               </div>
 
@@ -1128,17 +1269,15 @@ function InvoiceModifyModal({
           </div>
         ) : null}
 
-        <div className="border-t border-[#E5E7EB] bg-[#FFFFFF] px-4 py-3">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-3 text-[12px] font-bold text-[#8C8889]">
-              <span>{lines.length} line(s)</span>
-              <span>{nextUnits} unit(s)</span>
-              <span>
-                Replacement {formatNpr(nextSubtotal)}
-              </span>
+        <div className="shrink-0 border-t border-[#E5E7EB] bg-[#FFFFFF] px-4 sm:px-5 py-3 sm:py-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex flex-wrap items-center justify-between sm:justify-start gap-x-3 gap-y-1 text-[12px] font-bold text-[#8C8889]">
+              <span>{lines.length} line(s) · {nextUnits} unit(s)</span>
+              <span className="hidden sm:inline">|</span>
+              <span>Replacement {formatNpr(nextSubtotal)}</span>
               <span
                 className={cn(
-                  "font-mono font-extrabold",
+                  "font-mono font-extrabold text-[13px]",
                   totalDifference > 0
                     ? "text-[#BE123C]"
                     : totalDifference < 0
@@ -1151,12 +1290,12 @@ function InvoiceModifyModal({
               </span>
             </div>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center gap-2 sm:gap-3">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleAttemptClose}
                 disabled={busy}
-                className="h-[42px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+                className="flex-1 sm:flex-none h-[42px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
               >
                 Back
               </button>
@@ -1164,7 +1303,7 @@ function InvoiceModifyModal({
                 type="button"
                 onClick={onSubmit}
                 disabled={busy || lines.length === 0}
-                className="h-[42px] rounded-[14px] border-2 border-[#11120d] bg-[#11120d] px-4 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
+                className="flex-1 sm:flex-none h-[42px] rounded-[14px] border-2 border-[#11120d] bg-[#11120d] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
               >
                 {busy ? "Creating..." : "Create Credit Note"}
               </button>
@@ -1172,7 +1311,22 @@ function InvoiceModifyModal({
           </div>
         </div>
       </div>
-    </div>
+
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard invoice modifications?"
+        message="You have unsaved changes to this invoice. Discarding will lose all added replacement items and adjustments."
+        confirmLabel="Discard & Close"
+        cancelLabel="Keep Editing"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmDiscardOpen(false);
+          onClose();
+        }}
+        onClose={() => setConfirmDiscardOpen(false)}
+      />
+    </div>,
+    document.body,
   );
 }
 
@@ -1205,198 +1359,317 @@ function InvoiceReturnRequestModal({
   onClose: () => void;
   onSubmit: () => void;
 }) {
-  if (!invoice) return null;
+  useBodyScrollLock(Boolean(invoice));
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
 
   const selectedLines = lines.filter((line) => line.qtyReturning > 0);
   const returnUnits = selectedLines.reduce(
     (sum, line) => sum + line.qtyReturning,
     0,
   );
-  const estimatedRefund = selectedLines.reduce(
+  const rawGrossReturn = selectedLines.reduce(
     (sum, line) => sum + line.qtyReturning * line.unitPrice,
     0,
   );
 
-  return (
-    <div className="app-modal-layer fixed inset-0">
+  const invoiceSubTotal = invoice
+    ? Number(invoice.subtotal || 0) ||
+      invoice.items.reduce((sum, item) => sum + item.qty * item.unitPrice, 0)
+    : 0;
+  const discountAdjusted =
+    invoice && invoiceSubTotal > 0 && invoice.netTotal > 0
+      ? Math.round(
+          (rawGrossReturn * (invoice.netTotal / invoiceSubTotal) +
+            Number.EPSILON) *
+            100,
+        ) / 100
+      : rawGrossReturn;
+  const discountAdjustmentAmount = Math.max(0, rawGrossReturn - discountAdjusted);
+  const reservedRefundTotal = Number(invoice?.reservedRefundTotal || 0);
+  const remainingRefundable = invoice
+    ? Math.max(0, invoice.paidAmount - reservedRefundTotal)
+    : 0;
+  const estimatedRefund = Math.min(discountAdjusted, remainingRefundable);
+  const isCappedAtRemaining = discountAdjusted > remainingRefundable;
+
+  const isDirty =
+    selectedLines.length > 0 ||
+    note.trim().length > 0 ||
+    reason !== "CUSTOMER_REQUEST";
+
+  function handleAttemptClose() {
+    if (isDirty && !busy) {
+      setConfirmDiscardOpen(true);
+    } else {
+      onClose();
+    }
+  }
+
+  useEffect(() => {
+    if (!invoice) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleAttemptClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [invoice, isDirty, busy]);
+
+  if (!invoice || typeof document === "undefined") return null;
+
+  return createPortal(
+    <div className="app-modal-layer fixed inset-0 z-[120]">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
-        onClick={onClose}
+        onClick={handleAttemptClose}
         aria-label="Close"
       />
 
-      <div className="absolute left-1/2 top-1/2 flex max-h-[92vh] w-[1080px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border-2 border-[#CFCFD3] bg-[#FFFFFF]">
-        <div className="flex flex-col gap-4 border-b border-[#CFCFD3] p-5 lg:flex-row lg:items-center lg:justify-between">
-          <div className="min-w-0">
-            <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
+      <div className="absolute left-1/2 top-1/2 flex max-h-[92vh] max-h-[92dvh] w-[1080px] max-w-[96vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-2xl">
+        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[#E5E7EB] p-4 sm:p-5 bg-white">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
               Return request
             </div>
-            <div className="mt-1 truncate text-[20px] font-extrabold text-[#000000]">
+            <div className="mt-0.5 truncate text-[18px] sm:text-[20px] font-extrabold text-[#000000]">
               {invoice.invoiceNo}
             </div>
-            <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
+            <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889] truncate">
               {invoice.customerName} | Paid {formatNpr(invoice.paidAmount)}
+              {reservedRefundTotal > 0 ? (
+                <span className="ml-2 font-bold text-amber-700">
+                  (Reserved refunds: {formatNpr(reservedRefundTotal)})
+                </span>
+              ) : null}
             </div>
           </div>
 
           <button
             type="button"
-            onClick={onClose}
-            className="flex h-[38px] w-[38px] items-center justify-center rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
+            onClick={handleAttemptClose}
+            className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
             aria-label="Close return request"
           >
             <Icon name="close" />
           </button>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-5">
-          <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-            <div className="min-w-0 overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF]">
-              <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F3F4F6] px-4 py-3">
+        <div className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
+          <div className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_340px] items-start">
+            <div className="min-w-0 overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
+              <div className="flex items-center justify-between gap-2 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
                 <div className="text-[12px] font-extrabold uppercase text-[#565449]">
                   Items
                 </div>
-                <div className="text-[12px] font-bold text-[#8C8889]">
-                  {returnUnits} unit(s)
+                <div className="shrink-0 text-[11px] sm:text-[12px] font-bold text-[#8C8889]">
+                  {returnUnits} unit(s) selected
                 </div>
               </div>
 
-              <div className="overflow-x-auto">
-                <div className="min-w-[620px]">
-                  <div className="grid grid-cols-[minmax(190px,1fr)_76px_126px_112px] gap-2 border-b border-[#E5E7EB] px-3 py-2 text-[11px] font-extrabold uppercase text-[#8C8889]">
-                    <div>Item</div>
-                    <div className="text-center">Sold</div>
-                    <div className="text-center">Return</div>
-                    <div className="text-right">Refund</div>
-                  </div>
+              {/* Desktop Table View */}
+              <div className="hidden sm:block max-h-[380px] overflow-y-auto">
+                <div className="grid grid-cols-[minmax(190px,1fr)_90px_126px_110px] gap-2 border-b border-[#E5E7EB] bg-[#F8FAFC] px-4 py-2 text-[11px] font-extrabold uppercase text-[#8C8889] sticky top-0 z-10">
+                  <div>Item</div>
+                  <div className="text-center">Returnable</div>
+                  <div className="text-center">Return Qty</div>
+                  <div className="text-right">Line Total</div>
+                </div>
 
-                  <div className="divide-y divide-[#E5E7EB]">
-                    {lines.map((line) => (
-                      <div
-                        key={line.invoiceItemId}
-                        className="grid grid-cols-[minmax(190px,1fr)_76px_126px_112px] items-center gap-2 px-3 py-3"
-                      >
-                        <div className="min-w-0">
-                          <div className="truncate text-[13px] font-extrabold text-[#000000]">
-                            {line.name}
-                          </div>
-                          <div className="mt-1 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
-                            {line.sku ? <span>SKU: {line.sku}</span> : null}
-                            <span>{formatNpr(line.unitPrice)} / unit</span>
-                          </div>
+                <div className="divide-y divide-[#E5E7EB]">
+                  {lines.map((line) => (
+                    <div
+                      key={line.invoiceItemId}
+                      className="grid grid-cols-[minmax(190px,1fr)_90px_126px_110px] items-center gap-2 px-4 py-3 hover:bg-[#F9FAFB] transition"
+                    >
+                      <div className="min-w-0">
+                        <div className="truncate text-[13px] font-extrabold text-[#000000]">
+                          {line.name}
                         </div>
-
-                        <div className="text-center font-mono text-[13px] font-extrabold text-[#000000]">
-                          {line.qtyPurchased}
+                        <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                          {line.sku ? <span>SKU: {line.sku}</span> : null}
+                          <span>{formatNpr(line.unitPrice)} / unit</span>
                         </div>
+                      </div>
 
-                        <div className="mx-auto flex h-[36px] w-[118px] items-center justify-between rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6] p-1">
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onChangeQty(
-                                line.invoiceItemId,
-                                line.qtyReturning - 1,
-                              )
-                            }
-                            disabled={line.qtyReturning <= 0}
-                            className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF] disabled:opacity-40"
-                            aria-label={`Decrease ${line.name} return quantity`}
-                            title="Decrease quantity"
-                          >
-                            <Icon name="remove" className="text-[16px]" />
-                          </button>
-                          <input
-                            type="number"
-                            min={0}
-                            max={line.qtyPurchased}
-                            value={line.qtyReturning}
-                            aria-label={`Return quantity for ${line.name}`}
-                            onChange={(event) =>
-                              onChangeQty(
-                                line.invoiceItemId,
-                                Number(event.target.value || 0),
-                              )
-                            }
-                            className="h-[26px] w-[46px] min-w-0 bg-transparent text-center text-[13px] font-extrabold outline-none"
-                          />
-                          <button
-                            type="button"
-                            onClick={() =>
-                              onChangeQty(
-                                line.invoiceItemId,
-                                line.qtyReturning + 1,
-                              )
-                            }
-                            disabled={line.qtyReturning >= line.qtyPurchased}
-                            className="flex h-[26px] w-[26px] shrink-0 items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#FFFFFF] disabled:opacity-40"
-                            aria-label={`Increase ${line.name} return quantity`}
-                            title="Increase quantity"
-                          >
-                            <Icon name="add" className="text-[16px]" />
-                          </button>
+                      <div className="text-center font-mono text-[13px] font-extrabold text-[#000000]">
+                        {line.qtyPurchased}
+                      </div>
+
+                      <div className="mx-auto flex h-[36px] w-[118px] items-center justify-between rounded-[10px] bg-[#F1F3F5] p-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              line.qtyReturning - 1,
+                            )
+                          }
+                          disabled={line.qtyReturning <= 0}
+                          className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs disabled:opacity-30 disabled:shadow-none transition active:scale-90"
+                          aria-label={`Decrease ${line.name} return quantity`}
+                          title="Decrease quantity"
+                        >
+                          <Icon name="remove" className="text-[15px]" />
+                        </button>
+                        <input
+                          type="number"
+                          min={0}
+                          max={line.qtyPurchased}
+                          value={line.qtyReturning}
+                          aria-label={`Return quantity for ${line.name}`}
+                          onChange={(event) =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              Number(event.target.value || 0),
+                            )
+                          }
+                          className="h-[28px] w-[42px] min-w-0 bg-transparent text-center font-mono text-[13px] font-extrabold text-[#11120d] outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              line.qtyReturning + 1,
+                            )
+                          }
+                          disabled={line.qtyReturning >= line.qtyPurchased}
+                          className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs disabled:opacity-30 disabled:shadow-none transition active:scale-90"
+                          aria-label={`Increase ${line.name} return quantity`}
+                          title="Increase quantity"
+                        >
+                          <Icon name="add" className="text-[15px]" />
+                        </button>
+                      </div>
+
+                      <div className="text-right font-mono text-[13px] font-extrabold text-[#000000]">
+                        {formatNpr(line.qtyReturning * line.unitPrice)}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              </div>
+
+              {/* Mobile Card List View — No horizontal overflow */}
+              <div className="sm:hidden divide-y divide-[#E5E7EB] max-h-[320px] overflow-y-auto">
+                {lines.map((line) => (
+                  <div key={line.invoiceItemId} className="p-3 space-y-2.5">
+                    <div className="flex items-start justify-between gap-2">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-[13px] font-extrabold text-[#000000] truncate">
+                          {line.name}
                         </div>
+                        <div className="text-[11px] font-semibold text-[#8C8889] mt-0.5">
+                          {line.sku ? `SKU: ${line.sku} · ` : ""}{formatNpr(line.unitPrice)}/unit
+                        </div>
+                      </div>
+                      <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-extrabold text-[#565449]">
+                        Max: {line.qtyPurchased}
+                      </span>
+                    </div>
 
-                        <div className="text-right font-mono text-[13px] font-extrabold text-[#000000]">
+                    <div className="flex items-center justify-between pt-1">
+                      <div className="flex h-[36px] w-[116px] items-center justify-between rounded-[10px] bg-[#F1F3F5] p-1">
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              line.qtyReturning - 1,
+                            )
+                          }
+                          disabled={line.qtyReturning <= 0}
+                          className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs disabled:opacity-30 disabled:shadow-none transition active:scale-90"
+                          aria-label={`Decrease ${line.name} return quantity`}
+                        >
+                          <Icon name="remove" className="text-[15px]" />
+                        </button>
+                        <input
+                          type="number"
+                          min={0}
+                          max={line.qtyPurchased}
+                          value={line.qtyReturning}
+                          aria-label={`Return quantity for ${line.name}`}
+                          onChange={(event) =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              Number(event.target.value || 0),
+                            )
+                          }
+                          className="h-[28px] w-[42px] min-w-0 bg-transparent text-center font-mono text-[13px] font-extrabold text-[#11120d] outline-none"
+                        />
+                        <button
+                          type="button"
+                          onClick={() =>
+                            onChangeQty(
+                              line.invoiceItemId,
+                              line.qtyReturning + 1,
+                            )
+                          }
+                          disabled={line.qtyReturning >= line.qtyPurchased}
+                          className="flex h-[28px] w-[28px] shrink-0 items-center justify-center rounded-[7px] bg-white text-[#11120d] shadow-xs disabled:opacity-30 disabled:shadow-none transition active:scale-90"
+                          aria-label={`Increase ${line.name} return quantity`}
+                        >
+                          <Icon name="add" className="text-[15px]" />
+                        </button>
+                      </div>
+
+                      <div className="text-right">
+                        <div className="text-[10px] font-bold text-[#8C8889]">Line Total</div>
+                        <div className="font-mono text-[13px] font-extrabold text-[#000000]">
                           {formatNpr(line.qtyReturning * line.unitPrice)}
                         </div>
                       </div>
-                    ))}
+                    </div>
                   </div>
-                </div>
+                ))}
               </div>
             </div>
 
             <aside className="space-y-4">
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-                <div className="text-[12px] font-extrabold uppercase text-[#565449]">
-                  Reason
+              {/* Reason / Details matching Credit Note UI exactly */}
+              <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
+                <label className="block text-[12px] font-extrabold uppercase text-[#8C8889]">
+                  Reason / Details
+                </label>
+                <ProjectSelect
+                  value={reason}
+                  onChange={(e) => onChangeReason(e.target.value as ReturnReasonCode)}
+                  className="mt-2 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 py-2.5 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
+                >
+                  {RETURN_REASON_OPTIONS.map((opt) => (
+                    <option key={opt.code} value={opt.code}>
+                      {opt.label}
+                    </option>
+                  ))}
+                </ProjectSelect>
+                <div className="mt-1.5 text-[11px] font-semibold text-[#8C8889]">
+                  {RETURN_REASON_OPTIONS.find((opt) => opt.code === reason)?.helper}
                 </div>
-                <div className="mt-3 grid gap-2">
-                  {RETURN_REASON_OPTIONS.map((option) => {
-                    const active = option.code === reason;
-                    return (
-                      <button
-                        key={option.code}
-                        type="button"
-                        onClick={() => onChangeReason(option.code)}
-                        className={cn(
-                          "rounded-[12px] border px-3 py-2 text-left transition",
-                          active
-                            ? "border-[#11120d] bg-[#11120d] text-[#FFFFFF]"
-                            : "border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] hover:bg-[#F3F4F6]",
-                        )}
-                      >
-                        <div className="text-[12px] font-extrabold">
-                          {option.label}
-                        </div>
-                        <div
-                          className={cn(
-                            "mt-0.5 text-[11px] font-semibold",
-                            active ? "text-[#E5E7EB]" : "text-[#8C8889]",
-                          )}
-                        >
-                          {option.helper}
-                        </div>
-                      </button>
-                    );
-                  })}
-                </div>
+                <input
+                  type="text"
+                  value={note}
+                  onChange={(event) => onChangeNote(event.target.value)}
+                  placeholder="Type details or manual reason..."
+                  className="mt-3 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 py-2.5 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
+                />
               </div>
 
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-                <div className="text-[12px] font-extrabold uppercase text-[#565449]">
+              <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
+                <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
                   Refund method
                 </div>
-                <div className="mt-3 grid grid-cols-2 gap-2">
+                <div className="mt-2 grid grid-cols-2 gap-2">
                   {(["CASH", "ESEWA"] as const).map((method) => (
                     <button
                       key={method}
                       type="button"
                       onClick={() => onChangeRefundMethod(method)}
                       className={cn(
-                        "h-[40px] rounded-[12px] border text-[12px] font-extrabold transition",
+                        "h-[40px] rounded-[12px] border text-[12.5px] font-extrabold transition",
                         refundMethod === method
                           ? "border-[#11120d] bg-[#11120d] text-[#FFFFFF]"
                           : "border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] hover:bg-[#F3F4F6]",
@@ -1408,46 +1681,40 @@ function InvoiceReturnRequestModal({
                 </div>
               </div>
 
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-4">
-                <label className="block text-[12px] font-extrabold uppercase text-[#565449]">
-                  Note
-                </label>
-                <textarea
-                  value={note}
-                  onChange={(event) => onChangeNote(event.target.value)}
-                  placeholder="Condition, customer comment, exchange details..."
-                  rows={4}
-                  className="mt-2 w-full resize-none rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 py-3 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
-                />
-              </div>
-
-              <div className="rounded-[16px] border border-[#CFCFD3] bg-[#F3F4F6] p-4">
+              <div className="rounded-[16px] border border-[#DADDE3] bg-[#F8FAFC] p-4 shadow-sm">
                 <div className="text-[12px] font-extrabold uppercase text-[#565449]">
-                  Summary
+                  Refund Breakdown
                 </div>
-                <div className="mt-4 space-y-3 text-[13px]">
+                <div className="mt-3 space-y-2.5 text-[13px]">
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Items</span>
-                    <span className="font-extrabold text-[#000000]">
-                      {selectedLines.length} line(s)
+                    <span className="font-bold text-[#8C8889]">Items Gross</span>
+                    <span className="font-mono font-extrabold text-[#000000]">
+                      {formatNpr(rawGrossReturn)}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Units</span>
-                    <span className="font-extrabold text-[#000000]">
-                      {returnUnits}
-                    </span>
-                  </div>
+                  {discountAdjustmentAmount > 0 ? (
+                    <div className="flex items-center justify-between gap-3 text-amber-800">
+                      <span className="font-bold">Discount Adj.</span>
+                      <span className="font-mono font-extrabold">
+                        -{formatNpr(discountAdjustmentAmount)}
+                      </span>
+                    </div>
+                  ) : null}
                   <div className="border-t border-dashed border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Refund est.</span>
-                    <span className="font-mono font-extrabold text-[#000000]">
+                    <span className="font-bold text-[#11120d]">Estimated Refund</span>
+                    <span className="font-mono text-[15px] font-extrabold text-[#179B4D]">
                       {formatNpr(estimatedRefund)}
                     </span>
                   </div>
-                  <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#8C8889]">Reason</span>
-                    <span className="text-right font-extrabold text-[#000000]">
+                  {isCappedAtRemaining ? (
+                    <div className="rounded-[10px] bg-amber-50 p-2.5 text-[11px] font-bold text-amber-800 border border-amber-200">
+                      Refund capped at remaining paid balance ({formatNpr(remainingRefundable)}).
+                    </div>
+                  ) : null}
+                  <div className="flex items-center justify-between gap-3 text-[11px] text-[#8C8889] pt-1">
+                    <span>Reason</span>
+                    <span className="text-right font-bold text-[#000000]">
                       {getReturnReasonLabel(reason)}
                     </span>
                   </div>
@@ -1463,28 +1730,29 @@ function InvoiceReturnRequestModal({
           </div>
         </div>
 
-        <div className="border-t border-[#CFCFD3] bg-[#FFFFFF] px-5 py-4">
-          <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-            <div className="flex flex-wrap gap-3 text-[12px] font-bold text-[#8C8889]">
-              <span>{selectedLines.length} line(s)</span>
-              <span>{returnUnits} unit(s)</span>
-              <span>{formatNpr(estimatedRefund)} estimated</span>
+        <div className="shrink-0 border-t border-[#DADDE3] bg-[#FFFFFF] px-4 sm:px-5 py-3 sm:py-4">
+          <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+            <div className="flex items-center justify-between sm:justify-start gap-3 text-[12px] font-bold text-[#8C8889]">
+              <span>{selectedLines.length} line(s) · {returnUnits} unit(s)</span>
+              <span className="text-[#11120d] font-extrabold text-[13px] sm:text-[14px]">
+                {formatNpr(estimatedRefund)} estimated
+              </span>
             </div>
 
-            <div className="flex items-center justify-end gap-3">
+            <div className="flex items-center gap-2.5">
               <button
                 type="button"
-                onClick={onClose}
+                onClick={handleAttemptClose}
                 disabled={busy}
-                className="h-[42px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
+                className="flex-1 sm:flex-initial h-[42px] rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
               >
-                Back
+                Cancel
               </button>
               <button
                 type="button"
                 onClick={onSubmit}
                 disabled={busy || selectedLines.length === 0}
-                className="h-[42px] rounded-[14px] border-2 border-[#11120d] bg-[#11120d] px-4 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
+                className="flex-1 sm:flex-initial h-[42px] rounded-[14px] bg-[#11120d] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-40"
               >
                 {busy ? "Submitting..." : "Submit Return"}
               </button>
@@ -1492,7 +1760,22 @@ function InvoiceReturnRequestModal({
           </div>
         </div>
       </div>
-    </div>
+
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard return request?"
+        message="You have unsaved return quantities or details. Are you sure you want to discard them?"
+        confirmLabel="Discard & Close"
+        cancelLabel="Keep Editing"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmDiscardOpen(false);
+          onClose();
+        }}
+        onClose={() => setConfirmDiscardOpen(false)}
+      />
+    </div>,
+    document.body,
   );
 }
 
@@ -1756,6 +2039,8 @@ function InvoiceEditModal({
   onMarkPaid,
   onCancelInvoice,
   onModifyInvoice,
+  onReturnInvoice,
+  canReturn,
 }: {
   invoice: AppInvoice | null;
   paymentMethod: InvoiceEditPaymentMethod;
@@ -1769,44 +2054,87 @@ function InvoiceEditModal({
   onMarkPaid: () => void;
   onCancelInvoice: () => void;
   onModifyInvoice: () => void;
+  onReturnInvoice?: () => void;
+  canReturn?: boolean;
 }) {
-  if (!invoice) return null;
+  useBodyScrollLock(Boolean(invoice));
+  const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
+  const [pendingAction, setPendingAction] = useState<"close" | "return" | null>(
+    null,
+  );
+
+  const isDirty = paymentAmount.trim().length > 0;
+
+  function handleAttemptClose() {
+    if (isDirty && !busy) {
+      setPendingAction("close");
+      setConfirmDiscardOpen(true);
+    } else {
+      onClose();
+    }
+  }
+
+  function handleAttemptReturn() {
+    if (isDirty && !busy) {
+      setPendingAction("return");
+      setConfirmDiscardOpen(true);
+    } else {
+      onReturnInvoice?.();
+    }
+  }
+
+  useEffect(() => {
+    if (!invoice) return;
+    function handleKeyDown(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        handleAttemptClose();
+      }
+    }
+    window.addEventListener("keydown", handleKeyDown);
+    return () => window.removeEventListener("keydown", handleKeyDown);
+  }, [invoice, isDirty, busy]);
+
+  if (!invoice || typeof document === "undefined") return null;
 
   const paymentLocked =
     invoice.status === "Paid" || invoice.status === "Cancelled";
   const canSettle = !paymentLocked && invoice.dueAmount > 0; // only unpaid or partial invoices with due left can be updated
 
-  return (
-    <div className="app-modal-layer fixed inset-0">
+  return createPortal(
+    <div className="app-modal-layer fixed inset-0 z-[120]">
       <button
         type="button"
         className="absolute inset-0 bg-[#000000]/40 backdrop-blur-sm transition-all"
-        onClick={onClose}
+        onClick={handleAttemptClose}
         aria-label="Close"
       />
-      <div className="absolute left-1/2 top-1/2 w-[560px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 rounded-[20px] border-2 border-[#CFCFD3] bg-[#FFFFFF]  overflow-hidden">
-        <div className="p-5 border-b border-[#CFCFD3] flex items-center justify-between">
-          <div>
-            <div className="text-[12px] font-extrabold text-[#8C8889] uppercase ">
+      <div className="absolute left-1/2 top-1/2 flex max-h-[92vh] max-h-[92dvh] w-[560px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-2xl">
+        <div className="shrink-0 flex items-start justify-between gap-3 border-b border-[#E5E7EB] p-4 sm:p-5 bg-white">
+          <div className="min-w-0 flex-1">
+            <div className="text-[11px] font-extrabold uppercase tracking-[0.08em] text-[#64748B]">
               Edit invoice
             </div>
-            <div className="text-[18px] font-extrabold text-[#000000] mt-1">
+            <div className="mt-0.5 truncate text-[18px] sm:text-[20px] font-extrabold text-[#000000]">
               {invoice.invoiceNo}
+            </div>
+            <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889] truncate">
+              {invoice.customerName} | Original {formatNpr(invoice.netTotal)}
             </div>
           </div>
           <button
             type="button"
-            onClick={onClose}
-            className="w-[38px] h-[38px] rounded-[12px] border-2 border-[#CFCFD3] bg-[#FFFFFF] hover:bg-[#CFCFD3] flex items-center justify-center text-[#000000] transition"
+            onClick={handleAttemptClose}
+            className="flex h-[38px] w-[38px] shrink-0 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] transition hover:bg-[#F3F4F6]"
             aria-label="Close"
           >
             <Icon name="close" />
           </button>
         </div>
 
-        <div className="p-5 space-y-4">
+        <div className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-5 space-y-4">
           <div>
-            <div className="block text-[12px] font-extrabold text-[#8C8889] uppercase  mb-2">
+            <div className="block text-[12px] font-extrabold text-[#8C8889] uppercase mb-2">
               Payment method
             </div>
             <div className="grid grid-cols-2 gap-3">
@@ -1821,7 +2149,7 @@ function InvoiceEditModal({
                       ? method === "Cash"
                         ? "bg-[#000000] text-[#FFFFFF] border-[#000000]"
                         : "bg-[#EAF8EF] text-[#179B4D] border-[#9DD8B2]"
-                      : "bg-[#FFFFFF] text-[#000000] border-[#CFCFD3] hover:bg-[#CFCFD3]",
+                      : "bg-[#FFFFFF] text-[#000000] border-[#CFCFD3] hover:bg-[#F3F4F6]",
                   )}
                 >
                   {method === "Cash" ? "Cash" : "eSewa"}
@@ -1830,41 +2158,50 @@ function InvoiceEditModal({
             </div>
           </div>
 
-          <div className="grid grid-cols-2 gap-3 text-[13px]">
-            <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
-              <div className="text-[#8C8889] font-bold">Customer</div>
-              <div className="text-[#000000] font-extrabold mt-1">
+          <div className="grid grid-cols-2 gap-2.5 sm:gap-3 text-[13px]">
+            <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+              <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Customer</div>
+              <div className="text-[#000000] font-extrabold mt-1 truncate">
                 {invoice.customerName}
               </div>
-              <div className="text-[12px] text-[#8C8889] mt-1">
+              <div className="text-[11px] text-[#8C8889] mt-0.5 truncate">
                 {invoice.customerSubtitle}
               </div>
             </div>
 
-            <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
-              <div className="text-[#8C8889] font-bold">Status</div>
-              <div className="mt-2">
+            <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+              <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Status</div>
+              <div className="mt-1.5">
                 <InvoiceStatusChip status={invoice.status} />
               </div>
             </div>
 
-            <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
-              <div className="text-[#8C8889] font-bold">Total</div>
-              <div className="font-mono font-extrabold text-[#000000] mt-1">
+            <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+              <div className="text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Total</div>
+              <div className="font-mono text-[14px] font-extrabold text-[#000000] mt-1">
                 {formatNpr(invoice.netTotal)}
               </div>
             </div>
 
-            <div className="rounded-[14px] border border-[#CFCFD3] bg-[#CFCFD3]/20 p-3">
-              <div className="text-[#8C8889] font-bold">Paid / Due</div>
-              <div className="font-mono font-extrabold text-[#000000] mt-1">
-                {formatNpr(invoice.paidAmount)} / {formatNpr(invoice.dueAmount)}
+            <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-2.5 sm:p-3 flex flex-col justify-center gap-1.5">
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[10px] sm:text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Paid</span>
+                <span className="font-mono text-[12.5px] sm:text-[13px] font-extrabold text-[#000000]">
+                  {formatNpr(invoice.paidAmount)}
+                </span>
+              </div>
+              <div className="h-px bg-[#E5E7EB]" />
+              <div className="flex items-center justify-between gap-1">
+                <span className="text-[10px] sm:text-[10.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Due</span>
+                <span className={cn("font-mono text-[12.5px] sm:text-[13px] font-extrabold", invoice.dueAmount > 0 ? "text-[#BE123C]" : "text-[#179B4D]")}>
+                  {formatNpr(invoice.dueAmount)}
+                </span>
               </div>
             </div>
           </div>
 
           <div>
-            <label className="block text-[12px] font-extrabold text-[#8C8889] uppercase  mb-2">
+            <label className="block text-[12px] font-extrabold text-[#8C8889] uppercase mb-2">
               Add payment amount
             </label>
             <input
@@ -1907,12 +2244,12 @@ function InvoiceEditModal({
             </div>
           ) : null}
 
-          <div className="grid grid-cols-1 gap-3">
+          <div className="grid grid-cols-1 gap-2.5 pt-1">
             <button
               type="button"
               onClick={onAddPayment}
               disabled={busy || !canSettle}
-              className="h-[46px] rounded-[14px] bg-[#000000] text-[#FFFFFF] font-extrabold hover:bg-[#8C8889] disabled:opacity-50 disabled:pointer-events-none transition"
+              className="h-[46px] rounded-[14px] bg-[#000000] text-[#FFFFFF] font-extrabold hover:bg-[#2a2c27] disabled:opacity-50 disabled:pointer-events-none transition"
             >
               {busy
                 ? "Saving..."
@@ -1925,19 +2262,33 @@ function InvoiceEditModal({
               type="button"
               onClick={onMarkPaid}
               disabled={busy || !canSettle}
-              className="h-[46px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] font-extrabold hover:bg-[#CFCFD3] disabled:opacity-50 disabled:pointer-events-none transition"
+              className="h-[46px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] font-extrabold hover:bg-[#F3F4F6] disabled:opacity-50 disabled:pointer-events-none transition"
             >
               Mark Fully Paid (Cash)
             </button>
 
-            <button
-              type="button"
-              onClick={onModifyInvoice}
-              disabled={busy || invoice.status === "Cancelled"}
-              className="h-[46px] rounded-[14px] border-2 border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F] font-extrabold hover:bg-amber-100 disabled:opacity-50 disabled:pointer-events-none transition"
-            >
-              Modify with Credit Note
-            </button>
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+              <button
+                type="button"
+                onClick={onModifyInvoice}
+                disabled={busy || invoice.status === "Cancelled"}
+                className="h-[46px] rounded-[14px] border-2 border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F] font-extrabold hover:bg-amber-100 disabled:opacity-50 disabled:pointer-events-none transition"
+              >
+                Modify with Credit Note
+              </button>
+
+              {canReturn ? (
+                <button
+                  type="button"
+                  onClick={handleAttemptReturn}
+                  disabled={busy}
+                  className="h-[46px] rounded-[14px] border-2 border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D] font-extrabold hover:bg-[#DFF3E7] disabled:opacity-50 disabled:pointer-events-none transition flex items-center justify-center gap-2"
+                >
+                  <Icon name="assignment_return" />
+                  Return Items
+                </button>
+              ) : null}
+            </div>
 
             <button
               type="button"
@@ -1950,7 +2301,26 @@ function InvoiceEditModal({
           </div>
         </div>
       </div>
-    </div>
+
+      <ConfirmDialog
+        open={confirmDiscardOpen}
+        title="Discard payment changes?"
+        message="You have entered an unsaved payment amount. Discarding will clear your entry."
+        confirmLabel="Discard & Proceed"
+        cancelLabel="Keep Editing"
+        tone="danger"
+        onConfirm={() => {
+          setConfirmDiscardOpen(false);
+          if (pendingAction === "return") {
+            onReturnInvoice?.();
+          } else {
+            onClose();
+          }
+        }}
+        onClose={() => setConfirmDiscardOpen(false)}
+      />
+    </div>,
+    document.body,
   );
 }
 
@@ -2027,6 +2397,8 @@ export default function CashierInvoicesPage() {
     useState<ReturnRefundMethod>("CASH");
   const [returnError, setReturnError] = useState("");
   const [savingReturn, setSavingReturn] = useState(false);
+  const [returnOrigin, setReturnOrigin] = useState<"detail" | "edit" | null>(null);
+  const [returnOriginInvoiceId, setReturnOriginInvoiceId] = useState<string | null>(null);
   const [returnRequests, setReturnRequests] = useState<AppReturnRequest[]>([]);
   const [returnRequestsLoading, setReturnRequestsLoading] = useState(false);
   const [returnRequestsError, setReturnRequestsError] = useState("");
@@ -2515,14 +2887,37 @@ export default function CashierInvoicesPage() {
     return (
       invoice.status !== "Cancelled" &&
       invoice.paidAmount > 0 &&
-      invoice.items.some((item) => item.id && item.qty > 0)
+      invoice.items.some(
+        (item) =>
+          item.id &&
+          (item.remainingReturnableQty !== undefined
+            ? item.remainingReturnableQty > 0
+            : item.qty > 0),
+      )
     );
   }
 
-  function openReturnRequest(invoice: AppInvoice) {
+  function openReturnRequest(invoice: AppInvoice, origin?: "detail" | "edit") {
     if (!canRequestReturn(invoice)) {
       setReturnError("Only paid, non-cancelled invoices with items can be returned.");
       return;
+    }
+
+    const effectiveOrigin =
+      origin ||
+      (selectedInvoiceId === invoice.id
+        ? "detail"
+        : editInvoice?.id === invoice.id
+          ? "edit"
+          : null);
+    setReturnOrigin(effectiveOrigin);
+    setReturnOriginInvoiceId(invoice.id);
+
+    // Cleanly close parent modal to avoid stacked/overlapping modals
+    if (effectiveOrigin === "detail") {
+      closeInvoice();
+    } else if (effectiveOrigin === "edit") {
+      closeEditInvoice();
     }
 
     setReturnInvoice(invoice);
@@ -2532,7 +2927,10 @@ export default function CashierInvoicesPage() {
         productId: item.productId,
         name: item.name,
         sku: item.sku,
-        qtyPurchased: Math.max(0, item.qty),
+        qtyPurchased:
+          item.remainingReturnableQty !== undefined
+            ? item.remainingReturnableQty
+            : Math.max(0, item.qty),
         qtyReturning: 0,
         unitPrice: item.unitPrice,
       })),
@@ -2543,13 +2941,30 @@ export default function CashierInvoicesPage() {
     setReturnError("");
   }
 
-  function closeReturnRequest() {
+  function closeReturnRequest(submitted: boolean = false) {
+    const prevOrigin = returnOrigin;
+    const prevOriginId = returnOriginInvoiceId;
+
     setReturnInvoice(null);
     setReturnLines([]);
     setReturnReason("CUSTOMER_REQUEST");
     setReturnRefundMethod("CASH");
     setReturnNote("");
     setReturnError("");
+    setReturnOrigin(null);
+    setReturnOriginInvoiceId(null);
+
+    // If cancelled without submitting, restore previously open modal
+    if (!submitted && prevOrigin && prevOriginId) {
+      if (prevOrigin === "detail") {
+        void openInvoice(prevOriginId);
+      } else if (prevOrigin === "edit") {
+        const found = invoices.find((inv) => inv.id === prevOriginId);
+        if (found) {
+          openEditInvoice(found);
+        }
+      }
+    }
   }
 
   function changeReturnQty(invoiceItemId: string, qty: number) {
@@ -2597,7 +3012,8 @@ export default function CashierInvoicesPage() {
       });
 
       showToast("success", `Return request submitted for ${returnInvoice.invoiceNo}.`);
-      closeReturnRequest();
+      closeReturnRequest(true);
+      await loadInvoices();
       if (isAdminView) {
         await loadReturnRequests(returnReviewStatus);
       }
@@ -3051,9 +3467,14 @@ export default function CashierInvoicesPage() {
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
-            <span>Paid / Due</span>
+            <span>Paid amount</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(editInvoice.paidAmount)} /{" "}
+              {formatNpr(editInvoice.paidAmount)}
+            </span>
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <span>Remaining due</span>
+            <span className={cn("font-extrabold", editInvoice.dueAmount > 0 ? "text-rose-700" : "text-emerald-700")}>
               {formatNpr(editInvoice.dueAmount)}
             </span>
           </div>
@@ -3508,9 +3929,9 @@ export default function CashierInvoicesPage() {
             </div>
           </div>
 
-          <div className="flex w-full flex-col gap-2 sm:flex-row xl:w-auto xl:min-w-[600px]">
+          <div className="flex w-full items-center gap-2 xl:w-auto xl:min-w-[600px]">
             <div className="flex h-[42px] min-w-0 flex-1 items-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 transition focus-within:border-[#11120d]">
-              <Icon name="search" className="text-[18px] text-[#8C8889]" />
+              <Icon name="search" className="text-[18px] text-[#8C8889] shrink-0" />
               <input
                 value={query}
                 onChange={(e) => {
@@ -3522,16 +3943,23 @@ export default function CashierInvoicesPage() {
               />
             </div>
 
-            <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden" />
+            <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden shrink-0" />
 
             {isAdminView ? (
               <button
                 type="button"
                 onClick={openReturnReview}
-                className="inline-flex h-[42px] items-center justify-center gap-2 rounded-[12px] border border-[#9DD8B2] bg-[#EAF8EF] px-3 text-[12px] font-extrabold text-[#179B4D] transition hover:bg-[#DFF3E7]"
+                className="inline-flex h-[42px] shrink-0 items-center justify-center gap-1.5 rounded-[12px] border border-[#9DD8B2] bg-[#EAF8EF] px-2.5 sm:px-3 text-[12px] font-extrabold text-[#179B4D] transition hover:bg-[#DFF3E7]"
+                title="Return requests"
+                aria-label="Return requests"
               >
                 <Icon name="assignment_return" className="text-[17px]" />
-                Returns{returnRequests.length > 0 ? ` (${returnRequests.length})` : ""}
+                <span className="hidden sm:inline">Returns</span>
+                {returnRequests.length > 0 ? (
+                  <span className="inline-flex h-4.5 min-w-4.5 items-center justify-center rounded-full bg-[#179B4D] px-1 text-[10px] font-extrabold text-white">
+                    {returnRequests.length}
+                  </span>
+                ) : null}
               </button>
             ) : null}
           </div>
@@ -3869,7 +4297,7 @@ export default function CashierInvoicesPage() {
           {pageItems.map((invoice) => (
             <div
               key={invoice.id}
-              className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm"
+              className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-3.5 sm:p-4 shadow-sm"
             >
               <div className="flex items-start justify-between gap-3">
                 <div className="min-w-0">
@@ -3905,16 +4333,16 @@ export default function CashierInvoicesPage() {
                 {getCompactInvoiceSummary(invoice)}
               </div>
 
-              <div className="mt-3 flex flex-wrap items-center justify-between gap-3">
-                <div className="flex flex-wrap items-center gap-2">
+              <div className="mt-3 flex items-center justify-between gap-2">
+                <div className="flex min-w-0 items-center gap-1.5">
                   <InvoiceStatusChip status={invoice.status} />
                   <PaymentMethodChip method={invoice.paymentMethod} showIcon />
                 </div>
-                <div className="flex gap-2">
+                <div className="flex shrink-0 items-center gap-1.5">
                   <button
                     type="button"
                     onClick={() => openInvoice(invoice.id)}
-                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF] active:scale-95"
                     title="View invoice"
                     aria-label={`View invoice ${invoice.invoiceNo}`}
                   >
@@ -3923,7 +4351,7 @@ export default function CashierInvoicesPage() {
                   <button
                     type="button"
                     onClick={() => openEditInvoice(invoice)}
-                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF] active:scale-95"
                     title="Edit invoice"
                     aria-label={`Edit invoice ${invoice.invoiceNo}`}
                   >
@@ -3932,7 +4360,7 @@ export default function CashierInvoicesPage() {
                   <button
                     type="button"
                     onClick={() => openInvoicePrint(invoice.id)}
-                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]"
+                    className="flex h-9 w-9 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#11120d] hover:text-[#FFFFFF] active:scale-95"
                     title="Print invoice"
                     aria-label={`Print invoice ${invoice.invoiceNo}`}
                   >
@@ -3985,7 +4413,7 @@ export default function CashierInvoicesPage() {
             <>
               <button
                 type="button"
-                onClick={() => openReturnRequest(detailInvoice)}
+                onClick={() => openReturnRequest(detailInvoice, "detail")}
                 disabled={!canRequestReturn(detailInvoice)}
                 className="h-[44px] rounded-[14px] border-2 border-[#9DD8B2] bg-[#EAF8EF] px-4 font-extrabold text-[#179B4D] transition hover:bg-[#DFF3E7] disabled:cursor-not-allowed disabled:opacity-50 flex items-center justify-center gap-2"
               >
@@ -4011,6 +4439,10 @@ export default function CashierInvoicesPage() {
         onCancelInvoice={handleCancelInvoice}
         onModifyInvoice={() => {
           if (editInvoice) openModifyInvoice(editInvoice);
+        }}
+        canReturn={editInvoice ? canRequestReturn(editInvoice) : false}
+        onReturnInvoice={() => {
+          if (editInvoice) openReturnRequest(editInvoice, "edit");
         }}
       />
 

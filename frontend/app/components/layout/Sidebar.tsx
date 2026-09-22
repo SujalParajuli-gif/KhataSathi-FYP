@@ -263,7 +263,7 @@ export default function Sidebar({
       {mobileEnabled && !isMobileOpen && allowEdgeGesture ? (
         <div
           aria-hidden="true"
-          className="fixed bottom-0 left-0 top-[68px] z-[100] w-9 touch-pan-y lg:hidden"
+          className="fixed bottom-0 left-0 top-[68px] z-[40] w-3 touch-pan-y lg:hidden pointer-events-auto"
           style={{ ...openDrawerGestureStyle, overscrollBehaviorX: "none" }}
           {...openDrawerGestureProps}
         />

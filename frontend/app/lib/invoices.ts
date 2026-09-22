@@ -22,6 +22,7 @@ export type InvoiceItemSummary = {
   overrideReason?: string;
   overrideByName?: string;
   overrideAt?: string;
+  remainingReturnableQty?: number;
   lineTotal: number;
 };
 
@@ -82,6 +83,7 @@ export type AppInvoice = {
   itemSummary: string; // short preview like "Product A x2, Product B x1 +3 more"
   payments: InvoicePaymentSummary[];
   creditNotes: InvoiceCreditNoteSummary[];
+  reservedRefundTotal?: number;
   cancelledAt?: string;
   cancelledByName?: string;
   cancelledByRole?: string;
@@ -210,11 +212,14 @@ export function buildInvoiceItemSummary(items: InvoiceItemSummary[]) {
 
 // extracting the payment reference (e.g., eSewa transaction code) from the first payment that has one
 export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
-  return (
+  const ref =
     invoice.payments.find(
       (payment) => payment.kind !== "REFUND" && payment.reference,
-    )?.reference || ""
-  );
+    )?.reference || "";
+  if (ref.trim().toLowerCase() === "expired pending esewa payment") {
+    return "";
+  }
+  return ref;
 }
 
 // --
@@ -224,33 +229,60 @@ export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
 export function normalizeInvoice(raw: any): AppInvoice {
   const createdAt = String(raw.createdAt || new Date().toISOString());
 
+  // extracting active return requests if present to calculate remaining returnable items and reserved refunds
+  const returnRequests = Array.isArray(raw.returnRequests) ? raw.returnRequests : [];
+  const reservedRefundTotal = returnRequests.reduce(
+    (sum: number, req: any) => sum + Number(req.refundAmount || 0),
+    0,
+  );
+  const alreadyReturnedByItemId = new Map<string, number>();
+  for (const req of returnRequests) {
+    for (const item of req.items || []) {
+      const invoiceItemId = String(item.invoiceItemId || "");
+      if (invoiceItemId) {
+        alreadyReturnedByItemId.set(
+          invoiceItemId,
+          (alreadyReturnedByItemId.get(invoiceItemId) || 0) + Number(item.qtyReturned || 0),
+        );
+      }
+    }
+  }
+
   // normalizing each invoice item — handles different field name patterns from the API
-  const items: InvoiceItemSummary[] = (raw.items || []).map((item: any) => ({
-    id:
+  const items: InvoiceItemSummary[] = (raw.items || []).map((item: any) => {
+    const qty = Number(item.qty || 0);
+    const itemId =
       item.id ||
-      `${item.productId || item.product?.id || item.product?.sku || item.product?.name}-${item.qty}`,
-    productId: item.productId || item.product?.id || undefined,
-    name: item.product?.name || item.name || "Unknown item",
-    sku: item.product?.sku || undefined,
-    barcode: item.product?.barcode || undefined,
-    qty: Number(item.qty || 0),
-    unitPrice: Number(item.appliedUnitPrice || item.unitPrice || 0),
-    originalUnitPrice:
-      item.originalUnitPrice === null || item.originalUnitPrice === undefined
-        ? undefined
-        : Number(item.originalUnitPrice || 0),
-    overrideUnitPrice:
-      item.overrideUnitPrice === null || item.overrideUnitPrice === undefined
-        ? undefined
-        : Number(item.overrideUnitPrice || 0),
-    overrideReason: item.overrideReason || undefined,
-    overrideByName: item.overrideBy?.name || undefined,
-    overrideAt: item.overrideAt || undefined,
-    lineTotal: Number(
-      item.lineTotal ||
-        Number(item.qty || 0) * Number(item.appliedUnitPrice || item.unitPrice || 0),
-    ),
-  }));
+      `${item.productId || item.product?.id || item.product?.sku || item.product?.name}-${qty}`;
+    const alreadyReturned = alreadyReturnedByItemId.get(itemId) || 0;
+    const remainingReturnableQty = Math.max(0, qty - alreadyReturned);
+
+    return {
+      id: itemId,
+      productId: item.productId || item.product?.id || undefined,
+      name: item.product?.name || item.name || "Unknown item",
+      sku: item.product?.sku || undefined,
+      barcode: item.product?.barcode || undefined,
+      qty,
+      unitPrice: Number(item.appliedUnitPrice || item.unitPrice || 0),
+      originalUnitPrice:
+        item.originalUnitPrice === null || item.originalUnitPrice === undefined
+          ? undefined
+          : Number(item.originalUnitPrice || 0),
+      overrideUnitPrice:
+        item.overrideUnitPrice === null || item.overrideUnitPrice === undefined
+          ? undefined
+          : Number(item.overrideUnitPrice || 0),
+      overrideReason: item.overrideReason || undefined,
+      overrideByName: item.overrideBy?.name || undefined,
+      overrideAt: item.overrideAt || undefined,
+      remainingReturnableQty,
+      lineTotal: Number(
+        item.lineTotal ||
+          qty * Number(item.appliedUnitPrice || item.unitPrice || 0),
+      ),
+    };
+  });
 
   // normalizing each payment record
   const payments: InvoicePaymentSummary[] = (raw.payments || []).map((payment: any) => ({
@@ -365,6 +397,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
     itemSummary: buildInvoiceItemSummary(items),
     payments,
     creditNotes,
+    reservedRefundTotal,
     cancelledAt: raw.cancelledAt || undefined,
     cancelledByName: raw.cancelledBy?.name || undefined,
     cancelledByRole: raw.cancelledBy?.role || undefined,
