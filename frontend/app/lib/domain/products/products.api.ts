@@ -207,9 +207,13 @@ export async function fetchPriceLookupProducts(
   q: ProductsQuery,
   options?: { signal?: AbortSignal },
 ) {
+  const brandId = getBrandIdByName(q.brand);
+  if (q.brand && q.brand !== "All Brands" && !brandId) {
+    throw new Error("The selected brand could not be resolved. Reload the filters or choose All Brands.");
+  }
   const response = await listPriceLookupProductsApi({
     search: q.q,
-    brand: getBrandIdByName(q.brand),
+    brand: brandId,
     category: mapCategoryFilter(q.category),
     active: mapStatusToActive(q.status),
     lowStock: q.lowOnly || q.stockStatus === "low" ? "true" : undefined,

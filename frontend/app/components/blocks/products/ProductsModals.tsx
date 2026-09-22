@@ -1866,28 +1866,12 @@ export default function ProductsModals({
                           alt={form.name || "Product preview"}
                           title={form.name || "Product preview"}
                           subtitle={form.sku ? `SKU: ${form.sku}` : undefined}
-                          enablePreview="desktop"
+                          enablePreview={true}
                           imgClassName="h-full w-full object-contain p-1"
                           className="flex h-full w-full items-center justify-center overflow-hidden rounded-[10px] bg-white"
                           fallback={<GoogleIcon name="inventory_2" sizePx={36} className="text-[#8C8889]" />}
                         />
-                        <div className="absolute inset-0 flex items-center justify-center gap-1.5 rounded-[10px] bg-black/55 opacity-0 backdrop-blur-[1px] transition group-hover:opacity-100">
-                          <label
-                            htmlFor="product-image-dropzone"
-                            className="inline-flex cursor-pointer items-center justify-center rounded-[7px] bg-white/95 px-2 py-1 text-[11px] font-bold text-[#0F172A] hover:bg-white"
-                            title="Change image"
-                          >
-                            <GoogleIcon name="photo_camera" className="text-[14px]" />
-                          </label>
-                          <button
-                            type="button"
-                            onClick={onClearProductImage}
-                            className="inline-flex items-center justify-center rounded-[7px] bg-rose-600 px-2 py-1 text-[11px] font-bold text-white hover:bg-rose-700"
-                            title="Remove image"
-                          >
-                            <GoogleIcon name="delete" className="text-[14px]" />
-                          </button>
-                        </div>
+
                       </div>
                     ) : (
                       <label
@@ -1912,20 +1896,20 @@ export default function ProductsModals({
                     </div>
                   ) : null}
                   {productImagePreview || form.imageUrl ? (
-                    <div className="mt-1.5 flex w-full justify-center gap-2">
-                      <label
-                        htmlFor="product-image-dropzone"
-                        className="cursor-pointer text-[11px] font-bold text-[#2563EB] hover:underline"
+                    <div className="mt-2 flex w-full flex-wrap justify-center gap-2">
+                      <button
+                        type="button"
+                        onClick={() => document.getElementById("product-image-dropzone")?.click()}
+                        className="min-h-11 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-800"
                       >
-                        Change
-                      </label>
-                      <span className="text-[#CBD5E1]">·</span>
+                        Change photo
+                      </button>
                       <button
                         type="button"
                         onClick={onClearProductImage}
-                        className="text-[11px] font-bold text-rose-600 hover:underline"
+                        className="min-h-11 rounded-lg border border-rose-200 bg-white px-3 text-xs font-semibold text-rose-700"
                       >
-                        Remove
+                        Remove photo
                       </button>
                     </div>
                   ) : null}
@@ -3677,8 +3661,6 @@ export default function ProductsModals({
                 <ImportProcessingWidget
                   batchId={activeImportBatchId}
                   fileName={importFile?.name}
-                  sourceType={importResult?.sourceType || (importProcessingKind === "pdf" ? "PDF" : importProcessingKind === "image" ? "IMAGE" : "CSV")}
-                  supplier={importSupplier}
                   onComplete={(completedBatchId) => {
                     onCompleteImportBatch?.(completedBatchId);
                   }}

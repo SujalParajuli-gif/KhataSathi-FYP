@@ -87,6 +87,8 @@ export function clearAuthUser() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(AUTH_KEY);
   window.localStorage.removeItem("khatasathi_token");
+  window.sessionStorage.removeItem("active_product_import_batch_id");
+  window.dispatchEvent(new CustomEvent("active_product_import_changed", { detail: { batchId: null } }));
 }
 
 // getting the current user's role — defaults to "admin" if no user is logged in

@@ -216,7 +216,7 @@ export default function AppShell({ children, statusBanner }: Props) {
         >
           Skip to main content
         </a>
-        <div className="h-dvh overflow-hidden bg-white text-slate-900">
+        <div className="h-dvh overflow-hidden bg-workspace text-ink">
           <Sidebar
             role={role}
             capabilities={capabilities}
@@ -255,7 +255,7 @@ export default function AppShell({ children, statusBanner }: Props) {
               id="app-main-content"
               data-app-scroll-container
               className={[
-                "min-h-0 flex-1 overscroll-contain bg-white",
+                "min-h-0 flex-1 overscroll-contain bg-workspace",
                 isBillingRoute
                   ? "overflow-hidden p-[12px] sm:p-[16px] lg:p-[18px]"
                   : isImportReviewRoute

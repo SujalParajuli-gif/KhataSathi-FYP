@@ -1,4 +1,5 @@
 import { importBatchStatus } from "~/lib/importBatchStatus";
+import { refreshImportTask } from "~/lib/importTaskStore";
 import type { ProductImportBatchSummary } from "~/lib/api/endpoints";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import ProjectSelect from "~/components/ui/ProjectSelect";
@@ -2351,18 +2352,16 @@ export default function ProductsPage() {
     }
   }
 
-  function cancelImportProcessing() {
-    importAbortRef.current?.abort();
+  async function cancelImportProcessing() {
     if (activeImportBatchId) {
-      void controlProductImportApi(activeImportBatchId, "cancel").catch(() => {});
-      sessionStorage.removeItem("active_product_import_batch_id");
-      window.dispatchEvent(
-        new CustomEvent("active_product_import_changed", {
-          detail: { batchId: null },
-        })
-      );
-      setActiveImportBatchId(null);
-    }
+      try {
+        await controlProductImportApi(activeImportBatchId, "cancel");
+        refreshImportTask(activeImportBatchId);
+      } catch {
+        showToast("danger", "Could not stop extraction. Your import is still available; try again.");
+        return;
+      }
+    } else importAbortRef.current?.abort();
     setImportBusy(false);
     setImportProcessingKind(null);
     setOpenImport(false);

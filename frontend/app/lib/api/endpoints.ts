@@ -918,6 +918,16 @@ export async function getProductImportBatchApi(batchId: string) {
     return res.data as ProductImportBatch;
 }
 
+export type ProductImportTaskStatus = {
+    batch: ProductImportBatchSummary;
+    coverage: { total: number; visited: number; completed: number; canRetry: boolean; outcome: string };
+};
+
+export async function getProductImportStatusApi(batchId: string, signal?: AbortSignal) {
+    const res = await api.get(`/api/products/import-batches/${encodeURIComponent(batchId)}/status`, { signal });
+    return res.data as ProductImportTaskStatus;
+}
+
 export async function getProductImportReviewApi(
     batchId: string,
     filters: {

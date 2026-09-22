@@ -1,5 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
-import { createPortal } from "react-dom";
+import { ModalFrame } from "./Modal";
 import { resolveMediaUrl, useResilientImage } from "~/hooks/useResilientImage";
 import Icon from "./Icon";
 
@@ -51,14 +51,7 @@ export default function PreviewableImage({
     return () => media.removeEventListener("change", syncViewport);
   }, [enablePreview]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-    function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") setOpen(false);
-    }
-    window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, [open]);
+
 
   if (!image.originalUrl) return <div className={className}>{fallback}</div>;
 
@@ -121,64 +114,19 @@ export default function PreviewableImage({
         ) : null}
       </button>
 
-      {open && typeof document !== "undefined"
-        ? createPortal(
-            <div
-              className="fixed inset-0 z-[260] flex items-center justify-center bg-slate-950/60 p-2 backdrop-blur-[3px] sm:p-6"
-              role="dialog"
-              aria-modal="true"
-              aria-label={`Image preview for ${title || alt}`}
-              onMouseDown={(event) =>
-                event.target === event.currentTarget && setOpen(false)
-              }
-            >
-              <div className="flex max-h-[calc(100dvh-16px)] w-full max-w-[980px] flex-col overflow-hidden rounded-[18px] border border-slate-200 bg-white shadow-2xl sm:max-h-[calc(100dvh-48px)] sm:rounded-[22px]">
-                <div className="flex items-start justify-between gap-4 border-b border-slate-200 bg-white px-4 py-4 sm:px-6">
-                  <div className="min-w-0">
-                    <div className="truncate text-[18px] font-black text-slate-950 sm:text-[20px]">
-                      {title || alt}
-                    </div>
-                    {subtitle ? (
-                      <div className="mt-1 truncate text-[12px] font-bold text-slate-500">
-                        {subtitle}
-                      </div>
-                    ) : null}
-                  </div>
-                  <div className="flex shrink-0 items-center gap-2">
-                    <a
-                      href={previewUrl}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="hidden h-[42px] items-center justify-center gap-2 rounded-[13px] border border-slate-300 bg-white px-3 text-[12px] font-black text-slate-700 transition hover:bg-[#ECEFF3] sm:flex"
-                    >
-                      <Icon name="open_in_new" sizePx={17} />
-                      Open full size
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => setOpen(false)}
-                      className="flex h-[42px] w-[42px] items-center justify-center rounded-[14px] border border-slate-300 bg-white text-slate-600 transition hover:bg-[#ECEFF3]"
-                      aria-label="Close image preview"
-                    >
-                      <Icon name="close" sizePx={24} />
-                    </button>
-                  </div>
-                </div>
-                <div className="min-h-0 flex-1 bg-slate-50 p-3 sm:p-5">
-                  <div className="flex h-full min-h-[200px] max-h-[70dvh] items-center justify-center overflow-hidden rounded-[18px] border border-slate-200 bg-white sm:min-h-[360px]">
-                    <img
-                      src={previewUrl}
-                      alt={alt}
-                      className="max-h-full max-w-full object-contain"
-                      decoding="async"
-                    />
-                  </div>
-                </div>
-              </div>
-            </div>,
-            document.body,
-          )
-        : null}
+      <ModalFrame
+        open={open}
+        title={`Image preview for ${title || alt}`}
+        description={subtitle}
+        onClose={() => setOpen(false)}
+        maxWidthClass="max-w-[980px]"
+        layer="critical"
+        headerActions={<a href={previewUrl} target="_blank" rel="noreferrer" className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-medium"><Icon name="open_in_new" sizePx={17} />Full size</a>}
+      >
+        <div className="flex max-h-[70dvh] min-h-[200px] items-center justify-center overflow-auto rounded-xl bg-inset p-2">
+          <img src={previewUrl} alt={alt} className="max-h-[65dvh] max-w-full object-contain" decoding="async" />
+        </div>
+      </ModalFrame>
     </>
   );
 }

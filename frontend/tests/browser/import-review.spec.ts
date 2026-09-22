@@ -156,12 +156,14 @@ function review(status = "DRAFT", incomplete = false) {
 }
 async function mockApp(page: Page, state: ReturnType<typeof review>, options: {failFirstPoll?:boolean; batches?:unknown[]} = {}) {
   let reads = 0;
+  let statusReads = 0;
   let contextReads = 0;
   await page.addInitScript((value) => localStorage.setItem("khatasathi_auth_user",JSON.stringify(value)),user);
   await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
     const path = new URL(route.request().url()).pathname;
     const respond = (body: unknown, status = 200) => route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
-    if (path.endsWith("/review")) { reads++; if (options.failFirstPoll && reads === 2) return respond({error:"Temporary connection problem"},503); return respond(state); }
+    if (path.endsWith("/status")) { statusReads++; if (options.failFirstPoll && statusReads === 2) return respond({error:"Temporary connection problem"},503); return respond({ batch: state.batch, coverage: state.coverage }); }
+    if (path.endsWith("/review")) { reads++; return respond(state); }
     if (path.endsWith("source-context")) { contextReads++; return respond({rows:[],columns:[],sourceType:"PDF"}); }
     if (path.endsWith("/rows") && route.request().method() === "PUT") { state.rows[0].parsed = {...state.rows[0].parsed,...route.request().postDataJSON().rows[0]}; return respond({savedCount:1,rows:state.rows}); }
     if (path.endsWith("/capabilities")) return respond({businessMode:"CATALOG_ONLY",catalogEnabled:true,inventoryEnabled:false,posEnabled:false,stockTracked:false,staffDraftRequestsEnabled:false});
@@ -175,18 +177,156 @@ async function mockApp(page: Page, state: ReturnType<typeof review>, options: {f
     if (path.endsWith("/import-templates")) return respond({templates:[]});
     return respond({});
   });
-  return { get reads() {return reads;}, get contextReads() {return contextReads;} };
+  return { get reads() {return reads;}, get statusReads() {return statusReads;}, get contextReads() {return contextReads;} };
 }
 
 test("processing recovers after a polling failure without looping on empty source context", async ({page}) => {
   const state = review("PROCESSING");
   const counters = await mockApp(page,state,{failFirstPoll:true});
   await page.goto("/products/imports/test-batch");
-  await expect(page.getByRole("status")).toContainText("Extracting Supplier Rate List");
-  await expect.poll(() => counters.reads,{timeout:12000}).toBeGreaterThanOrEqual(3);
+  await expect(page.getByRole("heading", { name: "Extracting products…" })).toBeVisible();
+  await expect.poll(() => counters.statusReads,{timeout:15000}).toBeGreaterThanOrEqual(3);
+  expect(counters.reads).toBe(1);
   state.batch.status = "DRAFT"; state.rows = [structuredClone(row)];
+  await page.getByRole("button", { name: "Review products", exact: true }).click({timeout:10000});
   await expect(page.getByRole("heading",{name:"Review item"})).toBeVisible({timeout:10000});
   expect(counters.contextReads).toBeLessThanOrEqual(3);
+});
+
+test("minimized progress stays live and completion does not navigate away", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = review("PROCESSING");
+  const counters = await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("button", { name: "Work in background" }).click();
+  await expect(page).toHaveURL(/\/products$/);
+  const task = page.getByRole("complementary", { name: "Import task" });
+  await expect(task).toContainText("Extracting products");
+  state.batch.status = "DRAFT";
+  await expect(task).toContainText("Ready for review", { timeout: 10000 });
+  await expect(page).toHaveURL(/\/products$/);
+  expect(counters.reads).toBe(1);
+  const stoppedAt = counters.statusReads;
+  await page.waitForTimeout(3000);
+  expect(counters.statusReads).toBe(stoppedAt);
+  await page.screenshot({ path: testInfo.outputPath("minimized-import-complete-mobile.png") });
+  await page.reload();
+  await expect(task).toContainText("Ready for review");
+  await task.getByRole("button", { name: "Dismiss import notification" }).click();
+  await expect(task).toHaveCount(0);
+});
+
+test("stopping asks first and cancelling remains a live state", async ({ page }) => {
+  const state = review("PROCESSING");
+  await mockApp(page, state);
+  let cancellations = 0;
+  await page.route("**/api/products/import-batches/test-batch/processing", async (route) => {
+    cancellations++;
+    state.batch.status = "CANCELLING";
+    await route.fulfill({ json: { batch: state.batch } });
+  });
+  await page.goto("/products/imports/test-batch");
+  page.once("dialog", (dialog) => dialog.dismiss());
+  await page.getByRole("button", { name: "Stop extraction", exact: true }).click();
+  expect(cancellations).toBe(0);
+  page.once("dialog", (dialog) => dialog.accept());
+  await page.getByRole("button", { name: "Stop extraction", exact: true }).click();
+  await expect(page.getByRole("heading", { name: "Stopping extraction…" })).toBeVisible();
+  expect(cancellations).toBe(1);
+  state.batch.status = "INTERRUPTED";
+  await expect(page.getByRole("heading", { name: "Extraction stopped — progress saved" })).toBeVisible({ timeout: 10000 });
+});
+
+for (const width of [390, 1440]) {
+  test(`product photo actions and preview are keyboard accessible at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mockApp(page, review());
+    await page.goto("/products");
+    await page.getByRole("button", { name: "Add Product", exact: true }).click();
+    await page.locator("#product-image-dropzone").setInputFiles({
+      name: "test.png", mimeType: "image/png",
+      buffer: Buffer.from("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aD1sAAAAASUVORK5CYII=", "base64"),
+    });
+    await expect(page.getByRole("button", { name: "Change photo", exact: true })).toBeVisible();
+    const trigger = page.getByRole("button", { name: "Preview Product preview", exact: true });
+    await trigger.click();
+    const preview = page.getByRole("dialog", { name: "Image preview for Product preview", exact: true });
+    await expect(preview).toBeVisible();
+    await expect(preview.getByRole("link", { name: "Full size" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`photo-preview-${width}.png`) });
+    await page.keyboard.press("Escape");
+    await expect(preview).toBeHidden();
+    await expect(trigger).toBeFocused();
+    await page.getByRole("button", { name: "Remove photo", exact: true }).click();
+    await expect(page.getByRole("button", { name: "Change photo", exact: true })).toHaveCount(0);
+  });
+}
+
+for (const width of [390, 1440]) {
+  test(`documents and history distinguish failed reads from empty results at ${width}px`, async ({ page }, testInfo) => {
+    await page.setViewportSize({ width, height: 900 });
+    await mockApp(page, review());
+    let fail = true;
+    await page.route("**/api/documents?*", (route) => route.fulfill({
+      status: fail ? 503 : 200, json: fail ? { error: "Unavailable" } : { documents: [], total: 0 },
+    }));
+    await page.goto("/documents");
+    await expect(page.getByRole("alert").filter({ hasText: "Documents could not be refreshed" })).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`documents-error-${width}.png`) });
+    fail = false;
+    await page.getByRole("button", { name: "Retry documents" }).click();
+    await expect(page.getByRole("button", { name: "Retry documents" })).toHaveCount(0);
+    fail = true;
+    await page.route("**/api/audit/history?*", (route) => route.fulfill({
+      status: fail ? 503 : 200, json: fail ? { error: "Unavailable" } : { events: [], total: 0, totalPages: 1 },
+    }));
+    await page.goto("/history");
+    await expect(page.getByRole("alert").filter({ hasText: "History could not be refreshed" })).toBeVisible();
+    await expect(page.getByText("No category history found.", { exact: true })).toHaveCount(0);
+    await page.screenshot({ path: testInfo.outputPath(`history-error-${width}.png`) });
+    fail = false;
+    await page.getByRole("button", { name: "Retry history" }).click();
+    await expect(page.getByText("No category history found.", { exact: true })).toBeVisible();
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  });
+}
+
+test("settings reports failed reads and retries without loading hidden sections", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 900 });
+  await mockApp(page, review());
+  let fail = true;
+  const unexpected: string[] = [];
+  page.on("request", (request) => {
+    const path = new URL(request.url()).pathname;
+    if (path === "/api/users" || path.startsWith("/api/backups") || path.startsWith("/api/cash-drawers")) unexpected.push(path);
+  });
+  await page.route("**/api/settings/business", (route) => route.fulfill({
+    status: fail ? 503 : 200, json: fail ? { error: "Unavailable" } : {},
+  }));
+  await page.goto("/settings");
+  await expect(page.getByRole("alert").filter({ hasText: "Some settings could not be loaded" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath("settings-error-mobile.png") });
+  fail = false;
+  await page.getByRole("button", { name: "Retry settings" }).click();
+  await expect(page.getByRole("alert").filter({ hasText: "Some settings could not be loaded" })).toHaveCount(0);
+  expect(unexpected).toEqual([]);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
+test("lookup starts before unneeded metadata finishes", async ({ page }) => {
+  await mockApp(page, review());
+  let releaseBrands!: () => void;
+  const brandsGate = new Promise<void>((resolve) => { releaseBrands = resolve; });
+  await page.route("**/api/brands**", async (route) => { await brandsGate; await route.fulfill({ json: [] }); });
+  let lookupReads = 0;
+  await page.route("**/api/products/price-lookup**", async (route) => {
+    lookupReads++;
+    await route.fulfill({ json: { products: [], total: 0, visibility: { canViewPurchaseCost: false, canViewWholesalePrice: false } } });
+  });
+  try {
+    await page.goto("/product-lookup");
+    await expect.poll(() => lookupReads).toBeGreaterThan(0);
+  } finally { releaseBrands(); }
 });
 
 test("dirty review navigation asks to save and incomplete coverage blocks final confirmation", async ({page}) => {

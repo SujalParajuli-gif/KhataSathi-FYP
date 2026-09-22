@@ -178,7 +178,7 @@ export function ModalFrame({
               <div
                 id={titleId}
                 className={cn(
-                  "font-extrabold text-[#000000]",
+                  "font-semibold text-ink",
                   compact ? "text-[16px]" : "text-[18px]",
                 )}
               >
@@ -188,7 +188,7 @@ export function ModalFrame({
                 <div
                   id={descriptionId}
                   className={cn(
-                    "mt-[3px] font-medium text-[#8C8889]",
+                    "mt-[3px] font-normal text-muted",
                     compact
                       ? "text-[12px] leading-[18px]"
                       : "text-[13px] leading-[24px]",

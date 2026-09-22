@@ -26,6 +26,7 @@ import {
   importPdf,
   getImportBatch,
   getImportBatchReview,
+  getImportBatchStatus,
   getImportBatchSource,
   getImportBatchSourcePage,
   getImportBatchSourceContext,
@@ -102,6 +103,7 @@ router.get("/lookup-code", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), 
 router.post("/search-selections", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), recordSearchSelection); // intentional action on a stabilized search result
 router.get("/import-batches", requireRole("ADMIN", "MANAGER"), listImportBatches); // recent CSV/PDF/image import batches
 router.get("/import-batches/:batchId/review", requireRole("ADMIN", "MANAGER"), getImportBatchReview); // paginated review workspace data
+router.get("/import-batches/:batchId/status", requireRole("ADMIN", "MANAGER"), getImportBatchStatus);
 router.get("/import-batches/:batchId/source", requireRole("ADMIN", "MANAGER"), getImportBatchSource); // protected original source file
 router.get("/import-batches/:batchId/source/pages/:pageNumber", requireRole("ADMIN", "MANAGER"), getImportBatchSourcePage); // rendered PDF page for source-row highlighting
 router.get("/import-batches/:batchId/source-context", requireRole("ADMIN", "MANAGER"), getImportBatchSourceContext); // whole batch spreadsheet context

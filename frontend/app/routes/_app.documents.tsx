@@ -331,6 +331,8 @@ export default function DocumentsPage() {
   const [draftDateTo, setDraftDateTo] = useState("");
 
   const [isLoading, setIsLoading] = useState(true);
+  const [documentsLoadError, setDocumentsLoadError] = useState("");
+  const documentsRequestRef = useRef(0);
   const [deletingId, setDeletingId] = useState<string | null>(null);
   const [visibilitySavingId, setVisibilitySavingId] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState("");
@@ -395,8 +397,10 @@ export default function DocumentsPage() {
   );
 
   async function loadDocuments(options?: { signal?: AbortSignal }) {
+    const request = ++documentsRequestRef.current;
     try {
       setIsLoading(true);
+      setDocumentsLoadError("");
       const res = await listDocumentsApi({
         page,
         pageSize,
@@ -411,22 +415,21 @@ export default function DocumentsPage() {
         to: dateTo ? new Date(`${dateTo}T23:59:59`).toISOString() : undefined,
       }, options);
 
+      if (options?.signal?.aborted || request !== documentsRequestRef.current) return;
       setDocuments(res.documents);
       setTotal(res.total);
       setSelectedDoc((current) =>
         current && res.documents.some((doc) => doc.id === current.id) ? current : null,
       );
     } catch (err: any) {
-      if (options?.signal?.aborted || err?.code === "ERR_CANCELED") return;
+      if (options?.signal?.aborted || err?.code === "ERR_CANCELED" || request !== documentsRequestRef.current) return;
+      setDocumentsLoadError("Documents could not be refreshed. Any previous results remain visible.");
       if (isRateLimitError(err)) {
         requestRateLimitRecovery();
         return;
       }
-      showToast("danger", err?.message || "Failed to load documents.", {
-        persistent: true,
-      });
     } finally {
-      if (!options?.signal?.aborted) setIsLoading(false);
+      if (!options?.signal?.aborted && request === documentsRequestRef.current) setIsLoading(false);
     }
   }
 
@@ -454,12 +457,8 @@ export default function DocumentsPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    const timer = window.setTimeout(
-      () => void loadDocuments({ signal: controller.signal }),
-      120,
-    );
+    void loadDocuments({ signal: controller.signal });
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -1929,7 +1928,7 @@ function DocumentTouchViewer({
     <div className="-mx-2 flex min-h-full flex-col bg-white px-1 pb-6 pt-3 text-[#11120d] md:mx-0 md:rounded-[28px] md:p-6">
       <div className="mb-4 hidden flex-col gap-3 md:flex md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-black tracking-tight text-[#11120d]">Documents</h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-[#11120d]">Documents</h1>
           <p className="mt-0.5 text-[13px] font-medium text-[#64748B]">
             Upload bills, find files, preview details, and stage documents for stock or import work.
           </p>
@@ -1966,11 +1965,11 @@ function DocumentTouchViewer({
                   <div className={cn("flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px]", card.bgTone, card.tone)}>
                     <Icon name={card.icon} sizePx={14} />
                   </div>
-                  <div className="min-w-0 flex-1 truncate text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  <div className="min-w-0 flex-1 truncate text-xs font-medium text-[#64748B]">
                     {card.label}
                   </div>
                 </div>
-                <div className="mt-2 truncate font-mono text-[22px] font-black tracking-tight text-[#11120d]" title={String(card.value)}>
+                <div className="mt-2 truncate font-mono text-[22px] font-semibold tracking-tight text-[#11120d]" title={String(card.value)}>
                   {card.value}
                 </div>
               </div>
@@ -1980,19 +1979,19 @@ function DocumentTouchViewer({
           {/* Mobile Stat Banner */}
           <div className="mb-3 grid grid-cols-3 divide-x divide-[#E2E4E8] rounded-[12px] border border-[#D8DBE0] bg-[#F8FAFC] py-2.5 shadow-2xs md:hidden">
             <div className="px-2 text-center">
-              <div className="font-mono text-[17px] font-black text-[#11120d]">{total}</div>
+              <div className="font-mono text-[17px] font-semibold text-[#11120d]">{total}</div>
               <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Documents</div>
             </div>
             <div className="px-2 text-center">
-              <div className="font-mono text-[17px] font-black text-[#B7791F]">{unprocessedCount}</div>
-              <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">To review</div>
+              <div className="font-mono text-[17px] font-semibold text-[#B7791F]">{unprocessedCount}</div>
+              <div className="mt-0.5 text-xs font-medium text-muted">To review on page</div>
             </div>
             <div className="min-w-0 px-2 text-center">
-              <div className="truncate font-mono text-[17px] font-black text-[#11120d]">
+              <div className="truncate font-mono text-[17px] font-semibold text-[#11120d]">
                 {storageInfo ? formatBytes(storageInfo.totalSizeBytes) : processedCount}
               </div>
               <div className="mt-0.5 text-[9px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
-                {storageInfo ? "Storage" : "Linked"}
+                {storageInfo ? "Storage" : "Linked on page"}
               </div>
             </div>
           </div>
@@ -2081,7 +2080,7 @@ function DocumentTouchViewer({
 
               <div className={cn("grid gap-2.5", isAdmin ? "grid-cols-5" : "grid-cols-4")}>
                 <label className="space-y-1">
-                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Document type</div>
+                  <div className="text-xs font-medium text-[#64748B]">Document type</div>
                   <ProjectSelect
                     value={typeFilter}
                     onChange={(event) => {
@@ -2100,7 +2099,7 @@ function DocumentTouchViewer({
                 </label>
 
                 <label className="space-y-1">
-                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Processing</div>
+                  <div className="text-xs font-medium text-[#64748B]">Processing</div>
                   <ProjectSelect
                     value={processingStatusFilter}
                     onChange={(event) => {
@@ -2117,7 +2116,7 @@ function DocumentTouchViewer({
 
                 {isAdmin ? (
                   <label className="space-y-1">
-                    <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">Visibility</div>
+                    <div className="text-xs font-medium text-[#64748B]">Visibility</div>
                     <ProjectSelect
                       value={visibilityFilter}
                       onChange={(event) => {
@@ -2137,7 +2136,7 @@ function DocumentTouchViewer({
                 ) : null}
 
                 <label className="space-y-1">
-                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">From date</div>
+                  <div className="text-xs font-medium text-[#64748B]">From date</div>
                   <ProjectDateInput
                     value={dateFrom}
                     max={dateTo || undefined}
@@ -2150,7 +2149,7 @@ function DocumentTouchViewer({
                 </label>
 
                 <label className="space-y-1">
-                  <div className="text-[9.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">To date</div>
+                  <div className="text-xs font-medium text-[#64748B]">To date</div>
                   <ProjectDateInput
                     value={dateTo}
                     min={dateFrom || undefined}
@@ -2282,11 +2281,16 @@ function DocumentTouchViewer({
           </MobileFilterSheet>
 
           <section ref={documentListRef} className="flex min-h-[420px] scroll-mt-4 flex-col overflow-hidden bg-white lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:shadow-sm">
-            {isLoading ? (
+            {documentsLoadError ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <span>{documentsLoadError}</span>
+              <button type="button" disabled={isLoading} onClick={() => void loadDocuments()} className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 font-semibold">Retry documents</button>
+            </div> : null}
+            {isLoading && documents.length > 0 ? <p role="status" className="border-b border-line p-3 text-sm text-muted">Updating documents… Previous results remain visible.</p> : null}
+            {isLoading && documents.length === 0 ? (
               <div className="flex min-h-[360px] items-center justify-center text-[13px] font-semibold text-[#8C8889]">
                 Loading documents...
               </div>
-            ) : documents.length === 0 ? (
+            ) : documents.length === 0 ? documentsLoadError ? null : (
               <div className="p-4">{renderEmptyState()}</div>
             ) : (
               <>

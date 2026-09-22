@@ -417,10 +417,10 @@ function StorageIntegrityPanel({
               ["Review candidates", report.summary.unreferencedFiles + report.summary.staleTempFiles],
             ].map(([label, value]) => (
               <div key={String(label)} className="rounded-[8px] border border-slate-200 bg-slate-50 p-3.5">
-                <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
+                <div className="text-xs font-medium text-slate-500">
                   {label}
                 </div>
-                <div className="mt-1 text-[22px] font-black text-slate-950">{value}</div>
+                <div className="mt-1 text-[22px] font-semibold text-slate-950">{value}</div>
               </div>
             ))}
           </div>
@@ -578,25 +578,25 @@ function RecoveryBackupPanel({
 
         <div className="grid grid-cols-2 gap-x-6 gap-y-3 border-t border-slate-200 pt-4 lg:min-w-[370px] lg:border-l lg:border-t-0 lg:pl-5 lg:pt-0">
           <div>
-            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Last completed</div>
+            <div className="text-xs font-medium text-slate-500">Last completed</div>
             <div className="mt-1 text-[12px] font-extrabold text-slate-900">
               {formatDateTime(status?.completedAt)}
             </div>
           </div>
           <div>
-            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Snapshot</div>
+            <div className="text-xs font-medium text-slate-500">Snapshot</div>
             <div className="mt-1 font-mono text-[12px] font-extrabold text-slate-900">
               {status?.snapshotId ? status.snapshotId.slice(0, 12) : "-"}
             </div>
           </div>
           <div>
-            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Protected data</div>
+            <div className="text-xs font-medium text-slate-500">Protected data</div>
             <div className="mt-1 text-[12px] font-extrabold text-slate-900">
               {formatFileSize(status?.totalBytesProcessed)}
             </div>
           </div>
           <div>
-            <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-slate-500">Added this run</div>
+            <div className="text-xs font-medium text-slate-500">Added this run</div>
             <div className="mt-1 text-[12px] font-extrabold text-slate-900">
               {formatFileSize(status?.dataAdded)}
             </div>
@@ -917,6 +917,8 @@ export default function SettingsPage() {
   const [modeBusy, setModeBusy] = useState(false);
   const [showModeConfirm, setShowModeConfirm] = useState(false);
   const [refreshing, setRefreshing] = useState(false); // lighter refresh state used after saves without showing the full page loader
+  const [settingsLoadIssue, setSettingsLoadIssue] = useState("");
+  const settingsLoadRequestRef = useRef(0);
   const [brands, setBrands] = useState<Brand[]>([]); // brand records shown in brand management
   const [users, setUsers] = useState<UserLite[]>([]); // lightweight staff list used for overview counts
   const [cashierPrivileges, setCashierPrivileges] = useState<
@@ -1163,6 +1165,8 @@ export default function SettingsPage() {
   // Business Rules screen light and prevents hidden tabs from spending the
   // request budget before the admin opens them.
   async function loadData(showLoader = true, targetTab: TabKey = tab) {
+    const request = ++settingsLoadRequestRef.current;
+    setSettingsLoadIssue("");
     if (showLoader) setLoading(true);
     else setRefreshing(true);
     const needsBrands = targetTab === "brands";
@@ -1195,6 +1199,7 @@ export default function SettingsPage() {
         needsUsers ? listCashierPrivilegesApi() : Promise.resolve(null),
         needsUsers ? getOverridePolicyApi() : Promise.resolve(null),
       ]);
+      if (request !== settingsLoadRequestRef.current) return false;
 
       if (needsBrands && brandData.status === "fulfilled") {
         // mapping brands into a compact shape keeps the UI layer simple
@@ -1350,25 +1355,31 @@ export default function SettingsPage() {
       ) {
         requestRateLimitRecovery();
       }
-      if (hasFailure) settingsTabLoadedAtRef.current.delete(targetTab);
+      if (hasFailure) {
+        settingsTabLoadedAtRef.current.delete(targetTab);
+        setSettingsLoadIssue("Some settings could not be loaded. Retry before making changes to this section.");
+      }
       else settingsTabLoadedAtRef.current.set(targetTab, Date.now());
       return !hasFailure;
     } finally {
-      setLoading(false);
-      setRefreshing(false);
+      if (request === settingsLoadRequestRef.current) {
+        setLoading(false);
+        setRefreshing(false);
+      }
     }
   }
 
   useEffect(() => {
     const loadedAt = settingsTabLoadedAtRef.current.get(tab) ?? 0;
+    settingsLoadRequestRef.current++;
+    setSettingsLoadIssue("");
     if (Date.now() - loadedAt < SETTINGS_TAB_CACHE_MS) {
       setLoading(false);
+      setRefreshing(false);
       return;
     }
-    const timer = window.setTimeout(() => {
-      void loadData(loading, tab);
-    }, 140);
-    return () => window.clearTimeout(timer);
+    void loadData(loading, tab);
+    return () => { settingsLoadRequestRef.current++; };
   }, [tab, rateLimitRecoveryKey]);
 
   useEffect(() => {
@@ -1904,6 +1915,10 @@ export default function SettingsPage() {
   }
 
   function reviewBusinessDefaults() {
+    if (!settingsTabLoadedAtRef.current.has("overview")) {
+      showToast("danger", "Load the current business settings before saving changes.");
+      return;
+    }
     setDefaultsShowErrors(true);
     setDefaultsSaveError("");
     if (!defaultsValid) {
@@ -1921,6 +1936,7 @@ export default function SettingsPage() {
 
   // running the update for business defaults
   async function saveBusinessDefaults() {
+    if (!settingsTabLoadedAtRef.current.has("overview")) return;
     if (!defaultsValid || defaultChanges.length === 0) return;
     const payload: Partial<BusinessSettings> = {};
     for (const change of defaultChanges) {
@@ -2461,6 +2477,10 @@ export default function SettingsPage() {
       </div>
 
       <main {...settingsSwipeGesture} className="w-full px-4 py-5 sm:px-7 sm:py-6">
+        {settingsLoadIssue ? <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+          <span>{settingsLoadIssue}</span>
+          <button type="button" disabled={refreshing} onClick={() => void loadData(false, tab)} className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 font-semibold">{refreshing ? "Retrying…" : "Retry settings"}</button>
+        </div> : null}
         {tab === "overview" && defaultsDirty ? (
           <div className="mb-4 flex items-center justify-between gap-3 rounded-[12px] border border-[#D4D7DC] bg-[#F8FAFC] p-3">
             <div className="flex items-center gap-2 text-[12.5px] font-bold text-[#11120D]">
@@ -2493,10 +2513,10 @@ export default function SettingsPage() {
             <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs xl:col-span-2">
               <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
                 <div>
-                  <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                  <div className="text-xs font-medium text-[#64748B]">
                     Active capability mode
                   </div>
-                  <h2 className="mt-1 text-[18px] font-black text-[#11120D]">
+                  <h2 className="mt-1 text-[18px] font-semibold text-[#11120D]">
                     Choose what this shop can operate
                   </h2>
                   <p className="mt-0.5 max-w-3xl text-[12.5px] font-medium leading-relaxed text-[#64748B] text-justify">
@@ -2569,7 +2589,7 @@ export default function SettingsPage() {
                               <Icon name={option.icon} sizePx={15} />
                             </div>
 
-                            <span className="truncate text-[13.5px] font-black text-slate-950">
+                            <span className="truncate text-[13.5px] font-semibold text-slate-950">
                               {option.title}
                             </span>
 
@@ -2594,7 +2614,7 @@ export default function SettingsPage() {
                             )}
                           >
                             {selected ? (
-                              <Icon name="check" sizePx={11} className="font-black text-white" />
+                              <Icon name="check" sizePx={11} className="font-semibold text-white" />
                             ) : null}
                           </div>
                         </div>
@@ -2607,7 +2627,7 @@ export default function SettingsPage() {
 
                       {/* Dynamic status feedback on mobile */}
                       {isStaged ? (
-                        <div className="mt-2 flex items-center gap-1 text-[10.5px] font-black text-slate-950 sm:hidden">
+                        <div className="mt-2 flex items-center gap-1 text-[10.5px] font-semibold text-slate-950 sm:hidden">
                           <span>Staged change · Confirm below ↓</span>
                         </div>
                       ) : isSaved ? (
@@ -2638,7 +2658,7 @@ export default function SettingsPage() {
                       className={cn(
                         "text-[12px]",
                         modeDraft === "FULL_POS"
-                          ? "text-slate-950 font-black"
+                          ? "text-slate-950 font-semibold"
                           : "text-slate-400 font-semibold"
                       )}
                     >
@@ -2680,7 +2700,7 @@ export default function SettingsPage() {
                       <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-[6px] bg-slate-900 text-white shadow-xs">
                         <Icon name="swap_horiz" sizePx={14} />
                       </span>
-                      <span className="text-[12px] font-black uppercase tracking-wider text-slate-900">
+                      <span className="text-[12px] font-semibold uppercase tracking-wider text-slate-900">
                         Pending Shop Access Change
                       </span>
                     </div>
@@ -2845,7 +2865,7 @@ export default function SettingsPage() {
                         <div className="divide-y divide-rose-200">
                           {modePreflight.blockers.map((blocker) => (
                             <div key={blocker.key} className="flex gap-3 px-3.5 py-2 text-[11.5px] text-rose-950">
-                              <span className="font-black">{blocker.count}</span>
+                              <span className="font-semibold">{blocker.count}</span>
                               <span className="font-semibold">{blocker.message}</span>
                             </div>
                           ))}
@@ -2859,7 +2879,7 @@ export default function SettingsPage() {
                   <div className="flex items-center gap-2">
                     <Icon name="verified_user" sizePx={15} className="text-emerald-600" />
                     <span>
-                      Current active mode: <strong className="font-black text-emerald-950">{formatBusinessMode(capabilities.businessMode)}</strong>. Click any capability mode above to stage a mode migration.
+                      Current active mode: <strong className="font-semibold text-emerald-950">{formatBusinessMode(capabilities.businessMode)}</strong>. Click any capability mode above to stage a mode migration.
                     </span>
                   </div>
                   <span className="hidden rounded-full border border-emerald-300 bg-white px-2.5 py-0.5 text-[10px] font-extrabold text-emerald-800 shadow-2xs sm:inline-block">
@@ -2875,7 +2895,7 @@ export default function SettingsPage() {
                   <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-blue-50 text-[#2F67D8]">
                     <Icon name="inventory_2" sizePx={17} />
                   </div>
-                  <h2 className="text-[16px] font-black text-[#11120D]">
+                  <h2 className="text-[16px] font-semibold text-[#11120D]">
                     Inventory & Pricing
                   </h2>
                 </div>
@@ -2953,7 +2973,7 @@ export default function SettingsPage() {
                   <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-slate-100 text-[#11120D]">
                     <Icon name="tune" sizePx={17} />
                   </div>
-                  <h2 className="text-[16px] font-black text-[#11120D]">
+                  <h2 className="text-[16px] font-semibold text-[#11120D]">
                     Operational Limits
                   </h2>
                 </div>
@@ -3039,7 +3059,7 @@ export default function SettingsPage() {
                   <div className="text-[13px] font-extrabold uppercase tracking-[0.18em] text-slate-500">
                     Expected Balance
                   </div>
-                  <div className="mt-3 text-[32px] font-black leading-none text-slate-800">
+                  <div className="mt-3 text-[32px] font-semibold leading-none text-slate-800">
                     Rs.{" "}
                     {Number(currentDrawer.expectedTotal || 0).toLocaleString()}
                   </div>
@@ -3297,7 +3317,7 @@ export default function SettingsPage() {
                       setOverridePinError("");
                     }}
                     placeholder="0000"
-                    className="h-11 min-w-0 flex-1 rounded-[8px] border border-slate-200 px-4 text-center text-[17px] font-black tracking-[10px] outline-none focus:border-blue-600"
+                    className="h-11 min-w-0 flex-1 rounded-[8px] border border-slate-200 px-4 text-center text-[17px] font-semibold tracking-[10px] outline-none focus:border-blue-600"
                   />
                   <button
                     type="button"
@@ -3771,7 +3791,7 @@ export default function SettingsPage() {
                   <span>Audit Logs</span>
                   <span
                     className={cn(
-                      "rounded-full px-1.5 py-0.2 text-[10.5px] font-black",
+                      "rounded-full px-1.5 py-0.2 text-[10.5px] font-semibold",
                       securitySubTab === "audit"
                         ? "bg-[#11120D] text-white"
                         : "bg-[#E2E8F0] text-[#64748B]",
@@ -3793,13 +3813,13 @@ export default function SettingsPage() {
                 >
                   <span>Login Activity</span>
                   {failedLoginCount > 0 ? (
-                    <span className="rounded-full bg-rose-100 px-1.5 py-0.2 text-[10.5px] font-black text-rose-700">
+                    <span className="rounded-full bg-rose-100 px-1.5 py-0.2 text-[10.5px] font-semibold text-rose-700">
                       {failedLoginCount} failed
                     </span>
                   ) : (
                     <span
                       className={cn(
-                        "rounded-full px-1.5 py-0.2 text-[10.5px] font-black",
+                        "rounded-full px-1.5 py-0.2 text-[10.5px] font-semibold",
                         securitySubTab === "login"
                           ? "bg-[#11120D] text-white"
                           : "bg-[#E2E8F0] text-[#64748B]",
@@ -3839,7 +3859,7 @@ export default function SettingsPage() {
                 {securitySubTab === "audit" ? (
                   <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         From Date
                       </span>
                       <ProjectDateInput
@@ -3854,7 +3874,7 @@ export default function SettingsPage() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         To Date
                       </span>
                       <ProjectDateInput
@@ -3869,7 +3889,7 @@ export default function SettingsPage() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         Audit Action
                       </span>
                       <input
@@ -3882,7 +3902,7 @@ export default function SettingsPage() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         Entity Type
                       </span>
                       <input
@@ -3898,7 +3918,7 @@ export default function SettingsPage() {
                 ) : (
                   <div className="grid flex-1 grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-3">
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         Date Range
                       </span>
                       <div className="grid grid-cols-2 gap-2">
@@ -3925,7 +3945,7 @@ export default function SettingsPage() {
                       </div>
                     </label>
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         Login Account
                       </span>
                       <input
@@ -3939,7 +3959,7 @@ export default function SettingsPage() {
                       />
                     </label>
                     <label className="space-y-1">
-                      <span className="text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
+                      <span className="text-xs font-medium text-[#64748B]">
                         Login Status
                       </span>
                       <ProjectSelect
@@ -4163,7 +4183,7 @@ export default function SettingsPage() {
                           key={log.id}
                           className="border-b border-[#E5E7EB] transition-colors hover:bg-[#ECEFF3] last:border-0"
                         >
-                          <td className="px-5 py-3.5 text-[13px] font-black text-[#11120D]">
+                          <td className="px-5 py-3.5 text-[13px] font-semibold text-[#11120D]">
                             {log.action}
                           </td>
                           <td className="px-5 py-3.5">
@@ -4217,7 +4237,7 @@ export default function SettingsPage() {
                     >
                       <div className="flex items-start justify-between gap-3">
                         <div className="min-w-0 flex-1">
-                          <div className="text-[13.5px] font-black text-[#11120D]">
+                          <div className="text-[13.5px] font-semibold text-[#11120D]">
                             {log.action}
                           </div>
                           <div className="mt-1 text-[12px] font-semibold text-[#64748B]">
@@ -4999,10 +5019,10 @@ export default function SettingsPage() {
       >
         <div className="space-y-3.5">
           <div className="rounded-[14px] border border-[#D8DBE0] bg-[#F8FAFC] p-4 shadow-2xs">
-            <div className="text-[10.5px] font-black uppercase tracking-[0.06em] text-[#64748B]">
+            <div className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-[#64748B]">
               Capability Mode Transition
             </div>
-            <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[15px] font-black text-[#11120D]">
+            <div className="mt-2 flex flex-wrap items-center gap-2.5 text-[15px] font-semibold text-[#11120D]">
               <span className="rounded-[8px] bg-white px-2.5 py-1 border border-[#D8DBE0]">{formatBusinessMode(capabilities.businessMode)}</span>
               <Icon name="arrow_forward" sizePx={16} className="text-[#64748B]" />
               <span className="rounded-[8px] bg-[#11120D] text-white px-2.5 py-1">{formatBusinessMode(modeDraft)}</span>
@@ -5015,7 +5035,7 @@ export default function SettingsPage() {
             </div>
           </div>
           <div className="rounded-[14px] border border-[#D8DBE0] bg-white p-4 shadow-2xs">
-            <div className="text-[10.5px] font-black uppercase tracking-[0.06em] text-[#64748B]">
+            <div className="text-[10.5px] font-semibold uppercase tracking-[0.06em] text-[#64748B]">
               Audit Trail Reason
             </div>
             <div className="mt-1.5 text-[13px] font-bold leading-relaxed text-[#11120D]">

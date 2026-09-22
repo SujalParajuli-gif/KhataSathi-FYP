@@ -382,6 +382,8 @@ export default function HistoryPage() {
   const historyTabRailRef = useRef<SwipeableTabRailController | null>(null);
   const [eventRows, setEventRows] = useState<HistoryEventRow[]>([]);
   const [eventLoading, setEventLoading] = useState(false);
+  const [eventLoadError, setEventLoadError] = useState("");
+  const [eventRetryKey, setEventRetryKey] = useState(0);
   const [eventTotal, setEventTotal] = useState(0);
   const [eventTotalPages, setEventTotalPages] = useState(1);
   const [stockBatchDetail, setStockBatchDetail] = useState<StockReceiveBatchDetail | null>(null);
@@ -624,6 +626,7 @@ export default function HistoryPage() {
     async function loadEvents() {
       try {
         setEventLoading(true);
+        setEventLoadError("");
         const combinedQuery = [
           debouncedQuery,
           eventActionFilter !== "All" ? eventActionFilter : "",
@@ -652,17 +655,18 @@ export default function HistoryPage() {
         if (isRateLimitError(error)) requestRateLimitRecovery();
         // Keep the last successful page visible during a transient failure or
         // rate-limit cooldown. A failed refresh must not look like no history.
+        setEventLoadError("History could not be refreshed. Any previous results remain visible.");
       } finally {
         if (!controller.signal.aborted) setEventLoading(false);
       }
     }
 
-    const timer = window.setTimeout(() => void loadEvents(), 120);
+    void loadEvents();
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
     };
   }, [
+    eventRetryKey,
     debouncedQuery,
     eventActionFilter,
     eventActorFilter,
@@ -982,18 +986,23 @@ export default function HistoryPage() {
           </div>
 
           <div className="mt-4 overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white shadow-xs xl:rounded-[18px]">
-            <div className="hidden grid-cols-[minmax(0,1.4fr)_minmax(240px,1fr)_minmax(170px,0.65fr)_130px] border-b border-[#E2E4E8] bg-[#F8F9FA] px-4 py-2.5 text-left text-[10.5px] font-extrabold uppercase tracking-[0.06em] text-[#64748B] lg:grid">
+            <div className="hidden grid-cols-[minmax(0,1.4fr)_minmax(240px,1fr)_minmax(170px,0.65fr)_130px] border-b border-[#E2E4E8] bg-[#F8F9FA] px-4 py-2.5 text-left text-xs font-medium text-[#64748B] lg:grid">
               <div>Activity</div>
               <div>Business detail</div>
               <div>Actor / Time</div>
               <div className="text-right">Action</div>
             </div>
 
-            {eventLoading ? (
+            {eventLoadError ? <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <span>{eventLoadError}</span>
+              <button type="button" disabled={eventLoading} onClick={() => setEventRetryKey((value) => value + 1)} className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 font-semibold">Retry history</button>
+            </div> : null}
+            {eventLoading && eventRows.length > 0 ? <p role="status" className="border-b border-line p-3 text-sm text-muted">Updating history… Previous results remain visible.</p> : null}
+            {eventLoading && eventRows.length === 0 ? (
               <div className="flex h-[220px] items-center justify-center text-[12px] font-bold text-[#7A7F89]">
                 Loading history…
               </div>
-            ) : eventRows.length === 0 ? (
+            ) : eventRows.length === 0 ? eventLoadError ? null : (
               <div className="flex h-[220px] flex-col items-center justify-center text-center text-[#7A7F89]">
                 <Icon name="history" sizePx={32} className="text-[#A0AEC0]" />
                 <div className="mt-2 text-[13px] font-bold text-[#374151]">
@@ -1029,13 +1038,13 @@ export default function HistoryPage() {
                       </div>
                       <div className="min-w-0 flex-1">
                         <div className="flex flex-wrap items-center gap-1.5">
-                          <span className="truncate text-[13.5px] font-black text-[#11120d]">
+                          <span className="truncate text-[13.5px] font-semibold text-[#11120d]">
                             {displayTitle}
                           </span>
                           {!isRedundantTitle ? (
                             <span
                               className={cn(
-                                "shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-black uppercase tracking-wide",
+                                "shrink-0 rounded-full border px-2 py-0.5 text-[9.5px] font-semibold uppercase tracking-wide",
                                 getEventActionTone(event),
                               )}
                             >
@@ -1835,7 +1844,7 @@ export default function HistoryPage() {
                       <div className="whitespace-nowrap font-mono text-[16px] font-extrabold text-[#000000]">
                         {formatNpr(invoice.netTotal)}
                       </div>
-                      <div className="mt-1 text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                      <div className="mt-1 text-xs font-medium text-[#8C8889]">
                         Total
                       </div>
                     </div>
@@ -1856,7 +1865,7 @@ export default function HistoryPage() {
 
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <div className="min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
-                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                      <div className="text-xs font-medium text-[#8C8889]">
                         Paid
                       </div>
                       <div className="mt-1 truncate font-mono text-[13px] font-extrabold text-[#000000]">
@@ -1864,7 +1873,7 @@ export default function HistoryPage() {
                       </div>
                     </div>
                     <div className="min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
-                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                      <div className="text-xs font-medium text-[#8C8889]">
                         Due
                       </div>
                       <div
@@ -1882,7 +1891,7 @@ export default function HistoryPage() {
 
                   {reference ? (
                     <div className="mt-3 min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">
-                      <div className="text-[10px] font-extrabold uppercase tracking-[0.06em] text-[#8C8889]">
+                      <div className="text-xs font-medium text-[#8C8889]">
                         Reference
                       </div>
                       <div className="mt-1 break-all text-[12px] font-bold leading-5 text-[#565449]">

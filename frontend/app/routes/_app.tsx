@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { Navigate, Outlet, useLocation, useNavigate } from "react-router";
 import AppShell from "~/components/layout/AppShell";
 import { AppStartupState, ConnectionStatusBanner } from "~/components/ui/AppStatus";
-import { useToast } from "~/components/ui/Toast";
 import { ImportFloatingPill } from "~/components/blocks/products/ImportFloatingPill";
 import {
   getBusinessCapabilitiesApi,
@@ -208,7 +207,6 @@ export default function AppLayout() {
 function GlobalImportFloatingPill() {
   const navigate = useNavigate();
   const location = useLocation();
-  const { showToast } = useToast();
   const [activeBatchId, setActiveBatchId] = useState<string | null>(() => {
     if (typeof window === "undefined") return null;
     return sessionStorage.getItem("active_product_import_batch_id");
@@ -238,42 +236,16 @@ function GlobalImportFloatingPill() {
     };
   }, []);
 
-  const shouldShow =
-    Boolean(activeBatchId) &&
-    !(location.pathname === "/products" && isModalOpen);
-
-  if (!shouldShow || !activeBatchId) return null;
-
+  if (!activeBatchId) return null;
   return (
     <ImportFloatingPill
       batchId={activeBatchId}
-      onClick={() => {
-        if (location.pathname === "/products") {
-          window.dispatchEvent(new CustomEvent("reopen_product_import_modal"));
-        } else {
-          navigate("/products?openImport=true");
-        }
-      }}
-      onComplete={(completedBatchId) => {
+      hidden={(location.pathname === "/products" && isModalOpen) || location.pathname === `/products/imports/${activeBatchId}`}
+      onClick={() => navigate(`/products/imports/${encodeURIComponent(activeBatchId)}`)}
+      onDismiss={() => {
         sessionStorage.removeItem("active_product_import_batch_id");
         setActiveBatchId(null);
-        window.dispatchEvent(
-          new CustomEvent("active_product_import_changed", {
-            detail: { batchId: null },
-          })
-        );
-        showToast("success", "Rate list extracted successfully! Ready for review.");
-        navigate(`/products/imports/${encodeURIComponent(completedBatchId)}`);
-      }}
-      onError={(message) => {
-        sessionStorage.removeItem("active_product_import_batch_id");
-        setActiveBatchId(null);
-        window.dispatchEvent(
-          new CustomEvent("active_product_import_changed", {
-            detail: { batchId: null },
-          })
-        );
-        showToast("danger", message || "Extraction was stopped or could not be completed.");
+        window.dispatchEvent(new CustomEvent("active_product_import_changed", { detail: { batchId: null } }));
       }}
     />
   );

@@ -1,5 +1,10 @@
 @import "tailwindcss";
 
+/* Leave scrollable content reachable above the persistent background task. */
+body[data-import-notification="visible"] [data-app-scroll-container] {
+  padding-bottom: max(140px, env(safe-area-inset-bottom));
+}
+
 /* Every full-screen application dialog must cover the app shell, including the
    desktop navigation rail. Toasts/popovers still use their higher semantic
    layers. Prefer the shared ModalFrame; this class keeps legacy dialog shells
@@ -71,6 +76,12 @@
 /* these theme variables connect our custom fonts to Tailwind's font-sans and font-mono utilities
    so components can use Tailwind font classes and still get the project fonts automatically */
 @theme {
+  --color-workspace: #f5f6f8;
+  --color-surface: #ffffff;
+  --color-inset: #f8fafc;
+  --color-line: #d8dde5;
+  --color-ink: #17202e;
+  --color-muted: #596579;
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
     "Noto Color Emoji";
@@ -87,7 +98,7 @@ body {
   font-family: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
     "Noto Color Emoji";
-  background: #cfcfd3;
+  background: var(--color-workspace);
   color: #000000;
   overscroll-behavior-x: none;
 }

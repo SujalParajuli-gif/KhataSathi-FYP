@@ -1,5 +1,6 @@
 import OptionSelector from "~/components/ui/OptionSelector";
 import { importBatchStatus } from "~/lib/importBatchStatus";
+import { refreshImportTask } from "~/lib/importTaskStore";
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useBlocker, useNavigate, useParams, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
@@ -586,20 +587,12 @@ export default function ProductImportReviewPage() {
     return () => window.removeEventListener("beforeunload", warn);
   }, [dirty]);
   useEffect(() => {
-    if (!processing || dirty) return;
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
-    const poll = async () => { await loadReview(); if (!stopped) timer = setTimeout(poll, 2500); };
-    timer = setTimeout(poll, 2500);
-    return () => { stopped = true; clearTimeout(timer); };
-  }, [processing, dirty, batchId, page, pageSize, search, filter]);
-  useEffect(() => {
     if (!batchId) return;
     try { setCommitUnknown(Boolean(sessionStorage.getItem(`import-commit:${batchId}`))); } catch { /* Optional browser storage. */ }
   }, [batchId]);
   async function changeProcessing(action: "cancel" | "retry" | "reprocess_empty", pageNumbers?: number[]) {
     if (!batchId) return;
-    try { setProcessingAction(true); await controlProductImportApi(batchId, action, pageNumbers); await loadReview(); }
+    try { setProcessingAction(true); await controlProductImportApi(batchId, action, pageNumbers); refreshImportTask(batchId); await loadReview(); }
     catch (error: any) { showToast("danger", error?.response?.data?.error || "The processing request could not be completed."); }
     finally { setProcessingAction(false); }
   }
@@ -1468,6 +1461,7 @@ export default function ProductImportReviewPage() {
     } catch (commitError: any) {
       showToast("danger", commitError?.response?.data?.error || commitError?.message || "Import could not be committed.");
     } finally {
+      refreshImportTask(review.batch.id);
       setCommitBusy(false);
     }
   }
@@ -2272,11 +2266,8 @@ export default function ProductImportReviewPage() {
         <ImportProcessingWidget
           batchId={batchId!}
           fileName={review?.batch.fileName || undefined}
-          sourceType={review?.batch.sourceType || undefined}
-          supplier={review?.batch.supplier || undefined}
           onComplete={() => void loadReview()}
           onMinimize={() => navigate("/products")}
-          onError={(message) => setError(message)}
         />
       </div>
     );

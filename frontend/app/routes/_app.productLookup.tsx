@@ -988,10 +988,9 @@ export default function ProductLookupPage() {
   const [categories, setCategories] = useState<string[]>(
     () => restoredLookupSnapshot?.categories || ["All Categories"],
   );
-  const [productMetaReady, setProductMetaReady] = useState(
-    Boolean(restoredLookupSnapshot),
-  );
   const [query, setQuery] = useState(() => lookupSearchParams.get("q") || "");
+  // Only a restored brand-name filter needs metadata to resolve its database ID.
+  const [productMetaReady, setProductMetaReady] = useState(false);
   const [debouncedQuery, setDebouncedQuery] = useState(
     () => lookupSearchParams.get("q") || "",
   );
@@ -1371,15 +1370,17 @@ export default function ProductLookupPage() {
     });
   }
 
-  async function loadMeta() {
+  async function loadMeta(signal: AbortSignal) {
     try {
       const meta = await fetchProductsMeta();
+      if (signal.aborted) return;
       setBrands(["All Brands", ...meta.brands]);
       setCategories(["All Categories", ...meta.categories]);
     } catch (error) {
+      if (signal.aborted) return;
       if (isRateLimitError(error)) requestRateLimitRecovery();
     } finally {
-      setProductMetaReady(true);
+      if (!signal.aborted) setProductMetaReady(true);
     }
   }
 
@@ -1534,17 +1535,14 @@ export default function ProductLookupPage() {
 
   useEffect(() => {
     const controller = new AbortController();
-    const timer = window.setTimeout(() => {
-      void loadMeta();
-    }, 100);
+    void loadMeta(controller.signal);
     return () => {
-      window.clearTimeout(timer);
       controller.abort();
     };
   }, [rateLimitRecoveryKey]);
 
   useEffect(() => {
-    if (!productMetaReady) return undefined;
+    if (brand !== "All Brands" && !productMetaReady) return;
     const controller = new AbortController();
     function refreshLookupVisibility() {
       if (document.visibilityState !== "visible") return;
@@ -1567,11 +1565,11 @@ export default function ProductLookupPage() {
     photoStatus,
     page,
     pageSize,
-    productMetaReady,
+    brand !== "All Brands" && !productMetaReady,
   ]);
 
   useEffect(() => {
-    if (!productMetaReady) return undefined;
+    if (brand !== "All Brands" && !productMetaReady) return;
     const controller = new AbortController();
     const restoredSnapshot = restoredLookupSnapshotRef.current;
     restoredLookupSnapshotRef.current = undefined;
@@ -1593,7 +1591,7 @@ export default function ProductLookupPage() {
         .finally(() => {
           if (!controller.signal.aborted && !restoredSnapshot) setLoading(false);
         });
-    }, restoredSnapshot ? 0 : 300);
+    }, 0);
     return () => {
       window.clearTimeout(timer);
       controller.abort();
@@ -1609,7 +1607,7 @@ export default function ProductLookupPage() {
     page,
     pageSize,
     rateLimitRecoveryKey,
-    productMetaReady,
+    brand !== "All Brands" && !productMetaReady,
   ]);
 
   useEffect(() => {
@@ -2353,7 +2351,8 @@ export default function ProductLookupPage() {
               : "lg:grid-cols-1",
           )}
         >
-          <section className="min-w-0 space-y-4" aria-label="Product lookup results">
+          <section className="min-w-0 space-y-4" aria-label="Product lookup results" aria-busy={loading}>
+            {loading && products.length > 0 ? <p role="status" className="text-sm text-slate-600">Updating products… Previous results remain visible.</p> : null}
             <section className="flex min-h-[calc(100dvh-176px)] flex-col lg:min-h-0 lg:block lg:overflow-hidden lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:bg-white lg:shadow-xs">
               <div className="hidden overflow-x-auto lg:block">
                 <table className="w-full min-w-[900px] text-left">
@@ -2383,7 +2382,7 @@ export default function ProductLookupPage() {
                     </tr>
                   </thead>
                   <tbody className="divide-y divide-[#E5E7EB]">
-                    {loading ? (
+                    {loading && products.length === 0 ? (
                       Array.from({ length: 8 }).map((_, index) => (
                         <tr key={index}>
                           <td
@@ -2562,7 +2561,7 @@ export default function ProductLookupPage() {
               </div>
 
               <div className="flex-1 space-y-3 lg:hidden">
-                {loading ? (
+                {loading && products.length === 0 ? (
                   Array.from({ length: 6 }).map((_, index) => (
                     <div
                       key={index}

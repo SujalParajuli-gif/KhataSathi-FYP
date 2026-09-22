@@ -1,4 +1,5 @@
 import { Request, Response } from "express";
+import { getProductImportStatus } from "./importStatus";
 import fs from "fs/promises";
 import { PDFParse } from "pdf-parse";
 import { enqueueImport, controlImport } from "./importWorker";
@@ -1206,6 +1207,17 @@ export async function getImportBatch(req: Request, res: Response) {
     res.json(batch);
   } catch (err: any) {
     res.status(404).json({ error: err?.message || "Import batch not found" });
+  }
+}
+
+export async function getImportBatchStatus(req: Request, res: Response) {
+  try {
+    const result = await getProductImportStatus(String(req.params.batchId));
+    res.setHeader("Cache-Control", "no-store");
+    if (!result) { res.status(404).json({ error: "Import batch not found" }); return; }
+    res.json(result);
+  } catch {
+    res.status(503).json({ error: "Import status is temporarily unavailable" });
   }
 }
 
