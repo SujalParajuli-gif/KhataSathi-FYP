@@ -2,7 +2,7 @@ import OptionSelector from "~/components/ui/OptionSelector";
 import { importBatchStatus } from "~/lib/importBatchStatus";
 import { refreshImportTask } from "~/lib/importTaskStore";
 import { cloneElement, isValidElement, useEffect, useMemo, useRef, useState } from "react";
-import { Link, useBlocker, useNavigate, useParams, useSearchParams } from "react-router";
+import { Link, useBlocker, useLocation, useNavigate, useParams, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import { useToast } from "~/components/ui/Toast";
 import ProjectSelect from "~/components/ui/ProjectSelect";
@@ -386,6 +386,7 @@ const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white p
 export default function ProductImportReviewPage() {
   const { batchId = "" } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const [reviewSearchParams, setReviewSearchParams] = useSearchParams();
   const queryField = useQueryControls(reviewSearchParams, setReviewSearchParams);
   const { showToast } = useToast();
@@ -421,7 +422,6 @@ export default function ProductImportReviewPage() {
   const sourceHighlightRef = useRef<HTMLDivElement>(null);
   const [bulkOpen, setBulkOpen] = useState(false);
   const [priceSetupOpen, setPriceSetupOpen] = useState(false);
-  const [exitConfirmOpen, setExitConfirmOpen] = useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
   const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
   const [sourceDetailSearch, setSourceDetailSearch] = useState("");
@@ -678,12 +678,15 @@ export default function ProductImportReviewPage() {
 
   const currentDraftFingerprint = useMemo(() => (draft ? JSON.stringify(draftPayload(draft)) : ""), [draft]);
   const dirty = Boolean(draft && currentDraftFingerprint !== savedFingerprint);
-  const blocker = useBlocker(({ currentLocation, nextLocation, historyAction }) =>
-    currentLocation.pathname !== nextLocation.pathname || (dirty && historyAction === "POP"));
   const [coverageAcknowledged, setCoverageAcknowledged] = useState(false);
   const [processingAction, setProcessingAction] = useState(false);
   const [commitUnknown, setCommitUnknown] = useState(false);
   const processing = Boolean(review && ["QUEUED", "PROCESSING", "CANCELLING", "COMMITTING"].includes(review.batch.status));
+  const blocker = useBlocker(({ currentLocation, nextLocation }) => {
+    if (review?.batch.status === "IMPORTED" || processing) return false;
+    return currentLocation.pathname !== nextLocation.pathname;
+  });
+  const blockedRouteExit = blocker.state === "blocked" && blocker.location.pathname !== location.pathname;
   useEffect(() => { setCoverageAcknowledged(false); }, [batchId, review?.coverage?.completed]);
   useEffect(() => {
     if (!dirty) return;
@@ -1201,7 +1204,7 @@ export default function ProductImportReviewPage() {
         await saveDraft();
       }
       setReviewProgressSaved(true);
-      showToast("success", "Review progress saved. Step 3 is complete and ready for final import.");
+      showToast("success", "Review progress saved. You can continue reviewing or open Final import when ready.");
     } catch (err: any) {
       showToast("danger", err?.message || "Failed to save review progress.");
     } finally {
@@ -1628,7 +1631,6 @@ export default function ProductImportReviewPage() {
         bulkPreview ||
         bulkDiscardOpen ||
         commitOpen ||
-        exitConfirmOpen ||
         sourceDetailsOpen ||
         pendingReviewNavigation ||
         mobileMenuOpen
@@ -1661,7 +1663,6 @@ export default function ProductImportReviewPage() {
     priceMappingBusy,
     mobileMenuOpen,
     commitOpen,
-    exitConfirmOpen,
     sourceDetailsOpen,
     pendingReviewNavigation,
     review,
@@ -2661,8 +2662,8 @@ export default function ProductImportReviewPage() {
       {blocker.state === "blocked" ? (
         <ModalFrame
           open
-          title={dirty ? "Unsaved product changes" : "Leave import review?"}
-          description={dirty ? `Edits to ${draft?.name ? `"${draft.name}"` : "this row"} are not saved.` : "Your review progress is safely saved as a draft batch. You can resume anytime from the Products page."}
+          title={dirty ? (blockedRouteExit ? "Save before leaving review?" : "Unsaved product changes") : processing ? "Leave while processing continues?" : "Leave import review?"}
+          description={dirty ? `Edits to ${draft?.name ? `"${draft.name}"` : "this row"} are not saved.` : processing ? "The import task will keep running in the background and remain available from Products." : "Your saved decisions remain in this draft batch, so you can resume the review later."}
           onClose={() => blocker.reset()}
           maxWidthClass="max-w-[480px]"
           mobileBottomSheet
@@ -2671,11 +2672,18 @@ export default function ProductImportReviewPage() {
               {dirty ? (
                 <button
                   type="button"
-                  onClick={() => blocker.proceed()}
+                  onClick={() => {
+                    if (review && activeRow) {
+                      const initialDraft = importRowToDraft(review.batch, activeRow);
+                      setDraft(initialDraft);
+                      setSavedFingerprint(JSON.stringify(draftPayload(initialDraft)));
+                    }
+                    blocker.proceed();
+                  }}
                   className="order-3 sm:order-1 sm:mr-auto inline-flex h-11 w-full sm:w-auto items-center justify-center gap-1.5 rounded-[12px] border border-rose-200 bg-rose-50 px-4 text-[12.5px] font-bold text-rose-700 transition hover:bg-rose-100"
                 >
                   <Icon name="close" sizePx={15} />
-                  <span>Discard & Leave</span>
+                  <span>{blockedRouteExit ? "Discard & Leave" : "Discard Changes"}</span>
                 </button>
               ) : null}
               <button
@@ -2683,7 +2691,7 @@ export default function ProductImportReviewPage() {
                 onClick={() => blocker.reset()}
                 className="order-2 sm:order-2 inline-flex h-11 w-full sm:w-auto items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-5 text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
               >
-                Keep Editing
+                Cancel
               </button>
               {dirty ? (
                 <button
@@ -2696,7 +2704,7 @@ export default function ProductImportReviewPage() {
                   className="order-1 sm:order-3 inline-flex h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] border border-[#11120d] bg-[#11120d] px-5 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm disabled:opacity-50"
                 >
                   <Icon name="save" sizePx={16} />
-                  <span>{saving ? "Saving…" : "Save & Leave"}</span>
+                  <span>{saving ? "Saving…" : blockedRouteExit ? "Save & Leave" : "Save & Continue"}</span>
                 </button>
               ) : (
                 <button
@@ -2705,7 +2713,7 @@ export default function ProductImportReviewPage() {
                   className="order-1 sm:order-3 inline-flex h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] border border-[#11120d] bg-[#11120d] px-5 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm"
                 >
                   <Icon name="arrow_forward" sizePx={16} />
-                  <span>Exit to Products</span>
+                  <span>{processing ? "Continue in Background" : "Leave Review"}</span>
                 </button>
               )}
             </div>
@@ -2713,8 +2721,12 @@ export default function ProductImportReviewPage() {
         >
           <div className="rounded-[12px] border border-amber-200 bg-amber-50/80 p-3 text-[12px] font-medium leading-5 text-amber-900">
             {dirty
-              ? "Save your changes before leaving, or discard them to exit."
-              : "All saved row decisions and batch status are stored in your catalog. You can safely return to complete this review later."}
+              ? blockedRouteExit
+                ? "Save this product before leaving, or discard only its unsaved edits."
+                : "Save this product before continuing, or discard only its unsaved edits."
+              : processing
+                ? "You can return to this task from Products to see its latest status."
+                : "All saved row decisions and batch status are stored in your catalog. You can safely return to complete this review later."}
           </div>
         </ModalFrame>
       ) : null}
@@ -2731,7 +2743,7 @@ export default function ProductImportReviewPage() {
         <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
           <button
             type="button"
-            onClick={() => setExitConfirmOpen(true)}
+            onClick={() => navigate("/products")}
             className="inline-flex h-9 sm:h-10 shrink-0 items-center gap-1 rounded-[10px] border border-[#CFCFD3] bg-white px-2.5 sm:px-3 text-[11.5px] sm:text-[12px] font-bold text-[#11120d] transition hover:bg-[#F3F4F6] shadow-2xs"
             aria-label="Back to products"
             title="Exit review workspace and return to products catalog"
@@ -2879,7 +2891,7 @@ export default function ProductImportReviewPage() {
                 type="button"
                 onClick={() => void handleSaveReviewProgress()}
                 disabled={savingProgress || saving}
-                title="Save current review progress and mark review complete"
+                title="Save current review progress"
                 className={`h-10 items-center gap-1.5 rounded-[10px] border px-3.5 text-[12px] font-bold transition inline-flex shadow-2xs ${
                   reviewProgressSaved
                     ? "border-emerald-300 bg-emerald-50 text-emerald-800"
@@ -2963,9 +2975,7 @@ export default function ProductImportReviewPage() {
         activeStage={
           review?.batch.status === "IMPORTED"
             ? 4
-            : reviewProgressSaved || (review && review.decisionCounts.unresolved === 0 && review.pagination.total > 0)
-              ? 3
-              : 2
+            : 2
         }
         className="rounded-[12px]"
       />
@@ -4567,71 +4577,6 @@ export default function ProductImportReviewPage() {
           )}
           {review.coverage?.requiresAcknowledgement ? <label className="mt-4 flex items-start gap-3 rounded-lg bg-amber-50 p-3 text-sm"><input type="checkbox" checked={coverageAcknowledged} onChange={(event) => setCoverageAcknowledged(event.target.checked)} className="mt-1" />I checked the source and understand that unread pages are excluded from this import.</label> : null}
           <div className="mt-5 grid grid-cols-2 gap-2"><button type="button" onClick={() => setCommitOpen(false)} disabled={commitBusy} className="h-11 rounded-[11px] border border-[#D4D7DC] text-[11px] font-extrabold">Back to review</button><button type="button" onClick={() => void commitBatch()} disabled={commitBusy || commitUnknown || (review.coverage?.requiresAcknowledgement && !coverageAcknowledged) || review.decisionCounts.unresolved > 0 || (review.priceMapping.required && !review.priceMapping.complete)} className="h-11 rounded-[11px] bg-[#11120d] text-[11px] font-extrabold text-white disabled:opacity-40">{commitBusy ? "Importing…" : "Confirm and import"}</button></div>
-        </ModalFrame>
-      ) : null}
-
-      {/* Exit Confirmation Modal */}
-      {exitConfirmOpen ? (
-        <ModalFrame
-          open={exitConfirmOpen}
-          onClose={() => setExitConfirmOpen(false)}
-          title={dirty ? "Unsaved product changes" : "Leave import review?"}
-          description={dirty ? `Edits to ${draft?.name ? `"${draft.name}"` : "this row"} are not saved.` : "Your progress is saved."}
-          maxWidthClass="max-w-[480px]"
-          mobileBottomSheet
-          footer={(
-            <div className="flex w-full flex-col sm:flex-row sm:items-center sm:justify-end gap-2.5">
-              {dirty ? (
-                <button
-                  type="button"
-                  onClick={() => {
-                    if (review && activeRow) {
-                      const initialDraft = importRowToDraft(review.batch, activeRow);
-                      setDraft(initialDraft);
-                      setSavedFingerprint(JSON.stringify(draftPayload(initialDraft)));
-                    }
-                    setExitConfirmOpen(false);
-                    navigate("/products");
-                  }}
-                  className="order-3 sm:order-1 sm:mr-auto inline-flex h-11 w-full sm:w-auto items-center justify-center gap-1.5 rounded-[12px] border border-rose-200 bg-rose-50 px-4 text-[12.5px] font-bold text-rose-700 transition hover:bg-rose-100"
-                >
-                  <Icon name="close" sizePx={15} />
-                  <span>Discard & Leave</span>
-                </button>
-              ) : null}
-              <button
-                type="button"
-                onClick={() => setExitConfirmOpen(false)}
-                className="order-2 sm:order-2 inline-flex h-11 w-full sm:w-auto items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-5 text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6]"
-              >
-                Keep Editing
-              </button>
-              <button
-                type="button"
-                disabled={saving}
-                onClick={async () => {
-                  if (dirty) {
-                    const ok = await saveDraft();
-                    if (!ok) return;
-                  }
-                  setExitConfirmOpen(false);
-                  navigate("/products");
-                }}
-                className="order-1 sm:order-3 inline-flex h-11 w-full sm:w-auto items-center justify-center gap-2 rounded-[12px] border border-[#11120d] bg-[#11120d] px-5 text-[12.5px] font-bold text-white transition hover:bg-[#2a2c27] shadow-sm disabled:opacity-50"
-              >
-                <Icon name={dirty ? "save" : "arrow_forward"} sizePx={16} />
-                <span>{dirty ? (saving ? "Saving…" : "Save & Leave") : "Exit to Products"}</span>
-              </button>
-            </div>
-          )}
-        >
-          <div className="rounded-[12px] border border-amber-200 bg-amber-50/80 p-3 text-[12px] font-medium leading-5 text-amber-900">
-            {dirty ? (
-              <span>Save your changes before leaving, or discard them to exit.</span>
-            ) : (
-              <span>Resume this review anytime from the Products page.</span>
-            )}
-          </div>
         </ModalFrame>
       ) : null}
 

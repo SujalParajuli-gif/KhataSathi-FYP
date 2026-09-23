@@ -156,7 +156,13 @@ export async function searchProductsWithDeterministicRanking(
   const products = rankedIds.length
     ? await prisma.product.findMany({
         where: { id: { in: rankedIds } },
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+          brand: { select: { id: true, name: true } },
+          searchAliases: {
+            where: { isEnabled: true },
+            select: { alias: true },
+          },
+        },
       })
     : [];
   const orderedProducts = restoreRankedProductOrder<(typeof products)[number]>(

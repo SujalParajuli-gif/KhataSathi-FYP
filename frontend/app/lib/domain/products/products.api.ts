@@ -42,6 +42,7 @@ type BackendProduct = {
   quantityStep?: number | null;
   wholesaleEligible?: boolean | null;
   sourceCitation?: string | null;
+  searchAliases?: Array<{ alias: string }>;
   sellingPriceStatus?: "PENDING" | "READY";
   availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
   retailPrice: number | null;
@@ -97,6 +98,7 @@ function toFrontendProduct(product: BackendProduct): Product {
     quantityStep: Number(product.quantityStep ?? 1),
     wholesaleEligible: product.wholesaleEligible ?? true,
     sourceCitation: product.sourceCitation ?? "",
+    searchAliases: (product.searchAliases ?? []).map((entry) => entry.alias),
     rateUpdatedAt: product.rateUpdatedAt || null,
     sellingPriceStatus:
       product.sellingPriceStatus === "PENDING" ||

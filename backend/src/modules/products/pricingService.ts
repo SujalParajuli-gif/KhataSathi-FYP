@@ -48,6 +48,7 @@ type BulkPriceProduct = {
     retailPrice: number | null;
     wholesalePrice: number | null;
     availabilityStatus: string;
+    searchAliases?: Array<{ alias: string }>;
 };
 
 const MAX_FILTERED_BULK_PRODUCTS = 10_000;
@@ -121,6 +122,10 @@ async function loadBulkPriceProducts(filters: ProductFilters) {
                 retailPrice: true,
                 wholesalePrice: true,
                 availabilityStatus: true,
+                searchAliases: {
+                    where: { isEnabled: true },
+                    select: { alias: true },
+                },
             },
             orderBy: { createdAt: "desc" },
             take: MAX_FILTERED_BULK_PRODUCTS + 1,
@@ -455,9 +460,11 @@ export async function bulkUpdateProductPrices(input: {
         (left, right) => (filteredProductOrder.get(left.productId) ?? 0) - (filteredProductOrder.get(right.productId) ?? 0),
     );
     const matchingPreview = previewSearch
-        ? previewSearchSource.filter((item) =>
-            [item.name, item.sku].some((value) => String(value || "").toLocaleLowerCase().includes(previewSearch)),
-        )
+        ? previewSearchSource.filter((item) => {
+            const aliases = filteredProductSnapshots.get(item.productId)?.searchAliases?.map((entry) => entry.alias) ?? [];
+            return [item.name, item.sku, ...aliases]
+                .some((value) => String(value || "").toLocaleLowerCase().includes(previewSearch));
+        })
         : previewSearchSource;
     const previewSort: PreviewSort = input.previewSort === "rate_desc"
         || input.previewSort === "rate_asc"

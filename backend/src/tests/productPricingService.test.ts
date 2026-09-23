@@ -138,6 +138,35 @@ test("fill-empty preview keeps already-priced products searchable for exact adju
   }
 });
 
+test("filtered bulk-price preview can be searched by a product alias", async () => {
+  const originalFindMany = prisma.product.findMany;
+  const originalCount = prisma.product.count;
+  (prisma.product as any).findMany = async () => [{
+    ...baseProduct,
+    name: "Basin",
+    searchAliases: [{ alias: "bata" }],
+  }];
+  (prisma.product as any).count = async () => 1;
+  try {
+    const result = await bulkUpdateProductPrices({
+      scope: "FILTERED",
+      filters: { isActive: true },
+      wholesalePercent: 18,
+      existingPricePolicy: "FILL_EMPTY",
+      previewOnly: true,
+      previewSearch: "bata",
+      reason: "Preview only",
+      actorId: "actor-1",
+    });
+
+    assert.equal(result.previewMatchedCount, 1);
+    assert.equal(result.preview[0]?.name, "Basin");
+  } finally {
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma.product as any).count = originalCount;
+  }
+});
+
 test("filtered preview sorts the complete result before applying pagination", async () => {
   const originalFindMany = prisma.product.findMany;
   const originalCount = prisma.product.count;

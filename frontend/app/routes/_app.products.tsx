@@ -600,7 +600,7 @@ export default function ProductsPage() {
     let list = !normalized
       ? [...selectedProducts]
       : selectedProducts.filter((product) =>
-          [product.name, product.sku, product.barcode, product.brand]
+          [product.name, product.sku, product.barcode, product.brand, ...(product.searchAliases ?? [])]
             .filter(Boolean)
             .some((value) => String(value).toLocaleLowerCase().includes(normalized)),
         );
@@ -1430,20 +1430,20 @@ export default function ProductsPage() {
       return;
     }
 
+    const controller = new AbortController();
     const timer = window.setTimeout(async () => {
       try {
         setStockLookupBusy(true);
         setStockLineError("");
-        const result = await fetchProducts({
-          q: query,
-          status: "active",
-          page: 1,
-          pageSize: 20,
-        });
+        const result = await fetchProducts(
+          { q: query, status: "active", page: 1, pageSize: 20 },
+          { signal: controller.signal },
+        );
         setStockLookupResults(
           result.items.filter((product: Product) => !stockProductIds.includes(product.id)),
         );
       } catch (error: any) {
+        if (controller.signal.aborted || error?.code === "ERR_CANCELED") return;
         setStockLookupResults([]);
         setStockLineError(error?.message || "Failed to search products.");
       } finally {
@@ -1451,7 +1451,10 @@ export default function ProductsPage() {
       }
     }, 250);
 
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
   }, [openStockManager, stockProductIds, stockProductQuery]);
 
   React.useEffect(() => {
@@ -4974,17 +4977,18 @@ export default function ProductsPage() {
                 {stockProductQuery.trim().length >= 2 && (
                   <div className="absolute left-0 right-0 top-full z-20 mt-[4px] max-h-[300px] overflow-y-auto rounded-[12px] border border-[#E5E7EB] bg-white shadow-xl">
                     {stockLookupResults.map((product) => (
-                      <div
+                      <button
                         key={product.id}
+                        type="button"
                         onClick={() => addProductToStockManager(product)}
-                        className="flex cursor-pointer items-center justify-between gap-[12px] px-[16px] py-[12px] transition-colors hover:bg-[#ECEFF3] border-b border-[#E5E7EB] last:border-0"
+                        className="flex w-full cursor-pointer items-center justify-between gap-[12px] border-b border-[#E5E7EB] px-[16px] py-[12px] text-left transition-colors hover:bg-[#ECEFF3] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#2563EB] last:border-0"
                       >
                         <div>
                           <div className="text-[13px] font-bold text-[#11120d]">{product.name}</div>
                           <div className="text-[11px] font-medium text-[#565449] mt-[2px]">SKU {product.sku || "-"} | Stock: {product.stock}</div>
                         </div>
-                        <button className="rounded-[6px] bg-[#EFF6FF] px-[10px] py-[4px] text-[11px] font-bold text-[#2563EB]">Add</button>
-                      </div>
+                        <span className="rounded-[6px] bg-[#EFF6FF] px-[10px] py-[4px] text-[11px] font-bold text-[#2563EB]">Add</span>
+                      </button>
                     ))}
                     {!stockLookupBusy && stockLookupResults.length === 0 && (
                       <div className="p-[16px] text-center">

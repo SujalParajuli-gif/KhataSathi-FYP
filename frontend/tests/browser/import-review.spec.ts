@@ -12,7 +12,7 @@ for (const viewport of [{ width: 1440, height: 1000 }, { width: 390, height: 844
     await mockApp(page, state);
     await page.goto("/products/imports/test-batch");
     if (viewport.width < 1280) await page.getByRole("button", { name: /Test bucket/ }).first().click();
-    await expect(page.getByText("An existing product matches.", { exact: false })).toBeVisible();
+    await expect(page.getByText("Matches existing product.", { exact: false })).toBeVisible();
     await expect(page.getByText("Choose a decision", { exact: true })).toBeVisible();
     await expect(page.getByText("User changed", { exact: true })).toHaveCount(0);
     const findings = await page.getByText("Catalog comparison: existing → incoming", { exact: true }).boundingBox();
@@ -32,7 +32,7 @@ test("identifier findings focus a highlighted correctable field", async ({ page 
     error: "Barcode belongs to another product.", reviewIssues: [{ field: "barcode", message: "Barcode belongs to another product.", severity: "error" }] });
   await mockApp(page, state);
   await page.goto("/products/imports/test-batch");
-  await page.getByRole("button", { name: "Check Barcode", exact: true }).click();
+  await page.getByRole("button", { name: "Barcode", exact: true }).click();
   const barcode = page.getByRole("textbox", { name: "Barcode", exact: true });
   await expect(barcode).toBeFocused();
   await expect(barcode).toHaveAttribute("aria-invalid", "true");
@@ -43,7 +43,7 @@ test("an unchanged existing match is explained without a user-edited tag", async
   Object.assign(state.rows[0], { comparisonStatus: "EXACT_DUPLICATE", resolution: "KEEP_EXISTING", reviewChanges: [] });
   await mockApp(page, state);
   await page.goto("/products/imports/test-batch");
-  await expect(page.getByText("Already in your catalog.", { exact: false })).toBeVisible();
+  await expect(page.getByText("Already in catalog.", { exact: false })).toBeVisible();
   await expect(page.getByText("User changed", { exact: true })).toHaveCount(0);
 });
 
@@ -71,15 +71,16 @@ test("coverage recovery stays compact and mobile review views survive reload", a
   await expect(recovery).toBeVisible();
   expect((await recovery.boundingBox())!.height).toBeLessThanOrEqual(48);
   await expect(recovery.getByRole("button", { name: "Recheck" })).toBeVisible();
-  await page.getByRole("tab", { name: "Source" }).click();
+  await page.goto("/products/imports/test-batch?view=source");
   await expect(page).toHaveURL(/view=source/);
-  await expect(page.getByRole("heading", { name: "Source document" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Document" })).toBeVisible();
   await page.reload();
-  await expect(page.getByRole("tab", { name: "Source" })).toHaveAttribute("aria-selected", "true");
-  await expect(page.getByRole("button", { name: "Reset source zoom, currently 100%" })).toBeVisible();
+  await expect(page).toHaveURL(/view=source/);
+  await expect(page.getByRole("heading", { name: "Document" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Zoom out source" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Zoom in source" })).toBeVisible();
   await page.getByRole("button", { name: "Zoom in source" }).click();
-  await expect(page.getByRole("button", { name: "Reset source zoom, currently 125%" })).toBeVisible();
-  await expect(page.getByRole("link", { name: "Open source in a new tab" })).toHaveAttribute("target", "_blank");
+  await expect(page.getByRole("link", { name: "Open source in a new tab" })).toBeHidden();
   await page.screenshot({ path: testInfo.outputPath("source-backed-mobile.png") });
 });
 
@@ -116,7 +117,7 @@ test("source-backed review keeps all three desktop work areas in view", async ({
   state.batch.source = { available: true, fileName: "test-catalog.pdf", mimeType: "application/pdf" };
   await mockApp(page, state);
   await page.goto("/products/imports/test-batch");
-  await expect(page.getByRole("heading", { name: "Source document" })).toBeVisible();
+  await expect(page.getByRole("heading", { name: "Document" })).toBeVisible();
   await expect(page.getByRole("heading", { name: "Review item" })).toBeVisible();
   await expect(page.getByRole("textbox", { name: "Search import rows" })).toBeVisible();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
@@ -144,7 +145,7 @@ test("unfinished imports are resumable from the product catalog", async ({ page 
   if (await showList.isVisible()) {
     await showList.click();
   }
-  await page.getByRole("button", { name: /Ready to review: test-catalog\.pdf/ }).click();
+  await page.getByRole("button", { name: /Saved draft: test-catalog\.pdf/ }).click();
   await expect(page).toHaveURL(/\/products\/imports\/test-batch/);
 });
 const row = {id:"row-1",batchId:"test-batch",rowNumber:1,status:"READY",resolution:"CREATE_NEW",comparisonStatus:"READY_NEW",parsed:{name:"Test bucket",brand:"Test supplier",category:"Buckets",sku:"TEST-1",ratePerPiece:100,retailPrice:null,wholesalePrice:null,availabilityStatus:"CATALOG_LISTED",stock:0}};
@@ -335,8 +336,8 @@ test("dirty review navigation asks to save and incomplete coverage blocks final 
   const productName = page.getByRole("textbox",{name:"Product name",exact:true});
   await productName.fill("Corrected bucket");
   await page.getByRole("button",{name:"Back to products",exact:true}).click();
-  await expect(page.getByRole("dialog",{name:"Unsaved product changes"})).toBeVisible();
-  await page.getByRole("button",{name:"Keep Editing",exact:true}).click();
+  await expect(page.getByRole("dialog",{name:"Save before leaving review?"})).toBeVisible();
+  await page.getByRole("button",{name:"Cancel",exact:true}).click();
   await expect(productName).toHaveValue("Corrected bucket");
   await page.getByRole("button",{name:/^Save (?:row|& Next)$/}).click();
   await page.getByRole("button",{name:/final import|commit batch|import saved/i}).filter({visible:true}).first().click();
@@ -388,7 +389,11 @@ for (const width of [390, 1440]) {
     const initial = (await source.boundingBox())!.width;
     await page.getByRole("button", { name: "Zoom out source" }).click();
     await expect.poll(async () => (await source.boundingBox())!.width / initial).toBeCloseTo(0.75, 1);
-    await page.getByRole("button", { name: "Reset source zoom, currently 75%" }).click();
+    if (width >= 640) {
+      await page.getByRole("button", { name: "Reset source zoom, currently 75%" }).click();
+    } else {
+      await page.getByRole("button", { name: "Zoom in source" }).click();
+    }
     await page.getByRole("button", { name: "Zoom in source" }).click();
     await expect.poll(async () => (await source.boundingBox())!.width / initial).toBeCloseTo(1.25, 1);
     await page.screenshot({ path: testInfo.outputPath(`image-zoom-${width}.png`) });
@@ -550,11 +555,9 @@ test("large brand lists allow explicit search but not manual creation", async ({
   await mockApp(page, review());
   await page.route((url) => url.pathname.endsWith("/brands"), route => route.fulfill({ contentType: "application/json", body: JSON.stringify(Array.from({ length: 16 }, (_, index) => ({ id: `brand-${index}`, name: `Brand ${index}` }))) }));
   await page.goto("/products/imports/test-batch?view=editor");
-  const field = page.locator("label").filter({ has: page.getByRole("combobox", { name: "Product brand", exact: true }) });
-  await expect(field.getByRole("textbox")).toHaveCount(0);
-  await expect(field.getByRole("button", { name: "Enter manually…" })).toHaveCount(0);
-  await expect(field.getByRole("button", { name: "Search options" })).toHaveCount(0);
-  const combobox = field.getByRole("combobox", { name: "Product brand", exact: true });
+  const combobox = page.getByRole("combobox", { name: "Product brand", exact: true });
+  await expect(page.getByRole("button", { name: "Enter manually…" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Search options" })).toHaveCount(0);
   await combobox.click();
   const searchInput = page.getByRole("searchbox", { name: "Search Product brand" });
   await searchInput.fill("Brand 15");
@@ -582,8 +585,11 @@ test("mobile row editing and unsaved-change confirmation stay usable", async ({p
   await page.getByRole("button",{name:"Review Test bucket",exact:true}).click();
   await page.getByRole("textbox",{name:"Product name",exact:true}).fill("Mobile correction");
   await page.getByRole("button",{name:"Back to products",exact:true}).click();
-  const dialog = page.getByRole("dialog",{name:"Unsaved product changes"});
+  const dialog = page.getByRole("dialog",{name:"Save before leaving review?"});
   await expect(dialog).toBeVisible();
-  await expect(dialog.getByRole("button",{name:"Keep editing"})).toBeInViewport();
+  await expect(dialog.getByRole("button",{name:"Cancel"})).toBeInViewport();
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+  await dialog.getByRole("button", { name: "Discard & Leave", exact: true }).click();
+  await expect(page).toHaveURL(/\/products$/);
+  await expect(page.getByRole("dialog")).toHaveCount(0);
 });

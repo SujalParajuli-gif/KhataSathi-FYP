@@ -178,11 +178,17 @@ export async function listProducts(filters: ProductFilters) {
         const pageProducts = (filteredPage.ids.length
           ? await prisma.product.findMany({
             where: { id: { in: filteredPage.ids } },
-            include: { brand: { select: { id: true, name: true } } },
+            include: {
+              brand: { select: { id: true, name: true } },
+              searchAliases: { where: { isEnabled: true }, select: { alias: true } },
+            },
           })
           : []) as Array<
             Prisma.ProductGetPayload<{
-              include: { brand: { select: { id: true; name: true } } };
+              include: {
+                brand: { select: { id: true; name: true } };
+                searchAliases: { where: { isEnabled: true }; select: { alias: true } };
+              };
             }>
           >;
         const productById = new Map(pageProducts.map((product) => [product.id, product]));
@@ -226,7 +232,10 @@ export async function listProducts(filters: ProductFilters) {
         const [products, total] = await Promise.all([
             prisma.product.findMany({
                 where,
-                include: { brand: { select: { id: true, name: true } } },
+                include: {
+                    brand: { select: { id: true, name: true } },
+                    searchAliases: { where: { isEnabled: true }, select: { alias: true } },
+                },
                 orderBy,
                 skip,
                 take: pageSize,
@@ -268,7 +277,10 @@ export async function getProductsByIds(ids: string[]) {
     const settings = await getBusinessSettings();
     const products = await prisma.product.findMany({
         where: { id: { in: uniqueIds } },
-        include: { brand: { select: { id: true, name: true } } },
+        include: {
+            brand: { select: { id: true, name: true } },
+            searchAliases: { where: { isEnabled: true }, select: { alias: true } },
+        },
     });
     const byId = new Map(
         products.map((product) => [

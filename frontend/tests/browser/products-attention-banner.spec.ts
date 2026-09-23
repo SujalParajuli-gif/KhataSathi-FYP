@@ -90,7 +90,7 @@ test("attention badge counts every pending batch while showing only three previe
   const banner = page.locator("section[aria-labelledby='import-activity-heading']");
   await expect(banner.getByText("5", { exact: true })).toBeVisible();
   await banner.getByRole("button", { name: "Show list" }).click();
-  await expect(banner.getByRole("button", { name: /Ready to review: Household/ })).toHaveCount(3);
+  await expect(banner.getByRole("button", { name: /Saved draft: Household/ })).toHaveCount(3);
 });
 
 test("attention summary includes older batches outside the recent history page", async ({ page }) => {
@@ -103,7 +103,7 @@ test("attention summary includes older batches outside the recent history page",
   const banner = page.locator("section[aria-labelledby='import-activity-heading']");
   await expect(banner.getByText("42", { exact: true })).toBeVisible();
   await banner.getByRole("button", { name: "Show list" }).click();
-  await expect(banner.getByRole("button", { name: /Ready to review: Household/ })).toBeVisible();
+  await expect(banner.getByRole("button", { name: /Saved draft: Household/ })).toBeVisible();
 });
 
 test("product page status filter defaults to Active with only Active and Inactive options", async ({ page }) => {
@@ -157,7 +157,7 @@ test("attention banner has badge with count, text without repeated number, and s
   const pdfCard = banner.locator("button", { hasText: "Household SPL.pdf" });
   await expect(pdfCard).toBeVisible();
   await expect(pdfCard.locator("span.material-symbols-rounded:has-text('picture_as_pdf')")).toBeVisible();
-  await expect(pdfCard.getByText("Ready to review")).toBeVisible();
+  await expect(pdfCard.getByText("Saved draft")).toBeVisible();
 
   // Card 2: XLSX has table_chart icon
   const excelCard = banner.locator("button", { hasText: "KhataSathi_Super_Plastic_Catalog.xlsx" });

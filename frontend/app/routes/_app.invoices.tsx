@@ -27,6 +27,7 @@ import {
   discardParkedDraftApi,
   getMyCashierPrivilegesApi,
   getInvoiceApi,
+  getProductByCodeApi,
   initiateEsewaPaymentApi,
   listInvoicesApi,
   listParkedDraftsApi,
@@ -365,7 +366,7 @@ function mapModifyProductResult(product: any): ModifyProductResult {
     sku: String(product.sku || ""),
     barcode: product.barcode ? String(product.barcode) : undefined,
     retailPrice: Number(product.retailPrice || 0),
-    stock: Number(product.stock || 0),
+    stock: Number(product.availableStock ?? product.stock ?? 0),
   };
 }
 
@@ -397,6 +398,8 @@ function InvoiceModifyModal({
   const [addProductQuery, setAddProductQuery] = useState("");
   const [addProductResults, setAddProductResults] = useState<ModifyProductResult[]>([]);
   const [addProductLoading, setAddProductLoading] = useState(false);
+  const [addProductError, setAddProductError] = useState("");
+  const [addProductIndex, setAddProductIndex] = useState(0);
   const [scanInput, setScanInput] = useState("");
   const [scanModalOpen, setScanModalOpen] = useState(false);
   const [scanBusy, setScanBusy] = useState(false);
@@ -404,7 +407,13 @@ function InvoiceModifyModal({
   const [scanError, setScanError] = useState("");
   const [confirmDiscardOpen, setConfirmDiscardOpen] = useState(false);
   const searchTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const addProductResultRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const videoRef = React.useRef<HTMLVideoElement | null>(null);
+  const existingProductIds = useMemo(() => new Set(lines.map((line) => line.productId)), [lines]);
+  const filteredResults = useMemo(
+    () => addProductResults.filter((product) => !existingProductIds.has(product.id)),
+    [addProductResults, existingProductIds],
+  );
 
   useBodyScrollLock(Boolean(invoice));
 
@@ -451,33 +460,53 @@ function InvoiceModifyModal({
     const query = addProductQuery.trim();
     if (query.length < 2) {
       setAddProductResults([]);
+      setAddProductError("");
       return;
     }
 
     if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+    const controller = new AbortController();
     searchTimerRef.current = setTimeout(async () => {
       setAddProductLoading(true);
+      setAddProductError("");
       try {
-        const response = await listProductsApi({ search: query, active: "true", pageSize: 20 });
+        const response = await listProductsApi(
+          { search: query, active: "true", pageSize: 20 },
+          { signal: controller.signal },
+        );
         const products = Array.isArray(response?.products) ? response.products : [];
         setAddProductResults(products.map(mapModifyProductResult));
-      } catch {
+      } catch (searchError: any) {
+        if (controller.signal.aborted || searchError?.code === "ERR_CANCELED") return;
         setAddProductResults([]);
+        setAddProductError("Product search failed. Check the connection and try again.");
       } finally {
-        setAddProductLoading(false);
+        if (!controller.signal.aborted) setAddProductLoading(false);
       }
     }, 300);
 
     return () => {
       if (searchTimerRef.current) clearTimeout(searchTimerRef.current);
+      controller.abort();
     };
   }, [addProductQuery, invoice]);
+
+  useEffect(() => {
+    addProductResultRefs.current.length = filteredResults.length;
+    setAddProductIndex((current) => Math.min(current, Math.max(0, filteredResults.length - 1)));
+  }, [filteredResults.length]);
+
+  useEffect(() => {
+    addProductResultRefs.current[addProductIndex]?.scrollIntoView({ block: "nearest" });
+  }, [addProductIndex]);
 
   // reset search state when the modal opens or closes
   useEffect(() => {
     if (!invoice) {
       setAddProductQuery("");
       setAddProductResults([]);
+      setAddProductError("");
+      setAddProductIndex(0);
       setScanInput("");
       setScanModalOpen(false);
       setScanStatus("");
@@ -610,12 +639,6 @@ function InvoiceModifyModal({
   );
   const totalDifference = nextSubtotal - invoice.netTotal;
 
-  // filter out products that are already in the replacement items list so the search results are cleaner
-  const existingProductIds = new Set(lines.map((line) => line.productId));
-  const filteredResults = addProductResults.filter(
-    (product) => !existingProductIds.has(product.id),
-  );
-
   function applyReasonSuggestion(suggestion: string) {
     const current = reason.trim();
     if (!current) {
@@ -639,21 +662,7 @@ function InvoiceModifyModal({
     setScanStatus(source === "camera" ? "Barcode detected." : "Looking up product...");
 
     try {
-      const response = await listProductsApi({
-        search: code,
-        active: "true",
-        pageSize: 20,
-      });
-      const products: ModifyProductResult[] = Array.isArray(response?.products)
-        ? response.products.map(mapModifyProductResult)
-        : [];
-      const normalized = code.toLowerCase();
-      const exactMatch = products.find(
-        (product) =>
-          product.sku.toLowerCase() === normalized ||
-          (product.barcode || "").toLowerCase() === normalized,
-      );
-      const product = exactMatch || (products.length === 1 ? products[0] : null);
+      const product = mapModifyProductResult(await getProductByCodeApi(code));
 
       if (!product) {
         setScanStatus("");
@@ -755,6 +764,8 @@ function InvoiceModifyModal({
                       value={addProductQuery}
                       onChange={(event) => {
                         setAddProductQuery(event.target.value);
+                        setAddProductIndex(0);
+                        setAddProductError("");
                         setScanError("");
                         setScanStatus("");
                       }}
@@ -762,6 +773,29 @@ function InvoiceModifyModal({
                         setScanError("");
                         setScanStatus("");
                       }}
+                      onKeyDown={(event) => {
+                        if (event.key === "Escape") {
+                          setAddProductQuery("");
+                          return;
+                        }
+                        if (filteredResults.length === 0) return;
+                        if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                          event.preventDefault();
+                          const direction = event.key === "ArrowDown" ? 1 : -1;
+                          setAddProductIndex((current) =>
+                            (current + direction + filteredResults.length) % filteredResults.length,
+                          );
+                        } else if (event.key === "Enter") {
+                          const product = filteredResults[addProductIndex];
+                          if (!product || product.stock <= 0) return;
+                          event.preventDefault();
+                          onAddLine(product);
+                          setAddProductQuery("");
+                          setAddProductResults([]);
+                        }
+                      }}
+                      aria-controls="invoice-product-search-results"
+                      aria-expanded={addProductQuery.trim().length >= 2}
                       placeholder="Search product name, SKU, barcode..."
                       className="w-full bg-transparent text-[13px] font-semibold text-[#000000] outline-none placeholder:text-[#8C8889]"
                     />
@@ -773,11 +807,14 @@ function InvoiceModifyModal({
                     </div>
 
                     {addProductQuery.trim().length >= 2 ? (
-                      <div className="absolute left-0 right-0 top-full z-10 mt-1 max-h-[230px] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-lg">
-                        {filteredResults.map((product) => (
+                      <div id="invoice-product-search-results" role="listbox" aria-label="Product search results" className="absolute left-0 right-0 top-full z-10 mt-1 max-h-[230px] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-lg">
+                        {filteredResults.map((product, resultIndex) => (
                           <button
                             key={product.id}
+                            ref={(element) => { addProductResultRefs.current[resultIndex] = element; }}
                             type="button"
+                            role="option"
+                            aria-selected={resultIndex === addProductIndex}
                             disabled={product.stock <= 0}
                             onClick={() => {
                               onAddLine(product);
@@ -790,7 +827,9 @@ function InvoiceModifyModal({
                               "flex w-full items-center justify-between gap-3 px-4 py-2.5 text-left transition",
                               product.stock <= 0
                                 ? "cursor-not-allowed opacity-40"
-                                : "hover:bg-[#F3F4F6]",
+                                : resultIndex === addProductIndex
+                                  ? "bg-[#E8F2FF]"
+                                  : "hover:bg-[#F3F4F6]",
                             )}
                           >
                             <div className="min-w-0">
@@ -815,7 +854,11 @@ function InvoiceModifyModal({
                             </span>
                           </button>
                         ))}
-                        {filteredResults.length === 0 && !addProductLoading ? (
+                        {addProductError && !addProductLoading ? (
+                          <div role="alert" className="px-4 py-3 text-center text-[12px] font-semibold text-rose-700">
+                            {addProductError}
+                          </div>
+                        ) : filteredResults.length === 0 && !addProductLoading ? (
                           <div className="px-4 py-3 text-center text-[12px] font-semibold text-[#8C8889]">
                             No matching products found.
                           </div>

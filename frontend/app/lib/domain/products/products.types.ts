@@ -34,6 +34,7 @@ export type Product = {
   quantityStep: number;
   wholesaleEligible: boolean;
   sourceCitation?: string;
+  searchAliases?: string[];
 
   sellingPriceStatus: "PENDING" | "READY";
   availabilityStatus: "CATALOG_LISTED" | "COMING_SOON";

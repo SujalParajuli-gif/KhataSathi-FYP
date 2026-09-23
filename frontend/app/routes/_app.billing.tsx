@@ -1447,6 +1447,7 @@ export default function BillingPage() {
   const [manualSearchProductIds, setManualSearchProductIds] = useState<string[]>([]);
   const [manualSearchTotal, setManualSearchTotal] = useState(0);
   const [manualSearchLoading, setManualSearchLoading] = useState(false);
+  const [manualSearchError, setManualSearchError] = useState("");
   const [manualSearchIndex, setManualSearchIndex] = useState(0);
   const [openRowActionProductId, setOpenRowActionProductId] = useState<
     string | null
@@ -1665,6 +1666,7 @@ export default function BillingPage() {
       setManualSearchProductIds([]);
       setManualSearchTotal(0);
       setManualSearchLoading(false);
+      setManualSearchError("");
       return undefined;
     }
 
@@ -1672,6 +1674,7 @@ export default function BillingPage() {
     setManualSearchProductIds([]);
     setManualSearchTotal(0);
     setManualSearchLoading(true);
+    setManualSearchError("");
     const timer = window.setTimeout(() => {
       void listProductsApi(
         { search, active: "true", page: 1, pageSize: MANUAL_SEARCH_LIMIT },
@@ -1689,8 +1692,7 @@ export default function BillingPage() {
         .catch((error: any) => {
           if (controller.signal.aborted || error?.code === "ERR_CANCELED") return;
           if (isRateLimitError(error)) requestRateLimitRecovery();
-          // Keep billing usable during a transient failure; the global rate
-          // limit banner explains cooldowns without adding duplicate errors.
+          else setManualSearchError("Product search failed. Check the connection and try again.");
         })
         .finally(() => {
           if (!controller.signal.aborted) setManualSearchLoading(false);
@@ -4171,7 +4173,7 @@ export default function BillingPage() {
 
               {/* SEARCH AUTOCOMPLETE DROPDOWN */}
               {productQuery.trim().length > 0 && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-30 flex max-h-[62vh] w-[640px] flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)]">
+                <div className="absolute left-0 top-[calc(100%+8px)] z-30 flex max-h-[62vh] w-full flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)] sm:w-[min(640px,calc(100vw-2rem))]">
                   <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2">
                     <div>
                       <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
@@ -4208,6 +4210,10 @@ export default function BillingPage() {
                     {manualSearchLoading ? (
                       <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
                         Searching products...
+                      </div>
+                    ) : manualSearchError ? (
+                      <div role="alert" className="py-8 text-center text-[13px] font-semibold text-rose-700">
+                        {manualSearchError}
                       </div>
                     ) : manualResults.length === 0 ? (
                       <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
