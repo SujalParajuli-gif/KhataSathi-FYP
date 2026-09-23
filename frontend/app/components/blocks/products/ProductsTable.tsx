@@ -232,6 +232,7 @@ export default function ProductsTableCard({
   onPageSizeChange,
   onClearFilters,
   onRetry,
+  hasActiveCatalogFilters,
   stockTracked,
   purchaseCostVisible,
 }: {
@@ -255,6 +256,7 @@ export default function ProductsTableCard({
   onPageSizeChange: (pageSize: number) => void;
   onClearFilters: () => void;
   onRetry: () => void;
+  hasActiveCatalogFilters: boolean;
   stockTracked: boolean;
   purchaseCostVisible: boolean;
 }) {
@@ -333,34 +335,20 @@ export default function ProductsTableCard({
     <>
       <section className="space-y-3 lg:hidden" aria-label="Products catalog">
         {loading && rows.length === 0 ? (
-          <div className="space-y-3">
+          <div className="space-y-3" role="status" aria-label="Loading products" aria-busy="true">
             {[0, 1, 2].map((item) => (
-              <div key={item} className="h-[136px] animate-pulse rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC]" />
+              <div key={item} className="h-[136px] animate-pulse rounded-[14px] border border-[#E5E7EB] bg-[#F8FAFC] motion-reduce:animate-none" />
             ))}
           </div>
         ) : null}
 
         {!loading && rows.length === 0 ? (
-          <div className="flex min-h-[52dvh] flex-col items-center justify-center px-5 py-10 text-center">
-            <div className="inline-flex h-28 w-28 items-center justify-center rounded-full bg-[#F8FAFC] text-[#A3A3A3]">
-              <GoogleIcon name={loadError ? "error_outline" : "inventory_2"} className="text-[58px]" />
-            </div>
-            <h2 className="mt-6 text-[21px] font-extrabold text-[#11120d]">
-              {loadError || "No products match your filters."}
-            </h2>
-            <p className="mt-2 max-w-[320px] text-[14px] leading-6 text-[#6B7280]">
-              {loadError ? "Check your connection and try loading the catalog again." : "Try removing some filters or clearing your search."}
-            </p>
-            <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
-              {!loadError ? (
-                <button type="button" onClick={onClearFilters} className="inline-flex h-12 items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[14px] font-bold text-[#11120d]">
-                  <GoogleIcon name="filter_alt_off" className="text-[20px]" />
-                  Clear all filters
-                </button>
-              ) : null}
-              <button type="button" onClick={onRetry} className="h-12 rounded-[12px] px-4 text-[14px] font-bold text-[#11120d]">Retry</button>
-            </div>
-          </div>
+          <ProductsEmptyState
+            loadError={loadError}
+            hasActiveCatalogFilters={hasActiveCatalogFilters}
+            onClearFilters={onClearFilters}
+            onRetry={onRetry}
+          />
         ) : null}
 
         {rows.map((product) => {
@@ -621,11 +609,13 @@ export default function ProductsTableCard({
         <Card>
           <div>
             <div className="overflow-x-auto">
+              {loading && <div role="status" className="sr-only">{rows.length === 0 ? "Loading products" : "Updating products"}</div>}
               <table
                 className={cn(
                   "w-full border-collapse text-left",
                   stockTracked ? "min-w-[1230px]" : "min-w-[1120px]",
                 )}
+                aria-busy={loading}
               >
                 <thead>
                   <tr className="border-b border-[#DADDE3] bg-[#F8FAFC] text-[11px] font-extrabold uppercase tracking-[0.06em] text-[#64748B]">
@@ -821,20 +811,43 @@ export default function ProductsTableCard({
                   })}
 
                   {rows.length === 0 && loading ? (
-                    <tr>
-                      <td colSpan={stockTracked ? 12 : 11} className="px-[14px] py-[22px] text-[14px] font-semibold text-[#565449]">
-                        <div className="flex items-center gap-2">
-                          <span className="h-4 w-4 animate-spin rounded-full border-2 border-[#CFCFD3] border-t-[#11120d]" />
-                          Loading products...
-                        </div>
-                      </td>
-                    </tr>
+                    <>
+                      {[0, 1, 2, 3, 4].map((item) => (
+                        <tr key={item}>
+                          <td className="w-[52px] p-0" />
+                          <td className="px-3 py-4">
+                            <div className="flex items-center gap-[12px]">
+                              <div className="h-[48px] w-[48px] shrink-0 animate-pulse rounded-[12px] bg-[#F1F5F9] motion-reduce:animate-none" />
+                              <div className="min-w-0 space-y-2">
+                                <div className="h-4 w-[160px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" />
+                                <div className="h-3 w-[100px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" />
+                              </div>
+                            </div>
+                          </td>
+                          <td className="px-3 py-4"><div className="h-4 w-[80px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[100px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[60px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[60px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[70px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[70px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="px-3 py-4"><div className="h-4 w-[80px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          {stockTracked ? <td className="px-3 py-4"><div className="h-4 w-[60px] animate-pulse rounded bg-[#F1F5F9] motion-reduce:animate-none" /></td> : null}
+                          <td className="px-3 py-4"><div className="h-5 w-[80px] animate-pulse rounded-full bg-[#F1F5F9] motion-reduce:animate-none" /></td>
+                          <td className="w-[80px] px-3 py-4" />
+                        </tr>
+                      ))}
+                    </>
                   ) : null}
 
                   {rows.length === 0 && !loading ? (
                     <tr>
-                      <td colSpan={(stockTracked ? 11 : 10) + (purchaseCostVisible ? 1 : 0)} className="px-[14px] py-[22px] text-[14px] text-[#8C8889]">
-                        {loadError || "No products match your filters."}
+                      <td colSpan={stockTracked ? 12 : 11} className="p-0">
+                        <ProductsEmptyState
+                          loadError={loadError}
+                          hasActiveCatalogFilters={hasActiveCatalogFilters}
+                          onClearFilters={onClearFilters}
+                          onRetry={onRetry}
+                        />
                       </td>
                     </tr>
                   ) : null}
@@ -951,5 +964,57 @@ function AvailabilityPill({ product }: { product: Product }) {
     <span className="inline-flex items-center rounded-full border border-sky-200 bg-sky-50 px-2.5 py-1 text-[11px] font-bold text-sky-800">
       Price coming soon
     </span>
+  );
+}
+
+function ProductsEmptyState({
+  loadError,
+  hasActiveCatalogFilters,
+  onClearFilters,
+  onRetry,
+}: {
+  loadError?: string;
+  hasActiveCatalogFilters: boolean;
+  onClearFilters: () => void;
+  onRetry: () => void;
+}) {
+  const isError = !!loadError;
+  const heading = isError
+    ? "Products could not be loaded"
+    : hasActiveCatalogFilters
+      ? "No products match these filters"
+      : "No active products yet";
+
+  const description = isError
+    ? (loadError || "Check your connection and try loading the catalog again.")
+    : hasActiveCatalogFilters
+      ? "Try adjusting your search or clearing filters to see more results."
+      : "Add new products or import them using the page actions above.";
+
+  return (
+    <div className="flex min-h-[40dvh] flex-col items-center justify-center px-5 py-10 text-center" role={isError ? "alert" : undefined}>
+      <div className="inline-flex h-28 w-28 items-center justify-center rounded-full bg-[#F8FAFC] text-[#A3A3A3]">
+        <GoogleIcon name={isError ? "error_outline" : "inventory_2"} className="text-[58px]" />
+      </div>
+      <h2 className="mt-6 text-[21px] font-extrabold text-[#11120d]">
+        {heading}
+      </h2>
+      <p className="mt-2 max-w-[320px] text-[14px] leading-6 text-[#6B7280]">
+        {description}
+      </p>
+      <div className="mt-6 flex flex-wrap items-center justify-center gap-3">
+        {!isError && hasActiveCatalogFilters ? (
+          <button type="button" onClick={onClearFilters} className="inline-flex h-12 items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[14px] font-bold text-[#11120d]">
+            <GoogleIcon name="filter_alt_off" className="text-[20px]" />
+            Clear all filters
+          </button>
+        ) : null}
+        {isError ? (
+          <button type="button" onClick={onRetry} className="h-12 rounded-[12px] px-4 text-[14px] font-bold text-[#11120d]">
+            Retry
+          </button>
+        ) : null}
+      </div>
+    </div>
   );
 }

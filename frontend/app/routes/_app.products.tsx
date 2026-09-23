@@ -4113,6 +4113,16 @@ export default function ProductsPage() {
 
       {/* this table only receives the current client-side page slice, not the full product array */}
       <ProductsTableCard
+        hasActiveCatalogFilters={
+          debouncedQ !== "" ||
+          brand !== "All Brands" ||
+          category !== "All Categories" ||
+          (stockTracked && stockStatus !== "all") ||
+          (stockTracked && lowOnly) ||
+          status !== "active" ||
+          pricingStatus !== "all" ||
+          photoStatus !== "all"
+        }
         stockTracked={stockTracked}
         purchaseCostVisible={purchaseCostVisible}
         rows={pageItems}
