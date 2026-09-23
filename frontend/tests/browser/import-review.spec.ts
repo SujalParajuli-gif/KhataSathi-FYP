@@ -204,7 +204,7 @@ test("minimized progress stays live and completion does not navigate away", asyn
   const task = page.getByRole("complementary", { name: "Import task" });
   await expect(task).toContainText("Extracting products");
   state.batch.status = "DRAFT";
-  await expect(task).toContainText("Ready for review", { timeout: 10000 });
+  await expect(task).toContainText("Extraction completed", { timeout: 10000 });
   await expect(page).toHaveURL(/\/products$/);
   expect(counters.reads).toBe(1);
   const stoppedAt = counters.statusReads;
@@ -212,7 +212,7 @@ test("minimized progress stays live and completion does not navigate away", asyn
   expect(counters.statusReads).toBe(stoppedAt);
   await page.screenshot({ path: testInfo.outputPath("minimized-import-complete-mobile.png") });
   await page.reload();
-  await expect(task).toContainText("Ready for review");
+  await expect(task).toContainText("Extraction completed");
   await task.getByRole("button", { name: "Dismiss import notification" }).click();
   await expect(task).toHaveCount(0);
 });

@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { importTaskLabel, isImportActive, useImportTask } from "~/lib/importTaskStore";
+import { importTerminalSummary } from "~/lib/importBatchStatus";
 
 export function ImportFloatingPill({ batchId, onClick, onDismiss, hidden = false }: {
   batchId: string; onClick: () => void; onDismiss: () => void; hidden?: boolean;
@@ -17,7 +18,7 @@ export function ImportFloatingPill({ batchId, onClick, onDismiss, hidden = false
     <aside aria-label="Import task" className="fixed bottom-3 right-3 z-[80] flex max-w-[calc(100vw-24px)] items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
       <button type="button" onClick={onClick} className="min-h-12 min-w-0 px-2 text-left">
         <span className="block truncate text-sm font-semibold">{data?.batch.fileName || "Product import"}</span>
-        <span role="status" className="block text-xs text-slate-600">{error || importTaskLabel(data?.batch.status)}</span>
+        <span role="status" className="block text-xs text-slate-600">{active ? (error || importTaskLabel(data?.batch.status)) : (unavailable ? "This import is no longer available." : data ? importTerminalSummary(data.batch) : error)}</span>
         {active && data?.coverage.total ? <span className="block text-xs text-slate-500">{data.coverage.visited} of {data.coverage.total} pages inspected</span> : null}
         <span className="block text-xs font-semibold text-blue-700">{active ? "View progress" : "View details"}</span>
       </button>

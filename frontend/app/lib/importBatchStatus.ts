@@ -62,3 +62,30 @@ export function importBatchStatus(batch: {
   };
 }
 
+export function importTerminalSummary(batch: {
+  status?: string | null;
+  totalRows?: number;
+  importedRows?: number;
+  failedRows?: number;
+}) {
+  const total = Math.max(0, Number(batch.totalRows) || 0);
+  const applied = Math.max(0, Number(batch.importedRows) || 0);
+  const failed = Math.max(0, Number(batch.failedRows) || 0);
+  const status = batch.status || "";
+
+  switch (status) {
+    case "DRAFT":
+      if (failed > 0) {
+        return `Extraction completed. Review ${total} extracted row${total === 1 ? '' : 's'}; ${failed} need${failed === 1 ? 's' : ''} attention.`;
+      }
+      return `Extraction completed. ${total} row${total === 1 ? '' : 's'} ready for review.`;
+    case "IMPORTED":
+      const ignored = Math.max(0, total - applied - failed);
+      return `${applied} applied, ${ignored} ignored, ${failed} failed.`;
+    case "FAILED":
+    case "INTERRUPTED":
+      return `Saved work remains available for review or retry.`;
+    default:
+      return "";
+  }
+}

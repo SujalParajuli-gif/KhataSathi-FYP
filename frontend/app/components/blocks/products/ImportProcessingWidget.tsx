@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import { controlProductImportApi } from "~/lib/api/endpoints";
 import { importTaskLabel, isImportActive, refreshImportTask, useImportTask } from "~/lib/importTaskStore";
+import { importTerminalSummary } from "~/lib/importBatchStatus";
 
 export interface ImportProcessingWidgetProps {
   batchId: string; fileName?: string;
@@ -46,10 +47,9 @@ export function ImportProcessingWidget({ batchId, fileName, onComplete, onMinimi
       <span aria-hidden="true" className="h-5 w-5 rounded-full border-2 border-slate-200 border-t-slate-900 motion-safe:animate-spin" />
       {status === "COMMITTING" ? "Saving your reviewed decisions. Do not submit again." : "Waiting for the next server update. Large pages can take longer."}
     </div> : null}
-    {data ? <p className="mt-3 text-sm text-slate-600">{data.batch.totalRows} extracted rows{status === "IMPORTED" ? " · Reviewed decisions saved to the catalog." : ""}</p> : null}
+    {!active && !unavailable && data ? <p className="mt-3 text-sm text-slate-700">{importTerminalSummary(data.batch)}</p> : data ? <p className="mt-3 text-sm text-slate-600">{data.batch.totalRows} extracted rows</p> : null}
     {active && checkedAt ? <p className="mt-2 text-xs text-muted">Status checked at {new Date(checkedAt).toLocaleTimeString()}. Page counts update when the server finishes a page.</p> : null}
-    {status === "DRAFT" ? <p className="mt-3 text-sm">Extraction has finished. Review the products before applying them to your catalog.</p> : null}
-    {!active && coverage?.outcome === "PARTIAL" ? <p className="mt-3 text-sm text-amber-800">Some pages need attention. Review saved products or retry remaining pages.</p> : null}
+    {!active && !unavailable && coverage?.outcome === "PARTIAL" ? <p className="mt-3 text-sm text-amber-800">Some pages need attention. Review saved products or retry remaining pages.</p> : null}
     {(connectionError || actionError) ? <p role="alert" className="mt-4 rounded-lg bg-amber-50 p-3 text-sm text-amber-900">{actionError || connectionError}</p> : null}
     <p className="mt-5 text-sm leading-6 text-slate-600">Processing continues on the server when minimized. Progress and saved results are available in Import History.</p>
     <div className="mt-5 flex flex-wrap items-center gap-2 border-t border-slate-200 pt-4">
