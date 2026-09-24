@@ -3402,16 +3402,26 @@ export async function getProductImportSourceContext(input: {
     rowId?: string;
     radius?: number;
 }) {
+    const batch = await prisma.productImportBatch.findFirst({
+        where: { id: input.batchId, deletedAt: null },
+        select: { id: true },
+    });
+
+    if (!batch) {
+        throw new Error("Product import batch was not found");
+    }
+
     const radius = Math.max(2, Math.min(50, Number(input.radius || 10)));
     const active = input.rowId
         ? await prisma.productImportRow.findFirst({
-            where: { id: input.rowId, batchId: input.batchId },
+            where: { id: input.rowId, batchId: input.batchId, batch: { deletedAt: null } },
         })
         : null;
 
     const rows = await prisma.productImportRow.findMany({
         where: {
             batchId: input.batchId,
+            batch: { deletedAt: null },
             ...(active
                 ? { rowNumber: { gte: Math.max(1, active.rowNumber - radius), lte: active.rowNumber + radius } }
                 : {}),
@@ -3422,7 +3432,7 @@ export async function getProductImportSourceContext(input: {
     });
 
     return {
-        activeRowId: active?.id || input.rowId || rows[0]?.id || "",
+        activeRowId: active?.id || rows[0]?.id || "",
         rows,
     };
 }
