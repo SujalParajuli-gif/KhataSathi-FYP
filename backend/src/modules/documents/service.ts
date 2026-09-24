@@ -5,6 +5,7 @@ import crypto from "crypto";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import type { CreateDocumentInput, ListDocumentsInput, UpdateDocumentMetadataInput } from "./validation";
+import { detectDocumentFormat, DocumentValidationError, ALLOWED_MIME_TYPES } from "./validation";
 import type { DocumentType, DocumentVisibility, Prisma } from "@prisma/client";
 import {
   buildDocumentThumbnailFileName,
@@ -118,11 +119,10 @@ function buildRelativeFolderPath(date: Date = new Date()): string {
 function buildStoredFileName(
   id: string,
   documentType: string,
-  originalName: string,
+  verifiedExtension: string,
 ): string {
-  const ext = path.extname(originalName).toLowerCase() || ".bin";
   const typeSlug = documentType.toLowerCase().replace(/_/g, "-");
-  return `${id}_${typeSlug}${ext}`;
+  return `${id}_${typeSlug}${verifiedExtension}`;
 }
 
 // computing SHA-256 checksum of a file
@@ -235,6 +235,7 @@ export interface UploadedFileInfo {
   mimetype: string;
   size: number;
   path: string; // temp path from multer
+  verifiedExtension?: string;
 }
 
 // creating document records for one or more uploaded files
@@ -245,6 +246,22 @@ export async function createDocuments(
   userId: string,
 ): Promise<any[]> {
   assertStorageReady();
+
+  // Validate every file before processing any records
+  for (const file of files) {
+    if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+      throw new DocumentValidationError(`File type not allowed: ${file.originalname}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}`);
+    }
+    const format = await detectDocumentFormat(file.path);
+    if (!format) {
+      throw new DocumentValidationError(`File type not allowed or content mismatch: ${file.originalname}`);
+    }
+    if (format.mimeType !== file.mimetype) {
+      throw new DocumentValidationError(`File type content mismatch for ${file.originalname}: claimed ${file.mimetype} but found ${format.mimeType}`);
+    }
+    file.verifiedExtension = format.extension;
+    file.mimetype = format.mimeType; // ensure the DB gets the verified MIME type
+  }
 
   const relativeFolderPath = buildRelativeFolderPath();
   const results: any[] = [];
@@ -273,7 +290,7 @@ export async function createDocuments(
       },
     });
 
-    const storedFileName = buildStoredFileName(doc.id, metadata.documentType, file.originalname);
+    const storedFileName = buildStoredFileName(doc.id, metadata.documentType, file.verifiedExtension!);
     let finalPath: string | null = null;
     let thumbnailFileName: string | null = null;
 

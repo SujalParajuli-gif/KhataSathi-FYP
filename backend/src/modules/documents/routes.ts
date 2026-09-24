@@ -1,6 +1,5 @@
 import { Router } from "express";
 import multer from "multer";
-import path from "path";
 import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
 import {
@@ -41,8 +40,7 @@ const upload = multer({
     filename: (_req, file, cb) => {
       // using a random hex prefix + timestamp to avoid temp file collisions
       const uniquePrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${uniquePrefix}${ext}`);
+      cb(null, `${uniquePrefix}.tmp`);
     },
   }),
   limits: {

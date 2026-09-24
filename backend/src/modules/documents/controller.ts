@@ -7,7 +7,7 @@ import {
   listDocumentsSchema,
   updateDocumentMetadataSchema,
   updateDocumentVisibilitySchema,
-  ALLOWED_MIME_TYPES,
+  DocumentValidationError,
 } from "./validation";
 import { StorageUnavailableError } from "../../lib/storageReadiness";
 
@@ -18,18 +18,6 @@ export async function uploadDocuments(req: Request, res: Response) {
     if (!files || files.length === 0) {
       res.status(400).json({ error: "At least one file is required" });
       return;
-    }
-
-    // validating MIME types (multer fileFilter is a first pass, this is the authoritative check)
-    for (const file of files) {
-      if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
-        // cleaning up all temp files before rejecting
-        await Promise.all(files.map((f) => fs.unlink(f.path).catch(() => {})));
-        res.status(400).json({
-          error: `File type not allowed: ${file.mimetype}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}`,
-        });
-        return;
-      }
     }
 
     // parsing and validating metadata from the request body
@@ -75,6 +63,11 @@ export async function uploadDocuments(req: Request, res: Response) {
 
     if (err instanceof StorageUnavailableError) {
       res.status(503).json({ code: err.code, error: err.message });
+      return;
+    }
+
+    if (err instanceof DocumentValidationError) {
+      res.status(400).json({ error: err.message });
       return;
     }
 

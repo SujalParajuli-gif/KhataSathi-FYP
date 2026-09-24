@@ -100,3 +100,43 @@ export const updateDocumentMetadataSchema = z.object({
 export type UpdateDocumentMetadataInput = z.infer<
   typeof updateDocumentMetadataSchema
 >;
+
+import fs from "fs/promises";
+import sharp from "sharp";
+
+export async function detectDocumentFormat(
+  filePath: string,
+): Promise<{ mimeType: string; extension: string } | null> {
+  // Read the file entirely once; system errors should not be swallowed.
+  const fileBuffer = await fs.readFile(filePath);
+
+  // Check if it's a valid PDF by reading the signature from the buffer
+  if (fileBuffer.length >= 5 && fileBuffer.subarray(0, 5).toString("utf-8") === "%PDF-") {
+    return { mimeType: "application/pdf", extension: ".pdf" };
+  }
+
+  // Check if it's a valid supported image
+  try {
+    const metadata = await sharp(fileBuffer).metadata();
+    if (metadata.format === "jpeg") {
+      return { mimeType: "image/jpeg", extension: ".jpg" };
+    }
+    if (metadata.format === "png") {
+      return { mimeType: "image/png", extension: ".png" };
+    }
+    if (metadata.format === "webp") {
+      return { mimeType: "image/webp", extension: ".webp" };
+    }
+  } catch (error) {
+    // Not a valid image or unsupported format
+  }
+
+  return null;
+}
+
+export class DocumentValidationError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "DocumentValidationError";
+  }
+}

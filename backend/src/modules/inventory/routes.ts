@@ -1,6 +1,5 @@
 import { Router } from "express";
 import multer from "multer";
-import path from "path";
 import { restock, adjust, lowStock, stockTransactions, receiveBatch, receiveBatches, receiveBatchDetail } from "./controller";
 import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
@@ -29,8 +28,7 @@ const billUpload = multer({
     },
     filename: (_req, file, cb) => {
       const uniquePrefix = `${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      const ext = path.extname(file.originalname).toLowerCase();
-      cb(null, `${uniquePrefix}${ext}`);
+      cb(null, `${uniquePrefix}.tmp`);
     },
   }),
   limits: {
