@@ -107,6 +107,22 @@ export function getAllowedCorsOrigins() {
   ]));
 }
 
+export function isCorsOriginAllowed(
+  origin: string | undefined,
+  allowedOrigins: string[],
+  isProduction: boolean = process.env.NODE_ENV === "production",
+): boolean {
+  if (!origin) return true;
+  const normalizedOrigin = origin.replace(/\/+$/, "");
+  if (allowedOrigins.includes(normalizedOrigin)) return true;
+
+  if (isProduction) return false;
+
+  return /^https?:\/\/(localhost|127\.0\.0\.1|::1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(
+    normalizedOrigin,
+  );
+}
+
 export function getRateLimitConfig() {
   return {
     loginLimitPerMinute: Number(process.env.LOGIN_RATE_LIMIT_PER_MINUTE || 5),

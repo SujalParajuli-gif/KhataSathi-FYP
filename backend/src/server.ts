@@ -35,6 +35,7 @@ import { purgeDeadAuthSessions } from "./modules/auth/session";
 import prisma from "./db/prisma";
 import {
   getAllowedCorsOrigins,
+  isCorsOriginAllowed,
   getRateLimitConfig,
   validateProductionEnvironment,
 } from "./config/env";
@@ -87,18 +88,7 @@ app.use(
 app.use(
   cors({
     origin(origin, callback) {
-      if (!origin) {
-        callback(null, true);
-        return;
-      }
-
-      const normalizedOrigin = origin.replace(/\/+$/, "");
-      if (
-        allowedCorsOrigins.includes(normalizedOrigin) ||
-        /^https?:\/\/(localhost|127\.0\.0\.1|::1|192\.168\.\d{1,3}\.\d{1,3}|10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(1[6-9]|2\d|3[0-1])\.\d{1,3}\.\d{1,3})(:\d+)?$/.test(
-          normalizedOrigin,
-        )
-      ) {
+      if (isCorsOriginAllowed(origin, allowedCorsOrigins)) {
         callback(null, true);
         return;
       }
