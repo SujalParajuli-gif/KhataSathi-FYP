@@ -393,6 +393,7 @@ export default function ProductImportReviewPage() {
   const [review, setReview] = useState<ProductImportReviewPage | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+  const [loadedParams, setLoadedParams] = useState({ page: 1, pageSize: 25, search: "", filter: "ALL" as ReviewFilter });
   const [page, setPage] = queryField("page", 1, (value) => positiveReviewQueryNumber(value, 1));
   const [pageSize, setPageSize] = queryField("pageSize", 25, (raw) => {
     const value = positiveReviewQueryNumber(raw, 25);
@@ -554,6 +555,7 @@ export default function ProductImportReviewPage() {
       }, { signal });
       if (signal?.aborted || requestId !== reviewRequestIdRef.current) return;
       setReview(result);
+      setLoadedParams({ page, pageSize, search, filter });
       setPriceMappingDraft(result.priceMapping?.mapping || {});
       const requestedEdge = pendingPageEdge.current;
       pendingPageEdge.current = null;
@@ -594,7 +596,12 @@ export default function ProductImportReviewPage() {
   }, [review?.batch.id, activeRow?.id, activeRow?.parsed, activeRow?.resolution]);
 
   useEffect(() => {
-    if (!batchId) {
+    if (!batchId || !review) {
+      setSourceContext(null);
+      return;
+    }
+    const isSpreadsheet = ["CSV", "XLSX"].includes(review.batch.sourceType || "");
+    if (!isSpreadsheet) {
       setSourceContext(null);
       return;
     }
@@ -613,7 +620,7 @@ export default function ProductImportReviewPage() {
         if (active) setSourceContext(null);
       });
     return () => { active = false; };
-  }, [batchId, activeRowId]);
+  }, [batchId, activeRowId, review?.batch.sourceType]);
 
   const sourceMimeType = review?.batch.source?.mimeType || "";
   const sourceAvailable = Boolean(review?.batch.source?.available);
@@ -621,6 +628,8 @@ export default function ProductImportReviewPage() {
   const sourcePageNumber = Number(activeRow?.sourceLocator?.pageNumber || 1);
   const region = displayImportSourceRegion(activeRow?.sourceLocator);
   const regionScale = Number(region?.scale || 1000);
+  const sourcePreviewRequested = typeof window !== "undefined" &&
+    (window.innerWidth >= 1280 || mobilePanel === "source" || mobileSourceDrawerOpen);
 
   useEffect(() => {
     if (review && !sourceAvailable && mobilePanel === "source") setMobilePanel("editor");
@@ -646,8 +655,9 @@ export default function ProductImportReviewPage() {
   useEffect(() => {
     let active = true;
     let objectUrl = "";
+    const controller = new AbortController();
     async function loadSourcePreview() {
-      if (!batchId || !review?.batch.source?.available) {
+      if (!batchId || !review?.batch.source?.available || !activeRowId) {
         setSourcePreviewUrl("");
         return;
       }
@@ -655,16 +665,23 @@ export default function ProductImportReviewPage() {
         setSourcePreviewUrl("");
         return;
       }
+      if (!sourcePreviewRequested) {
+        setSourcePreviewUrl("");
+        return;
+      }
       try {
         setSourceLoading(true);
         const hasRegion = Boolean(activeRow?.sourceLocator?.region);
         const blob = sourceMimeType === "application/pdf" && hasRegion
-          ? await fetchProductImportSourcePageBlobApi(batchId, sourcePageNumber)
-          : await fetchProductImportSourceBlobApi(batchId);
+          ? await fetchProductImportSourcePageBlobApi(batchId, sourcePageNumber, { signal: controller.signal })
+          : await fetchProductImportSourceBlobApi(batchId, { signal: controller.signal });
+        if (!active) return;
         objectUrl = URL.createObjectURL(blob);
-        if (active) setSourcePreviewUrl(objectUrl);
-      } catch {
-        if (active) setSourcePreviewUrl("");
+        setSourcePreviewUrl(objectUrl);
+      } catch (err: any) {
+        if (active && err?.name !== "CanceledError" && err?.name !== "AbortError") {
+          setSourcePreviewUrl("");
+        }
       } finally {
         if (active) setSourceLoading(false);
       }
@@ -672,9 +689,10 @@ export default function ProductImportReviewPage() {
     void loadSourcePreview();
     return () => {
       active = false;
+      controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [batchId, review?.batch.source?.available, sourceMimeType, sourcePageNumber, Boolean(activeRow?.sourceLocator?.region)]);
+  }, [batchId, review?.batch.source?.available, sourceMimeType, sourcePageNumber, Boolean(activeRow?.sourceLocator?.region), activeRowId, sourcePreviewRequested]);
 
   const currentDraftFingerprint = useMemo(() => (draft ? JSON.stringify(draftPayload(draft)) : ""), [draft]);
   const dirty = Boolean(draft && currentDraftFingerprint !== savedFingerprint);
@@ -2610,7 +2628,16 @@ export default function ProductImportReviewPage() {
   }
 
   if (error && !review) {
-    return <div className="rounded-[18px] border border-rose-200 bg-rose-50 p-6"><h1 className="text-[18px] font-extrabold text-rose-900">Import review unavailable</h1><p className="mt-2 text-[13px] font-semibold text-rose-800">{error}</p><button type="button" onClick={() => navigate("/products")} className="mt-4 h-11 rounded-[11px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white">Back to products</button></div>;
+    return (
+      <div className="m-4 flex flex-col items-center justify-center rounded-[18px] border border-rose-200 bg-rose-50 p-8 text-center xl:m-6">
+        <h1 className="text-[18px] font-extrabold text-rose-900">Import review unavailable</h1>
+        <p className="mt-2 text-[13px] font-semibold text-rose-800">{error}</p>
+        <div className="mt-6 flex flex-wrap justify-center gap-3">
+          <button type="button" onClick={() => void loadReview()} className="h-11 rounded-[11px] bg-rose-600 px-5 text-[12px] font-extrabold text-white hover:bg-rose-700">Retry request</button>
+          <button type="button" onClick={() => navigate("/products")} className="h-11 rounded-[11px] border border-rose-200 bg-white px-5 text-[12px] font-extrabold text-rose-800 hover:bg-rose-100">Back to products</button>
+        </div>
+      </div>
+    );
   }
 
   if (processing) {
@@ -2657,6 +2684,9 @@ export default function ProductImportReviewPage() {
       setBatchBrandBusy(false);
     }
   }
+
+  const isStaleFailed = Boolean(error) && (page !== loadedParams.page || pageSize !== loadedParams.pageSize || search !== loadedParams.search || filter !== loadedParams.filter);
+
   return (
     <div className={`flex min-h-full flex-col gap-2 xl:h-full xl:min-h-0 xl:overflow-hidden xl:gap-3 ${selectedCount > 0 ? "pb-20 xl:pb-0" : ""}`}>
       {blocker.state === "blocked" ? (
@@ -2916,6 +2946,18 @@ export default function ProductImportReviewPage() {
         </div>
       </header>
 
+      {error && review && (
+        <div role="alert" className="mx-4 mt-4 flex flex-wrap items-center justify-between gap-4 rounded-[10px] border border-rose-200 bg-rose-50 px-4 py-3 shadow-sm xl:mx-6">
+          <div>
+            <h3 className="text-[12px] font-extrabold text-rose-900">Unable to load requested rows</h3>
+            <p className="mt-0.5 text-[11px] font-semibold text-rose-800">
+              {error} {isStaleFailed ? `Showing previous results for ${loadedParams.filter} filter, page ${loadedParams.page} (${loadedParams.pageSize}/page)${loadedParams.search ? `, search "${loadedParams.search}"` : ""}.` : ""}
+            </p>
+          </div>
+          <button type="button" onClick={() => void loadReview()} className="h-9 shrink-0 rounded-[8px] bg-rose-600 px-3 text-[11px] font-extrabold text-white hover:bg-rose-700">Retry request</button>
+        </div>
+      )}
+
       {!warningBannerDismissed && review?.coverage && (review.coverage.requiresAcknowledgement || review.coverage.canReprocessEmpty || typeof review.batch.extractionMeta?.jobError === "string") ? (
         <div role="status" aria-live="polite" className="flex min-h-9 shrink-0 items-center gap-2 rounded-[10px] border border-amber-200 bg-amber-50 px-2.5 py-1.5 text-[10.5px] font-semibold text-amber-950 sm:px-3 sm:text-[11px]">
           <Icon name="warning" sizePx={16} className="shrink-0 text-amber-700" />
@@ -3120,7 +3162,7 @@ export default function ProductImportReviewPage() {
 
             <div className="flex min-h-[38px] items-center justify-between gap-2 text-[11px] font-extrabold text-[#5F6570]">
               <label className="inline-flex min-h-[38px] cursor-pointer items-center gap-2 py-1 px-1 -ml-1 rounded-lg transition hover:bg-slate-100 active:bg-slate-200 touch-manipulation select-none">
-                <input type="checkbox" checked={allPageRowsSelected} onChange={togglePageSelection} className="h-4.5 w-4.5 rounded accent-[#11120d]" />
+                <input type="checkbox" checked={allPageRowsSelected} onChange={togglePageSelection} disabled={isStaleFailed} className="h-4.5 w-4.5 rounded accent-[#11120d]" />
                 <span>Select page</span>
               </label>
               {review && review.pagination.total > 0 ? (
@@ -3142,8 +3184,9 @@ export default function ProductImportReviewPage() {
                   <div className="inline-flex min-h-[38px] items-center gap-1.5 sm:gap-2">
                     <button
                       type="button"
+                      disabled={isStaleFailed}
                       onClick={() => { setAllMatchingSelected(true); setSelectedIds(new Set()); setExcludedSelectedIds(new Set()); }}
-                      className="inline-flex min-h-[32px] items-center rounded-md px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d]"
+                      className="inline-flex min-h-[32px] items-center rounded-md px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] disabled:opacity-50 disabled:cursor-not-allowed"
                     >
                       Select all {review.pagination.total.toLocaleString()}
                     </button>
@@ -3159,8 +3202,9 @@ export default function ProductImportReviewPage() {
                 ) : (
                   <button
                     type="button"
+                    disabled={isStaleFailed}
                     onClick={() => { setAllMatchingSelected(true); setSelectedIds(new Set()); setExcludedSelectedIds(new Set()); }}
-                    className="inline-flex min-h-[38px] items-center px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d]"
+                    className="inline-flex min-h-[38px] items-center px-1.5 font-bold text-[#11120d] hover:underline active:bg-slate-100 touch-manipulation focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] disabled:opacity-50 disabled:cursor-not-allowed"
                   >
                     Select all {review.pagination.total.toLocaleString()}
                   </button>
@@ -3169,9 +3213,17 @@ export default function ProductImportReviewPage() {
             </div>
           </div>
 
-          <div data-import-row-list className="divide-y divide-[#E8EAED] xl:flex-1 xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain">
-            {loading ? (
-              <div className="p-6 text-center text-[12px] font-extrabold text-[#7A7F89]">Loading rows…</div>
+          <div data-import-row-list className={`divide-y divide-[#E8EAED] xl:flex-1 xl:min-h-0 xl:overflow-y-auto xl:overscroll-contain ${isStaleFailed ? "pointer-events-none opacity-50 grayscale" : ""}`}>
+            {loading && review ? (
+              <div role="status" className="border-b border-[#E8EAED] bg-slate-50 p-3 text-center text-[12px] font-semibold text-slate-500">
+                Updating rows… Previous results remain visible.
+              </div>
+            ) : null}
+            {loading && !review ? (
+              <div className="flex flex-col items-center justify-center p-12 text-center" aria-live="polite">
+                <Icon name="refresh" sizePx={24} className="mb-3 animate-spin text-[#11120d]" />
+                <div className="text-[13px] font-extrabold text-[#11120d]">Loading rows…</div>
+              </div>
             ) : review?.rows.length ? (
               review.rows.map((row) => {
                 const selected = allMatchingSelected ? !excludedSelectedIds.has(row.id) : selectedIds.has(row.id);
@@ -3208,8 +3260,9 @@ export default function ProductImportReviewPage() {
                       <input
                         type="checkbox"
                         checked={selected}
+                        disabled={isStaleFailed}
                         onChange={() => toggleRowSelection(row.id)}
-                        className="h-5 w-5 rounded-[5px] accent-[#11120d] cursor-pointer"
+                        className="h-5 w-5 rounded-[5px] accent-[#11120d] cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
                         aria-label={`Select ${rowName(row)} for bulk editing`}
                       />
                     </label>
@@ -3217,8 +3270,9 @@ export default function ProductImportReviewPage() {
                     {/* Product Row Hit Target: 100% of the rest of the row is a single, continuous button */}
                     <button
                       type="button"
+                      disabled={isStaleFailed}
                       onClick={() => chooseRow(row)}
-                      className="flex min-w-0 flex-1 items-center justify-between gap-2.5 py-2.5 pr-2.5 text-left touch-manipulation select-none active:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#11120d]"
+                      className="flex min-w-0 flex-1 items-center justify-between gap-2.5 py-2.5 pr-2.5 text-left touch-manipulation select-none active:bg-black/[0.04] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-[#11120d] disabled:cursor-not-allowed"
                       aria-label={`Review ${rowName(row)}`}
                     >
                       <div className="min-w-0 flex-1">
@@ -3306,7 +3360,8 @@ export default function ProductImportReviewPage() {
             <button
               type="button"
               onClick={clearSelection}
-              className="inline-flex min-h-[36px] items-center px-1.5 text-xs font-bold text-[#64748B] hover:text-[#11120d] hover:underline transition shrink-0 touch-manipulation active:bg-slate-100 rounded-md"
+              disabled={isStaleFailed}
+              className="inline-flex min-h-[36px] items-center px-1.5 text-xs font-bold text-[#64748B] hover:text-[#11120d] hover:underline transition shrink-0 touch-manipulation active:bg-slate-100 rounded-md disabled:opacity-50 disabled:cursor-not-allowed"
             >
               Clear
             </button>
@@ -3314,7 +3369,8 @@ export default function ProductImportReviewPage() {
           <button
             type="button"
             onClick={() => void openBulkEditPanel()}
-            className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-[#11120d] px-4 text-xs font-extrabold text-white transition hover:bg-[#2a2c27] touch-manipulation active:scale-[0.98]"
+            disabled={isStaleFailed}
+            className="inline-flex h-10 shrink-0 items-center gap-1.5 rounded-xl bg-[#11120d] px-4 text-xs font-extrabold text-white transition hover:bg-[#2a2c27] touch-manipulation active:scale-[0.98] disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <Icon name="edit" sizePx={15} />
             <span>Bulk edit ({selectedCount.toLocaleString()})</span>

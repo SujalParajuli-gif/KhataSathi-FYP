@@ -969,18 +969,19 @@ export async function getProductImportSourceContextApi(
     };
 }
 
-export async function fetchProductImportSourceBlobApi(batchId: string) {
+export async function fetchProductImportSourceBlobApi(batchId: string, options?: { signal?: AbortSignal }) {
     const res = await api.get(`/api/products/import-batches/${batchId}/source`, {
         responseType: "blob",
         timeout: LONG_API_TIMEOUT_MS,
+        signal: options?.signal,
     });
     return res.data as Blob;
 }
 
-export async function fetchProductImportSourcePageBlobApi(batchId: string, pageNumber: number) {
+export async function fetchProductImportSourcePageBlobApi(batchId: string, pageNumber: number, options?: { signal?: AbortSignal }) {
     const res = await api.get(
         `/api/products/import-batches/${batchId}/source/pages/${pageNumber}`,
-        { responseType: "blob", timeout: LONG_API_TIMEOUT_MS },
+        { responseType: "blob", timeout: LONG_API_TIMEOUT_MS, signal: options?.signal },
     );
     return res.data as Blob;
 }
