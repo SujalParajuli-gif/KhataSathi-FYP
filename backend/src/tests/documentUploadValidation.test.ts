@@ -1,17 +1,21 @@
-import test from "node:test";
+import test, { after } from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs/promises";
+import fsSync from "node:fs";
 import path from "node:path";
 import os from "node:os";
 import { detectDocumentFormat, DocumentValidationError } from "../modules/documents/validation";
 import prisma from "../db/prisma";
 
 // Set a temporary isolated storage root before importing the service
-const isolatedStorageRoot = path.join(os.tmpdir(), `khatasathi-test-storage-${Date.now()}`);
+const isolatedStorageRoot = fsSync.mkdtempSync(path.join(os.tmpdir(), "khatasathi-test-storage-"));
 process.env.DOCUMENT_STORAGE_ROOT = isolatedStorageRoot;
 
-import { createDocuments, getDocumentFilePath } from "../modules/documents/service";
-import { uploadDocuments } from "../modules/documents/controller";
+const { documentStorageRoot } = require("../lib/storageReadiness") as typeof import("../lib/storageReadiness");
+assert.equal(documentStorageRoot, isolatedStorageRoot, "Document tests must use isolated storage");
+const { createDocuments, getDocumentFilePath } = require("../modules/documents/service") as typeof import("../modules/documents/service");
+const { uploadDocuments } = require("../modules/documents/controller") as typeof import("../modules/documents/controller");
+after(() => fs.rm(isolatedStorageRoot, { recursive: true, force: true }));
 
 const VALID_PDF = Buffer.from("%PDF-1.4\n%äüöß\n1 0 obj\n<</Type/Catalog/Pages 2 0 R>>\nendobj\n", "utf8");
 const VALID_PNG = Buffer.from("89504e470d0a1a0a0000000d494844520000000100000001010300000025db56ca00000003504c5445000000a77a3dda0000000174524e530040e6d8660000000a4944415408d76360000000020001e221bc330000000049454e44ae426082", "hex");
@@ -155,35 +159,29 @@ test("controller cleans all temporary files upon validation rejection", async ()
 test("payload.php retains display name but is stored with verified .pdf extension", async () => {
     await withPrismaMocks(async () => {
         const dir = await fs.mkdtemp(path.join(os.tmpdir(), "doc-test-payload-"));
+        const payloadPath = path.join(dir, "payload.php");
+        let createdFilePath: string | null = null;
         try {
-            const payloadPath = path.join(dir, "payload.php");
             await fs.writeFile(payloadPath, VALID_PDF);
-
-            let createdFilePath: string | null = null;
-            try {
-                const [doc] = await createDocuments([
-                    {
-                        originalname: "payload.php",
-                        mimetype: "application/pdf",
-                        size: VALID_PDF.length,
-                        path: payloadPath,
-                    }
-                ], { documentType: "GENERAL" }, "test-user-pdf");
-
-                createdFilePath = getDocumentFilePath(doc);
-
-                assert.equal(doc.fileName, "payload.php", "Display name should be payload.php");
-                assert.equal(doc.mimeType, "application/pdf");
-                assert.ok(doc.storedFileName.endsWith(".pdf"), "Stored filename must end with .pdf");
-            } finally {
-                if (createdFilePath) {
-                    await fs.unlink(createdFilePath).catch(() => {});
+            const [doc] = await createDocuments([
+                {
+                    originalname: "payload.php",
+                    mimetype: "application/pdf",
+                    size: VALID_PDF.length,
+                    path: payloadPath,
                 }
-                await fs.rm(dir, { recursive: true, force: true });
-            }
+            ], { documentType: "GENERAL" }, "test-user-pdf");
+
+            createdFilePath = getDocumentFilePath(doc);
+
+            assert.equal(doc.fileName, "payload.php", "Display name should be payload.php");
+            assert.equal(doc.mimeType, "application/pdf");
+            assert.ok(doc.storedFileName.endsWith(".pdf"), "Stored filename must end with .pdf");
         } finally {
-            // Clean up the isolated storage root
-            await fs.rm(isolatedStorageRoot, { recursive: true, force: true }).catch(() => {});
+            if (createdFilePath) {
+                await fs.unlink(createdFilePath).catch(() => {});
+            }
+            await fs.rm(dir, { recursive: true, force: true });
         }
     });
 });
