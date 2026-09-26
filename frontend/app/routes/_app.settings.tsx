@@ -897,7 +897,6 @@ export default function SettingsPage() {
   const settingsTabRailRef = useRef<SwipeableTabRailController | null>(null);
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const settingsTabLoadedAtRef = useRef(new Map<TabKey, number>());
-  const securityQueryLoadedAtRef = useRef(new Map<string, number>());
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
     setRateLimitRecoveryKey((current) => current + 1);
   });
@@ -961,6 +960,12 @@ export default function SettingsPage() {
   const [mobileSecurityFiltersOpen, setMobileSecurityFiltersOpen] =
     useState(false);
   const [securityLoading, setSecurityLoading] = useState(false); // lighter loading state for the audit tab lists
+  const [securityHasLoaded, setSecurityHasLoaded] = useState({ audit: false, login: false });
+  const [securityLoadFailure, setSecurityLoadFailure] = useState<{
+    audit: boolean;
+    login: boolean;
+    failedCount: boolean;
+  } | null>(null);
   const [auditPage, setAuditPage] = useState(1); // current page inside the audit logs list
   const [loginPage, setLoginPage] = useState(1); // current page inside the login attempts list
   const [auditPageSize, setAuditPageSize] = useState(DEFAULT_ADMIN_PAGE_SIZE);
@@ -1057,6 +1062,8 @@ export default function SettingsPage() {
   const [showCashierSaveConfirm, setShowCashierSaveConfirm] = useState(false);
   const [securitySubTab, setSecuritySubTab] = useState<"audit" | "login">("audit");
 
+  const securityLoadRequestRef = useRef(0);
+
   // the security lists share one date range filter, so these helpers keep both API payloads consistent
   function buildSecurityDateParams() {
     return {
@@ -1065,24 +1072,10 @@ export default function SettingsPage() {
     };
   }
 
-  function securityQueryKey() {
-    return [
-      securityDateFilter.from,
-      securityDateFilter.to,
-      securityAuditActionFilter,
-      securityEntityFilter,
-      securityLoginEmailFilter,
-      securityLoginStatusFilter,
-      auditPage,
-      auditPageSize,
-      loginPage,
-      loginPageSize,
-    ].join("|");
-  }
-
   async function loadSecurityData() {
+    const request = ++securityLoadRequestRef.current;
     setSecurityLoading(true);
-    const queryKey = securityQueryKey();
+    setSecurityLoadFailure(null);
 
     try {
       const dateParams = buildSecurityDateParams();
@@ -1115,7 +1108,10 @@ export default function SettingsPage() {
         }),
       ]);
 
+      if (request !== securityLoadRequestRef.current) return false;
+
       if (auditData.status === "fulfilled") {
+        setSecurityHasLoaded((current) => ({ ...current, audit: true }));
         setAuditLogs(
           Array.isArray(auditData.value?.logs) ? auditData.value.logs : [],
         );
@@ -1123,6 +1119,7 @@ export default function SettingsPage() {
       }
 
       if (loginData.status === "fulfilled") {
+        setSecurityHasLoaded((current) => ({ ...current, login: true }));
         setLoginAttempts(
           Array.isArray(loginData.value?.attempts)
             ? loginData.value.attempts
@@ -1137,6 +1134,11 @@ export default function SettingsPage() {
 
       const results = [auditData, loginData, failedData];
       const hasFailure = results.some((result) => result.status === "rejected");
+      setSecurityLoadFailure(hasFailure ? {
+        audit: auditData.status === "rejected",
+        login: loginData.status === "rejected",
+        failedCount: failedData.status === "rejected",
+      } : null);
       if (
         results.some(
           (result) =>
@@ -1145,11 +1147,11 @@ export default function SettingsPage() {
       ) {
         requestRateLimitRecovery();
       }
-      if (hasFailure) securityQueryLoadedAtRef.current.delete(queryKey);
-      else securityQueryLoadedAtRef.current.set(queryKey, Date.now());
       return !hasFailure;
     } finally {
-      setSecurityLoading(false);
+      if (request === securityLoadRequestRef.current) {
+        setSecurityLoading(false);
+      }
     }
   }
 
@@ -1383,14 +1385,20 @@ export default function SettingsPage() {
   }, [tab, rateLimitRecoveryKey]);
 
   useEffect(() => {
-    if (tab !== "audit") return;
-    const loadedAt =
-      securityQueryLoadedAtRef.current.get(securityQueryKey()) ?? 0;
-    if (Date.now() - loadedAt < SETTINGS_TAB_CACHE_MS) return;
+    securityLoadRequestRef.current++;
+    if (tab !== "audit") {
+      setSecurityLoading(false);
+      return;
+    }
+    setSecurityLoading(true);
+    setSecurityLoadFailure(null);
     const timer = window.setTimeout(() => {
       void loadSecurityData();
     }, 140);
-    return () => window.clearTimeout(timer);
+    return () => {
+      window.clearTimeout(timer);
+      securityLoadRequestRef.current++;
+    };
   }, [
     tab,
     auditPage,
@@ -3775,6 +3783,19 @@ export default function SettingsPage() {
 
         {tab === "audit" ? (
           <section className="overflow-hidden rounded-[14px] border border-[#D8DBE0] bg-white shadow-2xs">
+            {securityLoadFailure ? (
+              <div role="alert" className="flex flex-wrap items-center justify-between gap-3 border-b border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+                <span>Some security activity could not be loaded. Previously loaded results remain visible.</span>
+                <button type="button" disabled={securityLoading} onClick={() => void loadSecurityData()} className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 font-semibold disabled:opacity-50">Retry security activity</button>
+              </div>
+            ) : null}
+            {securityLoading ? (
+              <p role="status" className="border-b border-[#E5E7EB] bg-slate-50 p-3 text-sm text-slate-600">
+                {(securitySubTab === "audit" ? auditLogs.length : loginAttempts.length) > 0
+                  ? "Updating security activity… Previous results remain visible."
+                  : "Loading security activity…"}
+              </p>
+            ) : null}
             {/* Sub-Tab Navigation Header with Segmented Buttons & Mobile Filter Trigger */}
             <div className="flex items-center justify-between border-b border-[#E5E7EB] bg-white p-3 sm:p-4">
               <div className="inline-flex w-full sm:w-auto rounded-[10px] border border-[#D4D7DC] bg-[#F1F3F5] p-1 shadow-2xs">
@@ -4161,7 +4182,7 @@ export default function SettingsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {auditLogs.length === 0 ? (
+                      {auditLogs.length === 0 && securityHasLoaded.audit && !securityLoading && !securityLoadFailure?.audit ? (
                         <tr>
                           <td colSpan={5} className="px-5 py-14 text-center">
                             <Icon
@@ -4218,7 +4239,7 @@ export default function SettingsPage() {
 
                 {/* Mobile Cards for Audit Logs */}
                 <div className="space-y-3 p-4 md:hidden">
-                  {auditLogs.length === 0 ? (
+                  {auditLogs.length === 0 && securityHasLoaded.audit && !securityLoading && !securityLoadFailure?.audit ? (
                     <div className="py-10 text-center">
                       <Icon
                         name="history"
@@ -4287,7 +4308,7 @@ export default function SettingsPage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {loginAttempts.length === 0 ? (
+                      {loginAttempts.length === 0 && securityHasLoaded.login && !securityLoading && !securityLoadFailure?.login ? (
                         <tr>
                           <td colSpan={4} className="px-5 py-14 text-center">
                             <Icon
@@ -4343,7 +4364,7 @@ export default function SettingsPage() {
 
                 {/* Mobile Cards for Login Activity */}
                 <div className="space-y-3 p-4 md:hidden">
-                  {loginAttempts.length === 0 ? (
+                  {loginAttempts.length === 0 && securityHasLoaded.login && !securityLoading && !securityLoadFailure?.login ? (
                     <div className="py-10 text-center">
                       <Icon
                         name="login"
