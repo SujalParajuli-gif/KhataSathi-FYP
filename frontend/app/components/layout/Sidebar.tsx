@@ -207,9 +207,14 @@ export default function Sidebar({
     if (!isMobileOpen) return undefined;
 
     returnFocusRef.current = document.activeElement as HTMLElement | null;
-    closeButtonRef.current?.focus();
+    const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
 
     function keepFocusInDrawer(event: KeyboardEvent) {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseMobile();
+        return;
+      }
       if (event.key !== "Tab" || !sidebarRef.current) return;
 
       const focusable = Array.from(
@@ -236,6 +241,7 @@ export default function Sidebar({
 
     document.addEventListener("keydown", keepFocusInDrawer);
     return () => {
+      window.cancelAnimationFrame(focusFrame);
       document.removeEventListener("keydown", keepFocusInDrawer);
       returnFocusRef.current?.focus();
       returnFocusRef.current = null;
@@ -273,15 +279,16 @@ export default function Sidebar({
         ref={sidebarRef}
         id="app-sidebar"
         aria-label="Primary navigation"
+        inert={mobileEnabled && allowEdgeGesture && !drawerIsVisible}
         className={[
           "fixed inset-y-0 left-0 z-[90] flex w-[min(80vw,288px)] flex-col border-r border-[#CFCFD3] bg-white transition-[width,transform] duration-200 ease-out lg:z-[40]",
           isCollapsed ? "lg:w-[80px]" : "lg:w-[260px]",
           drawerProgress === null
             ? mobileEnabled && isMobileOpen
               ? "translate-x-0"
-              : "-translate-x-full"
+              : "-translate-x-full invisible lg:visible"
             : "",
-          "lg:translate-x-0",
+          "lg:translate-x-0 lg:visible",
           isDraggingDrawer
             ? "transition-none"
             : "duration-[260ms] ease-[cubic-bezier(0.22,0.8,0.24,1)]",

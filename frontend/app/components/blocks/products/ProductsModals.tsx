@@ -1846,6 +1846,7 @@ export default function ProductsModals({
             onChange={setMobileEditorTab}
             ariaLabel="Product form steps"
             controllerRef={productEditorTabRailRef}
+            isTrueTabs
             className="overflow-x-hidden sm:overflow-x-auto [scrollbar-width:none] [-ms-overflow-style:none] [&::-webkit-scrollbar]:hidden"
             railClassName="w-full min-w-full"
             buttonClassName="h-[46px] min-w-0 flex-1 px-0.5 sm:px-1 text-[13px] sm:text-[14px] font-extrabold"
@@ -1857,7 +1858,12 @@ export default function ProductsModals({
           <div className="flex flex-col gap-4 sm:gap-5">
 
             {/* Basic Info Tab */}
-            <div className={cn("flex flex-col gap-4", mobileEditorTab !== "basic" && "hidden")}>
+            <div
+              role="tabpanel"
+              id="panel-basic"
+              aria-labelledby="tab-basic"
+              className={cn("flex flex-col gap-4", mobileEditorTab !== "basic" && "hidden")}
+            >
 
               {/* Image uploader stacks on narrow screens so the form does not leave a dead column below it. */}
               <div className="grid grid-cols-1 items-start gap-3.5 sm:grid-cols-[136px_minmax(0,1fr)] sm:gap-4">
@@ -2058,7 +2064,12 @@ export default function ProductsModals({
             <div className="grid grid-cols-1 gap-[18px]">
 
               {/* SIZE & PACKAGING */}
-              <div className={cn("space-y-[12px]", mobileEditorTab !== "units" && "hidden")}>
+              <div
+                role="tabpanel"
+                id="panel-units"
+                aria-labelledby="tab-units"
+                className={cn("space-y-[12px]", mobileEditorTab !== "units" && "hidden")}
+              >
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   SIZE & PACKAGING
                 </h3>
@@ -2204,7 +2215,12 @@ export default function ProductsModals({
               </div>
 
               {/* PRICING */}
-              <div className={cn("space-y-[12px]", mobileEditorTab !== "pricing" && "hidden")}>
+              <div
+                role="tabpanel"
+                id="panel-pricing"
+                aria-labelledby="tab-pricing"
+                className={cn("space-y-[12px]", mobileEditorTab !== "pricing" && "hidden")}
+              >
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   PRICING
                 </h3>
@@ -2381,7 +2397,12 @@ export default function ProductsModals({
               </div>
 
               {/* STOCK & STATUS */}
-              {stockTracked ? <div className={cn("space-y-[12px]", mobileEditorTab !== "stock" && "hidden")}>
+              {stockTracked ? <div
+                role="tabpanel"
+                id="panel-stock"
+                aria-labelledby="tab-stock"
+                className={cn("space-y-[12px]", mobileEditorTab !== "stock" && "hidden")}
+              >
                 <h3 className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider mb-[8px] border-b border-[#E5E7EB] pb-[8px]">
                   STOCK & STATUS
                 </h3>
@@ -2443,7 +2464,7 @@ export default function ProductsModals({
             </div>
 
             {mobileEditorTab === "review" ? (
-              <div className="space-y-4">
+              <div role="tabpanel" id="panel-review" aria-labelledby="tab-review" className="space-y-4">
                 {/* 1. Hero Product Summary Header Card */}
                 <div className="flex flex-col gap-3.5 rounded-[16px] border border-[#E2E8F0] bg-white p-4 sm:flex-row sm:items-start sm:justify-between sm:p-5">
                   <div className="flex items-start gap-3.5 min-w-0 flex-1">
@@ -2635,7 +2656,7 @@ export default function ProductsModals({
                   </section>
                 </div>
               </div>
-            ) : null}
+            ) : <div role="tabpanel" id="panel-review" aria-labelledby="tab-review" hidden />}
           </div>
         </div>
       </ModalShell>

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef } from "react";
 import Icon from "~/components/ui/Icon";
 import PaginationBar from "~/components/ui/PaginationBar";
 import { MobileFilterTabs } from "~/components/ui/MobileFilters";
@@ -40,6 +40,29 @@ function AlertRow({
   const tone = alertTone(alert);
   const [swipeOffset, setSwipeOffset] = useState(0);
   const [isSwiping, setIsSwiping] = useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = useState(false);
+  const actionsId = useId();
+  const actionsButtonRef = useRef<HTMLButtonElement>(null);
+  const actionsRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!mobileMenuOpen) return;
+    function onKeyDown(event: KeyboardEvent) {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      setMobileMenuOpen(false);
+      actionsButtonRef.current?.focus();
+    }
+    function onPointerDown(event: PointerEvent) {
+      if (!actionsRef.current?.contains(event.target as Node)) setMobileMenuOpen(false);
+    }
+    document.addEventListener("keydown", onKeyDown);
+    document.addEventListener("pointerdown", onPointerDown);
+    return () => {
+      document.removeEventListener("keydown", onKeyDown);
+      document.removeEventListener("pointerdown", onPointerDown);
+    };
+  }, [mobileMenuOpen]);
 
   // Constants for swipe
   const THRESHOLD_LEFT = -160;
@@ -70,7 +93,7 @@ function AlertRow({
   });
 
   const isUnread = !alert.read;
-  
+
   return (
     <div className="group relative overflow-hidden rounded-[16px] border border-[#DADDE3] shadow-sm md:overflow-visible md:rounded-none md:border-x-0 md:border-t-0 md:border-b md:border-slate-100 md:shadow-none md:last:border-b-0">
       {/* Background Action Buttons (Revealed on Swipe) */}
@@ -78,6 +101,7 @@ function AlertRow({
         {/* Left Side: Right Swipe Action (Read/Unread) */}
         <div className="flex">
           <button
+            tabIndex={-1}
             onClick={() => {
               isUnread ? onMarkRead(alert.key) : onMarkUnread(alert.key);
               setSwipeOffset(0);
@@ -91,6 +115,7 @@ function AlertRow({
         {/* Right Side: Left Swipe Actions (Resolve/Dismiss) */}
         <div className="flex">
           <button
+            tabIndex={-1}
             onClick={() => { onResolve(alert.key); setSwipeOffset(0); }}
             className="w-[80px] h-full bg-emerald-500 text-white flex flex-col items-center justify-center active:bg-emerald-600 transition-colors"
           >
@@ -98,6 +123,7 @@ function AlertRow({
             <span className="text-[10px] font-bold uppercase tracking-wider">Resolve</span>
           </button>
           <button
+            tabIndex={-1}
             onClick={() => { onDismiss(alert.key); setSwipeOffset(0); }}
             className="w-[80px] h-full bg-rose-500 text-white flex flex-col items-center justify-center active:bg-rose-600 transition-colors"
           >
@@ -158,7 +184,7 @@ function AlertRow({
         </div>
 
         {/* ACTIONS Column (Desktop) */}
-        <div className="hidden md:flex md:col-span-2 items-center justify-end gap-2 w-full pt-3 mt-1 md:pt-0 md:mt-0 transition-opacity opacity-70 group-hover:opacity-100 focus-within:opacity-100">
+        <div className="hidden md:flex flex-wrap md:flex-nowrap md:col-span-2 items-center justify-end gap-2 w-full transition-opacity opacity-70 group-hover:opacity-100 focus-within:opacity-100">
           {isUnread ? (
             <button
               onClick={() => onMarkRead(alert.key)}
@@ -176,7 +202,7 @@ function AlertRow({
               <Icon name="mark_email_unread" className="text-[14px]" /> Unread
             </button>
           )}
-          
+
           <button
             onClick={() => onResolve(alert.key)}
             title="Resolve = issue handled"
@@ -191,6 +217,55 @@ function AlertRow({
           >
             <Icon name="close" className="text-[14px]" /> Dismiss
           </button>
+        </div>
+
+        {/* ACTIONS Menu (Mobile) */}
+        <div ref={actionsRef} className="md:hidden w-full pt-3 mt-1 border-t border-slate-100 flex flex-col items-end gap-2">
+          <button
+            ref={actionsButtonRef}
+            type="button"
+            aria-expanded={mobileMenuOpen}
+            aria-controls={actionsId}
+            onClick={() => setMobileMenuOpen((open) => !open)}
+            className="flex min-h-11 items-center gap-1.5 rounded-lg border border-slate-200 bg-slate-50 px-4 text-xs font-extrabold uppercase text-slate-600 focus:outline-none focus:ring-2 focus:ring-slate-900 active:bg-slate-100"
+          >
+            <Icon name="more_horiz" sizePx={16} /> Actions
+          </button>
+          {mobileMenuOpen && (
+              <div id={actionsId} role="group" aria-label="Alert actions" className="w-full rounded-xl border border-slate-200 bg-white p-1 shadow-sm flex flex-col">
+                {isUnread ? (
+                  <button
+                    type="button"
+                    onClick={() => { setMobileMenuOpen(false); onMarkRead(alert.key); actionsButtonRef.current?.focus(); }}
+                    className="flex min-h-11 w-full items-center gap-2 px-4 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:bg-slate-50"
+                  >
+                    <Icon name="check" sizePx={16} /> Read
+                  </button>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => { setMobileMenuOpen(false); onMarkUnread(alert.key); actionsButtonRef.current?.focus(); }}
+                    className="flex min-h-11 w-full items-center gap-2 px-4 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 focus:outline-none focus:bg-slate-50"
+                  >
+                    <Icon name="mark_email_unread" sizePx={16} /> Unread
+                  </button>
+                )}
+                <button
+                  type="button"
+                  onClick={() => { setMobileMenuOpen(false); onResolve(alert.key); actionsButtonRef.current?.focus(); }}
+                  className="flex min-h-11 w-full items-center gap-2 px-4 text-left text-sm font-semibold text-emerald-700 hover:bg-slate-50 focus:outline-none focus:bg-slate-50"
+                >
+                  <Icon name="check_circle" sizePx={16} /> Resolve
+                </button>
+                <button
+                  type="button"
+                  onClick={() => { setMobileMenuOpen(false); onDismiss(alert.key); }}
+                  className="flex min-h-11 w-full items-center gap-2 px-4 text-left text-sm font-semibold text-rose-700 hover:bg-rose-50 focus:outline-none focus:bg-rose-50"
+                >
+                  <Icon name="close" sizePx={16} /> Dismiss
+                </button>
+              </div>
+          )}
         </div>
 
       </div>
@@ -214,7 +289,7 @@ export default function AlertsPage() {
     resolveAlert,
     dismissAlert,
   } = useAlerts();
-  
+
   const [filterType, setFilterType] = useState<"all" | AppAlertType>("all");
   const [showUnreadOnly, setShowUnreadOnly] = useState(false);
   const [searchQuery, setSearchQuery] = useState("");
@@ -246,12 +321,12 @@ export default function AlertsPage() {
     return alerts.filter((alert) => {
       const matchesType = filterType === "all" ? true : alert.type === filterType;
       const matchesUnread = showUnreadOnly ? !alert.read : true;
-      const matchesSearch = searchQuery === "" || 
+      const matchesSearch = searchQuery === "" ||
         alert.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
         alert.message.toLowerCase().includes(searchQuery.toLowerCase()) ||
         alert.type.toLowerCase().includes(searchQuery.toLowerCase()) ||
         alert.level.toLowerCase().includes(searchQuery.toLowerCase());
-        
+
       return matchesType && matchesUnread && matchesSearch;
     });
   }, [alerts, filterType, showUnreadOnly, searchQuery]);
@@ -337,7 +412,7 @@ export default function AlertsPage() {
   return (
     <div className="-mx-2 min-h-full bg-white px-1 pb-6 pt-3 text-slate-900 md:mx-0 md:rounded-[28px] md:p-6">
       <div className="w-full">
-        
+
         {/* Header Section */}
         <div className="mb-3 flex flex-col justify-between gap-2.5 md:mb-6 md:flex-row md:items-center md:gap-4">
           <div className="hidden md:block">
@@ -351,14 +426,14 @@ export default function AlertsPage() {
             </p>
           </div>
           <div className="flex w-full items-center gap-2 md:w-auto md:gap-2.5">
-            <button 
+            <button
               onClick={() => refreshAlerts(500)}
               className="inline-flex h-9.5 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#374151] shadow-2xs transition active:scale-98 hover:bg-[#F3F4F6] md:flex-none md:px-3.5"
             >
               <Icon name="refresh" sizePx={15} />
               <span>Refresh</span>
             </button>
-            <button 
+            <button
               onClick={handleMarkAllRead}
               disabled={unreadCount === 0}
               className="inline-flex h-9.5 flex-1 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[12px] font-extrabold text-[#374151] shadow-2xs transition active:scale-98 hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40 md:flex-none md:px-3.5"
@@ -426,7 +501,7 @@ export default function AlertsPage() {
             items={[{ value: "all" as const, label: "All", count: alerts.length }, ...typeFilters.map((type) => ({ value: type, label: type, count: typeCounts[type] }))]}
           />
           <div className="hidden items-center gap-1.5 lg:flex">
-            <button 
+            <button
               onClick={() => setFilterType("all")}
               className={cn(
                 "h-8.5 rounded-full px-3.5 text-[12px] font-extrabold shadow-2xs transition",
@@ -436,7 +511,7 @@ export default function AlertsPage() {
               All <span className={cn("ml-1 rounded-full px-1.5 py-0.2 text-[10.5px]", filterType === "all" ? "bg-white/20 text-white" : "bg-[#F1F3F5] text-[#64748B]")}>{alerts.length}</span>
             </button>
             {typeFilters.map((type) => (
-              <button 
+              <button
                 key={type}
                 onClick={() => setFilterType(type)}
                 className={cn(
@@ -448,26 +523,28 @@ export default function AlertsPage() {
               </button>
             ))}
           </div>
-          
+
           <div className="flex items-center gap-2">
             <div className="relative min-w-0 flex-1 sm:w-[260px] sm:flex-none">
               <Icon name="search" sizePx={16} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]" />
-              <input 
-                type="text" 
+              <input
+                type="text"
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
-                placeholder="Search alerts..." 
+                placeholder="Search alerts..."
+                aria-label="Search alerts"
                 className="h-9.5 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
               />
             </div>
-            <label className="flex h-9.5 shrink-0 cursor-pointer select-none items-center gap-2 rounded-[10px] border border-[#D4D7DC] bg-white px-3 shadow-2xs transition hover:bg-[#F8FAFC]">
+            <label className="flex h-9.5 shrink-0 cursor-pointer select-none items-center gap-2 rounded-[10px] border border-[#D4D7DC] bg-white px-3 shadow-2xs transition hover:bg-[#F8FAFC] focus-within:ring-2 focus-within:ring-[#11120d] focus-within:ring-offset-1">
               <span className="text-[11.5px] font-bold text-[#4B5563]">Unread only</span>
               <div className="relative">
-                <input 
-                  type="checkbox" 
-                  className="hidden"
+                <input
+                  type="checkbox"
+                  className="sr-only"
                   checked={showUnreadOnly}
                   onChange={() => setShowUnreadOnly(!showUnreadOnly)}
+                  aria-label="Show unread only"
                 />
                 <div className={cn("flex h-5 w-9 items-center rounded-full p-0.5 transition", showUnreadOnly ? "bg-[#11120d]" : "bg-[#D4D7DC]")}>
                   <div className={cn("h-4 w-4 rounded-full bg-white shadow-xs transition", showUnreadOnly ? "translate-x-4" : "translate-x-0")} />
@@ -479,7 +556,7 @@ export default function AlertsPage() {
 
         {/* Alerts List */}
         <div ref={alertsListRef} className="relative scroll-mt-4 bg-transparent md:overflow-hidden md:rounded-[20px] md:border md:border-[#CFCFD3] md:bg-white md:shadow-sm">
-          
+
           {/* Desktop Table Header */}
           <div className="hidden md:grid grid-cols-12 gap-4 px-6 py-4 bg-slate-50 border-b border-[#CFCFD3] text-[11px] font-extrabold text-slate-500 uppercase tracking-widest">
             <div className="col-span-2">TYPE</div>
@@ -501,9 +578,9 @@ export default function AlertsPage() {
               </div>
             ) : (
               pageItems.map((alert) => (
-                <AlertRow 
-                  key={alert.key} 
-                  alert={alert} 
+                <AlertRow
+                  key={alert.key}
+                  alert={alert}
                   onMarkRead={handleMarkRead}
                   onMarkUnread={handleMarkUnread}
                   onResolve={resolveAlert}

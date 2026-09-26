@@ -925,6 +925,7 @@ export default function HistoryPage() {
                       setPage(1);
                     }}
                     placeholder="Search action, entity, actor..."
+                    aria-label="Search action, entity, actor..."
                     className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
                   />
                 </div>
@@ -945,6 +946,7 @@ export default function HistoryPage() {
                   <ProjectDateInput
                     value={fromDate}
                     max={toDate || undefined}
+                    aria-label="From date"
                     onChange={(event) => {
                       setFromDate(event.target.value);
                       setPage(1);
@@ -957,6 +959,7 @@ export default function HistoryPage() {
                   <ProjectDateInput
                     value={toDate}
                     min={fromDate || undefined}
+                    aria-label="To date"
                     onChange={(event) => {
                       setToDate(event.target.value);
                       setPage(1);
@@ -1177,6 +1180,7 @@ export default function HistoryPage() {
                 <ProjectDateInput
                   value={draftFromDate}
                   max={draftToDate || undefined}
+                  aria-label="From date"
                   onChange={(event) => setDraftFromDate(event.target.value)}
                 />
               </label>
@@ -1185,6 +1189,7 @@ export default function HistoryPage() {
                 <ProjectDateInput
                   value={draftToDate}
                   min={draftFromDate || undefined}
+                  aria-label="To date"
                   onChange={(event) => setDraftToDate(event.target.value)}
                 />
               </label>
@@ -1523,7 +1528,7 @@ export default function HistoryPage() {
             <div className="flex w-full gap-2 xl:w-[460px] xl:min-w-[460px]">
               <div className="relative min-w-0 flex-1">
                 <Icon name="search" className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]" sizePx={18} />
-                <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search invoice, customer, cashier, reference..." className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none placeholder:text-[#7A7F89] focus:border-[#11120d]" />
+                <input value={query} onChange={(event) => { setQuery(event.target.value); setPage(1); }} placeholder="Search invoice, customer, cashier, reference..." aria-label="Search invoice, customer, cashier, reference..." className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none placeholder:text-[#7A7F89] focus:border-[#11120d]" />
               </div>
               <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden" />
             </div>
@@ -1546,6 +1551,7 @@ export default function HistoryPage() {
                 <ProjectDateInput
                   value={fromDate}
                   max={toDate || undefined}
+                  aria-label="From date"
                   onChange={(event) => {
                     setFromDate(event.target.value);
                     setPage(1);
@@ -1561,6 +1567,7 @@ export default function HistoryPage() {
                 <ProjectDateInput
                   value={toDate}
                   min={fromDate || undefined}
+                  aria-label="To date"
                   onChange={(event) => {
                     setToDate(event.target.value);
                     setPage(1);

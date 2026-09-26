@@ -39,7 +39,7 @@ async function setupSettingsMock(
 
 async function openSecurityTab(page: Page) {
   await page.goto("/settings");
-  await page.getByRole("tab", { name: "Audit & Security" }).click();
+  await page.getByRole("button", { name: "Audit & Security" }).click();
 }
 
 async function applyAuditAction(page: Page, action: string) {

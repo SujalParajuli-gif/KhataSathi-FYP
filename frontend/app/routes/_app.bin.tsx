@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState, useRef } from "react";
 import Icon from "~/components/ui/Icon";
 import { ConfirmDialog } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
@@ -44,26 +44,42 @@ export default function BinPage() {
   const [pendingAction, setPendingAction] = useState<PendingAction>(null);
   const [busy, setBusy] = useState(false);
 
+  const [error, setError] = useState<string | null>(null);
+  const [hasLoaded, setHasLoaded] = useState(false);
+  const [loadedParams, setLoadedParams] = useState({ entityType: "ALL", page: 1, pageSize: 20 });
+  const requestSequenceRef = useRef(0);
+
+  const queryChanged = page !== loadedParams.page || pageSize !== loadedParams.pageSize || entityType !== loadedParams.entityType;
+  const isStale = hasLoaded && (queryChanged || error !== null);
+
   async function loadBin(options?: { signal?: AbortSignal }) {
+    const sequence = ++requestSequenceRef.current;
     try {
       setLoading(true);
+      setError(null);
       const res = await listBinApi({
         entityType: entityType === "ALL" ? undefined : entityType,
         page,
         pageSize,
       }, options);
+
+      if (options?.signal?.aborted || requestSequenceRef.current !== sequence) return;
+
       setRecords(res.records);
       setTotal(res.total);
       setTotalPages(Math.max(1, res.totalPages));
+      setLoadedParams({ entityType, page, pageSize });
+      setHasLoaded(true);
     } catch (err: any) {
-      if (options?.signal?.aborted || err?.code === "ERR_CANCELED") return;
+      if (options?.signal?.aborted || err?.code === "ERR_CANCELED" || requestSequenceRef.current !== sequence) return;
       if (isRateLimitError(err)) {
+        setError("The request was rate-limited. Please wait a moment, then try again.");
         requestRateLimitRecovery();
         return;
       }
-      showToast("danger", err?.message || "Failed to load bin");
+      setError(err?.message || "Failed to load bin");
     } finally {
-      if (!options?.signal?.aborted) setLoading(false);
+      if (requestSequenceRef.current === sequence && !options?.signal?.aborted) setLoading(false);
     }
   }
 
@@ -76,16 +92,10 @@ export default function BinPage() {
     return () => {
       window.clearTimeout(timer);
       controller.abort();
+      requestSequenceRef.current += 1;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [entityType, page, pageSize, rateLimitRecoveryKey]);
-
-  const counts = useMemo(() => {
-    return records.reduce<Record<string, number>>((acc, record) => {
-      acc[record.entityType] = (acc[record.entityType] || 0) + 1;
-      return acc;
-    }, {});
-  }, [records]);
 
   async function confirmPendingAction() {
     if (!pendingAction) return;
@@ -136,7 +146,7 @@ export default function BinPage() {
           <div className="flex items-center gap-3">
             <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Bin</h1>
             <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-600">
-              {total} records
+              {!hasLoaded ? "Loading" : error && records.length === 0 ? "Unavailable" : isStale ? "Previous results" : `${total} records`}
             </span>
           </div>
           <p className="mt-1 text-sm font-medium text-slate-500 md:text-base">
@@ -155,7 +165,7 @@ export default function BinPage() {
       </div>
 
       <div className="mb-4 rounded-[18px] border border-[#CFCFD3] bg-white p-3">
-        <MobileFilterTabs className="lg:hidden" ariaLabel="Bin record type" value={entityType} onChange={(type) => { setEntityType(type); setPage(1); }} items={[{ value: "ALL", label: "All" }, { value: "Document", label: "Documents", count: counts.Document }, { value: "ProductImportBatch", label: "Import Reviews", count: counts.ProductImportBatch }]} />
+        <MobileFilterTabs className="lg:hidden" ariaLabel="Bin record type" value={entityType} onChange={(type) => { setEntityType(type); setPage(1); }} items={[{ value: "ALL", label: "All" }, { value: "Document", label: "Documents" }, { value: "ProductImportBatch", label: "Import Reviews" }]} />
         <div className="hidden flex-nowrap items-center gap-2 overflow-x-auto md:flex-wrap lg:flex [&::-webkit-scrollbar]:hidden [-ms-overflow-style:none] [scrollbar-width:none]">
         {["ALL", "Document", "ProductImportBatch"].map((type) => (
           <button
@@ -173,7 +183,6 @@ export default function BinPage() {
             ].join(" ")}
           >
             {type === "ALL" ? "All" : ENTITY_LABELS[type] || type}
-            {type !== "ALL" && counts[type] ? ` (${counts[type]})` : ""}
           </button>
         ))}
         </div>
@@ -189,8 +198,25 @@ export default function BinPage() {
         </div>
         <div className="space-y-3 p-3 lg:space-y-0 lg:p-0 lg:[&>*+*]:border-t lg:[&>*+*]:border-[#E5E7EB]">
 
-        {loading ? (
-          <div className="flex h-[260px] items-center justify-center text-sm font-semibold text-slate-400">
+        {loading && !hasLoaded ? (
+          <div role="status" className="flex h-[260px] items-center justify-center text-sm font-semibold text-slate-400">
+            Loading bin...
+          </div>
+        ) : error && (!hasLoaded || records.length === 0) ? (
+          <div role="alert" className="flex h-[360px] flex-col items-center justify-center p-6 text-center">
+            <div className="flex h-[80px] w-[80px] items-center justify-center rounded-full border border-dashed border-[#CFCFD3] bg-rose-50 text-rose-500">
+              <Icon name="error" sizePx={48} />
+            </div>
+            <div className="mt-4 text-[15px] font-extrabold text-rose-700">Failed to load bin</div>
+            <div className="mt-1 max-w-[360px] text-[13px] font-semibold leading-6 text-rose-600">
+              {error}
+            </div>
+            <button type="button" onClick={() => loadBin()} className="mt-4 inline-flex h-9 items-center justify-center gap-2 rounded-lg bg-[#11120d] px-4 text-sm font-bold text-white">
+              Try again
+            </button>
+          </div>
+        ) : loading && records.length === 0 ? (
+          <div role="status" className="flex h-[260px] items-center justify-center text-sm font-semibold text-slate-500">
             Loading bin...
           </div>
         ) : records.length === 0 ? (
@@ -204,7 +230,15 @@ export default function BinPage() {
             </div>
           </div>
         ) : (
-          records.map((record) => (
+          <>
+          {isStale ? (
+            <div role={error ? "alert" : "status"} className="border-b border-amber-200 bg-amber-50 p-3 text-center text-sm font-semibold text-amber-800">
+              {error ? "Unable to update this view. Showing previous results." : "Loading new results. Showing previous results."}
+              {error ? <button type="button" onClick={() => void loadBin()} className="ml-2 underline underline-offset-2">Try again</button> : null}
+            </div>
+          ) : loading ? <div role="status" className="border-b border-slate-200 bg-slate-50 p-3 text-center text-sm text-slate-600">Refreshing bin...</div> : null}
+
+          {records.map((record) => (
             <div
               key={record.id}
               className="flex flex-col gap-3 rounded-[16px] border border-[#DADDE3] bg-white px-4 py-4 shadow-sm transition-colors hover:bg-[#ECEFF3] lg:grid lg:grid-cols-[1.5fr_1fr_1fr_1fr_190px] lg:items-center lg:gap-3 lg:rounded-none lg:border-0 lg:py-3 lg:shadow-none"
@@ -233,8 +267,9 @@ export default function BinPage() {
               <div className="mt-1 flex justify-end gap-2 lg:mt-0">
                 <button
                   type="button"
+                  disabled={isStale}
                   onClick={() => setPendingAction({ type: "restore", record })}
-                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold hover:bg-[#F3F4F6] lg:w-auto lg:px-3"
+                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto lg:px-3"
                   title="Restore"
                 >
                   <Icon name="restore" sizePx={18} />
@@ -242,8 +277,9 @@ export default function BinPage() {
                 </button>
                 <button
                   type="button"
+                  disabled={isStale}
                   onClick={() => setPendingAction({ type: "purge", record })}
-                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] text-[12px] font-extrabold text-[#BE123C] hover:bg-rose-100 lg:w-auto lg:px-3"
+                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] text-[12px] font-extrabold text-[#BE123C] hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto lg:px-3"
                   title="Delete"
                 >
                   <Icon name="delete" sizePx={18} />
@@ -251,11 +287,12 @@ export default function BinPage() {
                 </button>
               </div>
             </div>
-          ))
+          ))}
+          </>
         )}
         </div>
 
-        <div className="border-t border-[#E5E7EB] bg-white px-4 py-3">
+        {hasLoaded && !queryChanged && !error ? <div className="border-t border-[#E5E7EB] bg-white px-4 py-3">
           <PaginationBar
             page={page}
             totalPages={totalPages}
@@ -270,7 +307,7 @@ export default function BinPage() {
               setPage(1);
             }}
           />
-        </div>
+        </div> : null}
       </div>
 
       {pendingConfig ? (

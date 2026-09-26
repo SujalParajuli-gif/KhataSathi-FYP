@@ -264,7 +264,7 @@ for (const width of [390, 1440]) {
 }
 
 for (const width of [390, 1440]) {
-  test(`documents and history distinguish failed reads from empty results at ${width}px`, async ({ page }, testInfo) => {
+  test(`documents and history distinguish failed reads from empty results at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
     await mockApp(page, review());
     let fail = true;
@@ -273,7 +273,6 @@ for (const width of [390, 1440]) {
     }));
     await page.goto("/documents");
     await expect(page.getByRole("alert").filter({ hasText: "Documents could not be refreshed" })).toBeVisible();
-    await page.screenshot({ path: testInfo.outputPath(`documents-error-${width}.png`) });
     fail = false;
     await page.getByRole("button", { name: "Retry documents" }).click();
     await expect(page.getByRole("button", { name: "Retry documents" })).toHaveCount(0);
@@ -284,7 +283,6 @@ for (const width of [390, 1440]) {
     await page.goto("/history");
     await expect(page.getByRole("alert").filter({ hasText: "History could not be refreshed" })).toBeVisible();
     await expect(page.getByText("No category history found.", { exact: true })).toHaveCount(0);
-    await page.screenshot({ path: testInfo.outputPath(`history-error-${width}.png`) });
     fail = false;
     await page.getByRole("button", { name: "Retry history" }).click();
     await expect(page.getByText("No category history found.", { exact: true })).toBeVisible();

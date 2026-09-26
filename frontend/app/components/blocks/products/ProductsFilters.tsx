@@ -2,6 +2,7 @@ import React from "react";
 import GoogleIcon from "~/components/ui/GIcon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
+import { ModalFrame } from "~/components/ui/Modal";
 import {
   ActiveFilterChips,
   MobileFilterButton,
@@ -202,6 +203,14 @@ export default function ProductsFiltersCard({
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false);
+  React.useEffect(() => {
+    if (!mobileActionsOpen) return;
+    const desktop = window.matchMedia("(min-width: 1024px)");
+    const closeOnDesktop = () => { if (desktop.matches) setMobileActionsOpen(false); };
+    desktop.addEventListener("change", closeOnDesktop);
+    closeOnDesktop();
+    return () => desktop.removeEventListener("change", closeOnDesktop);
+  }, [mobileActionsOpen]);
   const [draftBrand, setDraftBrand] = React.useState(brand);
   const [draftCategory, setDraftCategory] = React.useState(category);
   const [draftStockStatus, setDraftStockStatus] = React.useState(stockStatus);
@@ -479,20 +488,18 @@ export default function ProductsFiltersCard({
       </MobileFilterSheet>
 
       {/* Mobile Actions Drawer */}
-      {mobileActionsOpen ? (
-        <div className="fixed inset-0 z-[130] lg:hidden">
-          <button type="button" className="absolute inset-0 bg-slate-950/50" aria-label="Close actions" onClick={() => setMobileActionsOpen(false)} />
-          <section role="dialog" aria-modal="true" aria-label="Product actions" className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
-            <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
-            <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[20px] font-extrabold">Product actions</h2><button type="button" onClick={() => setMobileActionsOpen(false)} className="flex h-11 w-11 items-center justify-center rounded-full transition active:bg-[#F3F4F6]" aria-label="Close actions"><GoogleIcon name="close" className="text-[26px]" /></button></div>
-            <div className="mt-2 space-y-1">
-            <button type="button" onClick={() => { setMobileActionsOpen(false); onImport(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="upload_file" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Import products</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
-            {onSearchInsights ? <button type="button" onClick={() => { setMobileActionsOpen(false); onSearchInsights(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="search_off" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Unmatched searches</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
-            {stockTracked ? <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
-            </div>
-          </section>
+      <ModalFrame
+        open={mobileActionsOpen}
+        onClose={() => setMobileActionsOpen(false)}
+        title="Product actions"
+        mobileBottomSheet
+      >
+        <div className="mt-2 space-y-1">
+          <button type="button" onClick={() => { setMobileActionsOpen(false); onImport(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="upload_file" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Import products</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button>
+          {onSearchInsights ? <button type="button" onClick={() => { setMobileActionsOpen(false); onSearchInsights(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="search_off" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Unmatched searches</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
+          {stockTracked ? <button type="button" onClick={() => { setMobileActionsOpen(false); onManageStock(); }} className="flex min-h-[56px] w-full items-center gap-3.5 rounded-[14px] px-2 text-left transition active:scale-[0.98] active:bg-[#F3F4F6]"><span className="inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]"><GoogleIcon name="inventory_2" className="text-[20px]" /></span><span className="flex-1 text-[15px] font-bold">Stock Movement</span><GoogleIcon name="chevron_right" className="text-[#94A3B8]" /></button> : null}
         </div>
-      ) : null}
+      </ModalFrame>
 
       {/* Desktop Search & Filters Toolbar */}
       <div className="hidden lg:block">

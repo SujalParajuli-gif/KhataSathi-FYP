@@ -3885,7 +3885,7 @@ export default function ProductsPage() {
                 className="inline-flex h-7.5 sm:h-8 items-center gap-1 sm:gap-1.5 rounded-[8px] bg-[#11120d] px-2 sm:px-3 text-[11px] sm:text-[11.5px] font-bold text-white transition hover:bg-[#2a2c27] active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] shrink-0 whitespace-nowrap"
                 title="Open recent import history"
               >
-                <Icon name="history" sizePx={14} />
+                <span className="hidden sm:inline-flex" aria-hidden="true"><Icon name="history" sizePx={14} /></span>
                 <span>Recent imports</span>
               </button>
 
@@ -3896,7 +3896,7 @@ export default function ProductsPage() {
                 aria-expanded={actionableImportsExpanded}
                 title={actionableImportsExpanded ? "Hide the list of pending imports" : "Show the list of pending imports"}
               >
-                <Icon name={actionableImportsExpanded ? "expand_less" : "expand_more"} sizePx={15} />
+                <span className="hidden sm:inline-flex" aria-hidden="true"><Icon name={actionableImportsExpanded ? "expand_less" : "expand_more"} sizePx={15} /></span>
                 <span>{actionableImportsExpanded ? "Hide list" : "Show list"}</span>
               </button>
             </div>

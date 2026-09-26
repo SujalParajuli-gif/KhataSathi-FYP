@@ -27,6 +27,7 @@ export default function SwipeableTabRail<T extends string>({
   inactiveClassName = "text-[#565449] hover:text-black",
   gestureProgress,
   controllerRef,
+  isTrueTabs = false,
 }: {
   items: Array<SwipeableTabItem<T>>;
   value: T;
@@ -39,6 +40,7 @@ export default function SwipeableTabRail<T extends string>({
   inactiveClassName?: string;
   gestureProgress?: { direction: -1 | 1; progress: number } | null;
   controllerRef?: MutableRefObject<SwipeableTabRailController | null>;
+  isTrueTabs?: boolean;
 }) {
   const railRef = useRef<HTMLDivElement>(null);
   const trackRef = useRef<HTMLDivElement>(null);
@@ -107,7 +109,7 @@ export default function SwipeableTabRail<T extends string>({
   return (
     <div
       ref={railRef}
-      role="tablist"
+      role={isTrueTabs ? "tablist" : "group"}
       aria-label={ariaLabel}
       data-horizontal-scroll
       className={cn(
@@ -116,16 +118,36 @@ export default function SwipeableTabRail<T extends string>({
       )}
     >
       <div ref={trackRef} className={cn("relative flex min-w-max", railClassName)}>
-        {items.map((item) => {
+        {items.map((item, index) => {
           const active = item.value === value;
           return (
             <button
               key={item.value}
               type="button"
-              role="tab"
-              aria-selected={active}
+              role={isTrueTabs ? "tab" : undefined}
+              aria-selected={isTrueTabs ? active : undefined}
+              aria-pressed={!isTrueTabs ? active : undefined}
+              aria-controls={isTrueTabs ? `panel-${item.value}` : undefined}
+              id={isTrueTabs ? `tab-${item.value}` : undefined}
+              tabIndex={isTrueTabs && !active ? -1 : 0}
               data-tab-value={item.value}
               onClick={() => onChange(item.value)}
+              onKeyDown={(e) => {
+                if (!isTrueTabs) return;
+                let targetIndex = index;
+                if (e.key === "ArrowRight") targetIndex = index + 1;
+                else if (e.key === "ArrowLeft") targetIndex = index - 1;
+                else if (e.key === "Home") targetIndex = 0;
+                else if (e.key === "End") targetIndex = items.length - 1;
+                else return;
+
+                e.preventDefault();
+                if (targetIndex < 0) targetIndex = items.length - 1;
+                if (targetIndex >= items.length) targetIndex = 0;
+                const nextId = items[targetIndex].value;
+                const nextEl = trackRef.current?.querySelector<HTMLButtonElement>(`[data-tab-value="${CSS.escape(nextId)}"]`);
+                nextEl?.focus();
+              }}
               className={cn(
                 "shrink-0 transition-colors duration-200",
                 buttonClassName,

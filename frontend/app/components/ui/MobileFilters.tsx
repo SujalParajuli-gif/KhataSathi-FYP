@@ -116,7 +116,7 @@ export function MobileFilterTabs<T extends string>({
   return (
     <div
       ref={tabListRef}
-      role="tablist"
+      role="group"
       aria-label={ariaLabel}
       data-horizontal-scroll
       className={cn(
@@ -130,8 +130,7 @@ export function MobileFilterTabs<T extends string>({
           <button
             key={item.value}
             type="button"
-            role="tab"
-            aria-selected={selected}
+            aria-pressed={selected}
             data-mobile-tab-value={item.value}
             onClick={() => onChange(item.value)}
             className={cn(
@@ -178,6 +177,7 @@ export function MobileFilterSheet({
   footerMessage?: ReactNode;
 }) {
   const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const sheetRef = useRef<HTMLElement>(null);
   const restoreFocusRef = useRef<HTMLElement | null>(null);
   const onCloseRef = useRef(onClose);
   onCloseRef.current = onClose;
@@ -190,8 +190,42 @@ export function MobileFilterSheet({
       : null;
     const focusFrame = window.requestAnimationFrame(() => closeButtonRef.current?.focus());
 
+    const focusableSelector = [
+      "button:not([disabled])",
+      "input:not([disabled]):not([type='hidden'])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "a[href]",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+
     function onKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") onCloseRef.current();
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+
+      if (event.key !== "Tab" || !sheetRef.current) return;
+
+      const controls = Array.from(
+        sheetRef.current.querySelectorAll<HTMLElement>(focusableSelector),
+      ).filter((element) => element.offsetParent !== null);
+
+      if (controls.length === 0) {
+        event.preventDefault();
+        sheetRef.current.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
     }
 
     document.addEventListener("keydown", onKeyDown);
@@ -213,10 +247,12 @@ export function MobileFilterSheet({
         onClick={onClose}
       />
       <section
+        ref={sheetRef}
         role="dialog"
         aria-modal="true"
         aria-label={title}
-        className="absolute inset-x-0 bottom-0 flex max-h-[88dvh] flex-col overflow-hidden rounded-t-[26px] bg-white shadow-2xl"
+        tabIndex={-1}
+        className="absolute inset-x-0 bottom-0 flex max-h-[88dvh] flex-col overflow-hidden rounded-t-[26px] bg-white shadow-2xl outline-none"
       >
         <div className="shrink-0 px-4 pt-3">
           <div className="mx-auto h-1.5 w-14 rounded-full bg-slate-300" />
