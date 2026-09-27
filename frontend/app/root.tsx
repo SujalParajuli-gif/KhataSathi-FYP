@@ -11,7 +11,6 @@ import Icon from "~/components/ui/Icon";
 import type { Route } from "./+types/root";
 import "./app.css";
 
-// loading Google Material Symbols font — we use this for all icons across the app
 export const links: Route.LinksFunction = () => [
   {
     rel: "preload",
@@ -19,10 +18,6 @@ export const links: Route.LinksFunction = () => [
     as: "font",
     type: "font/ttf",
     crossOrigin: "anonymous",
-  },
-  {
-    rel: "stylesheet",
-    href: "https://fonts.googleapis.com/css2?family=Material+Symbols+Rounded:opsz,wght,FILL,GRAD@20..48,100..700,0..1,-50..200",
   },
   {
     rel: "manifest",

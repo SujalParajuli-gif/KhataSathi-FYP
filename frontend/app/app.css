@@ -14,6 +14,14 @@ body[data-import-notification="visible"] [data-app-scroll-container] {
   isolation: isolate;
 }
 
+@font-face {
+  font-family: "Material Symbols Rounded";
+  font-style: normal;
+  font-weight: 100 700;
+  src: url("/assets/fonts/Material_Symbols/MaterialSymbolsRounded.woff2") format("woff2");
+  font-display: block;
+}
+
 /* we load the variable IBM Plex Sans files so the app can use one main sans family
    across headings, forms, and content without needing separate font files for each weight */
 @font-face {
@@ -254,6 +262,15 @@ input[type="number"]::-webkit-outer-spin-button {
 /* Material Symbols are variable icons, so we define their default axes and alignment once here
    without this, icons can render with inconsistent weight, size behavior, or baseline alignment across the app */
 .material-symbols-rounded {
+  font-family: "Material Symbols Rounded";
+  font-weight: normal;
+  font-style: normal;
+  text-transform: none;
+  letter-spacing: normal;
+  word-wrap: normal;
+  white-space: nowrap;
+  direction: ltr;
+  font-feature-settings: "liga";
   font-variation-settings:
     "FILL" 0,
     "wght" 400,
