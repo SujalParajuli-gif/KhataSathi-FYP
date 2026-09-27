@@ -391,7 +391,7 @@ function StorageIntegrityPanel({
           className="inline-flex h-11 w-full shrink-0 items-center justify-center gap-2 rounded-[8px] bg-slate-950 px-4 text-[12px] font-extrabold text-white transition hover:bg-slate-800 disabled:cursor-wait disabled:opacity-60 sm:w-auto"
         >
           <Icon name={busy ? "progress_activity" : "fact_check"} sizePx={18} className={busy ? "animate-spin" : ""} />
-          {busy ? "Checking storage..." : report ? "Run check again" : "Run storage check"}
+          {busy ? "Checking storage…" : report ? "Run check again" : "Run storage check"}
         </button>
       </div>
 
@@ -567,7 +567,7 @@ function RecoveryBackupPanel({
                 ? "border-rose-200 bg-rose-50 text-rose-700"
                 : "border-slate-200 bg-slate-50 text-slate-600",
           )}>
-            {status?.message || "Reading the latest recovery backup status..."}
+            {status?.message || "Reading the latest recovery backup status…"}
           </div>
           {status?.status === "SUCCESS" && !status.retentionApplied ? (
             <div className="mt-2 text-[11px] font-bold text-amber-700">
@@ -2464,7 +2464,7 @@ export default function SettingsPage() {
   if (loading) {
     return (
       <div className="flex h-[60vh] items-center justify-center font-semibold text-slate-400">
-        Loading settings...
+        Loading settings…
       </div>
     );
   }

@@ -834,7 +834,7 @@ export default function DocumentsPage() {
       return (
         <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-[#8C8889]">
           <Icon name="hourglass_empty" sizePx={44} className="mb-3 text-[#D1D5DB]" />
-          <div className="text-[13px] font-extrabold text-[#565449]">Loading preview...</div>
+          <div className="text-[13px] font-extrabold text-[#565449]">Loading preview…</div>
         </div>
       );
     }
@@ -1230,7 +1230,7 @@ function DocumentTouchViewer({
     return (
       <div className="flex h-full min-h-[260px] flex-col items-center justify-center text-[#8C8889]">
         <Icon name="hourglass_empty" sizePx={44} className="mb-3 text-[#D1D5DB]" />
-        <div className="text-[13px] font-extrabold text-[#565449]">Loading preview...</div>
+        <div className="text-[13px] font-extrabold text-[#565449]">Loading preview…</div>
       </div>
     );
   }
@@ -1904,7 +1904,7 @@ function DocumentTouchViewer({
                       className="flex h-[48px] w-full items-center justify-center gap-2 rounded-[14px] border border-[#11120d] bg-[#11120d] px-6 text-[14px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:pointer-events-none disabled:opacity-50"
                     >
                       <Icon name="upload" sizePx={20} />
-                      {uploadBusy ? "Uploading..." : "Upload Document"}
+                      {uploadBusy ? "Uploading…" : "Upload Document"}
                     </button>
                   </div>
                 </div>
@@ -2288,7 +2288,7 @@ function DocumentTouchViewer({
             {isLoading && documents.length > 0 ? <p role="status" className="border-b border-line p-3 text-sm text-muted">Updating documents… Previous results remain visible.</p> : null}
             {isLoading && documents.length === 0 ? (
               <div className="flex min-h-[360px] items-center justify-center text-[13px] font-semibold text-[#8C8889]">
-                Loading documents...
+                Loading documents…
               </div>
             ) : documents.length === 0 ? documentsLoadError ? null : (
               <div className="p-4">{renderEmptyState()}</div>
