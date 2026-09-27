@@ -2,6 +2,7 @@
 // Handles CSV/XLSX, PDF, and image (AI) import workflows including:
 // preview creation, batch CRUD, reviewed row management, and final import.
 
+import { createHash } from "node:crypto";
 import {
     Prisma,
     type ProductImportRow,
@@ -104,6 +105,7 @@ type CsvImportError = {
 
 type ReviewedPdfImportRowInput = {
     acknowledgeWarnings?: boolean;
+    expectedRevision?: string;
     rowId: string;
     name?: string;
     sku?: string;
@@ -134,6 +136,11 @@ type ReviewedPdfImportRowInput = {
 
 export class ReviewedImportRowValidationError extends Error {
     statusCode = 400;
+}
+
+export class ImportReviewStaleError extends ReviewedImportRowValidationError {
+    statusCode = 409;
+    code = "IMPORT_REVIEW_STALE";
 }
 
 function reviewedDraftText(value: unknown, label: string, required = false) {
@@ -3058,8 +3065,9 @@ export async function getProductImportReview(input: {
             parsed: parsedWithImportPriceMapping(row.parsed, priceMapping.mapping) as Prisma.JsonValue,
         }))
         : evidenceRows;
-    const displayRows = mappedRows.map((row) => ({
+    const displayRows = mappedRows.map((row, index) => ({
         ...row,
+        reviewRevision: importRowRevision(rows[index]),
         reviewChanges: reviewChangesById.get(row.id) || [],
         reviewIssues: importReviewIssues(row),
         pendingWarnings: pendingImportWarnings(row.parsed),
@@ -3240,6 +3248,8 @@ export async function setProductImportPriceMapping(input: {
     mapping: Record<string, unknown>;
     actorId: string;
     rowIds?: string[];
+    validateOnly?: boolean;
+    expectedReviewRevision?: string;
 }) {
     const batch = await prisma.productImportBatch.findFirst({
         where: { id: input.batchId, deletedAt: null },
@@ -3247,6 +3257,15 @@ export async function setProductImportPriceMapping(input: {
     });
     if (!batch) throw new Error("Product import batch was not found.");
     const expectedReviewState = importReviewSnapshot(batch.rows);
+    const expectedMappingState = JSON.stringify(batch.priceMapping ?? null);
+    const reviewRevision = importReviewRevision(batch.rows, batch.priceMapping);
+    if (input.expectedReviewRevision !== undefined &&
+        !/^[a-f0-9]{64}$/.test(input.expectedReviewRevision)) {
+        throw new ReviewedImportRowValidationError("Review revision is invalid.");
+    }
+    if (input.expectedReviewRevision && input.expectedReviewRevision !== reviewRevision) {
+        throw new ImportReviewStaleError("This import review changed since mapping was checked. Refresh it before saving.");
+    }
     const state = getImportPriceMappingState(batch);
     if (!state.required) throw new Error("This import has no extracted price columns to map.");
 
@@ -3267,7 +3286,14 @@ export async function setProductImportPriceMapping(input: {
         throw new Error("Each extracted price column must map to a different KhataSathi price field.");
     }
 
-    const targetRowIdSet = input.rowIds && input.rowIds.length > 0 ? new Set(input.rowIds) : null;
+    if (input.rowIds && input.rowIds.length === 0) {
+        throw new ReviewedImportRowValidationError("Choose at least one row or omit row IDs for the whole file.");
+    }
+    const targetRowIdSet = input.rowIds ? new Set(input.rowIds) : null;
+    const batchRowIds = new Set(batch.rows.map((row) => row.id));
+    if (targetRowIdSet && [...targetRowIdSet].some((id) => !batchRowIds.has(id))) {
+        throw new ReviewedImportRowValidationError("One or more selected rows do not belong to this import review.");
+    }
     if (targetRowIdSet && (!state.complete || Object.keys(mapping).some(key => mapping[key] !== state.mapping[key]))) {
         throw new ReviewedImportRowValidationError("Price-column meaning applies to the whole file. Choose all rows when changing the mapping.");
     }
@@ -3341,9 +3367,28 @@ export async function setProductImportPriceMapping(input: {
         });
     await classifyProductPreviewRows(comparisonDrafts);
 
-    await prisma.$transaction(async (tx) => {
+    if (input.validateOnly) {
+        return {
+            ...getImportPriceMappingState({
+                extractionMeta: batch.extractionMeta,
+                priceMapping: mapping,
+                rows: drafts.map((draft) => ({ parsed: draft.parsed || null })),
+            }),
+            reviewRevision,
+        };
+    }
+
+    const newReviewRevision = await prisma.$transaction(async (tx) => {
         await lockEditableImportBatch(tx, batch.id);
         await assertImportReviewUnchanged(tx, batch.id, expectedReviewState);
+        if (input.expectedReviewRevision) {
+            const currentBatch = await tx.productImportBatch.findUnique({
+                where: { id: batch.id }, select: { priceMapping: true },
+            });
+            if (JSON.stringify(currentBatch?.priceMapping ?? null) !== expectedMappingState) {
+                throw new ImportReviewStaleError("Price mapping changed in another operation. Refresh it before saving.");
+            }
+        }
         await tx.productImportBatch.update({
             where: { id: batch.id },
             data: { priceMapping: mapping },
@@ -3372,12 +3417,17 @@ export async function setProductImportPriceMapping(input: {
                 meta: { mapping, targetRowIds: input.rowIds || "all" },
             },
         });
+        const currentRows = await tx.productImportRow.findMany({
+            where: { batchId: batch.id },
+            select: { id: true, parsed: true, status: true, resolution: true },
+        });
+        return importReviewRevision(currentRows, mapping);
     });
-    return getImportPriceMappingState({
+    return { ...getImportPriceMappingState({
         extractionMeta: batch.extractionMeta,
         priceMapping: mapping,
         rows: drafts.map((draft) => ({ parsed: draft.parsed || null })),
-    });
+    }), reviewRevision: newReviewRevision };
 }
 
 // Page extraction cannot identify repetitions on another page until the batch is assembled.
@@ -3476,6 +3526,18 @@ export async function saveReviewedProductImportRows(
             );
         }
     }
+    for (const row of inputRows) {
+        if (row.expectedRevision === undefined) continue;
+        if (typeof row.expectedRevision !== "string" || !/^[a-f0-9]{64}$/.test(row.expectedRevision)) {
+            throw new ReviewedImportRowValidationError("Review row revision is invalid.");
+        }
+        const stored = batchRows.get(row.rowId)!;
+        if (importRowRevision(stored) !== row.expectedRevision) {
+            throw new ImportReviewStaleError(
+                `Row ${stored.rowNumber} changed since it was previewed. Refresh before saving; no rows in this request were saved.`,
+            );
+        }
+    }
 
     const preparedById = new Map(preparedRows.map(row => [row.rowId, row]));
     const acknowledgeById = new Map(inputRows.map(row => [row.rowId, row.acknowledgeWarnings === true]));
@@ -3544,7 +3606,7 @@ export async function saveReviewedProductImportRows(
         });
         return preparedRows.map(row => results.find(result => result.id === row.rowId)!);
     });
-    return { rows: savedRows, savedCount: savedRows.length };
+    return { rows: savedRows, savedCount: savedRows.length, savedRowIds: savedRows.map((row) => row.id) };
 }
 
 export async function setProductImportRowResolution(input: {
@@ -3654,12 +3716,24 @@ function importReviewSnapshot(rows: Array<{ id: string; parsed: unknown; status:
         .sort((a, b) => a.id.localeCompare(b.id)));
 }
 
+function importReviewRevision(rows: Array<{ id: string; parsed: unknown; status: string; resolution: unknown }>, mapping: unknown) {
+    return createHash("sha256").update(JSON.stringify({
+        rows: importReviewSnapshot(rows), mapping: mapping ?? null,
+    })).digest("hex");
+}
+
+function importRowRevision(row: { id: string; parsed: unknown; status: string; resolution: unknown }) {
+    return createHash("sha256").update(JSON.stringify({
+        id: row.id, parsed: row.parsed, status: row.status, resolution: row.resolution,
+    })).digest("hex");
+}
+
 async function assertImportReviewUnchanged(tx: Prisma.TransactionClient, batchId: string, expected: string) {
     const current = await tx.productImportRow.findMany({
         where: { batchId }, select: { id: true, parsed: true, status: true, resolution: true },
     });
     if (importReviewSnapshot(current) !== expected) {
-        throw new ReviewedImportRowValidationError("This review changed in another operation. Reload it and try again; your changes were not applied.");
+        throw new ImportReviewStaleError("This review changed in another operation. Reload it and try again; your changes were not applied.");
     }
 }
 

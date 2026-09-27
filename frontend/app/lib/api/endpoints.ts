@@ -638,6 +638,7 @@ export async function deleteProductImportTemplateApi(id: string) {
 
 export async function bulkUpdateProductPricesApi(payload: {
     reason: string;
+    expectedPreviewRevision?: string;
     updates?: Array<{
         productId: string;
         ratePerPiece?: number;
@@ -684,7 +685,8 @@ export async function bulkUpdateProductPricesApi(payload: {
         skippedComingSoon: number;
         skippedExisting: number;
         products: Array<{ id: string; name: string; sku: string }>;
-        errors: Array<{ productId: string; message: string }>;
+        errors: Array<{ productId: string; message: string; code?: string }>;
+        previewRevision: string | null;
         preview: Array<{
             productId: string;
             name: string;
@@ -742,6 +744,7 @@ export async function importImageRateListApi(file: File, options?: { signal?: Ab
 
 export type ProductImportRow = {
     id: string;
+    reviewRevision?: string;
     batchId: string;
     rowNumber: number;
     rawText?: string | null;
@@ -873,6 +876,7 @@ export type CsvImportResult = {
 
 export type ReviewedPdfImportRowPayload = {
     acknowledgeWarnings?: boolean;
+    expectedRevision?: string;
     rowId: string;
     name: string;
     sku: string;
@@ -1009,7 +1013,7 @@ export async function saveReviewedProductImportRowsApi(
     const res = await api.put(`/api/products/import-batches/${batchId}/rows`, {
         rows,
     });
-    return res.data as { rows: ProductImportRow[]; savedCount: number };
+    return res.data as { rows: ProductImportRow[]; savedCount: number; savedRowIds: string[] };
 }
 
 export async function setProductImportRowResolutionApi(
@@ -1028,12 +1032,13 @@ export async function setProductImportPriceMappingApi(
     batchId: string,
     mapping: Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">,
     rowIds?: string[],
+    options?: { validateOnly?: boolean; expectedReviewRevision?: string },
 ) {
     const res = await api.patch(
         `/api/products/import-batches/${batchId}/price-mapping`,
-        { mapping, rowIds },
+        { mapping, rowIds, ...options },
     );
-    return res.data as ProductImportReviewPage["priceMapping"];
+    return res.data as ProductImportReviewPage["priceMapping"] & { reviewRevision: string };
 }
 
 export async function commitSavedProductImportBatchApi(batchId: string, commitToken: string, acknowledgeIncomplete = false) {

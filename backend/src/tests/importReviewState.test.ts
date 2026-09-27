@@ -193,6 +193,105 @@ test("changing price mapping for a subset is rejected instead of changing other 
   installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", value: 100, label: "MRP" }] })]);
   await assert.rejects(setProductImportPriceMapping({ batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, rowIds: ["row-1"] }), /whole file/);
 });
+
+test("review revisions reject a stale selected row before saving any row in its request", async t => {
+  const { rows, mockMethod } = installBatchMocks(t, [source(), source({ name: "Other", sku: "AUTO-2" })]);
+  mockMethod(prisma.productImportRow, "count", async () => rows.length);
+  mockMethod(prisma.productImportRow, "groupBy", async () => []);
+  const review = await getProductImportReview({ batchId: "batch" });
+  assert.match(review.rows[0].reviewRevision, /^[a-f0-9]{64}$/);
+  let transactions = 0;
+  mockMethod(prisma, "$transaction", async () => { transactions += 1; throw new Error("Unexpected write"); });
+  rows[1].parsed.name = "Changed in another tab";
+  await assert.rejects(
+    saveReviewedProductImportRows("batch", [
+      { ...source(), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision },
+      { ...source({ name: "Other", sku: "AUTO-2" }), rowId: "row-2", expectedRevision: review.rows[1].reviewRevision },
+    ], "actor"),
+    /changed since it was previewed/,
+  );
+  assert.equal(transactions, 0);
+  assert.equal(rows[0].parsed.ratePerPiece, 100);
+  assert.equal(rows[1].parsed.name, "Changed in another tab");
+});
+
+test("a saved review chunk reports exactly which row IDs committed", async t => {
+  const { rows, mockMethod } = installBatchMocks(t, [source()]);
+  mockMethod(prisma.productImportRow, "count", async () => rows.length);
+  mockMethod(prisma.productImportRow, "groupBy", async () => []);
+  const review = await getProductImportReview({ batchId: "batch" });
+  const result = await saveReviewedProductImportRows("batch", [{
+    ...source(), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision,
+  }], "actor");
+  assert.deepEqual(result.savedRowIds, ["row-1"]);
+  assert.equal(result.savedCount, 1);
+});
+
+test("price mapping can be validated without writing and rejects a changed review on apply", async t => {
+  const { rows, batch, mockMethod } = installBatchMocks(t, [source({
+    extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }],
+  })]);
+  let transactions = 0;
+  const transaction = prisma.$transaction;
+  mockMethod(prisma, "$transaction", async (callback: any) => {
+    transactions += 1;
+    return (transaction as any)(callback);
+  });
+  const validation = await setProductImportPriceMapping({
+    batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, validateOnly: true,
+  });
+  assert.equal(validation.complete, true);
+  assert.match(validation.reviewRevision, /^[a-f0-9]{64}$/);
+  assert.equal(transactions, 0);
+  assert.equal(batch.priceMapping, null);
+  rows[0].parsed.name = "Changed in another tab";
+  await assert.rejects(setProductImportPriceMapping({
+    batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" },
+    expectedReviewRevision: validation.reviewRevision,
+  }), /changed since mapping was checked/);
+  assert.equal(transactions, 0);
+  assert.equal(batch.priceMapping, null);
+});
+
+test("mapping validation rejects empty or foreign selected-row scopes", async t => {
+  installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
+  const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, validateOnly: true };
+  await assert.rejects(setProductImportPriceMapping({ ...input, rowIds: [] }), /Choose at least one row/);
+  await assert.rejects(setProductImportPriceMapping({ ...input, rowIds: ["another-batch-row"] }), /do not belong/);
+});
+
+test("mapping revision detects a changed mapping even when row contents stay the same", async t => {
+  const { batch } = installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
+  const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" } };
+  const validation = await setProductImportPriceMapping({ ...input, validateOnly: true });
+  batch.priceMapping = { mrp: "wholesalePrice" };
+  await assert.rejects(setProductImportPriceMapping({
+    ...input, expectedReviewRevision: validation.reviewRevision,
+  }), /changed since mapping was checked/);
+  assert.deepEqual(batch.priceMapping, { mrp: "wholesalePrice" });
+});
+
+test("mapping revision is checked again after acquiring the batch lock", async t => {
+  const { batch, mockMethod } = installBatchMocks(t, [source({
+    extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }],
+  })]);
+  const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" } };
+  const validation = await setProductImportPriceMapping({ ...input, validateOnly: true });
+  const original = prisma.$transaction;
+  let writes = 0;
+  mockMethod(prisma, "$transaction", async (callback: any) => (original as any)(async (tx: any) => {
+    tx.productImportBatch.findUnique = async () => {
+      batch.priceMapping = { mrp: "wholesalePrice" };
+      return batch;
+    };
+    tx.productImportBatch.update = async () => { writes += 1; return batch; };
+    return callback(tx);
+  }));
+  await assert.rejects(setProductImportPriceMapping({
+    ...input, expectedReviewRevision: validation.reviewRevision,
+  }), /changed in another operation/);
+  assert.equal(writes, 0);
+});
 test("price mapping does not hide unrelated manual price corrections", async t => {
   const { rows } = installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
   await saveReviewedProductImportRows("batch", [{ ...rows[0].parsed, rowId: "row-1", ratePerPiece: 110 }], "actor");

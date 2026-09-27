@@ -1,7 +1,8 @@
 // Audited bulk selling-price updates. Rate is a neutral starting value, not a
 // verified cost, so calculations are expressed as a percentage change from Rate.
 
-import { type Prisma } from "@prisma/client";
+import { createHash } from "node:crypto";
+import { type Prisma, type ProductAvailabilityStatus } from "@prisma/client";
 import prisma from "../../db/prisma";
 import { priceFromPercentageChange } from "./pricingMath";
 import { listProducts, type ProductFilters } from "./service";
@@ -47,9 +48,48 @@ type BulkPriceProduct = {
     ratePerPiece: number | null;
     retailPrice: number | null;
     wholesalePrice: number | null;
-    availabilityStatus: string;
+    availabilityStatus: ProductAvailabilityStatus;
     searchAliases?: Array<{ alias: string }>;
 };
+
+type PriceRevisionState = Pick<BulkPriceProduct,
+    "id" | "ratePerPiece" | "retailPrice" | "wholesalePrice" | "availabilityStatus">;
+
+export class PricePreviewStaleError extends Error {
+    statusCode = 409;
+    code = "PRICE_PREVIEW_STALE";
+
+    constructor() {
+        super("Prices or the selected products changed since the preview. Refresh the preview before saving.");
+    }
+}
+
+function priceRevisionState(product: PriceRevisionState) {
+    return {
+        id: product.id,
+        ratePerPiece: product.ratePerPiece,
+        retailPrice: product.retailPrice,
+        wholesalePrice: product.wholesalePrice,
+        availabilityStatus: product.availabilityStatus,
+    };
+}
+
+function pricePreviewRevision(
+    products: PriceRevisionState[],
+    updates: DirectPriceUpdate[],
+    policy: ExistingPricePolicy,
+) {
+    const state = {
+        products: products.map(priceRevisionState).sort((a, b) => a.id.localeCompare(b.id)),
+        updates: [...updates].sort((a, b) => a.productId.localeCompare(b.productId)),
+        policy,
+    };
+    return createHash("sha256").update(JSON.stringify(state)).digest("hex");
+}
+
+function samePriceState(left: PriceRevisionState, right: PriceRevisionState) {
+    return JSON.stringify(priceRevisionState(left)) === JSON.stringify(priceRevisionState(right));
+}
 
 const MAX_FILTERED_BULK_PRODUCTS = 10_000;
 const MAX_PREVIEW_PAGE_SIZE = 100;
@@ -136,6 +176,7 @@ async function loadBulkPriceProducts(filters: ProductFilters) {
 }
 
 export async function bulkUpdateProductPrices(input: {
+    expectedPreviewRevision?: string;
     updates?: DirectPriceUpdate[];
     scope?: "IDS" | "FILTERED";
     filters?: BulkPriceFilterInput;
@@ -154,6 +195,10 @@ export async function bulkUpdateProductPrices(input: {
     actorId: string;
     actorRole?: string;
 }) {
+    if (input.expectedPreviewRevision !== undefined &&
+        !/^[a-f0-9]{64}$/.test(input.expectedPreviewRevision)) {
+        throw new Error("Preview revision is invalid.");
+    }
     const reason = normalizePriceText(input.reason);
     if (!reason) throw new Error("Reason is required for bulk price updates.");
     if (reason.length > 500) throw new Error("Reason must be 500 characters or fewer.");
@@ -174,6 +219,7 @@ export async function bulkUpdateProductPrices(input: {
     let skippedComingSoon = 0;
     let skippedExisting = 0;
     const filteredProductSnapshots = new Map<string, BulkPriceProduct>();
+    const observedProducts = new Map<string, PriceRevisionState>();
     const filteredProductOrder = new Map<string, number>();
     const preservedPreview: PricePreview[] = [];
     const requestedPreviewSearch = normalizePriceText(input.previewSearch).toLocaleLowerCase();
@@ -235,6 +281,7 @@ export async function bulkUpdateProductPrices(input: {
         products.forEach((product, index) => {
             filteredProductSnapshots.set(product.id, product);
             filteredProductOrder.set(product.id, index);
+            observedProducts.set(product.id, product);
         });
         matchedCount = products.length;
 
@@ -300,8 +347,29 @@ export async function bulkUpdateProductPrices(input: {
     }
 
     const results: Array<{ id: string; name: string; sku: string }> = [];
-    const errors: Array<{ productId: string; message: string }> = [];
+    const errors: Array<{ productId: string; message: string; code?: string }> = [];
     const preview: PricePreview[] = [];
+
+    // This preflight occurs before the first write. Row transactions below also
+    // compare their original state, so a concurrent edit during a long update
+    // becomes a reported row failure rather than a silent overwrite.
+    if (!input.previewOnly && input.expectedPreviewRevision) {
+        if (input.scope !== "FILTERED") {
+            const current = await prisma.product.findMany({
+                where: { id: { in: updates.map((update) => update.productId) } },
+                select: {
+                    id: true, ratePerPiece: true, retailPrice: true,
+                    wholesalePrice: true, availabilityStatus: true,
+                },
+            });
+            current.forEach((product) => observedProducts.set(product.id, product));
+        }
+        const currentRevision = pricePreviewRevision(
+            [...observedProducts.values()], updates,
+            input.existingPricePolicy === "REPLACE" ? "REPLACE" : "FILL_EMPTY",
+        );
+        if (currentRevision !== input.expectedPreviewRevision) throw new PricePreviewStaleError();
+    }
 
     // Keep row-level transactions and audit records, but process a small bounded
     // group at once so a catalog-wide update does not wait on 1,500 round trips
@@ -344,6 +412,13 @@ export async function bulkUpdateProductPrices(input: {
                         },
                     });
                 if (!before) throw new Error("Product not found.");
+                if (input.previewOnly && input.scope !== "FILTERED") {
+                    observedProducts.set(before.id, before);
+                }
+                const expected = input.expectedPreviewRevision ? observedProducts.get(update.productId) : undefined;
+                if (input.expectedPreviewRevision && (!expected || !samePriceState(before, expected))) {
+                    throw new PricePreviewStaleError();
+                }
                 const effectiveRate = rateProvided ? Number(ratePerPiece) : Number(before.ratePerPiece);
                 if (before.availabilityStatus !== "COMING_SOON" && ![effectiveRate, retailProvided ? retailPrice : before.retailPrice, wholesaleProvided ? wholesalePrice : before.wholesalePrice].some((value) => Number.isFinite(Number(value)) && Number(value) > 0)) {
                     throw new Error("Enter an announced price or mark this product as Coming soon.");
@@ -379,16 +454,32 @@ export async function bulkUpdateProductPrices(input: {
                 });
                 if (input.previewOnly) return { id: before.id, name: before.name, sku: before.sku };
 
-                const product = await tx.product.update({
-                    where: { id: update.productId },
-                    data: {
-                        ...(updateRate ? { ratePerPiece, rateUpdatedAt: new Date() } : {}),
-                        ...(updateRetail ? { retailPrice } : {}),
-                        ...(updateWholesale ? { wholesalePrice } : {}),
-                        sellingPriceStatus: resolveSellingPriceStatus(nextRetailPrice, nextWholesalePrice),
-                    },
-                    select: { id: true, name: true, sku: true },
-                });
+                const data = {
+                    ...(updateRate ? { ratePerPiece, rateUpdatedAt: new Date() } : {}),
+                    ...(updateRetail ? { retailPrice } : {}),
+                    ...(updateWholesale ? { wholesalePrice } : {}),
+                    sellingPriceStatus: resolveSellingPriceStatus(nextRetailPrice, nextWholesalePrice),
+                };
+                if (input.expectedPreviewRevision) {
+                    const changed = await tx.product.updateMany({
+                        where: {
+                            id: update.productId,
+                            ratePerPiece: before.ratePerPiece,
+                            retailPrice: before.retailPrice,
+                            wholesalePrice: before.wholesalePrice,
+                            availabilityStatus: before.availabilityStatus,
+                        },
+                        data,
+                    });
+                    if (changed.count !== 1) throw new PricePreviewStaleError();
+                } else {
+                    await tx.product.update({
+                        where: { id: update.productId },
+                        data,
+                        select: { id: true },
+                    });
+                }
+                const product = { id: before.id, name: before.name, sku: before.sku };
                 await tx.auditLog.create({
                     data: {
                         actorId: input.actorId,
@@ -414,7 +505,11 @@ export async function bulkUpdateProductPrices(input: {
                 : await prisma.$transaction((tx) => perform(tx));
             if (result && !input.previewOnly) results.push(result);
           } catch (error: any) {
-              errors.push({ productId: update.productId, message: error?.message || "Price update failed." });
+              errors.push({
+                  productId: update.productId,
+                  message: error?.message || "Price update failed.",
+                  ...(error instanceof PricePreviewStaleError ? { code: error.code } : {}),
+              });
           }
         }));
     }
@@ -511,6 +606,12 @@ export async function bulkUpdateProductPrices(input: {
         skippedExisting,
         products: results,
         errors,
+        previewRevision: input.previewOnly
+            ? pricePreviewRevision(
+                [...observedProducts.values()], updates,
+                input.existingPricePolicy === "REPLACE" ? "REPLACE" : "FILL_EMPTY",
+            )
+            : null,
         preview: input.previewOnly
             ? sortedPreview.slice(previewStart, previewStart + previewPageSize)
             : [],

@@ -264,3 +264,185 @@ test("retail-only products can update their announced selling price", async () =
     mock.restore();
   }
 });
+
+test("a changed explicit price preview rejects before any product is written", async () => {
+  const originalFindUnique = prisma.product.findUnique;
+  const originalFindMany = prisma.product.findMany;
+  const originalTransaction = prisma.$transaction;
+  let transactions = 0;
+  (prisma.product as any).findUnique = async () => ({ ...baseProduct });
+  (prisma.product as any).findMany = async () => [{ ...baseProduct, ratePerPiece: 125 }];
+  (prisma as any).$transaction = async () => { transactions += 1; throw new Error("Unexpected write"); };
+  try {
+    const input = {
+      scope: "IDS" as const,
+      updates: [{ productId: baseProduct.id, retailPrice: 140 }],
+      existingPricePolicy: "REPLACE" as const,
+      reason: "Supplier update",
+      actorId: "actor-1",
+    };
+    const preview = await bulkUpdateProductPrices({ ...input, previewOnly: true });
+    assert.match(preview.previewRevision || "", /^[a-f0-9]{64}$/);
+    await assert.rejects(
+      bulkUpdateProductPrices({ ...input, expectedPreviewRevision: preview.previewRevision! }),
+      /changed since the preview/,
+    );
+    assert.equal(transactions, 0);
+  } finally {
+    (prisma.product as any).findUnique = originalFindUnique;
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma as any).$transaction = originalTransaction;
+  }
+});
+
+test("a filtered preview revision includes the complete matching scope", async () => {
+  const originalFindMany = prisma.product.findMany;
+  const originalCount = prisma.product.count;
+  const originalTransaction = prisma.$transaction;
+  let products = [{ ...baseProduct, wholesalePrice: null }];
+  let transactions = 0;
+  (prisma.product as any).findMany = async () => products;
+  (prisma.product as any).count = async () => products.length;
+  (prisma as any).$transaction = async () => { transactions += 1; throw new Error("Unexpected write"); };
+  try {
+    const input = {
+      scope: "FILTERED" as const,
+      filters: { isActive: true },
+      wholesalePercent: 18,
+      existingPricePolicy: "FILL_EMPTY" as const,
+      reason: "Supplier update",
+      actorId: "actor-1",
+    };
+    const preview = await bulkUpdateProductPrices({ ...input, previewOnly: true, previewPageSize: 1 });
+    products = [...products, { ...baseProduct, id: "product-2", sku: "TEST-2", wholesalePrice: null }];
+    await assert.rejects(
+      bulkUpdateProductPrices({ ...input, expectedPreviewRevision: preview.previewRevision! }),
+      /changed since the preview/,
+    );
+    assert.equal(transactions, 0);
+  } finally {
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma.product as any).count = originalCount;
+    (prisma as any).$transaction = originalTransaction;
+  }
+});
+
+test("a price change during a protected update is reported per row without overwriting it", async () => {
+  const originalFindUnique = prisma.product.findUnique;
+  const originalFindMany = prisma.product.findMany;
+  const originalTransaction = prisma.$transaction;
+  let updateCalls = 0;
+  (prisma.product as any).findUnique = async () => ({ ...baseProduct });
+  (prisma.product as any).findMany = async () => [{ ...baseProduct }];
+  (prisma as any).$transaction = async (callback: any) => callback({
+    product: {
+      findUnique: async () => ({ ...baseProduct, retailPrice: 135 }),
+      updateMany: async () => { updateCalls += 1; return { count: 1 }; },
+    },
+    auditLog: { create: async () => ({}) },
+  });
+  try {
+    const input = {
+      scope: "IDS" as const,
+      updates: [{ productId: baseProduct.id, retailPrice: 140 }],
+      existingPricePolicy: "REPLACE" as const,
+      reason: "Supplier update",
+      actorId: "actor-1",
+    };
+    const preview = await bulkUpdateProductPrices({ ...input, previewOnly: true });
+    const result = await bulkUpdateProductPrices({ ...input, expectedPreviewRevision: preview.previewRevision! });
+    assert.equal(result.updatedCount, 0);
+    assert.equal(result.errorCount, 1);
+    assert.equal(result.errors[0]?.code, "PRICE_PREVIEW_STALE");
+    assert.equal(updateCalls, 0);
+  } finally {
+    (prisma.product as any).findUnique = originalFindUnique;
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma as any).$transaction = originalTransaction;
+  }
+});
+
+test("a protected price update compares current prices at the write boundary", async () => {
+  const originalFindUnique = prisma.product.findUnique;
+  const originalFindMany = prisma.product.findMany;
+  const originalTransaction = prisma.$transaction;
+  let rowAuditCalls = 0;
+  (prisma.product as any).findUnique = async () => ({ ...baseProduct });
+  (prisma.product as any).findMany = async () => [{ ...baseProduct }];
+  (prisma as any).$transaction = async (callback: any) => callback({
+    product: {
+      findUnique: async () => ({ ...baseProduct }),
+      updateMany: async ({ where }: any) => {
+        assert.equal(where.ratePerPiece, 100);
+        assert.equal(where.wholesalePrice, 120);
+        return { count: 0 }; // Another writer changed a price after our read.
+      },
+    },
+    auditLog: { create: async () => { rowAuditCalls += 1; return {}; } },
+  });
+  try {
+    const input = {
+      scope: "IDS" as const,
+      updates: [{ productId: baseProduct.id, retailPrice: 140 }],
+      existingPricePolicy: "REPLACE" as const,
+      reason: "Supplier update",
+      actorId: "actor-1",
+    };
+    const preview = await bulkUpdateProductPrices({ ...input, previewOnly: true });
+    const result = await bulkUpdateProductPrices({ ...input, expectedPreviewRevision: preview.previewRevision! });
+    assert.equal(result.updatedCount, 0);
+    assert.equal(result.errors[0]?.code, "PRICE_PREVIEW_STALE");
+    assert.equal(rowAuditCalls, 0);
+  } finally {
+    (prisma.product as any).findUnique = originalFindUnique;
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma as any).$transaction = originalTransaction;
+  }
+});
+
+test("a protected multi-product update reports committed and stale rows separately", async () => {
+  const originalFindUnique = prisma.product.findUnique;
+  const originalFindMany = prisma.product.findMany;
+  const originalTransaction = prisma.$transaction;
+  const originalAuditCreate = prisma.auditLog.create;
+  const products = [
+    { ...baseProduct },
+    { ...baseProduct, id: "product-2", sku: "TEST-2" },
+  ];
+  let rowAuditCalls = 0;
+  (prisma.product as any).findUnique = async ({ where }: any) => products.find((p) => p.id === where.id);
+  (prisma.product as any).findMany = async () => products;
+  (prisma as any).$transaction = async (callback: any) => callback({
+    product: {
+      findUnique: async ({ where }: any) => where.id === "product-2"
+        ? { ...products[1], ratePerPiece: 125 }
+        : { ...products[0] },
+      updateMany: async () => ({ count: 1 }),
+    },
+    auditLog: { create: async () => { rowAuditCalls += 1; return {}; } },
+  });
+  (prisma.auditLog as any).create = async () => ({});
+  try {
+    const input = {
+      scope: "IDS" as const,
+      updates: products.map((product) => ({ productId: product.id, retailPrice: 140 })),
+      existingPricePolicy: "REPLACE" as const,
+      reason: "Supplier update",
+      actorId: "actor-1",
+    };
+    const preview = await bulkUpdateProductPrices({ ...input, previewOnly: true });
+    const result = await bulkUpdateProductPrices({ ...input, expectedPreviewRevision: preview.previewRevision! });
+    assert.equal(result.updatedCount, 1);
+    assert.deepEqual(result.products.map((product) => product.id), ["product-1"]);
+    assert.equal(result.errorCount, 1);
+    assert.equal(result.errors[0]?.productId, "product-2");
+    assert.equal(result.errors[0]?.code, "PRICE_PREVIEW_STALE");
+    assert.equal(result.partialSuccess, true);
+    assert.equal(rowAuditCalls, 1);
+  } finally {
+    (prisma.product as any).findUnique = originalFindUnique;
+    (prisma.product as any).findMany = originalFindMany;
+    (prisma as any).$transaction = originalTransaction;
+    (prisma.auditLog as any).create = originalAuditCreate;
+  }
+});

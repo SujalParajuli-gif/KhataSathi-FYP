@@ -971,7 +971,13 @@ export async function bulkPriceUpdate(req: Request, res: Response) {
     if (req.body?.overrides !== undefined && !Array.isArray(req.body.overrides)) {
       throw new Error("Manual price adjustments are invalid.");
     }
+    const expectedPreviewRevision = req.body?.expectedPreviewRevision;
+    if (expectedPreviewRevision !== undefined &&
+      (typeof expectedPreviewRevision !== "string" || !/^[a-f0-9]{64}$/.test(expectedPreviewRevision))) {
+      throw new Error("Preview revision is invalid.");
+    }
     const result = await productService.bulkUpdateProductPrices({
+      expectedPreviewRevision,
       updates,
       scope,
       filters: req.body?.filters || undefined,
@@ -994,7 +1000,10 @@ export async function bulkPriceUpdate(req: Request, res: Response) {
     });
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err?.message || "Failed to update prices" });
+    res.status(err?.statusCode === 409 ? 409 : 400).json({
+      error: err?.message || "Failed to update prices",
+      ...(err?.code ? { code: err.code } : {}),
+    });
   }
 }
 
@@ -1365,6 +1374,7 @@ export async function saveReviewedBatchRows(req: Request, res: Response) {
     const status = Number(err?.statusCode || 0);
     res.status(status >= 400 && status < 500 ? status : 400).json({
       error: err?.message || "Failed to save reviewed rows",
+      ...(err?.code ? { code: err.code } : {}),
     });
   }
 }
@@ -1395,15 +1405,31 @@ export async function setImportBatchPriceMapping(req: Request, res: Response) {
       res.status(400).json({ error: "Price mapping is required." });
       return;
     }
+    if (req.body?.validateOnly !== undefined && typeof req.body.validateOnly !== "boolean") {
+      res.status(400).json({ error: "Mapping validation option is invalid." });
+      return;
+    }
+    if (req.body?.expectedReviewRevision !== undefined &&
+      (typeof req.body.expectedReviewRevision !== "string" ||
+        !/^[a-f0-9]{64}$/.test(req.body.expectedReviewRevision))) {
+      res.status(400).json({ error: "Review revision is invalid." });
+      return;
+    }
     const result = await productService.setProductImportPriceMapping({
       batchId: String(req.params.batchId),
       mapping,
       rowIds: Array.isArray(req.body?.rowIds) ? req.body.rowIds.map(String) : undefined,
       actorId: req.user!.id,
+      validateOnly: req.body?.validateOnly === true,
+      expectedReviewRevision: typeof req.body?.expectedReviewRevision === "string"
+        ? req.body.expectedReviewRevision : undefined,
     });
     res.json(result);
   } catch (err: any) {
-    res.status(400).json({ error: err?.message || "Failed to save extracted price mapping" });
+    res.status(err?.statusCode === 409 ? 409 : 400).json({
+      error: err?.message || "Failed to save extracted price mapping",
+      ...(err?.code ? { code: err.code } : {}),
+    });
   }
 }
 
