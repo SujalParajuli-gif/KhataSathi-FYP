@@ -3090,7 +3090,7 @@ function EmptyState({
   return (
     <div className="flex flex-col items-center justify-center rounded-[18px] border border-dashed border-slate-300 bg-white px-6 py-14 text-center">
       <div className="flex h-14 w-14 items-center justify-center rounded-[18px] bg-slate-100 text-slate-400">
-        <Icon name="package_search" sizePx={30} />
+        <Icon name={filtered ? "search_off" : "inventory_2"} sizePx={30} />
       </div>
       <div className="mt-4 text-[16px] font-black text-slate-950">
         {filtered ? "No matching products" : "No products in the catalog"}
