@@ -574,6 +574,15 @@ export default function ProductsPage() {
   const [bulkPriceTouched, setBulkPriceTouched] = useState(false);
   const [confirmDiscardBulkPrice, setConfirmDiscardBulkPrice] = useState(false);
   const [confirmBulkPriceSave, setConfirmBulkPriceSave] = useState(false);
+  const [bulkPriceResult, setBulkPriceResult] = useState<{
+    updatedCount: number;
+    skippedCount: number;
+    errorCount: number;
+    errors: Array<{ productId: string; message: string; code?: string }>;
+    products: Array<{ id: string; name: string; sku: string }>;
+    isPartialSuccess: boolean;
+    auditWarning: string | null;
+  } | null>(null);
   const [mobileStep1Tab, setMobileStep1Tab] = useState<"formula" | "products">("formula");
   const [explicitAdjustedIds, setExplicitAdjustedIds] = useState<Record<string, boolean>>({});
   const [showMobileDetails, setShowMobileDetails] = useState(false);
@@ -732,6 +741,7 @@ export default function ProductsPage() {
     skippedComingSoon: 0,
     skippedExisting: 0,
   });
+  const [bulkPricePreviewRevision, setBulkPricePreviewRevision] = useState<string | null>(null);
 
   const sampleFilteredProducts = useMemo(() => {
     return filteredPreviewItems.map((item) => ({
@@ -757,9 +767,10 @@ export default function ProductsPage() {
   const filteredPreviewRequestIdRef = React.useRef(0);
 
   const [bulkPriceStep1Page, setBulkPriceStep1Page] = useState(1);
-  const BULK_PRICE_STEP1_PAGE_SIZE = 10;
+  const BULK_PRICE_STEP1_PAGE_SIZE = 20;
   const [bulkPriceStep2Page, setBulkPriceStep2Page] = useState(1);
   const [bulkPriceStep2PageSize, setBulkPriceStep2PageSize] = useState(25);
+  const [bulkPricePreviewFilter, setBulkPricePreviewFilter] = useState<"ALL" | "READY" | "PRESERVED">("ALL");
   const percentageIsValid = (value: number) =>
     value > 0 && (priceChangeDirection === "DECREASE" ? value < 100 : value <= 100);
   const priceMarginsValid =
@@ -2953,6 +2964,7 @@ export default function ProductsPage() {
     // Search requests may finish out of order on slower networks. Only the most
     // recent response may replace the visible catalog preview.
     if (requestId !== filteredPreviewRequestIdRef.current) return result;
+    setBulkPricePreviewRevision(result.previewRevision || null);
     setFilteredPreviewItems(result.preview || []);
     setFilteredPreviewLoaded(true);
     setFilteredPreviewStats({
@@ -3664,6 +3676,25 @@ export default function ProductsPage() {
       } finally {
         setPriceBusy(false);
       }
+    } else {
+      try {
+        setPriceBusy(true);
+        const result = await bulkUpdateProductPricesApi({
+          reason: priceReason.trim() || "Preview",
+          scope: "IDS" as const,
+          updates,
+          existingPricePolicy: bulkPriceMode === "MANUAL" ? "REPLACE" : existingSellingPricePolicy,
+          previewOnly: true,
+        });
+        setBulkPricePreviewRevision(result.previewRevision || null);
+      } catch (error: any) {
+        const message = error?.response?.data?.error || error?.message || "The latest prices could not be checked.";
+        setBulkPriceNotice({ tone: "danger", message });
+        toastMsg("danger", message);
+        return;
+      } finally {
+        setPriceBusy(false);
+      }
     }
 
     setBulkPriceNotice(null);
@@ -3673,10 +3704,17 @@ export default function ProductsPage() {
 
   async function confirmBulkPriceUpdate() {
     const updates = buildBulkPriceUpdates();
+    if (!bulkPricePreviewRevision) {
+      const message = "The price preview is no longer available. Preview the latest prices before saving.";
+      setBulkPriceNotice({ tone: "danger", message });
+      setConfirmBulkPriceSave(false);
+      return;
+    }
     try {
       setPriceBusy(true);
       const result = await bulkUpdateProductPricesApi({
         reason: priceReason.trim(),
+        expectedPreviewRevision: bulkPricePreviewRevision,
         ...(isFilteredSelection
           ? {
               scope: "FILTERED" as const,
@@ -3690,37 +3728,38 @@ export default function ProductsPage() {
           : { scope: "IDS" as const, updates }),
         existingPricePolicy: bulkPriceMode === "MANUAL" ? "REPLACE" : existingSellingPricePolicy,
       });
-      toastMsg(
-        result.errorCount > 0 || result.updatedCount === 0 || Boolean(result.auditWarning) ? "info" : "success",
-        result.auditWarning
-          ? `${result.updatedCount} product${result.updatedCount === 1 ? "" : "s"} updated. ${result.auditWarning}`
-          : result.errorCount > 0
-          ? `${result.updatedCount} product${result.updatedCount === 1 ? "" : "s"} updated; ${result.errorCount} could not be updated. ${result.errors[0]?.message || "Review the selected products and try again."}`
-          : result.updatedCount === 0
-            ? `No prices were changed. ${result.skippedComingSoon + result.skippedMissingRate ? `${result.skippedComingSoon + result.skippedMissingRate} product${result.skippedComingSoon + result.skippedMissingRate === 1 ? " is" : "s are"} Coming soon or have no Rate.` : "The selected prices may already be filled."}`
-            : `${result.updatedCount} product${result.updatedCount === 1 ? "" : "s"} updated.`,
-      );
       setConfirmBulkPriceSave(false);
-      if (result.updatedCount === 0) {
-        setBulkPriceNotice({
-          tone: "danger",
-          message: result.errors[0]?.message
-            ? `No prices were changed. ${result.errors[0].message}`
-            : `No prices were changed. ${result.skippedComingSoon + result.skippedMissingRate ? "Some products are Coming soon or have no Rate." : "The selected prices may already be filled or unchanged."}`,
-        });
-        return;
-      }
       setBulkPriceTouched(false);
       setOpenBulkPrice(false);
       clearBulkSelection();
-      await loadProducts();
+      setBulkPriceResult({
+        updatedCount: result.updatedCount,
+        skippedCount: result.skippedComingSoon + result.skippedMissingRate + result.skippedExisting,
+        errorCount: result.errorCount,
+        errors: result.errors || [],
+        products: result.products || [],
+        isPartialSuccess: result.partialSuccess,
+        auditWarning: result.auditWarning || null,
+      });
+      await refreshProductsAfterSavedMutation();
     } catch (error: any) {
+      if (error?.response?.status === 409 && error?.response?.data?.code === "PRICE_PREVIEW_STALE") {
+        setBulkPriceNotice({ tone: "danger", message: "Prices were updated by another action while you were reviewing. Please preview again with the latest data." });
+        setConfirmBulkPriceSave(false);
+        setBulkPricePreviewRevision(null);
+        await refreshProductsAfterSavedMutation();
+        return;
+      }
       const message = error?.response?.data?.error || error?.message || "Failed to update prices.";
       setBulkPriceNotice({ tone: "danger", message });
       toastMsg(
         "danger",
         message,
       );
+      // On timeout or unknown error, we should refresh products
+      if (error?.message?.toLowerCase().includes("timeout")) {
+        await refreshProductsAfterSavedMutation();
+      }
     } finally {
       setPriceBusy(false);
     }
@@ -5017,7 +5056,7 @@ export default function ProductsPage() {
                   </div>
                 )}
               </div>
-              
+
               <div className="flex items-center gap-[8px]">
                 <div className="text-[12px] font-bold text-[#565449]">Apply qty to all:</div>
                 <input
@@ -5181,20 +5220,37 @@ export default function ProductsPage() {
 
                                                       <ModalFrame
         open={openBulkPrice}
-        title={bulkPriceMode === "MANUAL" ? "Enter exact selling prices" : "Set selling prices"}
+        title={confirmBulkPriceSave ? "Confirm price update" : bulkPriceMode === "MANUAL" ? "Enter exact selling prices" : "Set selling prices"}
         description={
-          bulkPriceMode === "MANUAL"
+          confirmBulkPriceSave
+            ? "Review catalog updates before saving."
+            : bulkPriceMode === "MANUAL"
             ? "Select products to edit and review proposed changes before saving."
             : "Calculate selling prices from each product's Rate, then adjust exceptions before saving."
         }
         descriptionClassName="hidden lg:block"
         onClose={requestCloseBulkPrice}
-        maxWidthClass="max-w-[1240px]"
-        dialogClassName="lg:h-[820px] lg:max-h-[calc(100vh-32px)] flex flex-col"
+        maxWidthClass="max-w-[1100px]"
+        dialogClassName={`flex flex-col lg:max-h-[calc(100vh-32px)] ${confirmBulkPriceSave && bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "lg:h-auto" : "lg:h-[820px]"}`}
         bodyClassName="flex-1 min-h-0 flex flex-col p-3 sm:p-4 lg:p-4 overflow-hidden"
         mobileFullScreen
         footer={
-          !pricePreviewReady ? (
+          confirmBulkPriceSave ? (
+            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
+              <DialogButton onClick={() => setConfirmBulkPriceSave(false)} disabled={priceBusy}>
+                ← Back to preview
+              </DialogButton>
+              <button
+                type="button"
+                onClick={confirmBulkPriceUpdate}
+                disabled={priceBusy}
+                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40 sm:min-w-[220px]"
+              >
+                <Icon name="sell" sizePx={15} />
+                <span>{priceBusy ? "Updating..." : `Confirm updates (${bulkPriceImpactAnalytics.affectedCount.toLocaleString()})`}</span>
+              </button>
+            </div>
+          ) : !pricePreviewReady ? (
             <div className="flex w-full items-center justify-between gap-3">
               <DialogButton onClick={requestCloseBulkPrice}>Cancel</DialogButton>
               <button
@@ -5203,11 +5259,11 @@ export default function ProductsPage() {
                 disabled={priceBusy || (!isFilteredSelection && priceMarginTargetCount === 0)}
                 className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
               >
-                <Icon name={bulkPriceMode === "MANUAL" ? "edit" : "calculate"} sizePx={15} />
+                <Icon name="calculate" sizePx={15} />
                 <span>
                   {bulkPriceMode === "MANUAL"
                     ? "Review selected prices"
-                    : `Calculate preview for ${isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()} items`} →
+                    : `Calculate preview for ${isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()} ${((isFilteredSelection ? selectedCount : priceMarginTargetCount) === 1) ? "product" : "products"}`} →
                 </span>
               </button>
             </div>
@@ -5236,45 +5292,53 @@ export default function ProductsPage() {
       >
         <div className="flex flex-col h-full min-h-0 gap-2">
           {/* TOP BAR: CLEAN STEPPER BREADCRUMB & COMPACT MODE SEGMENT */}
-          <div className="flex items-center justify-between gap-2 shrink-0 border-b border-[#E5E7EB] pb-2">
+          <div className="flex shrink-0 flex-col items-start gap-2 border-b border-[#E5E7EB] pb-2 sm:flex-row sm:items-center sm:justify-between">
             {/* Minimalist Workflow Stepper (Not buttons!) */}
-            <div className="flex items-center gap-2 text-[11.5px] font-bold" aria-label="Workflow steps">
-              {!pricePreviewReady ? (
-                <div className="flex items-center gap-1.5 text-[#11120d]">
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-[#11120d] text-white text-[10px] font-black">
-                    1
-                  </span>
-                  <span>1. Configure</span>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  onClick={() => setPricePreviewReady(false)}
-                  className="flex items-center gap-1.5 text-blue-700 hover:text-blue-900 transition touch-manipulation"
-                  title="Return to configure step"
-                >
-                  <span className="flex h-5 w-5 items-center justify-center rounded-full bg-blue-100 text-blue-800 text-[10px] font-black">
-                    ✓
-                  </span>
-                  <span>1. Configure</span>
-                </button>
-              )}
-
-              <span className="text-slate-300 font-bold">/</span>
-
-              <div className={`flex items-center gap-1.5 ${pricePreviewReady ? "text-[#11120d]" : "text-slate-400"}`}>
-                <span className={`flex h-5 w-5 items-center justify-center rounded-full text-[10px] font-black ${
-                  pricePreviewReady ? "bg-[#11120d] text-white" : "bg-slate-100 text-slate-400"
-                }`}>
-                  2
+            <div className="flex items-center gap-2 sm:gap-4 text-[11px] font-bold" aria-label="Workflow steps">
+              {/* Step 1 */}
+              <button
+                type="button"
+                onClick={() => { if(pricePreviewReady) { setPricePreviewReady(false); setConfirmBulkPriceSave(false); } }}
+                className={`flex items-center gap-1.5 sm:gap-2 transition ${!pricePreviewReady ? "text-[#11120d]" : "text-slate-500 hover:text-slate-700"}`}
+              >
+                <span className={`flex h-5 w-5 sm:h-6 sm:w-6 items-center justify-center rounded-full text-[10px] sm:text-[11px] font-black ${!pricePreviewReady ? "bg-[#11120d] text-white" : "bg-slate-100"}`}>
+                  {!pricePreviewReady ? "1" : "✓"}
                 </span>
-                <span>2. Preview & Edit</span>
+                <span className="hidden sm:inline">Config</span>
+                <span className="sm:hidden">Config</span>
+              </button>
+
+              <div className="h-[1px] w-4 sm:w-8 bg-slate-200"></div>
+
+              {/* Step 2 */}
+              <button
+                type="button"
+                disabled={!pricePreviewReady && !confirmBulkPriceSave}
+                onClick={() => { if(confirmBulkPriceSave) setConfirmBulkPriceSave(false); }}
+                className={`flex items-center gap-1.5 sm:gap-2 transition ${(pricePreviewReady && !confirmBulkPriceSave) ? "text-[#11120d]" : "text-slate-500"} ${confirmBulkPriceSave ? "hover:text-slate-700" : ""}`}
+              >
+                <span className={`flex h-5 w-5 sm:h-6 sm:w-6 items-center justify-center rounded-full text-[10px] sm:text-[11px] font-black ${(pricePreviewReady && !confirmBulkPriceSave) ? "bg-[#11120d] text-white" : "bg-slate-100"}`}>
+                  {confirmBulkPriceSave ? "✓" : "2"}
+                </span>
+                <span className="hidden sm:inline">Preview</span>
+                <span className="sm:hidden">Preview</span>
+              </button>
+
+              <div className="h-[1px] w-4 sm:w-8 bg-slate-200"></div>
+
+              {/* Step 3 */}
+              <div className={`flex items-center gap-1.5 sm:gap-2 ${confirmBulkPriceSave ? "text-[#11120d]" : "text-slate-400"}`}>
+                <span className={`flex h-5 w-5 sm:h-6 sm:w-6 items-center justify-center rounded-full text-[10px] sm:text-[11px] font-black ${confirmBulkPriceSave ? "bg-[#11120d] text-white" : "bg-slate-100 text-slate-400"}`}>
+                  3
+                </span>
+                <span className="hidden sm:inline">Review</span>
+                <span className="sm:hidden">Review</span>
               </div>
-            </div>
+              </div>
 
             {/* Mode Segmented Control (Compact capsule, not action buttons!) */}
             {!pricePreviewReady ? (
-              <div className="inline-flex rounded-lg border border-slate-200 bg-slate-100 p-0.5 shrink-0">
+              <div className="inline-flex shrink-0 self-end rounded-lg border border-slate-200 bg-slate-100 p-0.5 sm:self-auto">
                 <button
                   type="button"
                   onClick={() => { setBulkPriceMode("CALCULATE"); setBulkPriceNotice(null); setBulkPriceTouched(true); setExplicitAdjustedIds({}); }}
@@ -5360,7 +5424,7 @@ export default function ProductsPage() {
           )}
 
           {/* Notice Alert Banner */}
-          {bulkPriceNotice && bulkPriceNotice.tone !== "info" && (!pricePreviewReady || bulkPriceNotice.tone === "danger") ? (
+          {bulkPriceNotice && bulkPriceNotice.tone !== "info" && (!pricePreviewReady || bulkPriceNotice.tone === "danger") && !(!isFilteredSelection && bulkPriceNotice.tone === "success") ? (
             <div role="status" className={`shrink-0 rounded-[8px] border px-2.5 py-1 text-[11px] font-bold leading-5 ${
               bulkPriceNotice.tone === "danger"
                 ? "border-rose-200 bg-rose-50 text-rose-800"
@@ -5371,7 +5435,157 @@ export default function ProductsPage() {
           ) : null}
 
           {/* STEP 1: CONFIGURE VIEW */}
-          {!pricePreviewReady ? (
+          {confirmBulkPriceSave ? (
+        <div className={`flex flex-col gap-3 py-1 text-xs ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "flex-none overflow-y-auto" : "min-h-0 flex-1 overflow-hidden"}`}>
+          {/* 4 Impact Analytics KPI Cards */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
+            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">To Update</div>
+              <div className="mt-0.5 text-[17px] font-black tabular-nums text-blue-800">
+                {bulkPriceImpactAnalytics.affectedCount.toLocaleString()}
+              </div>
+            </div>
+
+            <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] p-2 text-center sm:text-left">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Preserved</div>
+              <div className="mt-0.5 text-[17px] font-black tabular-nums text-[#565449]">
+                {bulkPriceImpactAnalytics.preservedCount.toLocaleString()}
+              </div>
+            </div>
+
+            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">Wholesale Rule</div>
+              <div className="mt-0.5 text-[13px] font-black text-blue-900">
+                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateWholesalePrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${wholesaleMarginPercent}%` : "Unchanged"}
+              </div>
+            </div>
+
+            <div className="rounded-[9px] border border-purple-200 bg-purple-50 p-2 text-center sm:text-left">
+              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-purple-700">Retail Rule</div>
+              <div className="mt-0.5 text-[13px] font-black text-purple-900">
+                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateRetailPrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${retailMarginPercent}%` : "Unchanged"}
+              </div>
+            </div>
+          </div>
+
+          {/* Affected Products Review Table */}
+          <div className={`flex flex-col overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-white ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "flex-none" : "min-h-0 flex-1"}`}>
+            <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 flex items-center justify-between">
+              <div className="flex items-center gap-1.5">
+                <Icon name="list_alt" sizePx={14} className="text-blue-600" />
+                <span className="text-[12px] font-extrabold text-[#11120d]">
+                  {isFilteredSelection ? "Preview sample" : "Affected products"} ({bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} shown)
+                </span>
+              </div>
+            </div>
+
+            <div className={`divide-y divide-[#E5E7EB] overflow-y-auto ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "max-h-[min(45vh,400px)]" : "min-h-0 flex-1"}`}>
+              {bulkPriceImpactAnalytics.affectedItems.slice(0, 50).map((item) => (
+                <div key={item.id} className="p-2.5 flex flex-col gap-2.5 hover:bg-[#F8FAFC] transition sm:flex-row sm:items-center sm:justify-between">
+                  <div className="min-w-0 flex-1">
+                    <div className="truncate font-extrabold text-[12px] text-[#11120d]">{item.name}</div>
+                    <div className="text-[10px] text-[#8C8889]">
+                      SKU: {item.sku || "None"} · Rate: <span className="font-semibold text-[#565449]">{Number(item.rate) > 0 ? `NPR ${item.rate}` : "Not set"}</span>
+                    </div>
+                  </div>
+
+                  <div className="grid w-full grid-cols-1 gap-2 text-left sm:w-auto sm:grid-cols-2 sm:text-right">
+                    {item.wholesaleChanged && item.newWholesale !== null ? (
+                      <div className="rounded-md bg-blue-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
+                        <span className="text-[9px] font-bold text-blue-700 block uppercase">Wholesale</span>
+                        <div className="flex items-center gap-1 font-bold">
+                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
+                            {item.oldWholesale !== null ? `NPR ${item.oldWholesale}` : "None"}
+                          </span>
+                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
+                          <span className="text-blue-700 tabular-nums font-black">NPR {item.newWholesale}</span>
+                          {item.wholesaleDelta !== null ? (
+                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.wholesaleDelta >= 0 ? "bg-blue-50 text-blue-700" : "bg-rose-50 text-rose-700"}`}>
+                              {item.wholesaleDelta >= 0 ? "+" : ""}{item.wholesaleDelta.toFixed(1)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+
+                    {item.retailChanged && item.newRetail !== null ? (
+                      <div className="rounded-md bg-purple-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
+                        <span className="text-[9px] font-bold text-purple-700 block uppercase">Retail</span>
+                        <div className="flex items-center gap-1 font-bold">
+                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
+                            {item.oldRetail !== null ? `NPR ${item.oldRetail}` : "None"}
+                          </span>
+                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
+                          <span className="text-purple-700 tabular-nums font-black">NPR {item.newRetail}</span>
+                          {item.retailDelta !== null ? (
+                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.retailDelta >= 0 ? "bg-purple-50 text-purple-700" : "bg-rose-50 text-rose-700"}`}>
+                              {item.retailDelta >= 0 ? "+" : ""}{item.retailDelta.toFixed(1)}
+                            </span>
+                          ) : null}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                </div>
+              ))}
+
+              {bulkPriceImpactAnalytics.affectedItems.length === 0 ? (
+                <div className="p-5 text-center text-[11px] font-semibold text-[#8C8889]">
+                  No products have changed values. Existing prices will be kept.
+                </div>
+              ) : isFilteredSelection && bulkPriceImpactAnalytics.affectedCount > bulkPriceImpactAnalytics.affectedItems.length ? (
+                <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
+                  Showing {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} products from this preview. {bulkPriceImpactAnalytics.affectedCount.toLocaleString()} products will be updated.
+                </div>
+              ) : bulkPriceImpactAnalytics.affectedItems.length > 50 ? (
+                <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
+                  Showing the first 50 of {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} affected products.
+                </div>
+              ) : null}
+            </div>
+          </div>
+
+          {/* Audit Record Card */}
+          <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
+            <label htmlFor="bulk-price-reason-combobox-confirm" className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1 shrink-0">
+              <Icon name="verified" sizePx={14} className="text-blue-600" />
+              Audit reason <span className="text-rose-600">*</span>
+            </label>
+            <div className="w-full sm:max-w-[400px]">
+              <CreatableCombobox
+                compact
+                inputRef={priceReasonRef}
+                value={priceReason}
+                onChange={(val) => {
+                  setPriceReason(val);
+                  setBulkPriceTouched(true);
+                  if (bulkPriceErrors.reason) setBulkPriceErrors((c) => ({ ...c, reason: undefined }));
+                  if (bulkPriceNotice?.message?.includes("Enter a reason")) setBulkPriceNotice(null);
+                }}
+                options={[
+                  "Supplier Rate changed",
+                  "Market price changed",
+                  "Seasonal price adjustment",
+                  "Promotion ended",
+                  "Correcting an entry mistake",
+                  "Management-approved price review",
+                ]}
+                placeholder="Choose or type a reason..."
+                ariaLabel="Price update audit reason"
+                allowCreate
+                required
+                invalid={Boolean(bulkPriceErrors.reason)}
+              />
+              {bulkPriceErrors.reason ? (
+                <p className="mt-1 text-[10.5px] font-bold text-[#BE123C] flex items-center gap-1" role="alert">
+                  <Icon name="error" sizePx={13} />
+                  {bulkPriceErrors.reason}
+                </p>
+              ) : null}
+            </div>
+          </div>
+        </div>
+          ) : !pricePreviewReady ? (
             bulkPriceMode === "MANUAL" ? (
               /* MANUAL MODE: FULL-WIDTH CLEAN PRODUCT SELECTOR */
               <div className="w-full flex-1 min-h-0 flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden">
@@ -5392,7 +5606,7 @@ export default function ProductsPage() {
                       <button
                         type="button"
                         onClick={() => setVisiblePriceMarginTargets(false)}
-                        className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[10.5px] font-bold text-[#565449] hover:bg-slate-50 touch-manipulation"
+                        className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[12.5px] font-bold text-[#565449] hover:bg-slate-50 touch-manipulation"
                       >
                         Clear all
                       </button>
@@ -5448,7 +5662,7 @@ export default function ProductsPage() {
                     return (
                       <label
                         key={product.id}
-                        className={`flex min-h-[48px] cursor-pointer items-center justify-between gap-2.5 px-3 py-1.5 hover:bg-[#F8FAFC] transition touch-manipulation select-none ${
+                        className={`flex min-h-[48px] cursor-pointer items-center justify-between gap-2.5 px-3 py-3 hover:bg-[#F8FAFC] transition touch-manipulation select-none ${
                           isChecked ? "bg-slate-50/50" : ""
                         }`}
                       >
@@ -5465,7 +5679,7 @@ export default function ProductsPage() {
                           />
                           <div className="min-w-0 flex-1">
                             <div className="flex items-center gap-1.5 flex-wrap">
-                              <span className="truncate text-[12px] font-extrabold text-[#11120d]">{product.name}</span>
+                              <span className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</span>
                               {isComingSoon ? (
                                 <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-amber-800">Coming soon</span>
                               ) : hasNoRate ? (
@@ -5479,16 +5693,16 @@ export default function ProductsPage() {
                         </div>
 
                         <div className="flex items-center gap-3 shrink-0 text-right">
-                          <div className="text-[10.5px] font-bold text-[#565449]">
-                            <span className="text-[9px] text-[#8C8889] block">Rate</span>
+                          <div className="text-[12.5px] font-bold text-[#565449]">
+                            <span className="text-[10px] text-[#8C8889] block">Rate</span>
                             <span className="tabular-nums text-[#11120d]">{product.ratePerPiece ? `NPR ${product.ratePerPiece}` : "None"}</span>
                           </div>
-                          <div className="text-[10.5px] font-bold text-blue-700 hidden sm:block">
-                            <span className="text-[9px] text-[#8C8889] block">Wholesale</span>
+                          <div className="text-[12.5px] font-bold text-blue-700">
+                            <span className="text-[10px] text-[#8C8889] block">Wholesale</span>
                             <span className="tabular-nums">{product.wholesalePrice ? `NPR ${product.wholesalePrice}` : "None"}</span>
                           </div>
-                          <div className="text-[10.5px] font-bold text-purple-700 hidden sm:block">
-                            <span className="text-[9px] text-[#8C8889] block">Retail</span>
+                          <div className="text-[12.5px] font-bold text-purple-700">
+                            <span className="text-[10px] text-[#8C8889] block">Retail</span>
                             <span className="tabular-nums">{product.retailPrice ? `NPR ${product.retailPrice}` : "None"}</span>
                           </div>
                         </div>
@@ -5500,10 +5714,9 @@ export default function ProductsPage() {
                       No selected products match this search.
                     </div>
                   ) : null}
-                </div>
 
-                {/* Pagination Footer */}
-                <div className="border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 text-[10.5px] font-semibold text-[#6B7280] flex items-center justify-between shrink-0">
+                  {/* Pagination Footer (now scrolls with content) */}
+                  <div className="border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 text-[10.5px] font-semibold text-[#6B7280] flex items-center justify-between shrink-0 mt-auto">
                   <span>
                     Showing <strong className="text-[#11120d]">{step1Items.length === 0 ? 0 : (activeStep1Page - 1) * BULK_PRICE_STEP1_PAGE_SIZE + 1}–{Math.min(step1Items.length, activeStep1Page * BULK_PRICE_STEP1_PAGE_SIZE)}</strong> of <strong className="text-[#11120d]">{step1Items.length}</strong>
                   </span>
@@ -5532,6 +5745,7 @@ export default function ProductsPage() {
                       </button>
                     </div>
                   ) : null}
+                </div>
                 </div>
               </div>
             ) : (
@@ -5573,7 +5787,7 @@ export default function ProductsPage() {
                   {/* 1. Price Direction: Emerald (Markup) vs Amber (Markdown) */}
                   <section className="rounded-[11px] border border-slate-200 bg-slate-50/60 p-2.5 shrink-0">
                     <div className="mb-1.5 flex items-center justify-between gap-1.5">
-                      <span className="text-[11.5px] font-extrabold text-[#11120d] flex items-center gap-1">
+                      <span className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1">
                         <Icon name="trending_up" sizePx={14} className="text-slate-500" />
                         1. Price Direction
                       </span>
@@ -5613,7 +5827,7 @@ export default function ProductsPage() {
 
                   {/* 2. Target Price Tiers: Wholesale (Blue) & Retail (Purple) */}
                   <section className="rounded-[11px] border border-slate-200 bg-slate-50/60 p-2.5 shrink-0">
-                    <span className="text-[11.5px] font-extrabold text-[#11120d] flex items-center gap-1">
+                    <span className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1">
                       <Icon name="layers" sizePx={14} className="text-slate-500" />
                       2. Target Tiers
                     </span>
@@ -5623,7 +5837,7 @@ export default function ProductsPage() {
                         updateWholesalePrice ? "border-blue-300 bg-blue-50/25 shadow-2xs" : "border-slate-200 bg-white opacity-60"
                       }`}>
                         <label className="flex items-center justify-between cursor-pointer select-none">
-                          <span className="flex items-center gap-1.5 text-[11.5px] font-extrabold text-[#11120d]">
+                          <span className="flex items-center gap-1.5 text-[13px] font-extrabold text-[#11120d]">
                             <input
                               type="checkbox"
                               checked={updateWholesalePrice}
@@ -5654,7 +5868,7 @@ export default function ProductsPage() {
                         updateRetailPrice ? "border-purple-300 bg-purple-50/25 shadow-2xs" : "border-slate-200 bg-white opacity-60"
                       }`}>
                         <label className="flex items-center justify-between cursor-pointer select-none">
-                          <span className="flex items-center gap-1.5 text-[11.5px] font-extrabold text-[#11120d]">
+                          <span className="flex items-center gap-1.5 text-[13px] font-extrabold text-[#11120d]">
                             <input
                               type="checkbox"
                               checked={updateRetailPrice}
@@ -5689,7 +5903,7 @@ export default function ProductsPage() {
 
                   {/* 3. Existing Price Policy: Emerald (Safe) & Amber (Overwrite) */}
                   <section className="rounded-[11px] border border-slate-200 bg-slate-50/60 p-2.5 shrink-0">
-                    <span className="text-[11.5px] font-extrabold text-[#11120d] flex items-center gap-1">
+                    <span className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1">
                       <Icon name="policy" sizePx={14} className="text-slate-500" />
                       3. Existing Price Policy
                     </span>
@@ -5881,7 +6095,7 @@ export default function ProductsPage() {
                           return (
                             <label
                               key={product.id}
-                              className={`flex min-h-[48px] cursor-pointer items-center justify-between gap-2.5 px-3 py-1.5 hover:bg-[#F8FAFC] transition touch-manipulation select-none ${
+                              className={`flex min-h-[48px] cursor-pointer items-center justify-between gap-2.5 px-3 py-3 hover:bg-[#F8FAFC] transition touch-manipulation select-none ${
                                 isChecked ? "bg-slate-50/50" : "opacity-60 bg-rose-50/20"
                               }`}
                             >
@@ -5913,7 +6127,7 @@ export default function ProductsPage() {
                                 />
                                 <div className="min-w-0 flex-1">
                                   <div className="flex items-center gap-1.5 flex-wrap">
-                                    <span className="truncate text-[12px] font-extrabold text-[#11120d]">{product.name}</span>
+                                    <span className="truncate text-[13px] font-extrabold text-[#11120d]">{product.name}</span>
                                     {isComingSoon ? (
                                       <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-amber-800">Coming soon</span>
                                     ) : hasNoRate ? (
@@ -5927,12 +6141,12 @@ export default function ProductsPage() {
                               </div>
 
                               <div className="flex items-center gap-3 shrink-0 text-right">
-                                <div className="text-[10.5px] font-bold text-[#565449]">
-                                  <span className="text-[9px] text-[#8C8889] block">Rate</span>
+                                <div className="text-[12.5px] font-bold text-[#565449]">
+                                  <span className="text-[10px] text-[#8C8889] block">Rate</span>
                                   <span className="tabular-nums text-[#11120d]">{product.ratePerPiece ? `NPR ${product.ratePerPiece}` : "None"}</span>
                                 </div>
-                                <div className="text-[10.5px] font-bold text-blue-700 hidden sm:block">
-                                  <span className="text-[9px] text-[#8C8889] block">Wholesale</span>
+                                <div className="text-[12.5px] font-bold text-blue-700">
+                                  <span className="text-[10px] text-[#8C8889] block">Wholesale</span>
                                   <span className="tabular-nums">
                                     {calculatedWholesale && isChecked ? (
                                       <strong className="font-extrabold text-blue-700">NPR {calculatedWholesale}</strong>
@@ -5943,8 +6157,8 @@ export default function ProductsPage() {
                                     )}
                                   </span>
                                 </div>
-                                <div className="text-[10.5px] font-bold text-purple-700 hidden sm:block">
-                                  <span className="text-[9px] text-[#8C8889] block">Retail</span>
+                                <div className="text-[12.5px] font-bold text-purple-700">
+                                  <span className="text-[10px] text-[#8C8889] block">Retail</span>
                                   <span className="tabular-nums">
                                     {calculatedRetail && isChecked ? (
                                       <strong className="font-extrabold text-purple-700">NPR {calculatedRetail}</strong>
@@ -5965,9 +6179,8 @@ export default function ProductsPage() {
                           No products match this search.
                         </div>
                       ) : null}
-                    </div>
 
-                    {/* Pagination Footer */}
+                      {/* Pagination Footer (now scrolls with content) */}
                     <div className="border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 text-[10.5px] font-semibold text-[#6B7280] flex items-center justify-between shrink-0">
                       <span>
                         Showing <strong className="text-[#11120d]">{step1TotalCount === 0 ? 0 : (activeStep1Page - 1) * BULK_PRICE_STEP1_PAGE_SIZE + 1}–{Math.min(step1TotalCount, activeStep1Page * BULK_PRICE_STEP1_PAGE_SIZE)}</strong> of <strong className="text-[#11120d]">{step1TotalCount.toLocaleString()}</strong>
@@ -6018,6 +6231,7 @@ export default function ProductsPage() {
                         </div>
                       ) : null}
                     </div>
+                    </div>
                   </section>
                 </div>
               </div>
@@ -6025,7 +6239,7 @@ export default function ProductsPage() {
           ) : null}
 
           {/* STEP 2: PREVIEW & EDIT VIEW */}
-          {pricePreviewReady ? (
+          {pricePreviewReady && !confirmBulkPriceSave ? (
             <div className="flex-1 min-h-0 flex flex-col gap-2">
               {/* DESKTOP VIEW (lg:flex) */}
               <div className="hidden lg:flex flex-1 min-h-0 flex-col gap-2">
@@ -6066,21 +6280,14 @@ export default function ProductsPage() {
                           <span>Sort</span>
                           {bulkPriceSort !== "affected_first" ? <span className="h-1.5 w-1.5 rounded-full bg-blue-600" /> : null}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setPricePreviewReady(false)}
-                          className="inline-flex h-7.5 items-center justify-center gap-1 rounded-[7px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation shrink-0"
-                        >
-                          <Icon name="arrow_back" sizePx={13} />
-                          <span>Modify</span>
-                        </button>
+
                       </div>
                     </div>
 
                     <div className="relative flex-1 min-h-0 overflow-y-auto">
                       <table className="w-full text-[12.5px]">
                         <thead className="bg-[#F8FAFC] sticky top-0 z-10 border-b border-[#E5E7EB]">
-                          <tr className="text-[10px] font-extrabold uppercase tracking-wide text-[#8C8889]">
+                          <tr className="text-[11px] font-extrabold uppercase tracking-wide text-[#8C8889]">
                             {/* Product Name First! */}
                             <th className="text-left py-2 px-3 font-bold min-w-[200px]">Product Name</th>
                             <th className="text-center py-2 px-2.5 font-bold">Rate</th>
@@ -6151,10 +6358,10 @@ export default function ProductsPage() {
                                       inputMode="decimal"
                                       value={filteredPriceOverrides[item.productId]?.wholesalePrice ?? ""}
                                       onChange={(e) => updateFilteredPriceOverride(item.productId, "wholesalePrice", e.target.value)}
-                                      className="h-7.5 w-[100px] rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-blue-600"
+                                      className="h-8 w-[120px] rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[13px] font-bold tabular-nums outline-none focus:border-blue-600"
                                     />
                                   ) : item.newWholesalePrice !== null ? (
-                                    <span className="inline-block rounded-[5px] border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11.5px] font-extrabold text-blue-800 tabular-nums">
+                                    <span className="inline-block rounded-[5px] border border-blue-200 bg-blue-50 px-2 py-0.5 text-[13px] font-extrabold text-blue-800 tabular-nums">
                                       NPR {item.newWholesalePrice}
                                     </span>
                                   ) : (
@@ -6171,10 +6378,10 @@ export default function ProductsPage() {
                                       inputMode="decimal"
                                       value={filteredPriceOverrides[item.productId]?.retailPrice ?? ""}
                                       onChange={(e) => updateFilteredPriceOverride(item.productId, "retailPrice", e.target.value)}
-                                      className="h-7.5 w-[100px] rounded-[6px] border border-purple-300 bg-purple-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-purple-600"
+                                      className="h-8 w-[120px] rounded-[6px] border border-purple-300 bg-purple-50/50 px-2 text-center text-[13px] font-bold tabular-nums outline-none focus:border-purple-600"
                                     />
                                   ) : item.newRetailPrice !== null ? (
-                                    <span className="inline-block rounded-[5px] border border-purple-200 bg-purple-50 px-2 py-0.5 text-[11.5px] font-extrabold text-purple-800 tabular-nums">
+                                    <span className="inline-block rounded-[5px] border border-purple-200 bg-purple-50 px-2 py-0.5 text-[13px] font-extrabold text-purple-800 tabular-nums">
                                       NPR {item.newRetailPrice}
                                     </span>
                                   ) : (
@@ -6207,16 +6414,16 @@ export default function ProductsPage() {
                           })}
                         </tbody>
                       </table>
-                    </div>
 
-                    <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 shrink-0 text-[11px] font-medium text-[#6B7280]">
+                      {/* Pagination Footer (now scrolls with content) */}
+                      <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1 shrink-0 text-[11px] font-medium text-[#6B7280] mt-auto">
                       <div className="flex items-center gap-2.5">
                         <span>
                           Showing <strong className="text-[#11120d] font-bold">{(activeStep2FilteredPage - 1) * bulkPriceStep2PageSize + 1}–{Math.min(filteredPreviewStats.previewMatchedCount, activeStep2FilteredPage * bulkPriceStep2PageSize)}</strong> of <strong className="text-[#11120d] font-bold">{filteredPreviewStats.previewMatchedCount.toLocaleString()}</strong>
                         </span>
                         <label className="flex items-center gap-1.5 text-[11px] font-semibold text-[#8C8889]">
                           <span>Rows:</span>
-                          <div className="w-[74px]">
+                          <div className="w-auto">
                             <ProjectSelect
                               value={bulkPriceStep2PageSize}
                               onChange={(e) => {
@@ -6272,12 +6479,13 @@ export default function ProductsPage() {
                         </div>
                       ) : null}
                     </div>
+                    </div>
                   </div>
                 ) : (
                   /* Desktop Explicit Selection Preview Table Card */
                   <div className="flex-1 min-h-0 flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden">
                     <div className="flex flex-col gap-1.5 border-b border-[#E5E7EB] px-3 py-1.5 bg-[#F8FAFC] sm:flex-row sm:items-center sm:justify-between shrink-0">
-                      <div>
+                      <div className="flex flex-col gap-2 w-full sm:w-auto">
                         <div className="flex items-center gap-2">
                           <h4 className="text-[12.5px] font-extrabold text-[#11120d]">Products in scope ({visibleBulkPriceProducts.length.toLocaleString()})</h4>
                           {Object.values(priceMarginTargetIds).filter((v) => !v).length > 0 ? (
@@ -6285,6 +6493,31 @@ export default function ProductsPage() {
                               {Object.values(priceMarginTargetIds).filter((v) => !v).length} excluded
                             </span>
                           ) : null}
+                        </div>
+
+                        <div className="flex items-center rounded-lg bg-[#E2E8F0] p-0.5 w-full sm:w-auto self-start">
+                          <button
+                            type="button"
+                            onClick={() => setBulkPricePreviewFilter("ALL")}
+                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition ${bulkPricePreviewFilter === "ALL" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
+                          >
+                            All
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBulkPricePreviewFilter("READY")}
+                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition flex items-center justify-center gap-1 ${bulkPricePreviewFilter === "READY" ? "bg-white shadow-sm text-emerald-700" : "text-[#64748B] hover:text-emerald-700"}`}
+                          >
+                            <span className="w-1 h-1 rounded-full bg-emerald-500"></span>
+                            Ready
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => setBulkPricePreviewFilter("PRESERVED")}
+                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition ${bulkPricePreviewFilter === "PRESERVED" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
+                          >
+                            Excluded
+                          </button>
                         </div>
                       </div>
                       <div className="flex w-full items-center gap-1.5 sm:w-auto">
@@ -6312,21 +6545,14 @@ export default function ProductsPage() {
                           <span>Sort</span>
                           {bulkPriceSort !== "affected_first" ? <span className="h-1.5 w-1.5 rounded-full bg-blue-600" /> : null}
                         </button>
-                        <button
-                          type="button"
-                          onClick={() => setPricePreviewReady(false)}
-                          className="inline-flex h-7.5 items-center justify-center gap-1 rounded-[7px] border border-[#CFCFD3] bg-white px-2.5 text-[11px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation shrink-0"
-                        >
-                          <Icon name="arrow_back" sizePx={13} />
-                          <span>Modify</span>
-                        </button>
+
                       </div>
                     </div>
 
                     <div className="relative flex-1 min-h-0 overflow-y-auto">
                       <table className="w-full text-[12.5px]">
                         <thead className="bg-[#F8FAFC] sticky top-0 z-10 border-b border-[#E5E7EB]">
-                          <tr className="text-[10px] font-extrabold uppercase tracking-wide text-[#8C8889]">
+                          <tr className="text-[11px] font-extrabold uppercase tracking-wide text-[#8C8889]">
                             {/* Product Name First! */}
                             <th className="text-left py-2 px-3 font-bold min-w-[200px]">Product Name</th>
                             <th className="text-center py-2 px-2.5 font-bold">Rate</th>
@@ -6403,7 +6629,7 @@ export default function ProductsPage() {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), ratePerPiece: e.target.value } }));
                                         setBulkPriceTouched(true);
                                       }}
-                                      className="h-7.5 w-full rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-blue-600 disabled:bg-gray-100 disabled:border-gray-200"
+                                      className="h-7.5 w-full max-w-[84px] mx-auto rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[12px] font-bold tabular-nums outline-none focus:border-blue-600 disabled:bg-gray-100 disabled:border-gray-200"
                                     />
                                   ) : (
                                     <span className="text-[11.5px] font-bold tabular-nums text-[#565449]">Unchanged</span>
@@ -6423,10 +6649,10 @@ export default function ProductsPage() {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), wholesalePrice: e.target.value } }));
                                         setBulkPriceTouched(true);
                                       }}
-                                      className="h-7.5 w-[100px] rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-blue-600 disabled:bg-gray-100 disabled:border-gray-200"
+                                      className="h-7.5 w-full max-w-[84px] mx-auto rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[12px] font-bold tabular-nums outline-none focus:border-blue-600 disabled:bg-gray-100 disabled:border-gray-200"
                                     />
                                   ) : willChangeWholesale && isIncluded && !isComingSoon && !hasNoRate ? (
-                                    <span className="inline-block rounded-[5px] border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11.5px] font-extrabold text-blue-800 tabular-nums">
+                                    <span className="inline-block rounded-[5px] border border-blue-200 bg-blue-50 px-2 py-0.5 text-[13px] font-extrabold text-blue-800 tabular-nums">
                                       NPR {row.wholesalePrice || "-"}
                                     </span>
                                   ) : (
@@ -6447,10 +6673,10 @@ export default function ProductsPage() {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), retailPrice: e.target.value } }));
                                         setBulkPriceTouched(true);
                                       }}
-                                      className="h-7.5 w-[100px] rounded-[6px] border border-purple-300 bg-purple-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-purple-600 disabled:bg-gray-100 disabled:border-gray-200"
+                                      className="h-7.5 w-full max-w-[84px] mx-auto rounded-[6px] border border-purple-300 bg-purple-50/50 px-2 text-center text-[12px] font-bold tabular-nums outline-none focus:border-purple-600 disabled:bg-gray-100 disabled:border-gray-200"
                                     />
                                   ) : willChangeRetail && isIncluded && !isComingSoon && !hasNoRate ? (
-                                    <span className="inline-block rounded-[5px] border border-purple-200 bg-purple-50 px-2 py-0.5 text-[11.5px] font-extrabold text-purple-800 tabular-nums">
+                                    <span className="inline-block rounded-[5px] border border-purple-200 bg-purple-50 px-2 py-0.5 text-[13px] font-extrabold text-purple-800 tabular-nums">
                                       NPR {row.retailPrice || "-"}
                                     </span>
                                   ) : (
@@ -6468,11 +6694,11 @@ export default function ProductsPage() {
                                           setExplicitAdjustedIds((c) => ({ ...c, [product.id]: !c[product.id] }));
                                           setBulkPriceTouched(true);
                                         }}
-                                        className={`inline-flex h-7 items-center justify-center rounded-[6px] border px-2 text-[10px] font-bold disabled:opacity-35 ${
+                                        className={`inline-flex h-7 items-center justify-center rounded-[6px] border px-2 text-[10px] font-bold disabled:opacity-35 whitespace-nowrap ${
                                           isAdjusted ? "border-blue-200 bg-blue-50 text-blue-700" : "border-[#CFCFD3] bg-white text-[#11120d] hover:bg-slate-50"
                                         }`}
                                       >
-                                        {isAdjusted ? "Use rule" : "Adjust"}
+                                        {isAdjusted ? "Use Rule" : "Adjust"}
                                       </button>
                                     ) : null}
                                     <button
@@ -6498,29 +6724,29 @@ export default function ProductsPage() {
                           })}
                         </tbody>
                       </table>
-                    </div>
 
-                    <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 shrink-0 text-[11px] font-medium text-[#6B7280]">
+                      {/* Pagination Footer (now scrolls with content) */}
+                      <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1 shrink-0 text-[11px] font-medium text-[#6B7280] mt-auto">
                       <div className="flex items-center gap-2.5">
                         <span>
                           Showing <strong className="text-[#11120d] font-bold">{visibleBulkPriceProducts.length === 0 ? 0 : (activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–{Math.min(visibleBulkPriceProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}</strong> of <strong className="text-[#11120d] font-bold">{visibleBulkPriceProducts.length.toLocaleString()}</strong>
                         </span>
                         <label className="flex items-center gap-1.5 text-[11px] font-semibold text-[#8C8889]">
                           <span>Rows:</span>
-                          <div className="w-[74px]">
-                            <ProjectSelect
+                          <div className="w-auto">
+                            <select
                               value={bulkPriceStep2PageSize}
                               onChange={(e) => {
                                 setBulkPriceStep2PageSize(Number(e.target.value));
                                 setBulkPriceStep2Page(1);
                               }}
-                              className="h-[30px] rounded-[7px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold text-[#11120d] outline-none"
+                              className="h-[26px] w-[60px] rounded-[6px] border border-[#CFCFD3] bg-white px-1.5 py-0 text-[11px] font-bold text-[#11120d] outline-none"
                             >
                               <option value={10}>10</option>
                               <option value={25}>25</option>
                               <option value={50}>50</option>
                               <option value={100}>100</option>
-                            </ProjectSelect>
+                            </select>
                           </div>
                         </label>
                       </div>
@@ -6554,13 +6780,14 @@ export default function ProductsPage() {
                         </div>
                       ) : null}
                     </div>
+                    </div>
                   </div>
                 )}
 
                 {/* Desktop Audit Reason Bar */}
                 <div className="rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 shrink-0">
                   <div className="flex items-center justify-between gap-1.5">
-                    <label htmlFor="bulk-price-reason-combobox" className="text-[11.5px] font-extrabold text-[#11120d] flex items-center gap-1 shrink-0">
+                    <label htmlFor="bulk-price-reason-combobox" className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1 shrink-0">
                       <Icon name="verified" sizePx={14} className="text-blue-600" />
                       Audit reason <span className="text-rose-600">*</span>
                       <span className="text-[10px] font-normal text-[#6B7280] hidden md:inline">— Required for compliance log</span>
@@ -6641,14 +6868,7 @@ export default function ProductsPage() {
                     <span>Sort</span>
                     {bulkPriceSort !== "affected_first" ? <span className="h-1.5 w-1.5 rounded-full bg-blue-600" /> : null}
                   </button>
-                  <button
-                    type="button"
-                    onClick={() => setPricePreviewReady(false)}
-                    className="inline-flex h-10 !min-h-0 items-center justify-center gap-1.5 rounded-[9px] border border-[#CFCFD3] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation shrink-0 transition"
-                  >
-                    <Icon name="arrow_back" sizePx={15} />
-                    <span>Modify</span>
-                  </button>
+
                 </div>
 
                 {/* Mobile Cards List: The primary scrollable container */}
@@ -6836,77 +7056,73 @@ export default function ProductsPage() {
                       No preview items match this search.
                     </div>
                   ) : null}
-                </div>
-
-                {/* Mobile Pagination Row */}
-                <div className="flex items-center justify-between rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1.5 text-[10.5px] font-semibold text-[#6B7280] shrink-0">
-                  <div className="flex items-center gap-1.5 min-w-0">
-                    <span className="truncate">
-                      Showing <strong className="text-[#11120d]">
-                        {isFilteredSelection
-                          ? `${(activeStep2FilteredPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(filteredPreviewStats.previewMatchedCount, activeStep2FilteredPage * bulkPriceStep2PageSize)}`
-                          : `${(activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(visibleBulkPriceProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}`}
-                      </strong> of <strong className="text-[#11120d]">{isFilteredSelection ? filteredPreviewStats.previewMatchedCount : visibleBulkPriceProducts.length}</strong>
-                    </span>
-                    <div className="w-[66px] shrink-0">
-                      <ProjectSelect
-                        value={bulkPriceStep2PageSize}
-                        onChange={(e) => {
-                          const newSize = Number(e.target.value);
-                          setBulkPriceStep2PageSize(newSize);
-                          setBulkPriceStep2Page(1);
-                          if (isFilteredSelection) {
-                            setPriceBusy(true);
-                            void loadFilteredPricePreview(1, priceSearch, newSize).finally(() => setPriceBusy(false));
-                          }
-                        }}
-                        className="h-[26px] rounded-[6px] border border-[#D8DBE0] bg-white px-1.5 text-[10px] font-bold text-[#11120d] outline-none"
-                      >
-                        <option value={10}>10</option>
-                        <option value={20}>20</option>
-                        <option value={50}>50</option>
-                      </ProjectSelect>
+                      {/* Mobile Pagination Row (Moved inside scroll) */}
+                      <div className="flex items-center justify-between bg-[#F8FAFC] px-2.5 py-3 mt-auto text-[10.5px] font-semibold text-[#6B7280] shrink-0 border-t border-[#E5E7EB]">
+                        <div className="flex items-center gap-1.5 min-w-0">
+                          <span className="truncate">
+                            Showing <strong className="text-[#11120d]">
+                              {isFilteredSelection
+                                ? `${(activeStep2FilteredPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(filteredPreviewStats.previewMatchedCount, activeStep2FilteredPage * bulkPriceStep2PageSize)}`
+                                : `${(activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(visibleBulkPriceProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}`}
+                            </strong> of <strong className="text-[#11120d]">{isFilteredSelection ? filteredPreviewStats.previewMatchedCount : visibleBulkPriceProducts.length}</strong>
+                          </span>
+                          <div className="w-[66px] shrink-0">
+                            <ProjectSelect
+                              value={bulkPriceStep2PageSize}
+                              onChange={(e) => {
+                                const newSize = Number(e.target.value);
+                                setBulkPriceStep2PageSize(newSize);
+                                setBulkPriceStep2Page(1);
+                                if (isFilteredSelection) {
+                                  setPriceBusy(true);
+                                  void loadFilteredPricePreview(1, priceSearch, newSize).finally(() => setPriceBusy(false));
+                                }
+                              }}
+                              className="h-[26px] rounded-[6px] border border-[#D8DBE0] bg-white px-1.5 text-[10px] font-bold text-[#11120d] outline-none"
+                            >
+                              <option value={10}>10</option>
+                              <option value={20}>20</option>
+                              <option value={50}>50</option>
+                            </ProjectSelect>
+                          </div>
+                        </div>
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <span className="text-[10px] font-bold text-[#565449] tabular-nums hidden min-[360px]:inline">
+                            {isFilteredSelection ? `${activeStep2FilteredPage}/${step2FilteredTotalPages}` : `${activeStep2ExplicitPage}/${step2ExplicitTotalPages}`}
+                          </span>
+                          <button
+                            type="button"
+                            disabled={isFilteredSelection ? activeStep2FilteredPage <= 1 : activeStep2ExplicitPage <= 1}
+                            onClick={() => {
+                              if (isFilteredSelection) {
+                                setPriceBusy(true);
+                                void loadFilteredPricePreview(activeStep2FilteredPage - 1).finally(() => setPriceBusy(false));
+                              } else {
+                                setBulkPriceStep2Page((p) => Math.max(1, p - 1));
+                              }
+                            }}
+                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
+                          >
+                            <Icon name="chevron_left" sizePx={13} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={isFilteredSelection ? activeStep2FilteredPage >= step2FilteredTotalPages : activeStep2ExplicitPage >= step2ExplicitTotalPages}
+                            onClick={() => {
+                              if (isFilteredSelection) {
+                                setPriceBusy(true);
+                                void loadFilteredPricePreview(activeStep2FilteredPage + 1).finally(() => setPriceBusy(false));
+                              } else {
+                                setBulkPriceStep2Page((p) => Math.min(step2ExplicitTotalPages, p + 1));
+                              }
+                            }}
+                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
+                          >
+                            <Icon name="chevron_right" sizePx={13} />
+                          </button>
+                        </div>
+                      </div>
                     </div>
-                  </div>
-                  <div className="flex items-center gap-1.5 shrink-0">
-                    <span className="text-[10px] font-bold text-[#565449] tabular-nums">
-                      {isFilteredSelection ? `${activeStep2FilteredPage}/${step2FilteredTotalPages}` : `${activeStep2ExplicitPage}/${step2ExplicitTotalPages}`}
-                    </span>
-                    <button
-                      type="button"
-                      disabled={isFilteredSelection ? activeStep2FilteredPage <= 1 : activeStep2ExplicitPage <= 1}
-                      onClick={() => {
-                        if (isFilteredSelection) {
-                          setPriceBusy(true);
-                          void loadFilteredPricePreview(activeStep2FilteredPage - 1).finally(() => setPriceBusy(false));
-                        } else {
-                          setBulkPriceStep2Page((p) => Math.max(1, p - 1));
-                        }
-                      }}
-                      className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
-                      aria-label="Previous page"
-                    >
-                      <Icon name="chevron_left" sizePx={13} />
-                    </button>
-                    <button
-                      type="button"
-                      disabled={isFilteredSelection ? activeStep2FilteredPage >= step2FilteredTotalPages : activeStep2ExplicitPage >= step2ExplicitTotalPages}
-                      onClick={() => {
-                        if (isFilteredSelection) {
-                          setPriceBusy(true);
-                          void loadFilteredPricePreview(activeStep2FilteredPage + 1).finally(() => setPriceBusy(false));
-                        } else {
-                          setBulkPriceStep2Page((p) => Math.min(step2ExplicitTotalPages, p + 1));
-                        }
-                      }}
-                      className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
-                      aria-label="Next page"
-                    >
-                      <Icon name="chevron_right" sizePx={13} />
-                    </button>
-                  </div>
-                </div>
-
                 {/* Mobile Audit Reason Box */}
                 <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1.5 shrink-0">
                   <div className="flex items-center justify-between gap-2">
@@ -6949,6 +7165,7 @@ export default function ProductsPage() {
                   ) : null}
                 </div>
               </div>
+
             </div>
           ) : null}
         </div>
@@ -7069,158 +7286,114 @@ export default function ProductsPage() {
         </div>
       </ModalFrame>
 
-      {/* CONFIRMATION POPUP MODAL */}
+<ModalFrame open={confirmDiscardBulkPrice} title="Discard price changes?" description="Your unsaved price settings and preview will be lost." onClose={() => setConfirmDiscardBulkPrice(false)} layer="critical" maxWidthClass="max-w-[460px]" mobileBottomSheet footer={<div className="grid w-full grid-cols-2 gap-3"><DialogButton onClick={() => setConfirmDiscardBulkPrice(false)}>Keep editing</DialogButton><DialogButton variant="danger" onClick={discardBulkPriceChanges}>Discard changes</DialogButton></div>}>
+        <div className="rounded-[14px] border border-amber-200 bg-amber-50 p-4 text-[13px] font-semibold leading-6 text-amber-950">No product prices have been saved yet. Close this panel only if you want to lose these changes.</div>
+      </ModalFrame>
+
+      {/* RESULT POPUP MODAL */}
       <ModalFrame
-        open={confirmBulkPriceSave}
-        title="Confirm price update"
-        description="Review catalog updates before saving."
-        descriptionClassName="hidden sm:block"
-        onClose={() => setConfirmBulkPriceSave(false)}
+        open={Boolean(bulkPriceResult)}
+        title="Bulk price update complete"
+        description="Review the results of your price changes."
+        onClose={() => {
+          setBulkPriceResult(null);
+          clearBulkSelection();
+        }}
         layer="critical"
-        maxWidthClass="max-w-[720px]"
+        maxWidthClass="max-w-[600px]"
         mobileBottomSheet
         footer={
-          <div className="grid w-full grid-cols-1 gap-2 sm:grid-cols-[auto_minmax(0,1fr)] sm:gap-3">
-            <DialogButton onClick={() => setConfirmBulkPriceSave(false)} disabled={priceBusy}>
-              ← Back to preview
-            </DialogButton>
-            <button
-              type="button"
-              onClick={confirmBulkPriceUpdate}
-              disabled={priceBusy}
-              className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
-            >
-              <Icon name="sell" sizePx={15} />
-              <span>{priceBusy ? "Updating..." : `Confirm updates (${bulkPriceImpactAnalytics.affectedCount.toLocaleString()})`}</span>
-            </button>
+          <div className="flex w-full flex-col sm:flex-row items-center justify-between gap-3">
+            <div className="w-full sm:w-auto">
+              <DialogButton onClick={() => {
+                setBulkPriceResult(null);
+                clearBulkSelection();
+              }}>
+                Close
+              </DialogButton>
+            </div>
+            {bulkPriceResult?.errorCount ? (
+              <button
+                type="button"
+                onClick={async () => {
+                  const failedIds = bulkPriceResult.errors.map(e => e.productId).filter(Boolean);
+                  if (failedIds.length > 0) {
+                    try {
+                      // setSaving(true) if there's a busy state for this button? The user just said "preserve the result dialog"
+                      const failedProducts = await fetchProductsByIds(failedIds);
+                      const newSelected = Object.fromEntries(failedIds.map(id => [id, true]));
+                      const newCache = Object.fromEntries(failedProducts.map((p: any) => [p.id, p]));
+
+                      setSelected(newSelected);
+                      setSelectedProductCache(prev => ({ ...prev, ...newCache }));
+                      setBulkSelectionScope("page");
+                      setPriceMarginTargetIds(newSelected);
+
+                      // Clear stale preview state to rebuild fresh
+                      setPriceRows({});
+                      setPricePreviewReady(false);
+                      setBulkPricePreviewRevision(null);
+
+                      setBulkPriceResult(null);
+                      setOpenBulkPrice(true);
+                    } catch (e) {
+                      toastMsg("danger", "Could not load failed products for retry.");
+                    }
+                  } else {
+                    setBulkPriceResult(null);
+                    clearBulkSelection();
+                  }
+                }}
+                className="inline-flex min-h-10 flex-1 sm:flex-none items-center justify-center gap-2 rounded-[9px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27]"
+              >
+                <Icon name="refresh" sizePx={15} />
+                Retry {bulkPriceResult.errorCount} failed
+              </button>
+            ) : null}
           </div>
         }
       >
-        <div className="flex flex-col gap-2.5 py-1 text-xs">
-          {/* 4 Impact Analytics KPI Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">To Update</div>
-              <div className="mt-0.5 text-[17px] font-black tabular-nums text-blue-800">
-                {bulkPriceImpactAnalytics.affectedCount.toLocaleString()}
+        {bulkPriceResult ? (
+          <div className="flex flex-col gap-4 text-sm">
+            {bulkPriceResult.auditWarning && (
+              <div className="rounded-[9px] bg-amber-50 border border-amber-200 p-3 text-amber-900 text-xs font-semibold">
+                <Icon name="warning" sizePx={14} className="inline mr-1" />
+                {bulkPriceResult.auditWarning}
+              </div>
+            )}
+            <div className="grid grid-cols-3 gap-3">
+              <div className="rounded-[9px] border border-green-200 bg-green-50 p-3 text-center">
+                <div className="text-[11px] font-extrabold uppercase tracking-wide text-green-700">Updated</div>
+                <div className="mt-1 text-2xl font-black tabular-nums text-green-800">{bulkPriceResult.updatedCount}</div>
+              </div>
+              <div className="rounded-[9px] border border-slate-200 bg-slate-50 p-3 text-center">
+                <div className="text-[11px] font-extrabold uppercase tracking-wide text-slate-500">Skipped</div>
+                <div className="mt-1 text-2xl font-black tabular-nums text-slate-600">{bulkPriceResult.skippedCount}</div>
+              </div>
+              <div className={`rounded-[9px] border ${bulkPriceResult.errorCount > 0 ? 'border-rose-200 bg-rose-50' : 'border-slate-200 bg-slate-50'} p-3 text-center`}>
+                <div className={`text-[10px] font-extrabold uppercase tracking-wide ${bulkPriceResult.errorCount > 0 ? 'text-rose-700' : 'text-slate-500'}`}>Failed</div>
+                <div className={`mt-1 text-2xl font-black tabular-nums ${bulkPriceResult.errorCount > 0 ? 'text-rose-800' : 'text-slate-600'}`}>{bulkPriceResult.errorCount}</div>
               </div>
             </div>
 
-            <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Preserved</div>
-              <div className="mt-0.5 text-[17px] font-black tabular-nums text-[#565449]">
-                {bulkPriceImpactAnalytics.preservedCount.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">Wholesale Rule</div>
-              <div className="mt-0.5 text-[13px] font-black text-blue-900">
-                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateWholesalePrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${wholesaleMarginPercent}%` : "Unchanged"}
-              </div>
-            </div>
-
-            <div className="rounded-[9px] border border-purple-200 bg-purple-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-purple-700">Retail Rule</div>
-              <div className="mt-0.5 text-[13px] font-black text-purple-900">
-                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateRetailPrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${retailMarginPercent}%` : "Unchanged"}
-              </div>
-            </div>
-          </div>
-
-          {/* Affected Products Review Table */}
-          <div className="rounded-[10px] border border-[#E5E7EB] bg-white overflow-hidden flex flex-col">
-            <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 flex items-center justify-between">
-              <div className="flex items-center gap-1.5">
-                <Icon name="list_alt" sizePx={14} className="text-blue-600" />
-                <span className="text-[12px] font-extrabold text-[#11120d]">
-                  {isFilteredSelection ? "Preview sample" : "Affected products"} ({bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} shown)
-                </span>
-              </div>
-            </div>
-
-            <div className="max-h-[240px] overflow-y-auto divide-y divide-[#E5E7EB]">
-              {bulkPriceImpactAnalytics.affectedItems.slice(0, 50).map((item) => (
-                <div key={item.id} className="p-2.5 flex flex-col gap-2.5 hover:bg-[#F8FAFC] transition sm:flex-row sm:items-center sm:justify-between">
-                  <div className="min-w-0 flex-1">
-                    <div className="truncate font-extrabold text-[12px] text-[#11120d]">{item.name}</div>
-                    <div className="text-[10px] text-[#8C8889]">
-                      SKU: {item.sku || "None"} · Rate: <span className="font-semibold text-[#565449]">{Number(item.rate) > 0 ? `NPR ${item.rate}` : "Not set"}</span>
-                    </div>
-                  </div>
-
-                  <div className="grid w-full grid-cols-1 gap-2 text-left sm:w-auto sm:grid-cols-2 sm:text-right">
-                    {item.wholesaleChanged && item.newWholesale !== null ? (
-                      <div className="rounded-md bg-blue-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
-                        <span className="text-[9px] font-bold text-blue-700 block uppercase">Wholesale</span>
-                        <div className="flex items-center gap-1 font-bold">
-                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
-                            {item.oldWholesale !== null ? `NPR ${item.oldWholesale}` : "None"}
-                          </span>
-                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
-                          <span className="text-blue-700 tabular-nums font-black">NPR {item.newWholesale}</span>
-                          {item.wholesaleDelta !== null ? (
-                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.wholesaleDelta >= 0 ? "bg-blue-50 text-blue-700" : "bg-rose-50 text-rose-700"}`}>
-                              {item.wholesaleDelta >= 0 ? "+" : ""}{item.wholesaleDelta.toFixed(1)}
-                            </span>
-                          ) : null}
-                        </div>
+            {bulkPriceResult.errorCount > 0 && (
+              <div className="mt-2 flex flex-col gap-2">
+                <div className="text-[12px] font-extrabold text-rose-900">Error Details</div>
+                <div className="max-h-[200px] overflow-y-auto divide-y divide-rose-100 rounded-[9px] border border-rose-200 bg-white">
+                  {bulkPriceResult.errors.map((error, idx) => {
+                    const product = products.find(p => p.id === error.productId) || bulkPriceResult.products.find(p => p.id === error.productId);
+                    return (
+                      <div key={idx} className="p-2.5 flex flex-col gap-1 text-xs">
+                        <div className="font-bold text-slate-900">{product?.name || "Unknown Product"}</div>
+                        <div className="text-rose-700">{error.message} {error.code ? `(${error.code})` : ""}</div>
                       </div>
-                    ) : null}
-
-                    {item.retailChanged && item.newRetail !== null ? (
-                      <div className="rounded-md bg-purple-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
-                        <span className="text-[9px] font-bold text-purple-700 block uppercase">Retail</span>
-                        <div className="flex items-center gap-1 font-bold">
-                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
-                            {item.oldRetail !== null ? `NPR ${item.oldRetail}` : "None"}
-                          </span>
-                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
-                          <span className="text-purple-700 tabular-nums font-black">NPR {item.newRetail}</span>
-                          {item.retailDelta !== null ? (
-                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.retailDelta >= 0 ? "bg-purple-50 text-purple-700" : "bg-rose-50 text-rose-700"}`}>
-                              {item.retailDelta >= 0 ? "+" : ""}{item.retailDelta.toFixed(1)}
-                            </span>
-                          ) : null}
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
+                    );
+                  })}
                 </div>
-              ))}
-
-              {bulkPriceImpactAnalytics.affectedItems.length === 0 ? (
-                <div className="p-5 text-center text-[11px] font-semibold text-[#8C8889]">
-                  No products have changed values. Existing prices will be kept.
-                </div>
-              ) : isFilteredSelection && bulkPriceImpactAnalytics.affectedCount > bulkPriceImpactAnalytics.affectedItems.length ? (
-                <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
-                  Showing {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} products from this preview. {bulkPriceImpactAnalytics.affectedCount.toLocaleString()} products will be updated.
-                </div>
-              ) : bulkPriceImpactAnalytics.affectedItems.length > 50 ? (
-                <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
-                  Showing the first 50 of {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} affected products.
-                </div>
-              ) : null}
-            </div>
+              </div>
+            )}
           </div>
-
-          {/* Audit Record Card */}
-          <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 flex items-center justify-between gap-2">
-            <div className="flex items-center gap-2 min-w-0">
-              <Icon name="history" sizePx={15} className="text-blue-600 shrink-0" />
-              <span className="text-[11.5px] font-extrabold text-[#11120d] truncate">
-                Audit Reason: <span className="font-semibold text-[#565449]">&ldquo;{priceReason || "Not specified"}&rdquo;</span>
-              </span>
-            </div>
-            <span className="rounded bg-blue-100 px-1.5 py-0.5 text-[9px] font-extrabold text-blue-800 shrink-0">
-              Ready to record
-            </span>
-          </div>
-        </div>
-      </ModalFrame>
-<ModalFrame open={confirmDiscardBulkPrice} title="Discard price changes?" description="Your unsaved price settings and preview will be lost." onClose={() => setConfirmDiscardBulkPrice(false)} layer="critical" maxWidthClass="max-w-[460px]" mobileBottomSheet footer={<div className="grid w-full grid-cols-2 gap-3"><DialogButton onClick={() => setConfirmDiscardBulkPrice(false)}>Keep editing</DialogButton><DialogButton variant="danger" onClick={discardBulkPriceChanges}>Discard changes</DialogButton></div>}>
-        <div className="rounded-[14px] border border-amber-200 bg-amber-50 p-4 text-[13px] font-semibold leading-6 text-amber-950">No product prices have been saved yet. Close this panel only if you want to lose these changes.</div>
+        ) : null}
       </ModalFrame>
     </div>
   );

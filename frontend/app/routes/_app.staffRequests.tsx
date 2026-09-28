@@ -359,10 +359,10 @@ export default function StaffRequestsPage() {
                 <GIcon name="receipt_long" sizePx={22} />
               </div>
               <div>
-                <h1 className="text-[24px] font-extrabold tracking-[0] text-[#000000]">
+                <h1 className="text-[24px] font-extrabold tracking-[0] text-[#000000] sm:hidden">
                   My Bill Requests
                 </h1>
-                <p className="mt-1 text-[13px] font-semibold text-[#777275]">
+                <p className="text-[13px] font-semibold text-[#777275]">
                   Check requests you sent to cashiers.
                 </p>
               </div>

@@ -1,4 +1,5 @@
 import prisma from "../../db/prisma";
+import { buildBusinessDateRange } from "../../lib/businessDate";
 
 // defining the shape of filters for listing audit logs
 interface AuditFilters {
@@ -26,6 +27,8 @@ interface CategorizedHistoryFilters {
     from?: string;
     to?: string;
     q?: string;
+    action?: string;
+    actorId?: string;
     page?: number;
     pageSize?: number;
 }
@@ -385,7 +388,7 @@ export async function listLoginAttempts(filters: LoginAttemptFilters) {
 }
 
 export async function listCategorizedHistory(filters: CategorizedHistoryFilters) {
-    const { category = "all", from, to, q, page = 1, pageSize = 30 } = filters;
+    const { category = "all", from, to, q, action, actorId, page = 1, pageSize = 30 } = filters;
 
     const where: any = {};
     const andFilters: any[] = [];
@@ -393,11 +396,10 @@ export async function listCategorizedHistory(filters: CategorizedHistoryFilters)
     if (Object.keys(categoryWhere).length) {
         andFilters.push(categoryWhere);
     }
-    if (from || to) {
-        where.createdAt = {};
-        if (from) where.createdAt.gte = new Date(from);
-        if (to) where.createdAt.lte = new Date(to + "T23:59:59.999Z");
-    }
+    const businessDateRange = buildBusinessDateRange({ from, to });
+    if (businessDateRange) where.createdAt = businessDateRange;
+    if (action) where.action = { contains: action };
+    if (actorId) where.actorId = actorId;
     if (q) {
         andFilters.push({ OR: [
             { action: { contains: q } },

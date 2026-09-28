@@ -252,10 +252,7 @@ export default function RequestsPage() {
       <div className="space-y-[14px]">
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-end">
           <div>
-            <h1 className="text-[24px] font-extrabold text-[#000000]">
-              Request Hub
-            </h1>
-            <p className="mt-1 text-[13px] font-medium text-[#8C8889]">
+            <p className="text-[13px] font-medium text-[#8C8889]">
               Review pending returns and customer discount approvals from one queue.
             </p>
           </div>

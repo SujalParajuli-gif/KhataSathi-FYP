@@ -18,6 +18,14 @@ async function mockCatalog(page: Page) {
       read: false, resolved: false,
     }], unreadCount: 1 };
     else if (path.endsWith("/bin")) body = { records: [], total: 0, page: 1, pageSize: 20, totalPages: 1 };
+    else if (path === "/api/documents") body = { documents: [{
+      id: "catalog-document", documentType: "GENERAL", title: "Catalog PDF", fileName: "catalog.pdf",
+      storedFileName: "catalog.pdf", storedPath: "catalog.pdf", mimeType: "application/pdf", fileSize: 1024,
+      checksum: null, thumbnailFileName: null, thumbnailSize: null, supplierName: null, billNumber: null,
+      billDate: null, billAmount: null, remarks: null, linkedEntityType: null, linkedEntityId: null,
+      visibility: "ALL_AUTHENTICATED", uploadedById: user.id, createdAt: "2026-09-26T00:00:00Z",
+      uploadedBy: { id: user.id, name: user.name }, processingStatus: "UNPROCESSED", processingLabel: "Needs review",
+    }], total: 1, page: 1, pageSize: 20, totalPages: 1 };
     else if (path.endsWith("/products")) body = { products: [], total: 0, page: 1, pageSize: 50 };
     else if (path.endsWith("/import-batches")) body = { batches: [] };
     else if (path.endsWith("/brands") || path.endsWith("/categories")) body = [];
@@ -120,5 +128,19 @@ test.describe("Catalog mobile keyboard and actions", () => {
     await page.keyboard.press("Enter");
     await expect(units).toHaveAttribute("aria-selected", "true");
     await expect(dialog.locator("#panel-units")).toBeVisible();
+  });
+
+  test("document preview and actions are independent keyboard controls", async ({ page }) => {
+    await mockCatalog(page);
+    await page.goto("/documents");
+    const preview = page.getByRole("button", { name: "Preview Catalog PDF" });
+    const actions = page.getByRole("button", { name: "Actions for Catalog PDF" });
+    await expect(preview).toBeVisible();
+    await expect(actions).toBeVisible();
+    await expect(page.locator("article[role='button']")).toHaveCount(0);
+    await actions.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.getByRole("dialog", { name: "Document actions" })).toBeVisible();
+    await expect(page.getByRole("dialog")).toHaveCount(1);
   });
 });

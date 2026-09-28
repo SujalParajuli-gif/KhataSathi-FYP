@@ -56,6 +56,8 @@ export async function categorizedHistory(req: Request, res: Response) {
             from: req.query.from as string | undefined,
             to: req.query.to as string | undefined,
             q: req.query.q as string | undefined,
+            action: req.query.action as string | undefined,
+            actorId: req.query.actorId as string | undefined,
             page: req.query.page ? Number(req.query.page) : 1,
             pageSize: req.query.pageSize ? Number(req.query.pageSize) : 30,
         };

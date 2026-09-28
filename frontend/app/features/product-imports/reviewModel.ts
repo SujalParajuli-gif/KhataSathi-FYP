@@ -131,9 +131,21 @@ export function describeReviewPayloadChanges(
   before: ReviewedPdfImportRowPayload,
   after: ReviewedPdfImportRowPayload,
 ) {
+  return reviewPayloadChanges(before, after).map((change) => change.label);
+}
+
+export function reviewPayloadChanges(
+  before: ReviewedPdfImportRowPayload,
+  after: ReviewedPdfImportRowPayload,
+) {
   return (Object.keys(reviewFieldLabels) as Array<keyof ReviewedPdfImportRowPayload>)
     .filter((field) => comparable(before[field]) !== comparable(after[field]))
-    .map((field) => reviewFieldLabels[field] || String(field));
+    .map((field) => ({
+      field,
+      label: reviewFieldLabels[field] || String(field),
+      before: before[field],
+      after: after[field],
+    }));
 }
 
 function positivePrice(payload: ReviewedPdfImportRowPayload, field: ImportPriceField) {
@@ -251,6 +263,7 @@ export function importRowToDraft(
     .includes(text(parsed, "sourceType"));
 
   return {
+    expectedRevision: row.reviewRevision,
     rowId: row.id,
     rowNumber: row.rowNumber,
     rawText: row.rawText || "",

@@ -2630,17 +2630,22 @@ export default function ProductLookupPage() {
                               </div>
                             </div>
 
-                            {/* 3-Column Dual-Tone Price Grid */}
-                            <div className="grid grid-cols-3 gap-1.5 min-[380px]:gap-2">
+                            {/* Only show price fields available to this user. */}
+                            <div className={cn(
+                              "grid gap-1.5 min-[380px]:gap-2",
+                              showPurchaseCost && canViewWholesalePrice
+                                ? "grid-cols-2 min-[420px]:grid-cols-3"
+                                : showPurchaseCost || canViewWholesalePrice
+                                  ? "grid-cols-2"
+                                  : "grid-cols-1",
+                            )}>
                               {/* 1. Purchase / खरिद */}
-                              <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-white shadow-2xs">
+                              {showPurchaseCost ? <div className={cn("flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-white shadow-2xs", canViewWholesalePrice && "col-span-2 min-[420px]:col-span-1")}>
                                 <div className="bg-[#F1F5F9] px-1 py-0.5 text-center text-[10px] font-black uppercase tracking-wide text-[#475569] min-[400px]:text-[10.5px]">
                                   Cost
                                 </div>
                                 <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
-                                  {!canViewPurchaseCost || !purchaseCostVisible ? (
-                                    <span className="tracking-widest text-[#94A3B8] font-sans text-[13px]">••••</span>
-                                  ) : product.ratePerPiece !== null ? (
+                                  {product.ratePerPiece !== null ? (
                                     <>
                                       <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px] shrink-0">रु.</span>
                                       <span>{formatPriceNumber(product.ratePerPiece)}</span>
@@ -2649,7 +2654,7 @@ export default function ProductLookupPage() {
                                     "—"
                                   )}
                                 </div>
-                              </div>
+                              </div> : null}
 
                               {/* 2. Retail / खुद्रा */}
                               <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#D7EEDB] bg-white shadow-2xs">
@@ -2669,14 +2674,12 @@ export default function ProductLookupPage() {
                               </div>
 
                               {/* 3. Wholesale / थोक */}
-                              <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#DEE7F5] bg-white shadow-2xs">
+                              {canViewWholesalePrice ? <div className="flex min-w-0 h-[56px] flex-col overflow-hidden rounded-[14px] border border-[#DEE7F5] bg-white shadow-2xs">
                                 <div className="bg-[#EEF3FA] px-1 py-0.5 text-center text-[10px] font-black uppercase tracking-wide text-[#234A7F] min-[400px]:text-[10.5px]">
                                   Wholesale
                                 </div>
                                 <div className="flex flex-1 items-center justify-center gap-0.5 bg-white px-1 py-1 text-center font-mono text-[16px] font-black text-[#0F2D3A] min-[380px]:text-[18px]">
-                                  {!canViewWholesalePrice ? (
-                                    <span className="tracking-widest text-[#94A3B8] font-sans text-[13px]">••••</span>
-                                  ) : product.wholesalePrice !== null ? (
+                                  {product.wholesalePrice !== null ? (
                                     <>
                                       <span className="font-sans text-[11px] font-bold text-[#64748B] min-[380px]:text-[12px] shrink-0">रु.</span>
                                       <span>{formatPriceNumber(product.wholesalePrice)}</span>
@@ -2685,7 +2688,7 @@ export default function ProductLookupPage() {
                                     "—"
                                   )}
                                 </div>
-                              </div>
+                              </div> : null}
                             </div>
                             {canViewPurchaseCost && purchaseCostVisible && product.rateUpdatedAt ? (
                               <div className="mt-1 text-right text-[9.5px] font-medium text-slate-500" title={product.sourceCitation || undefined}>

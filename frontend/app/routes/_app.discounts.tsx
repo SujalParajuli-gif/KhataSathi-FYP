@@ -1330,10 +1330,7 @@ export default function DiscountsPage() {
         {/* this header keeps the page title separate from the rule reminder pill so the pricing rule stays visible without feeling heavy */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
-            <h1 className="text-[24px] font-extrabold  text-[#000000]">
-              Customer Discounts
-            </h1>
-            <p className="mt-1 text-[13px] font-medium text-[#8C8889]">
+            <p className="text-[13px] font-medium text-[#8C8889]">
               Add, edit, and manage customer discount rules for billing.
             </p>
           </div>

@@ -34,6 +34,7 @@ import {
   applyImportBulkEdit,
   comparisonLabel,
   describeReviewPayloadChanges,
+  reviewPayloadChanges,
   displayImportSourceRegion,
   draftPayload,
   importRowToDraft,
@@ -159,6 +160,13 @@ function reviewPrice(value: number | null | undefined) {
 
 function availabilityText(value: ReviewedPdfImportRowPayload["availabilityStatus"]) {
   return value === "COMING_SOON" ? "Coming soon" : "Normal product";
+}
+
+function reviewFieldValue(value: unknown) {
+  if (value === null || value === undefined || value === "") return "Not set";
+  if (typeof value === "boolean") return value ? "Yes" : "No";
+  if (Array.isArray(value)) return value.length ? value.join(", ") : "None";
+  return String(value);
 }
 
 function priceFieldLabel(field: ImportPriceField | ""): string {
@@ -564,6 +572,7 @@ export default function ProductImportReviewPage() {
         if (requestedEdge === "first") return result.rows[0]?.id || "";
         return result.rows.some((row) => row.id === current) ? current : result.rows[0]?.id || "";
       });
+      return result;
     } catch (requestError: any) {
       if (signal?.aborted || requestId !== reviewRequestIdRef.current) return;
       setError(requestError?.response?.data?.error || requestError?.message || "Import review could not be loaded.");
@@ -1077,10 +1086,31 @@ export default function ProductImportReviewPage() {
   }
 
   async function saveReviewPayloads(payloads: ReviewedPdfImportRowPayload[]) {
-    if (!review) return;
+    if (!review) return { updatedPayloads: payloads, savedRowIds: [], error: null };
+    let updatedPayloads = [...payloads];
+    const savedRowIds: string[] = [];
+    let error: any = null;
+
     for (let start = 0; start < payloads.length; start += 200) {
-      await saveReviewedProductImportRowsApi(review.batch.id, payloads.slice(start, start + 200));
+      const chunk = payloads.slice(start, start + 200);
+      try {
+        const res = await saveReviewedProductImportRowsApi(review.batch.id, chunk);
+        if (res.rows) {
+          updatedPayloads = updatedPayloads.map(payload => {
+            const saved = res.rows.find(r => r.id === payload.rowId);
+            if (saved) {
+              return { ...payload, expectedRevision: saved.reviewRevision || payload.expectedRevision };
+            }
+            return payload;
+          });
+          savedRowIds.push(...res.rows.map(r => r.id));
+        }
+      } catch (chunkError) {
+        error = chunkError;
+        break;
+      }
     }
+    return { updatedPayloads, savedRowIds, error };
   }
 
   function recordReviewHistory(
@@ -1117,19 +1147,57 @@ export default function ProductImportReviewPage() {
     const { direction, entry } = historyPrompt;
     try {
       setHistoryBusy(true);
-      await saveReviewPayloads(direction === "undo" ? entry.before : entry.after);
+      const sourcePayloads = direction === "undo" ? entry.before : entry.after;
+      const expectedRevisionsSource = direction === "undo" ? entry.after : entry.before;
+
+      const payloadsToSend = sourcePayloads.map(payload => {
+        const matchingRef = expectedRevisionsSource.find(r => r.rowId === payload.rowId);
+        return {
+          ...payload,
+          expectedRevision: matchingRef ? matchingRef.expectedRevision : payload.expectedRevision,
+        };
+      });
+
+      const { updatedPayloads: newPayloadsWithRevisions, savedRowIds, error: historyError } = await saveReviewPayloads(payloadsToSend);
+
+      const committedIds = new Set(savedRowIds);
+      const committedEntry = {
+        ...entry,
+        before: entry.before.filter((row) => committedIds.has(row.rowId)),
+        after: entry.after.filter((row) => committedIds.has(row.rowId)),
+      };
+      const remainingEntry = {
+        ...entry,
+        before: entry.before.filter((row) => !committedIds.has(row.rowId)),
+        after: entry.after.filter((row) => !committedIds.has(row.rowId)),
+      };
       if (direction === "undo") {
-        setUndoStack((current) => current.filter((candidate) => candidate.id !== entry.id));
-        setRedoStack((current) => [...current, entry].slice(-20));
+        committedEntry.before = newPayloadsWithRevisions.filter((row) => committedIds.has(row.rowId));
+        setUndoStack((current) => current.flatMap((candidate) => candidate.id === entry.id
+          ? (remainingEntry.before.length ? [remainingEntry] : []) : [candidate]));
+        if (committedEntry.before.length) setRedoStack((current) => [...current, committedEntry].slice(-20));
       } else {
-        setRedoStack((current) => current.filter((candidate) => candidate.id !== entry.id));
-        setUndoStack((current) => [...current, entry].slice(-20));
+        committedEntry.after = newPayloadsWithRevisions.filter((row) => committedIds.has(row.rowId));
+        setRedoStack((current) => current.flatMap((candidate) => candidate.id === entry.id
+          ? (remainingEntry.after.length ? [remainingEntry] : []) : [candidate]));
+        if (committedEntry.after.length) setUndoStack((current) => [...current, committedEntry].slice(-20));
       }
-      setHistoryPrompt(null);
+
       await loadReview();
-      showToast("success", `${direction === "undo" ? "Undone" : "Redone"}: ${entry.label}`);
-    } catch (historyError: any) {
-      showToast("danger", historyError?.response?.data?.error || historyError?.message || `${direction === "undo" ? "Undo" : "Redo"} failed.`);
+
+      if (historyError) {
+        if (historyError?.response?.status === 409 && historyError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
+          showToast("danger", `${savedRowIds.length} row${savedRowIds.length === 1 ? "" : "s"} ${direction === "undo" ? "undone" : "redone"}; remaining rows were not changed because this review changed in another action.`);
+        } else {
+          showToast("danger", `Partial ${direction === "undo" ? "undo" : "redo"} (${savedRowIds.length} saved): ${historyError?.response?.data?.error || historyError?.message}`);
+        }
+      } else {
+        setHistoryPrompt(null);
+        showToast("success", `${direction === "undo" ? "Undone" : "Redone"}: ${entry.label}`);
+      }
+    } catch (unexpectedError: any) {
+      await loadReview();
+      showToast("danger", `Unexpected error during ${direction === "undo" ? "undo" : "redo"}: ${unexpectedError?.message}`);
     } finally {
       setHistoryBusy(false);
     }
@@ -1179,13 +1247,18 @@ export default function ProductImportReviewPage() {
       recordReviewHistory(
         `Updated “${activeDraft.name}”${changedFields.length ? ` — ${changedFields.join(", ")}` : ""}`,
         [before],
-        [after],
+        [{ ...after, expectedRevision: saved?.reviewRevision || after.expectedRevision }],
       );
       showToast("success", `Row ${activeDraft.rowNumber} saved.`);
       await loadReview();
       return true;
     } catch (saveError: any) {
-      showToast("danger", saveError?.response?.data?.error || saveError?.message || "Row could not be saved.");
+      if (saveError?.response?.status === 409 && saveError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
+        showToast("danger", "This row has been updated by another action. Refreshing to show the latest data.");
+        await loadReview();
+      } else {
+        showToast("danger", saveError?.response?.data?.error || saveError?.message || "Row could not be saved.");
+      }
       return false;
     } finally {
       setSaving(false);
@@ -1514,7 +1587,13 @@ export default function ProductImportReviewPage() {
         priceConflicts: previewItems.filter((item) => item.priceConflict).length,
       });
     } catch (bulkError: any) {
-      showToast("danger", bulkError?.response?.data?.error || bulkError?.message || "Bulk changes could not be prepared.");
+      if (bulkError?.response?.status === 409 && bulkError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
+        showToast("danger", "These rows were updated by another action. Refreshing to show the latest data.");
+        await loadReview();
+        setBulkOpen(false);
+      } else {
+        showToast("danger", bulkError?.response?.data?.error || bulkError?.message || "Bulk changes could not be prepared.");
+      }
     } finally {
       setBulkSaving(false);
     }
@@ -1522,30 +1601,75 @@ export default function ProductImportReviewPage() {
 
   async function applyReviewedBulkEdit() {
     if (!bulkPreview) return;
+    let mappingApplied = false;
     try {
       setBulkSaving(true);
-      await saveReviewPayloads(bulkPreview.after);
+      let payloads = bulkPreview.after;
       if (hasBulkExtractedChanges) {
         const targetIds = bulkPreview.after.map((r) => r.rowId);
-        await setProductImportPriceMappingApi(
+        const mappingObj = bulkExtractedMapping as Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">;
+        const validation = await setProductImportPriceMappingApi(
           review!.batch.id,
-          bulkExtractedMapping as Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">,
+          mappingObj,
           targetIds,
+          { validateOnly: true }
+        );
+        const mapped = await setProductImportPriceMappingApi(
+          review!.batch.id,
+          mappingObj,
+          targetIds,
+          { expectedReviewRevision: validation.reviewRevision }
+        );
+        mappingApplied = true;
+
+        payloads = payloads.map((payload) => {
+          const expectedRevision = mapped.rowRevisions?.[payload.rowId];
+          if (!expectedRevision) {
+            throw new Error("Price mapping was saved, but one or more row revisions were missing. Refresh this review before retrying.");
+          }
+          return { ...payload, expectedRevision };
+        });
+      }
+
+      const { updatedPayloads: savedPayloads, savedRowIds, error: bulkError } = await saveReviewPayloads(payloads);
+
+      const successfulBefore = bulkPreview.before.filter(b => savedRowIds.includes(b.rowId));
+      const successfulAfter = savedPayloads.filter(a => savedRowIds.includes(a.rowId));
+
+      if (successfulBefore.length > 0) {
+        recordReviewHistory(
+          `Bulk edit for ${successfulBefore.length.toLocaleString()} products — ${bulkPreview.fields.join(", ")}`,
+          successfulBefore,
+          successfulAfter,
         );
       }
-      recordReviewHistory(
-        `Bulk edit for ${bulkPreview.changedRows.toLocaleString()} products — ${bulkPreview.fields.join(", ")}`,
-        bulkPreview.before,
-        bulkPreview.after,
-      );
+
       await loadReview();
-      const changedRows = bulkPreview.changedRows;
+
+      if (bulkError) {
+        if (bulkError?.response?.status === 409 && bulkError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
+          showToast("danger", mappingApplied
+            ? `Price mapping applied. Row saves partial (${savedRowIds.length} saved): some rows were updated by another action.`
+            : `Partial save (${savedRowIds.length} saved): some rows were updated by another action.`);
+        } else {
+          showToast("danger", mappingApplied
+            ? `Price mapping applied. Row saves partial (${savedRowIds.length} saved): ${bulkError?.response?.data?.error || bulkError?.message}`
+            : `Partial save (${savedRowIds.length} saved): ${bulkError?.response?.data?.error || bulkError?.message}`);
+        }
+      } else {
+        const changedRows = bulkPreview.changedRows;
+        showToast("success", `Bulk changes saved for ${changedRows.toLocaleString()} products.`);
+      }
+
       setBulkOpen(false);
-      setBulkPreview(null);
-      clearSelection();
-      showToast("success", `Bulk changes saved for ${changedRows.toLocaleString()} products.`);
-    } catch (bulkError: any) {
-      showToast("danger", bulkError?.response?.data?.error || bulkError?.message || "Bulk changes could not be saved.");
+      if (!bulkError) {
+        setBulkPreview(null);
+        clearSelection();
+      }
+    } catch (unexpectedError: any) {
+      await loadReview();
+      showToast("danger", mappingApplied ? `Price mapping was applied, but row saves failed: ${unexpectedError?.message}` : `Bulk changes failed: ${unexpectedError?.message}`);
+      setBulkOpen(false);
     } finally {
       setBulkSaving(false);
     }
@@ -1569,9 +1693,18 @@ export default function ProductImportReviewPage() {
     }
     try {
       setPriceMappingBusy(true);
+      const mappingObj = mapping as Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">;
+      const validation = await setProductImportPriceMappingApi(
+        review.batch.id,
+        mappingObj,
+        undefined,
+        { validateOnly: true }
+      );
       await setProductImportPriceMappingApi(
         review.batch.id,
-        mapping as Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">,
+        mappingObj,
+        undefined,
+        { expectedReviewRevision: validation.reviewRevision }
       );
       await loadReview();
       setPriceSetupOpen(false);
@@ -1583,7 +1716,12 @@ export default function ProductImportReviewPage() {
         : "mappings applied";
       showToast("success", `Updated price mapping: ${changeSummary}.`);
     } catch (mappingError: any) {
-      showToast("danger", mappingError?.response?.data?.error || mappingError?.message || "Price mapping could not be saved.");
+      if (mappingError?.response?.status === 409 && mappingError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
+        showToast("danger", "Review data was updated by another action. Refreshing to show the latest data.");
+        await loadReview();
+      } else {
+        showToast("danger", mappingError?.response?.data?.error || mappingError?.message || "Price mapping could not be saved.");
+      }
     } finally {
       setPriceMappingBusy(false);
     }
@@ -4252,15 +4390,15 @@ export default function ProductImportReviewPage() {
                     before,
                     after,
                     changedFields,
-                    skippedOperations: [],
+                    skippedOperations: 0,
                     priceConflict: false,
-                    skipReason: changedFields.length === 0 ? "No changes applied" : null,
+                    skipReason: undefined,
                   };
                 });
 
               const filteredItems = allItems.filter((item) => {
                 if (diffFilter === "changed" && item.changedFields.length === 0) return false;
-                if (diffFilter === "skipped" && !item.skipReason && item.changedFields.length > 0) return false;
+                if (diffFilter === "skipped" && item.skippedOperations === 0) return false;
                 if (diffFilter === "conflicts" && !item.priceConflict) return false;
 
                 if (diffSearch.trim()) {
@@ -4288,9 +4426,10 @@ export default function ProductImportReviewPage() {
                   title="Confirm bulk changes"
                   description="Nothing has been saved yet. Review the before-and-after values below."
                   onClose={() => { if (!bulkSaving) setBulkPreview(null); }}
-                  drawer
+                  mobileFullScreen
                   layer="critical"
-                  maxWidthClass="sm:max-w-[560px]"
+                  maxWidthClass="max-w-[1100px]"
+                  dialogClassName="lg:h-[820px] lg:max-h-[calc(100vh-32px)] flex flex-col"
                   bodyClassName="!p-0 flex min-h-0 flex-1 flex-col"
                 >
                   <div className="flex-1 min-h-0 flex flex-col p-4 sm:p-5 gap-3 overflow-hidden">
@@ -4339,7 +4478,7 @@ export default function ProductImportReviewPage() {
                           <div className={`text-xl font-extrabold ${bulkPreview.skippedRows > 0 ? "text-amber-900" : "text-[#11120d]"}`}>
                             {bulkPreview.skippedRows.toLocaleString()}
                           </div>
-                          <div className="text-[11px] font-semibold">Skipped rows</div>
+                          <div className="text-xs font-semibold">Rows with skipped operations</div>
                         </button>
 
                         <button
@@ -4418,8 +4557,8 @@ export default function ProductImportReviewPage() {
                               ["Wholesale price", before.wholesalePrice, after.wholesalePrice],
                             ] as const).filter(([, current, next]) => current !== next);
                             const availabilityChanged = before.availabilityStatus !== after.availabilityStatus;
-                            const otherChanges = changedFields.filter(
-                              (f) => !["Rate", "Retail price", "Wholesale price", "Availability"].includes(f)
+                            const otherChanges = reviewPayloadChanges(before, after).filter(
+                              ({ field }) => !["ratePerPiece", "retailPrice", "wholesalePrice", "availabilityStatus"].includes(field)
                             );
                             const displayName = after.name || before.name || (before.sku ? `Item ${before.sku}` : "Unnamed product");
 
@@ -4469,14 +4608,16 @@ export default function ProductImportReviewPage() {
                                       </span>
                                     </div>
                                   )}
-                                  {otherChanges.length > 0 && (
-                                    <div className="flex items-center gap-2 text-xs flex-wrap min-w-0">
-                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">Other fields:</span>
-                                      <span className="font-medium text-[#11120d] bg-slate-50 px-2 py-0.5 rounded border border-slate-200 break-words">
-                                        {otherChanges.join(", ")}
+                                  {otherChanges.map((change) => (
+                                    <div key={change.field} className="flex min-w-0 flex-wrap items-start gap-2 text-xs">
+                                      <span className="w-24 shrink-0 font-medium text-[#64748B] sm:w-28">{change.label}:</span>
+                                      <span className="min-w-0 break-words text-[#64748B]">{reviewFieldValue(change.before)}</span>
+                                      <span aria-hidden="true" className="text-[#94A3B8]">→</span>
+                                      <span className="min-w-0 break-words rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-bold text-[#11120d]">
+                                        {reviewFieldValue(change.after)}
                                       </span>
                                     </div>
-                                  )}
+                                  ))}
                                   {!skipReason && changedFields.length === 0 && (
                                     <div className="text-[11px] text-[#7A7F89] italic">
                                       No values modified for this product.

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
@@ -11,7 +11,7 @@ import {
   type MobileFilterChip,
 } from "~/components/ui/MobileFilters";
 import PaginationBar from "~/components/ui/PaginationBar";
-import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
+import PageSectionRail from "~/components/ui/PageSectionRail";
 import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
 import { useToast } from "~/components/ui/Toast";
 import {
@@ -893,8 +893,20 @@ function clampPage(n: number, min: number, max: number) {
 export default function SettingsPage() {
   const capabilities = useBusinessCapabilities();
   const { showToast } = useToast();
-  const [tab, setTab] = useState<TabKey>("overview"); // active settings section tab
-  const settingsTabRailRef = useRef<SwipeableTabRailController | null>(null);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const requestedTab = searchParams.get("tab");
+  const tab: TabKey = (requestedTab === "drawer" && capabilities.posEnabled) || requestedTab === "cashier-controls" ||
+    requestedTab === "brands" || requestedTab === "audit" || requestedTab === "backup"
+    ? requestedTab
+    : "overview";
+  function setTab(nextTab: TabKey) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextTab === "overview") next.delete("tab");
+      else next.set("tab", nextTab);
+      return next;
+    }, { preventScrollReset: true });
+  }
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const settingsTabLoadedAtRef = useRef(new Map<TabKey, number>());
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
@@ -2356,7 +2368,7 @@ export default function SettingsPage() {
     ...(capabilities.posEnabled
       ? [{ key: "drawer" as TabKey, label: "Cash Drawer" }]
       : []),
-    { key: "cashier-controls", label: "User Management" },
+    { key: "cashier-controls", label: "Role Permissions" },
     { key: "brands", label: "Brands" },
     { key: "audit", label: "Audit & Security" },
     { key: "backup", label: "Backup" },
@@ -2374,21 +2386,8 @@ export default function SettingsPage() {
     edgeGuard: 24,
     allowMouse: true,
     maxViewportWidth: 1023,
-    onMove: (offsetX) => {
-      const direction: -1 | 1 = offsetX < 0 ? 1 : -1;
-      const currentIndex = settingsTabs.findIndex((item) => item.key === tab);
-      if (!settingsTabs[currentIndex + direction]) {
-        settingsTabRailRef.current?.settle();
-        return;
-      }
-      settingsTabRailRef.current?.setGestureProgress(
-        direction,
-        Math.min(1, Math.abs(offsetX) / 140),
-      );
-    },
     onSwipeLeft: () => moveSettingsTab(1),
     onSwipeRight: () => moveSettingsTab(-1),
-    onEnd: () => window.requestAnimationFrame(() => settingsTabRailRef.current?.settle()),
   });
 
   useEffect(() => {
@@ -2402,7 +2401,7 @@ export default function SettingsPage() {
     },
     drawer: { title: "Cash Drawer", subtitle: "Manage sessions and history." },
     "cashier-controls": {
-      title: "User Management",
+      title: "Role Permissions",
       subtitle: "Role permissions and security controls.",
     },
     brands: {
@@ -2470,17 +2469,17 @@ export default function SettingsPage() {
   }
 
   return (
-    <div className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
-      <div className="border-b border-[#CFCFD3] bg-white shadow-sm">
-        <SwipeableTabRail
-          items={settingsTabs.map((item) => ({ value: item.key, label: item.label }))}
+    <div className="min-h-full text-slate-900">
+      <div className="bg-white px-4 sm:px-7">
+        <PageSectionRail
+          items={settingsTabs.map((item) => {
+            const next = new URLSearchParams(searchParams);
+            if (item.key === "overview") next.delete("tab");
+            else next.set("tab", item.key);
+            return { value: item.key, label: item.label, to: `/settings${next.size ? `?${next}` : ""}` };
+          })}
           value={tab}
-          controllerRef={settingsTabRailRef}
-          onChange={setTab}
           ariaLabel="Settings sections"
-          className="px-4 sm:px-7"
-          railClassName="gap-6 sm:gap-8"
-          buttonClassName="px-1 py-4 text-[14px] font-extrabold sm:text-[15px]"
         />
       </div>
 
@@ -2907,18 +2906,26 @@ export default function SettingsPage() {
                     Inventory & Pricing
                   </h2>
                 </div>
-                {!capabilities.inventoryEnabled ? <Pill tone="warning">Requires inventory</Pill> : null}
               </div>
 
-              {!capabilities.inventoryEnabled ? (
-                <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B] text-justify">
-                  Stock defaults are locked in Catalog only. Saved values remain preserved,
-                  and new products will not claim stock until inventory is enabled and an
-                  opening count is completed.
-                </div>
-              ) : null}
-
               <div className="space-y-4">
+                <BusinessNumberField
+                  fieldKey="wholesaleQtyThreshold"
+                  label="Wholesale quantity threshold / थोक सीमा"
+                  helper="Default minimum quantity required to use the wholesale price."
+                  value={wholesaleQtyThreshold}
+                  onChange={(value) => {
+                    setWholesaleQtyThreshold(value);
+                    setDefaultsSaveError("");
+                  }}
+                  error={defaultsShowErrors ? defaultsErrors.wholesaleQtyThreshold : undefined}
+                  suffix="units"
+                />
+                <details open={capabilities.inventoryEnabled} className="rounded-xl border border-slate-200 bg-slate-50 p-3 open:bg-white">
+                  <summary className={cn("cursor-pointer text-sm font-semibold text-slate-700", capabilities.inventoryEnabled && "hidden")}>
+                    Unavailable in Catalog only: stock defaults. Saved values are preserved.
+                  </summary>
+                  <div className="space-y-4 pt-3">
                 <BusinessNumberField
                   fieldKey="defaultInitialStock"
                   label="New product initial stock"
@@ -2945,18 +2952,13 @@ export default function SettingsPage() {
                   error={capabilities.inventoryEnabled && defaultsShowErrors ? defaultsErrors.defaultLowStock : undefined}
                   suffix="units"
                 />
-                <BusinessNumberField
-                  fieldKey="wholesaleQtyThreshold"
-                  label="Wholesale quantity threshold / थोक सीमा"
-                  helper="Default minimum quantity required to use the wholesale price."
-                  value={wholesaleQtyThreshold}
-                  onChange={(value) => {
-                    setWholesaleQtyThreshold(value);
-                    setDefaultsSaveError("");
-                  }}
-                  error={defaultsShowErrors ? defaultsErrors.wholesaleQtyThreshold : undefined}
-                  suffix="units"
-                />
+                  </div>
+                </details>
+                <details open={capabilities.posEnabled} className="rounded-xl border border-slate-200 bg-slate-50 p-3 open:bg-white">
+                  <summary className={cn("cursor-pointer text-sm font-semibold text-slate-700", capabilities.posEnabled && "hidden")}>
+                    Unavailable without Full POS: loyalty discount. Its saved value is preserved.
+                  </summary>
+                  <div className="pt-3">
                 <BusinessNumberField
                   fieldKey="loyaltyDiscountPercent"
                   label="Loyalty discount"
@@ -2972,11 +2974,13 @@ export default function SettingsPage() {
                   error={capabilities.posEnabled && defaultsShowErrors ? defaultsErrors.loyaltyDiscountPercent : undefined}
                   suffix="%"
                 />
+                  </div>
+                </details>
               </div>
             </div>
 
-            <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
-              <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+            <details open={capabilities.posEnabled} className="group rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
+              <summary className="flex cursor-pointer flex-wrap items-start justify-between gap-3 group-open:mb-5">
                 <div className="flex items-center gap-2.5">
                   <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-slate-100 text-[#11120D]">
                     <Icon name="tune" sizePx={17} />
@@ -2986,7 +2990,7 @@ export default function SettingsPage() {
                   </h2>
                 </div>
                 {!capabilities.posEnabled ? <Pill tone="warning">Requires Full POS</Pill> : null}
-              </div>
+              </summary>
 
               {!capabilities.posEnabled ? (
                 <div className="mb-5 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3.5 text-[12px] font-semibold leading-relaxed text-[#64748B] text-justify">
@@ -3039,7 +3043,7 @@ export default function SettingsPage() {
                   integer
                 />
               </div>
-            </div>
+            </details>
           </section>
         ) : null}
 

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useNavigate } from "react-router";
+import { useNavigate, useSearchParams } from "react-router";
 import {
   InvoiceStatusChip,
   PaymentMethodChip,
@@ -17,7 +17,7 @@ import {
 } from "~/components/ui/MobileFilters";
 import { DialogButton, ModalFrame } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
-import SwipeableTabRail, { type SwipeableTabRailController } from "~/components/ui/SwipeableTabRail";
+import PageSectionRail from "~/components/ui/PageSectionRail";
 import { getAuthUser } from "~/lib/auth";
 import {
   getInvoiceApi,
@@ -37,6 +37,7 @@ import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { useHorizontalGesture } from "~/hooks/useHorizontalGesture";
+import { useQueryControls } from "~/hooks/useQueryControls";
 import {
   getVisibleHistoryCategoryKeys,
   type HistoryCategoryKey as HistoryCategory,
@@ -117,6 +118,42 @@ const HISTORY_CATEGORIES: Array<{ key: HistoryCategory; label: string }> = [
   { key: "payment", label: "Payments" },
   { key: "system", label: "System" },
 ];
+
+const HISTORY_ACTIVITY_OPTIONS: Partial<Record<HistoryCategory, Array<{ value: string; label: string }>>> = {
+  product: [
+    { value: "PRICE", label: "Price updates" },
+    { value: "DEACTIVATED", label: "Product deactivations" },
+  ],
+  stock: [
+    { value: "RESTOCKED", label: "Restocked" },
+    { value: "RECEIVE", label: "Stock receives" },
+    { value: "ADJUSTED", label: "Stock adjustments" },
+  ],
+  import: [
+    { value: "COMPLETED", label: "Completed imports" },
+    { value: "DELETED", label: "Deleted reviews" },
+    { value: "RESTORED", label: "Restored reviews" },
+  ],
+  document: [
+    { value: "UPLOADED", label: "Document uploads" },
+    { value: "METADATA", label: "Metadata updates" },
+    { value: "DELETED", label: "Deleted documents" },
+  ],
+  return: [
+    { value: "APPROVED", label: "Approved returns" },
+    { value: "REJECTED", label: "Rejected returns" },
+    { value: "CREATED", label: "New return requests" },
+  ],
+  payment: [
+    { value: "UPDATED", label: "Payment added" },
+    { value: "VOIDED", label: "Payment voided" },
+  ],
+  system: [
+    { value: "BACKUP", label: "Database backups" },
+    { value: "PIN", label: "Security & PIN overrides" },
+    { value: "PRIVILEGE", label: "Cashier privileges" },
+  ],
+};
 
 const HISTORY_CATEGORY_INFO: Record<
   HistoryCategory,
@@ -350,11 +387,26 @@ function getSectionAction(category: HistoryCategory, isAdminView: boolean) {
   return null;
 }
 
+function getProductEventAction(event: HistoryEventRow, category: HistoryCategory, isAdminView: boolean) {
+  if (category !== "product" && category !== "stock") return null;
+  const meta = getEventMeta(event);
+  const sku = typeof meta.sku === "string" ? meta.sku.trim() : "";
+  if (sku) return { label: "Find product", route: `/products?q=${encodeURIComponent(sku)}` };
+  const productId = typeof meta.productId === "string" && meta.productId.trim()
+    ? meta.productId.trim()
+    : event.entityType === "Product" ? event.entityId : "";
+  return productId && isAdminView
+    ? { label: "Open product", route: `/products?editProduct=${encodeURIComponent(productId)}` }
+    : null;
+}
+
 // this handles the "Invoice History" page 
 // where admins and cashiers can browse, filter, search, and review all past invoices in the system
 export default function HistoryPage() {
   const authUser = getAuthUser();
   const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
+  const queryField = useQueryControls(searchParams, setSearchParams);
   const capabilities = useBusinessCapabilities();
   const isAdminView = authUser?.role === "admin";
   const visibleHistoryCategories = useMemo(
@@ -376,10 +428,19 @@ export default function HistoryPage() {
     withReference: 0,
   });
   const [loading, setLoading] = useState(capabilities.posEnabled); // tracks whether the initial data fetch is still running
-  const [historyCategory, setHistoryCategory] = useState<HistoryCategory>(
-    capabilities.posEnabled ? "sales" : "product",
-  );
-  const historyTabRailRef = useRef<SwipeableTabRailController | null>(null);
+  const requestedCategory = searchParams.get("category");
+  const historyCategory = visibleHistoryCategories.find((category) => category.key === requestedCategory)?.key
+    || visibleHistoryCategories[0]?.key || "product";
+  function setHistoryCategory(nextCategory: HistoryCategory) {
+    setSearchParams((current) => {
+      const next = new URLSearchParams(current);
+      if (nextCategory === visibleHistoryCategories[0]?.key) next.delete("category");
+      else next.set("category", nextCategory);
+      next.delete("action");
+      next.delete("page");
+      return next;
+    }, { preventScrollReset: true });
+  }
   const [eventRows, setEventRows] = useState<HistoryEventRow[]>([]);
   const [eventLoading, setEventLoading] = useState(false);
   const [eventLoadError, setEventLoadError] = useState("");
@@ -390,11 +451,11 @@ export default function HistoryPage() {
   const [stockDetailLoading, setStockDetailLoading] = useState(false);
   const [stockDetailError, setStockDetailError] = useState("");
   const [contextNotice, setContextNotice] = useState("");
-  const [query, setQuery] = useState(""); // free text search across invoice number, customer, cashier, items, and reference
+  const [query, setQuery] = queryField("q", "", (value) => value || "");
   const [debouncedQuery, setDebouncedQuery] = useState("");
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // main status tab selection
-  const [fromDate, setFromDate] = useState(""); // lower date boundary from the filter controls
-  const [toDate, setToDate] = useState(""); // upper date boundary from the filter controls
+  const [fromDate, setFromDate] = queryField("from", "", (value) => value || "");
+  const [toDate, setToDate] = queryField("to", "", (value) => value || "");
   const [cashierFilter, setCashierFilter] = useState("All"); // admin-facing cashier selector for narrowing history records to one cashier
   const [customerTypeFilter, setCustomerTypeFilter] =
     useState<HistoryCustomerTypeFilter>("All"); // lets admins combine customer type and cashier filters together
@@ -407,13 +468,17 @@ export default function HistoryPage() {
   const [draftCashierFilter, setDraftCashierFilter] = useState("All");
   const [draftCustomerTypeFilter, setDraftCustomerTypeFilter] = useState<HistoryCustomerTypeFilter>("All");
   const [draftMethodFilter, setDraftMethodFilter] = useState<"All" | AppInvoice["paymentMethod"]>("All");
-  const [eventActorFilter, setEventActorFilter] = useState("All");
-  const [eventActionFilter, setEventActionFilter] = useState("All");
+  const [eventActorFilter, setEventActorFilter] = queryField("actor", "All", (value) => value || "All");
+  const [eventActionFilter, setEventActionFilter] = queryField("action", "All", (value) => value || "All");
   const [draftEventActorFilter, setDraftEventActorFilter] = useState("All");
   const [draftEventActionFilter, setDraftEventActionFilter] = useState("All");
-  const [page, setPage] = useState(1); // current page inside the filtered results list
+  const [page, setPage] = queryField("page", 1, (value) => {
+    const parsed = Number(value);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : 1;
+  });
   const [pageSize, setPageSize] = useState(20);
   const [cashierOptions, setCashierOptions] = useState<Array<{ id: string; name: string }>>([]);
+  const [eventActorOptions, setEventActorOptions] = useState<Array<{ id: string; name: string }>>([]);
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
@@ -477,30 +542,28 @@ export default function HistoryPage() {
   }
 
   useEffect(() => {
-    if (!isAdminView || !capabilities.posEnabled) return;
-    void listUsersApi({ role: "CASHIER" })
+    if (!isAdminView) return;
+    void listUsersApi()
       .then((users) => {
         const rows = Array.isArray(users) ? users : [];
-        setCashierOptions(
-          rows
-            .filter((user: any) => user?.isActive !== false)
-            .map((user: any) => ({
-              id: String(user.id),
-              name: String(user.name || user.email || "Cashier"),
-            }))
-            .sort((left: any, right: any) => left.name.localeCompare(right.name)),
-        );
+        const activeUsers = rows.filter((user: any) => user?.isActive !== false);
+        const toOption = (user: any) => ({
+          id: String(user.id),
+          name: String(user.name || user.email || "Staff member"),
+        });
+        const byName = (left: { name: string }, right: { name: string }) => left.name.localeCompare(right.name);
+        setEventActorOptions(rows.map(toOption).sort(byName));
+        setCashierOptions(activeUsers.filter((user: any) => user.role === "CASHIER").map(toOption).sort(byName));
       })
       .catch(() => {});
-  }, [capabilities.posEnabled, isAdminView]);
+  }, [isAdminView]);
 
   useEffect(() => {
-    if (visibleHistoryCategories.some((category) => category.key === historyCategory)) return;
+    if (!capabilities.posEnabled) setLoading(false);
+    if (!requestedCategory || visibleHistoryCategories.some((category) => category.key === requestedCategory)) return;
     setHistoryCategory(visibleHistoryCategories[0]?.key || "product");
-    setPage(1);
-    setLoading(false);
     setContextNotice("");
-  }, [historyCategory, visibleHistoryCategories]);
+  }, [capabilities.posEnabled, requestedCategory, visibleHistoryCategories]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -585,8 +648,12 @@ export default function HistoryPage() {
 
   const categoryFilterChips: MobileFilterChip[] = [
     ...(fromDate || toDate ? [{ id: "dates", label: `${fromDate || "Any"} – ${toDate || "Any"}`, onRemove: () => { setFromDate(""); setToDate(""); setPage(1); } }] : []),
-    ...(eventActorFilter !== "All" ? [{ id: "actor", label: cashierOptions.find((c) => c.id === eventActorFilter)?.name || "Staff", onRemove: () => { setEventActorFilter("All"); setPage(1); } }] : []),
-    ...(eventActionFilter !== "All" ? [{ id: "action", label: eventActionFilter, onRemove: () => { setEventActionFilter("All"); setPage(1); } }] : []),
+    ...(eventActorFilter !== "All" ? [{ id: "actor", label: eventActorOptions.find((c) => c.id === eventActorFilter)?.name || "Staff", onRemove: () => { setEventActorFilter("All"); setPage(1); } }] : []),
+    ...(eventActionFilter !== "All" ? [{
+      id: "action",
+      label: HISTORY_ACTIVITY_OPTIONS[historyCategory]?.find((option) => option.value === eventActionFilter)?.label || eventActionFilter,
+      onRemove: () => { setEventActionFilter("All"); setPage(1); },
+    }] : []),
   ];
 
   function openMobileFilters() {
@@ -627,18 +694,12 @@ export default function HistoryPage() {
       try {
         setEventLoading(true);
         setEventLoadError("");
-        const combinedQuery = [
-          debouncedQuery,
-          eventActionFilter !== "All" ? eventActionFilter : "",
-          eventActorFilter !== "All" ? cashierOptions.find((c) => c.id === eventActorFilter)?.name || "" : "",
-        ]
-          .filter(Boolean)
-          .join(" ");
-
         const data = await listCategorizedHistoryApi(
           {
             category: historyCategory,
-            q: combinedQuery || undefined,
+            q: debouncedQuery || undefined,
+            action: eventActionFilter !== "All" ? eventActionFilter : undefined,
+            actorId: eventActorFilter !== "All" ? eventActorFilter : undefined,
             from: fromDate || undefined,
             to: toDate || undefined,
             page,
@@ -670,7 +731,6 @@ export default function HistoryPage() {
     debouncedQuery,
     eventActionFilter,
     eventActorFilter,
-    cashierOptions,
     fromDate,
     historyCategory,
     page,
@@ -780,6 +840,12 @@ export default function HistoryPage() {
       return;
     }
 
+    const productAction = getProductEventAction(event, historyCategory, isAdminView);
+    if (productAction) {
+      navigate(productAction.route);
+      return;
+    }
+
     const sectionAction = getSectionAction(historyCategory, isAdminView);
     if (sectionAction) navigate(sectionAction.route);
   }
@@ -813,7 +879,6 @@ export default function HistoryPage() {
     const nextCategory = visibleHistoryCategories[currentIndex + direction];
     if (!nextCategory) return;
     setHistoryCategory(nextCategory.key);
-    setPage(1);
   }
 
   const historySwipeGesture = useHorizontalGesture<HTMLDivElement>({
@@ -822,44 +887,29 @@ export default function HistoryPage() {
     edgeGuard: 24,
     allowMouse: true,
     maxViewportWidth: 1023,
-    onMove: (offsetX) => {
-      const direction: -1 | 1 = offsetX < 0 ? 1 : -1;
-      const currentIndex = visibleHistoryCategories.findIndex(
-        (category) => category.key === historyCategory,
-      );
-      if (!visibleHistoryCategories[currentIndex + direction]) {
-        historyTabRailRef.current?.settle();
-        return;
-      }
-      historyTabRailRef.current?.setGestureProgress(
-        direction,
-        Math.min(1, Math.abs(offsetX) / 140),
-      );
-    },
     onSwipeLeft: () => moveHistoryCategory(1),
     onSwipeRight: () => moveHistoryCategory(-1),
-    onEnd: () => window.requestAnimationFrame(() => historyTabRailRef.current?.settle()),
   });
 
   const categoryTabs = (
-    <div className="border-b border-slate-200 bg-white shadow-sm">
-      <SwipeableTabRail
-        items={visibleHistoryCategories.map((category) => ({
-          value: category.key,
-          label: category.label,
-        }))}
+    <div className="bg-white px-4 sm:px-7">
+      <PageSectionRail
+        items={visibleHistoryCategories.map((category) => {
+          const next = new URLSearchParams(searchParams);
+          if (category.key === visibleHistoryCategories[0]?.key) next.delete("category");
+          else next.set("category", category.key);
+          if (category.key !== historyCategory) {
+            next.delete("action");
+            next.delete("page");
+          }
+          return {
+            value: category.key,
+            label: category.label,
+            to: `/history${next.toString() ? `?${next}` : ""}`,
+          };
+        })}
         value={historyCategory}
-        controllerRef={historyTabRailRef}
-        onChange={(category) => {
-          setHistoryCategory(category);
-          setPage(1);
-        }}
         ariaLabel="History categories"
-        className="px-5 sm:px-7"
-        railClassName="gap-6 sm:gap-8"
-        buttonClassName="px-1 py-4 text-[14px] font-extrabold sm:text-[15px]"
-        activeClassName="text-[#11120D]"
-        inactiveClassName="text-slate-500 hover:text-slate-800"
       />
     </div>
   );
@@ -878,19 +928,10 @@ export default function HistoryPage() {
     const eventPageEnd = eventTotal === 0 ? 0 : eventPageStart + eventRows.length;
 
     return (
-      <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
+      <div {...historySwipeGesture} className="min-h-full text-slate-900">
         {categoryTabs}
 
         <section className="px-4 py-5 sm:px-7 sm:py-7" aria-label="History overview">
-          <div className="text-[13px] font-bold text-[#8C8889]">
-            {new Date().toLocaleDateString(undefined, {
-              weekday: "long",
-              day: "2-digit",
-              month: "long",
-              year: "numeric",
-            })}
-          </div>
-
           {contextNotice ? (
             <div className="mt-4 flex items-start justify-between gap-3 rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] font-semibold leading-5 text-amber-800">
               <div className="flex items-start gap-2">
@@ -909,9 +950,9 @@ export default function HistoryPage() {
           ) : null}
 
 
-          <div className="mt-4 rounded-[16px] border border-[#D8DBE0] bg-white p-2.5 shadow-2xs xl:rounded-[18px]">
-            <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
-              <div className="flex items-center gap-2">
+          <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-3 shadow-2xs xl:rounded-[18px]">
+            <div className="flex flex-col gap-3 xl:flex-row xl:items-end">
+              <div className="flex min-w-0 items-center gap-2 xl:w-[min(32vw,420px)]">
                 <div className="relative min-w-0 flex-1">
                   <Icon
                     name="search"
@@ -924,25 +965,26 @@ export default function HistoryPage() {
                       setQuery(event.target.value);
                       setPage(1);
                     }}
-                    placeholder="Search action, entity, actor..."
-                    aria-label="Search action, entity, actor..."
-                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-[12.5px] font-semibold text-[#11120d] outline-none transition placeholder:text-[#7A7F89] focus:border-[#11120d]"
+                    placeholder="Search history…"
+                    aria-label="Search history by action, record ID, or staff"
+                    className="h-11 w-full rounded-[10px] border border-[#D4D7DC] bg-white pl-9.5 pr-3 text-base font-medium text-[#11120d] outline-none transition-colors placeholder:text-[#7A7F89] focus:border-[#11120d] xl:text-sm"
                   />
                 </div>
 
-                <div className="lg:hidden shrink-0">
+                <div className="shrink-0 xl:hidden">
                   <MobileFilterButton activeCount={categoryFilterCount} onClick={openMobileFilters} />
                 </div>
               </div>
 
               {categoryFilterChips.length > 0 ? (
-                <div className="lg:hidden">
+                <div className="xl:hidden">
                   <ActiveFilterChips items={categoryFilterChips} />
                 </div>
               ) : null}
 
-              <div className="hidden items-center gap-2 lg:flex">
+              <div className="hidden flex-wrap items-end gap-2 xl:flex">
                 <div className="w-[150px]">
+                  <span className="mb-1 block text-xs font-semibold text-slate-600">From</span>
                   <ProjectDateInput
                     value={fromDate}
                     max={toDate || undefined}
@@ -951,11 +993,11 @@ export default function HistoryPage() {
                       setFromDate(event.target.value);
                       setPage(1);
                     }}
-                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                    className="h-11 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-sm font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
                   />
                 </div>
-                <span className="text-[11.5px] font-bold text-[#7A7F89]">to</span>
                 <div className="w-[150px]">
+                  <span className="mb-1 block text-xs font-semibold text-slate-600">To</span>
                   <ProjectDateInput
                     value={toDate}
                     min={fromDate || undefined}
@@ -964,9 +1006,35 @@ export default function HistoryPage() {
                       setToDate(event.target.value);
                       setPage(1);
                     }}
-                    className="h-10 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-[11.5px] font-bold text-[#11120d] outline-none focus:border-[#11120d]"
+                    className="h-11 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-sm font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
                   />
                 </div>
+                {isAdminView ? (
+                  <label className="w-[155px] text-xs font-semibold text-slate-600">
+                    Performed by
+                    <ProjectSelect
+                      value={eventActorFilter}
+                      onChange={(event) => { setEventActorFilter(event.target.value); setPage(1); }}
+                      className="mt-1 h-11 w-full text-sm"
+                    >
+                      <option value="All">All staff</option>
+                      {eventActorOptions.map((actor) => <option key={actor.id} value={actor.id}>{actor.name}</option>)}
+                    </ProjectSelect>
+                  </label>
+                ) : null}
+                <label className="w-[175px] text-xs font-semibold text-slate-600">
+                  Activity
+                  <ProjectSelect
+                    value={eventActionFilter}
+                    onChange={(event) => { setEventActionFilter(event.target.value); setPage(1); }}
+                    className="mt-1 h-11 w-full text-sm"
+                  >
+                    <option value="All">All activities</option>
+                    {(HISTORY_ACTIVITY_OPTIONS[historyCategory] || []).map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </ProjectSelect>
+                </label>
                 {(query || fromDate || toDate || eventActorFilter !== "All" || eventActionFilter !== "All") ? (
                   <button
                     type="button"
@@ -978,7 +1046,7 @@ export default function HistoryPage() {
                       setEventActionFilter("All");
                       setPage(1);
                     }}
-                    className="inline-flex h-10 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-[11px] font-extrabold text-[#374151] transition hover:bg-[#F3F4F6]"
+                    className="inline-flex h-11 items-center justify-center gap-1.5 rounded-[10px] border border-[#D4D7DC] bg-white px-3 text-sm font-semibold text-[#374151] transition-colors hover:bg-[#F3F4F6]"
                   >
                     <Icon name="close" sizePx={15} />
                     <span>Clear</span>
@@ -1016,9 +1084,10 @@ export default function HistoryPage() {
               eventRows.map((event) => {
                 const highlights = getEventHighlights(event, historyCategory);
                 const sectionAction = getSectionAction(historyCategory, isAdminView);
-                const canOpen = Boolean(event.detailType && event.detailId) || Boolean(sectionAction);
+                const productAction = getProductEventAction(event, historyCategory, isAdminView);
+                const canOpen = Boolean(event.detailType && event.detailId) || Boolean(productAction) || Boolean(sectionAction);
                 const actionLabel =
-                  event.actionLabel || sectionAction?.label || "Open context";
+                  productAction?.label || event.actionLabel || sectionAction?.label || "Open context";
                 const humanAction = humanizeAction(event.action);
                 const isRedundantTitle = event.title && event.title.toLowerCase() === humanAction.toLowerCase();
                 const displayTitle = event.title || humanAction;
@@ -1196,20 +1265,20 @@ export default function HistoryPage() {
             </div>
 
             {/* Performed By / Staff Member */}
-            <label className="block space-y-1.5">
+            {isAdminView ? <label className="block space-y-1.5">
               <span className="text-[12px] font-extrabold text-[#11120d]">Performed By</span>
               <ProjectSelect
                 value={draftEventActorFilter}
                 onChange={(event) => setDraftEventActorFilter(event.target.value)}
               >
                 <option value="All">All staff members</option>
-                {cashierOptions.map((cashier) => (
+                {eventActorOptions.map((cashier) => (
                   <option key={cashier.id} value={cashier.id}>
                     {cashier.name}
                   </option>
                 ))}
               </ProjectSelect>
-            </label>
+            </label> : null}
 
             {/* Activity Type */}
             <label className="block space-y-1.5">
@@ -1219,47 +1288,9 @@ export default function HistoryPage() {
                 onChange={(event) => setDraftEventActionFilter(event.target.value)}
               >
                 <option value="All">All activities</option>
-                {historyCategory === "product" ? (
-                  <>
-                    <option value="PRICE">Price Updates</option>
-                    <option value="DEACTIVATED">Product Deactivations</option>
-                  </>
-                ) : historyCategory === "stock" ? (
-                  <>
-                    <option value="RESTOCKED">Restocked</option>
-                    <option value="RECEIVE">Stock Receives</option>
-                    <option value="ADJUSTED">Stock Adjustments</option>
-                  </>
-                ) : historyCategory === "import" ? (
-                  <>
-                    <option value="COMPLETED">Completed Imports</option>
-                    <option value="DELETED">Deleted Reviews</option>
-                    <option value="RESTORED">Restored Reviews</option>
-                  </>
-                ) : historyCategory === "document" ? (
-                  <>
-                    <option value="UPLOADED">Document Uploads</option>
-                    <option value="METADATA">Metadata Updates</option>
-                    <option value="DELETED">Deleted Documents</option>
-                  </>
-                ) : historyCategory === "return" ? (
-                  <>
-                    <option value="APPROVED">Approved Returns</option>
-                    <option value="REJECTED">Rejected Returns</option>
-                    <option value="CREATED">New Return Requests</option>
-                  </>
-                ) : historyCategory === "payment" ? (
-                  <>
-                    <option value="UPDATED">Payment Added</option>
-                    <option value="VOIDED">Payment Voided</option>
-                  </>
-                ) : historyCategory === "system" ? (
-                  <>
-                    <option value="BACKUP">Database Backups</option>
-                    <option value="PIN">Security & PIN Overrides</option>
-                    <option value="PRIVILEGE">Cashier Privileges</option>
-                  </>
-                ) : null}
+                {(HISTORY_ACTIVITY_OPTIONS[historyCategory] || []).map((option) => (
+                  <option key={option.value} value={option.value}>{option.label}</option>
+                ))}
               </ProjectSelect>
             </label>
           </div>

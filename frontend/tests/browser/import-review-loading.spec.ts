@@ -35,7 +35,10 @@ async function setupImportReviewMock(page: Page, state: MockState = {}) {
       return respond({ businessMode: "CATALOG_ONLY", catalogEnabled: true });
     }
     if (path.endsWith("/auth/me")) return respond({ user });
+    if (path.endsWith("/users/me/presence")) return respond({});
     if (path.endsWith("/alerts")) return respond({ alerts: [], unreadCount: 0 });
+    if (path.endsWith("/brands") || path.endsWith("/products/categories")) return respond([]);
+    if (path.endsWith("/products")) return respond({ products: [], total: 0, page: 1, pageSize: 20 });
 
     if (path.includes("/source-context")) {
       requests.sourceContext++;

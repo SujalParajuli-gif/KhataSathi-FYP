@@ -599,10 +599,7 @@ export default function CustomerDiscountsPage() {
         {/* this header keeps the title on one side and the rule reminder pill on the other when there is enough space */}
         <div className="flex flex-col justify-between gap-4 md:flex-row md:items-center">
           <div>
-            <h1 className="text-[24px] font-extrabold  text-[#000000]">
-              Customer Discounts
-            </h1>
-            <p className="mt-1 text-[13px] font-medium text-[#8C8889]">
+            <p className="text-[13px] font-medium text-[#8C8889]">
               Create, request, and review customer-specific discount rules.
             </p>
           </div>

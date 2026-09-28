@@ -144,7 +144,6 @@ export default function BinPage() {
       <div className="mb-6 flex flex-col gap-4 md:mb-8 md:flex-row md:items-center md:justify-between">
         <div>
           <div className="flex items-center gap-3">
-            <h1 className="text-2xl font-bold tracking-tight md:text-3xl">Bin</h1>
             <span className="rounded-full bg-slate-200 px-2 py-0.5 text-xs font-bold text-slate-600">
               {!hasLoaded ? "Loading" : error && records.length === 0 ? "Unavailable" : isStale ? "Previous results" : `${total} records`}
             </span>
@@ -254,6 +253,9 @@ export default function BinPage() {
                   <span className="lg:hidden">•</span>
                   <span className="lg:hidden">By {record.deletedBy?.name || "Unknown"}</span>
                 </div>
+                <div className="mt-2 text-xs font-semibold text-rose-700 lg:hidden">
+                  Permanently deleted on {formatDate(record.purgeAfter)}
+                </div>
               </div>
               <div className="hidden text-sm font-bold text-slate-700 lg:block">
                 {ENTITY_LABELS[record.entityType] || record.entityType}
@@ -269,21 +271,19 @@ export default function BinPage() {
                   type="button"
                   disabled={isStale}
                   onClick={() => setPendingAction({ type: "restore", record })}
-                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white text-[12px] font-extrabold hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto lg:px-3"
-                  title="Restore"
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Icon name="restore" sizePx={18} />
-                  <span className="hidden lg:inline">Restore</span>
+                  <span>Restore</span>
                 </button>
                 <button
                   type="button"
                   disabled={isStale}
                   onClick={() => setPendingAction({ type: "purge", record })}
-                  className="inline-flex h-[38px] w-[38px] items-center justify-center gap-2 rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] text-[12px] font-extrabold text-[#BE123C] hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50 lg:w-auto lg:px-3"
-                  title="Delete"
+                  className="inline-flex min-h-11 items-center justify-center gap-2 rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] px-3 text-[12px] font-extrabold text-[#BE123C] hover:bg-rose-100 disabled:cursor-not-allowed disabled:opacity-50"
                 >
                   <Icon name="delete" sizePx={18} />
-                  <span className="hidden lg:inline">Delete</span>
+                  <span>Delete forever</span>
                 </button>
               </div>
             </div>

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   applyImportBulkEdit,
   describeReviewPayloadChanges,
+  reviewPayloadChanges,
   displayImportSourceRegion,
   parsedImportRow,
   readableSourceHeader,
@@ -43,6 +44,18 @@ test("a supplier is not silently substituted for a missing product brand", () =>
   const draft = importRowToDraft({ fileName: "multi-brand.pdf", supplier: "Distributor", sourceType: "PDF" },
     { id: "row", rowNumber: 1, parsed: { name: "Jar" } });
   assert.equal(draft.brand, "");
+});
+
+test("bulk preview retains old and proposed values for non-price fields", () => {
+  const before = { brand: "Panas Jars", vendorSource: null, packageUnit: "PIECE", ratePerPiece: 100 };
+  const after = { ...before, brand: "Bagmati Plastic", vendorSource: "Supplier A", packageUnit: "BOX" };
+  assert.deepEqual(reviewPayloadChanges(before, after).map(({ label, before: oldValue, after: newValue }) =>
+    [label, oldValue, newValue]), [
+    ["Brand", "Panas Jars", "Bagmati Plastic"],
+    ["Vendor source", null, "Supplier A"],
+    ["Package unit", "PIECE", "BOX"],
+  ]);
+  assert.deepEqual(describeReviewPayloadChanges(before, after), ["Brand", "Vendor source", "Package unit"]);
 });
 test("missing extracted identity fields remain empty instead of inventing a product name or SKU", () => {
   const draft = importRowToDraft({ fileName: "catalog.pdf", sourceType: "PDF" },

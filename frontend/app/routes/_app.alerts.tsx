@@ -1,4 +1,5 @@
-import { useEffect, useId, useMemo, useState, useRef } from "react";
+import { useEffect, useId, useMemo, useState, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import Icon from "~/components/ui/Icon";
 import PaginationBar from "~/components/ui/PaginationBar";
 import { MobileFilterTabs } from "~/components/ui/MobileFilters";
@@ -95,7 +96,7 @@ function AlertRow({
   const isUnread = !alert.read;
 
   return (
-    <div className="group relative overflow-hidden rounded-[16px] border border-[#DADDE3] shadow-sm md:overflow-visible md:rounded-none md:border-x-0 md:border-t-0 md:border-b md:border-slate-100 md:shadow-none md:last:border-b-0">
+    <div className="group relative overflow-hidden rounded-[14px] border border-[#DADDE3] shadow-sm md:overflow-visible md:rounded-none md:border-x-0 md:border-t-0 md:border-b md:border-slate-100 md:shadow-none md:last:border-b-0">
       {/* Background Action Buttons (Revealed on Swipe) */}
       <div className="absolute inset-0 z-0 flex justify-between overflow-hidden rounded-[16px] bg-slate-100 md:hidden">
         {/* Left Side: Right Swipe Action (Read/Unread) */}
@@ -137,7 +138,7 @@ function AlertRow({
       <div
         {...swipeGesture}
         className={cn(
-          "relative z-10 flex w-full flex-col items-start gap-3 px-4 py-4 md:grid md:grid-cols-12 md:gap-4 md:px-6 md:py-5",
+          "relative z-10 flex w-full flex-col items-start gap-2 px-3 py-3 md:grid md:grid-cols-12 md:gap-4 md:px-5 md:py-4",
           isUnread ? tone.pageUnread : "bg-white hover:bg-[#ECEFF3]",
           isSwiping ? "transition-none" : "transition-transform duration-300"
         )}
@@ -416,8 +417,7 @@ export default function AlertsPage() {
         {/* Header Section */}
         <div className="mb-3 flex flex-col justify-between gap-2.5 md:mb-6 md:flex-row md:items-center md:gap-4">
           <div className="hidden md:block">
-            <h1 className="text-2xl font-black tracking-tight text-[#11120d]">Alerts</h1>
-            <p className="text-[13px] font-medium text-[#64748B] mt-0.5">
+            <p className="text-[13px] font-medium text-[#64748B]">
               {capabilities.businessMode === "CATALOG_ONLY"
                 ? "Stay updated on catalog, price, product, and essential system changes."
                 : capabilities.posEnabled

@@ -3375,10 +3375,11 @@ export async function setProductImportPriceMapping(input: {
                 rows: drafts.map((draft) => ({ parsed: draft.parsed || null })),
             }),
             reviewRevision,
+            rowRevisions: {},
         };
     }
 
-    const newReviewRevision = await prisma.$transaction(async (tx) => {
+    const savedRevisionState = await prisma.$transaction(async (tx) => {
         await lockEditableImportBatch(tx, batch.id);
         await assertImportReviewUnchanged(tx, batch.id, expectedReviewState);
         if (input.expectedReviewRevision) {
@@ -3421,13 +3422,18 @@ export async function setProductImportPriceMapping(input: {
             where: { batchId: batch.id },
             select: { id: true, parsed: true, status: true, resolution: true },
         });
-        return importReviewRevision(currentRows, mapping);
+        return {
+            reviewRevision: importReviewRevision(currentRows, mapping),
+            rowRevisions: Object.fromEntries(currentRows
+                .filter(row => targetRowIdSet?.has(row.id))
+                .map(row => [row.id, importRowRevision(row)])),
+        };
     });
     return { ...getImportPriceMappingState({
         extractionMeta: batch.extractionMeta,
         priceMapping: mapping,
         rows: drafts.map((draft) => ({ parsed: draft.parsed || null })),
-    }), reviewRevision: newReviewRevision };
+    }), ...savedRevisionState };
 }
 
 // Page extraction cannot identify repetitions on another page until the batch is assembled.
@@ -3606,7 +3612,11 @@ export async function saveReviewedProductImportRows(
         });
         return preparedRows.map(row => results.find(result => result.id === row.rowId)!);
     });
-    return { rows: savedRows, savedCount: savedRows.length, savedRowIds: savedRows.map((row) => row.id) };
+    return {
+        rows: savedRows.map((row) => ({ ...row, reviewRevision: importRowRevision(row) })),
+        savedCount: savedRows.length,
+        savedRowIds: savedRows.map((row) => row.id),
+    };
 }
 
 export async function setProductImportRowResolution(input: {

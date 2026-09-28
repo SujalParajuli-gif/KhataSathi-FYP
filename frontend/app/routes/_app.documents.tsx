@@ -1026,39 +1026,33 @@ export default function DocumentsPage() {
           return (
             <article
               key={doc.id}
-              role="button"
-              tabIndex={0}
-              onClick={() => {
-                setMobileFullPreview(false);
-                setSelectedDoc(doc);
-              }}
-              onKeyDown={(event) => {
-                if (event.key === "Enter" || event.key === " ") {
-                  event.preventDefault();
-                  setMobileFullPreview(false);
-                  setSelectedDoc(doc);
-                }
-              }}
-              className="w-full rounded-[16px] border border-[#DADDE3] bg-white p-3 text-left shadow-sm transition active:bg-[#F3F4F6]"
+              className="w-full rounded-[16px] border border-[#DADDE3] bg-white p-3 text-left shadow-sm"
             >
               <div className="flex items-start gap-3">
-                <div className="h-[68px] w-[68px] shrink-0 overflow-hidden rounded-[13px] border border-[#E5E7EB] bg-[#F8FAFC]">
-                  <DocumentThumbnail doc={doc} />
-                </div>
-                <div className="min-w-0 flex-1 pt-0.5">
-                  <div className="break-words text-[14px] font-extrabold leading-5 text-[#11120d]">
-                    {documentDisplayTitle(doc)}
-                  </div>
-                  <div className="mt-1.5 text-[11px] font-bold text-[#64748B]">
-                    {typeLabel(doc.documentType)} · {formatBytes(doc.fileSize)}
-                  </div>
-                </div>
                 <button
                   type="button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    setMobileActionDoc(doc);
+                  onClick={() => {
+                    setMobileFullPreview(false);
+                    setSelectedDoc(doc);
                   }}
+                  className="flex min-w-0 flex-1 items-start gap-3 rounded-lg text-left focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                  aria-label={`Preview ${documentDisplayTitle(doc)}`}
+                >
+                  <div className="h-[68px] w-[68px] shrink-0 overflow-hidden rounded-[13px] border border-[#E5E7EB] bg-[#F8FAFC]">
+                    <DocumentThumbnail doc={doc} />
+                  </div>
+                  <div className="min-w-0 flex-1 pt-0.5">
+                    <div className="break-words text-[14px] font-extrabold leading-5 text-[#11120d]">
+                      {documentDisplayTitle(doc)}
+                    </div>
+                    <div className="mt-1.5 text-[11px] font-bold text-[#64748B]">
+                      {typeLabel(doc.documentType)} · {formatBytes(doc.fileSize)}
+                    </div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setMobileActionDoc(doc)}
                   className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[12px] border border-[#E5E7EB] bg-white text-[#565449] active:bg-[#ECEFF3]"
                   aria-label={`Actions for ${documentDisplayTitle(doc)}`}
                 >
@@ -1928,8 +1922,7 @@ function DocumentTouchViewer({
     <div className="-mx-2 flex min-h-full flex-col bg-white px-1 pb-6 pt-3 text-[#11120d] md:mx-0 md:rounded-[28px] md:p-6">
       <div className="mb-4 hidden flex-col gap-3 md:flex md:flex-row md:items-center md:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-[#11120d]">Documents</h1>
-          <p className="mt-0.5 text-[13px] font-medium text-[#64748B]">
+          <p className="text-[13px] font-medium text-[#64748B]">
             Upload bills, find files, preview details, and stage documents for stock or import work.
           </p>
         </div>

@@ -1491,18 +1491,13 @@ export default function ProfilePage() {
 
   return (
     <div className="w-full pt-0 pb-4">
+      <div className="mb-5">
+        <h1 className="text-2xl font-bold text-slate-800">Account Settings</h1>
+        <p className="text-slate-500 text-sm">Manage your profile, security, and accounts.</p>
+      </div>
       <div className="grid grid-cols-1 items-start gap-8 lg:grid-cols-12">
-        <div className="lg:sticky lg:top-0 lg:col-span-4 lg:self-start">
-          <div className="mb-5">
-            <h1 className="text-2xl font-bold text-slate-800">
-              Account Settings
-            </h1>
-            <p className="text-slate-500 text-sm">
-              Manage your profile, security, and cashier accounts.
-            </p>
-          </div>
-
-          <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div className="contents lg:sticky lg:top-0 lg:col-span-4 lg:block lg:self-start">
+          <div className="order-3 overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm lg:order-none">
             <div className="space-y-5 px-5 py-6 sm:px-6">
               <div className="flex flex-col items-center text-center">
                 <div className="relative inline-flex">
@@ -1585,7 +1580,7 @@ export default function ProfilePage() {
             </div>
           </div>
 
-          <nav className="mt-6 bg-white rounded-xl border border-slate-200 p-2 space-y-1">
+          <nav className="order-1 space-y-1 rounded-xl border border-slate-200 bg-white p-2 lg:order-none lg:mt-6">
             <button
               onClick={() => {
                 setAdminTab("personal");
@@ -1629,12 +1624,12 @@ export default function ProfilePage() {
               )}
             >
               <GIcon name="group" sizePx={16} />
-              Cashier Management
+              Accounts
             </button>
           </nav>
         </div>
 
-        <div className="lg:col-span-8 lg:pt-[72px]">
+        <div className="order-2 lg:col-span-8 lg:order-none">
           {adminTab !== "users" ? (
             <ProfilePanel
               title={

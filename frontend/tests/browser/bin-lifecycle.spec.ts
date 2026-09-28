@@ -55,6 +55,10 @@ for (const width of [1440, 390]) {
       await expect(page.getByText("Bin is empty")).toHaveCount(0);
       await page.getByRole("button", { name: "Try again" }).click();
       await expect(page.getByText("Recovered document")).toBeVisible();
+      if (width < 1024) {
+        await expect(page.getByText("Permanently deleted on")).toBeVisible();
+        await expect(page.getByRole("button", { name: "Delete forever" })).toBeVisible();
+      }
       expect(requests).toBe(2);
     });
 

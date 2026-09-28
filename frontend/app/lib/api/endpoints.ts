@@ -1038,7 +1038,10 @@ export async function setProductImportPriceMappingApi(
         `/api/products/import-batches/${batchId}/price-mapping`,
         { mapping, rowIds, ...options },
     );
-    return res.data as ProductImportReviewPage["priceMapping"] & { reviewRevision: string };
+    return res.data as ProductImportReviewPage["priceMapping"] & {
+        reviewRevision: string;
+        rowRevisions: Record<string, string>;
+    };
 }
 
 export async function commitSavedProductImportBatchApi(batchId: string, commitToken: string, acknowledgeIncomplete = false) {
@@ -1776,6 +1779,8 @@ export async function listCategorizedHistoryApi(filters?: {
     from?: string;
     to?: string;
     q?: string;
+    action?: string;
+    actorId?: string;
     page?: number;
     pageSize?: number;
 }, options?: { signal?: AbortSignal }) {

@@ -221,10 +221,42 @@ test("a saved review chunk reports exactly which row IDs committed", async t => 
   mockMethod(prisma.productImportRow, "groupBy", async () => []);
   const review = await getProductImportReview({ batchId: "batch" });
   const result = await saveReviewedProductImportRows("batch", [{
-    ...source(), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision,
+    ...source({ name: "Updated container" }), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision,
   }], "actor");
   assert.deepEqual(result.savedRowIds, ["row-1"]);
   assert.equal(result.savedCount, 1);
+  assert.match(result.rows[0].reviewRevision, /^[a-f0-9]{64}$/);
+  assert.notEqual(result.rows[0].reviewRevision, review.rows[0].reviewRevision);
+  const updatedReview = await getProductImportReview({ batchId: "batch" });
+  assert.equal(result.rows[0].reviewRevision, updatedReview.rows[0].reviewRevision);
+  await assert.rejects(saveReviewedProductImportRows("batch", [{
+    ...source(), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision,
+  }], "actor"), /changed since it was previewed/);
+  const undone = await saveReviewedProductImportRows("batch", [{
+    ...source(), rowId: "row-1", expectedRevision: result.rows[0].reviewRevision,
+  }], "actor");
+  assert.deepEqual(undone.savedRowIds, ["row-1"]);
+  assert.equal((undone.rows[0].parsed as Record<string, any>).name, "Container");
+  const undoneReview = await getProductImportReview({ batchId: "batch" });
+  assert.equal(undone.rows[0].reviewRevision, undoneReview.rows[0].reviewRevision);
+});
+
+test("a later rejected review chunk does not erase an earlier committed chunk", async t => {
+  const { rows, mockMethod } = installBatchMocks(t, [source(), source({ name: "Second", sku: "AUTO-2" })]);
+  mockMethod(prisma.productImportRow, "count", async () => rows.length);
+  mockMethod(prisma.productImportRow, "groupBy", async () => []);
+  const review = await getProductImportReview({ batchId: "batch" });
+  const first = await saveReviewedProductImportRows("batch", [{
+    ...source({ name: "First saved" }), rowId: "row-1", expectedRevision: review.rows[0].reviewRevision,
+  }], "actor");
+  rows[1].parsed.name = "Changed elsewhere";
+  await assert.rejects(saveReviewedProductImportRows("batch", [{
+    ...source({ name: "Second", sku: "AUTO-2" }), rowId: "row-2",
+    expectedRevision: review.rows[1].reviewRevision,
+  }], "actor"), /changed since it was previewed/);
+  assert.deepEqual(first.savedRowIds, ["row-1"]);
+  assert.equal(rows[0].parsed.name, "First saved");
+  assert.equal(rows[1].parsed.name, "Changed elsewhere");
 });
 
 test("price mapping can be validated without writing and rejects a changed review on apply", async t => {
@@ -258,6 +290,20 @@ test("mapping validation rejects empty or foreign selected-row scopes", async t 
   const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, validateOnly: true };
   await assert.rejects(setProductImportPriceMapping({ ...input, rowIds: [] }), /Choose at least one row/);
   await assert.rejects(setProductImportPriceMapping({ ...input, rowIds: ["another-batch-row"] }), /do not belong/);
+});
+
+test("selected price mapping returns exact post-save revisions even if rows leave the active filter", async t => {
+  installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
+  const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" } };
+  await setProductImportPriceMapping(input);
+  const selected = { ...input, rowIds: ["row-1"] };
+  const validation = await setProductImportPriceMapping({ ...selected, validateOnly: true });
+  const mapped = await setProductImportPriceMapping({
+    ...selected, expectedReviewRevision: validation.reviewRevision,
+  });
+  const review = await getProductImportReview({ batchId: "batch" });
+  assert.deepEqual(Object.keys(mapped.rowRevisions), ["row-1"]);
+  assert.equal(mapped.rowRevisions["row-1"], review.rows[0].reviewRevision);
 });
 
 test("mapping revision detects a changed mapping even when row contents stay the same", async t => {

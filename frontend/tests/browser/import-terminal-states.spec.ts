@@ -11,8 +11,13 @@ async function setupMock(page: Page, status: string = "PROCESSING") {
     const respond = (body: unknown, status = 200) => route.fulfill({ status, contentType: "application/json", body: JSON.stringify(body) });
 
     if (path.endsWith("/auth/me")) return respond({ user });
+    if (path.endsWith("/users/me/presence")) return respond({});
     if (path.endsWith("/capabilities")) return respond({ businessMode: "CATALOG_ONLY", catalogEnabled: true });
     if (path.endsWith("/alerts") || path.endsWith("/alerts/read")) return respond({ alerts: [], unreadCount: 0, readKeys: [] });
+    if (path.endsWith("/brands") || path.endsWith("/products/categories")) return respond([]);
+    if (path.endsWith("/products/import-batches")) return respond({ batches: [], attentionCount: 0 });
+    if (path.endsWith("/settings/business")) return respond({ name: "Test store" });
+    if (path.endsWith("/documents")) return respond({ documents: [], total: 0, page: 1, totalPages: 0 });
     if (path.endsWith("/products")) return respond({ products: [], page: 1, totalPages: 0, totalCount: 0 });
 
     if (path.endsWith("/update-mock-status")) {
