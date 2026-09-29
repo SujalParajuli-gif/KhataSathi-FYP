@@ -3331,6 +3331,17 @@ export async function setProductImportPriceMapping(input: {
             }
         }
         const mappedParsed = parsedWithImportPriceMapping(parsed, mapping);
+        const mappedPriceBaseline = Object.fromEntries(
+            Object.entries(mapping).map(([key, destination]) => {
+                const candidate = prices.find(price => price.key === key);
+                return [destination, candidate && Number.isFinite(candidate.value) && candidate.value > 0 ? roundCurrency(candidate.value) : null];
+            }),
+        );
+        // The source mapping establishes the setup baseline. A manual review
+        // correction remains the visible price and must not be overwritten.
+        if (userHasManualRate) mappedParsed.ratePerPiece = parsed.ratePerPiece;
+        if (userHasManualRetail) mappedParsed.retailPrice = parsed.retailPrice;
+        if (userHasManualWholesale) mappedParsed.wholesalePrice = parsed.wholesalePrice;
         const derivedAvailability = !importReviewChanges(parsed, row.extracted).includes("Availability");
         if (derivedAvailability) {
             mappedParsed.availabilityStatus = [mappedParsed.ratePerPiece, mappedParsed.retailPrice, mappedParsed.wholesalePrice]
@@ -3341,7 +3352,7 @@ export async function setProductImportPriceMapping(input: {
             ...importMetadata(parsed.reviewSetupBaseline),
             ...Object.fromEntries([...new Set([...Object.values(state.mapping), ...Object.values(mapping), ...(derivedAvailability ? ["availabilityStatus"] : [])])]
                 .filter(key => ["ratePerPiece", "retailPrice", "wholesalePrice", "availabilityStatus"].includes(key))
-                .map(key => [key, mappedParsed[key] ?? null])),
+                .map(key => [key, key === "availabilityStatus" ? mappedParsed[key] ?? null : mappedPriceBaseline[key] ?? null])),
         };
         mappedParsed.reviewAcknowledgedWarnings = [];
         return {
@@ -3376,6 +3387,7 @@ export async function setProductImportPriceMapping(input: {
             }),
             reviewRevision,
             rowRevisions: {},
+            previewRows: rowsToProcess.map((row, index) => ({ id: row.id, parsed: drafts[index].parsed })),
         };
     }
 

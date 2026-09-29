@@ -80,6 +80,7 @@ type BulkEditPreview = {
   changedRows: number;
   skippedRows: number;
   priceConflicts: number;
+  mappingRevision?: string;
 };
 
 type ReviewFilter = "ALL" | "EDITED" | "ATTENTION" | "IGNORED" | NonNullable<ProductImportRow["comparisonStatus"]>;
@@ -390,6 +391,37 @@ function Field({
 
 const inputClass = "h-9 min-w-0 rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 text-[12.5px] font-medium text-[#11120d] outline-none transition-colors focus:border-[#11120d] focus:ring-2 focus:ring-[#11120d]/15";
 
+function BulkSectionHeader({ id, title, summary, configured, open, onClick }: {
+  id: string;
+  title: string;
+  summary: string;
+  configured: boolean;
+  open: boolean;
+  onClick: () => void;
+}) {
+  const icon = id === "catalog" ? "inventory_2" : id === "percentage" ? "calculate" : id === "reassign" ? "swap_vert" : "table_chart";
+  const iconTone = id === "percentage" ? "bg-violet-50 text-violet-700" : id === "extracted" ? "bg-slate-100 text-slate-700" : "bg-blue-50 text-blue-700";
+  return (
+    <button
+      id={`bulk-section-${id}`}
+      type="button"
+      aria-expanded={open}
+      onClick={onClick}
+      className={`flex min-h-14 w-full items-center gap-3 rounded-xl border px-3 py-2.5 text-left transition-colors focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 sm:px-4 ${open ? "border-blue-300 bg-blue-50/50" : "border-slate-200 bg-white hover:border-blue-200 hover:bg-slate-50"}`}
+    >
+      <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg ${iconTone}`}><Icon name={icon} sizePx={19} /></span>
+      <span className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-2 text-sm font-bold text-slate-950">
+          {title}
+          {configured ? <span className="rounded-full border border-blue-200 bg-blue-50 px-2 py-0.5 text-[11px] font-semibold text-blue-800">Configured</span> : null}
+        </span>
+        <span className="mt-0.5 block break-words text-xs text-slate-600">{summary}</span>
+      </span>
+      <Icon name={open ? "expand_less" : "expand_more"} sizePx={20} className="shrink-0 text-slate-600" />
+    </button>
+  );
+}
+
 
 export default function ProductImportReviewPage() {
   const { batchId = "" } = useParams();
@@ -435,7 +467,8 @@ export default function ProductImportReviewPage() {
   const [sourceDetailsOpen, setSourceDetailsOpen] = useState(false);
   const [sourceDetailSearch, setSourceDetailSearch] = useState("");
   const [bulkSaving, setBulkSaving] = useState(false);
-  const [bulkTab, setBulkTab] = useState<"catalog" | "percentage" | "reassign" | "extracted">("catalog");
+  const [bulkTab, setBulkTab] = useState<"catalog" | "percentage" | "reassign" | "extracted" | null>("catalog");
+  const [bulkFormError, setBulkFormError] = useState<{ section: "catalog" | "percentage" | "reassign" | "extracted"; message: string } | null>(null);
   const [bulkExtractedMapping, setBulkExtractedMapping] = useState<Record<string, ImportPriceField | "">>({});
   const [bulkBrand, setBulkBrand] = useState("");
   const [bulkCategory, setBulkCategory] = useState("");
@@ -453,7 +486,7 @@ export default function ProductImportReviewPage() {
   const [bulkPercentageDirection, setBulkPercentageDirection] = useState<"INCREASE" | "DECREASE">("INCREASE");
   const [bulkPercentage, setBulkPercentage] = useState("");
   const [bulkPreview, setBulkPreview] = useState<BulkEditPreview | null>(null);
-  const [diffFilter, setDiffFilter] = useState<"all" | "changed" | "skipped" | "conflicts">("all");
+  const [diffFilter, setDiffFilter] = useState<"all" | "changed" | "unchanged" | "skipped" | "conflicts">("all");
   const [diffSearch, setDiffSearch] = useState("");
   const [diffPage, setDiffPage] = useState(1);
   const [bulkSelectedDrafts, setBulkSelectedDrafts] = useState<ReviewedPdfImportRowPayload[]>([]);
@@ -926,6 +959,7 @@ export default function ProductImportReviewPage() {
     ],
   );
   const bulkDirty = Boolean(bulkOpen && bulkBaseline && bulkStateFingerprint !== bulkBaseline);
+  useEffect(() => { setBulkFormError(null); }, [bulkStateFingerprint]);
   const hasBulkCatalogChanges = Boolean(
     bulkBrand.trim() ||
     bulkCategory.trim() ||
@@ -937,6 +971,20 @@ export default function ProductImportReviewPage() {
   const hasBulkPercentageChanges = Boolean(bulkPercentageEnabled);
   const hasBulkReassignChanges = Boolean(bulkMoveFrom || bulkMoveTo);
   const hasBulkExtractedChanges = Boolean(Object.values(bulkExtractedMapping).some((v) => Boolean(v)));
+  const occupiedDestinationCount = bulkMoveFrom && bulkMoveTo && bulkMoveFrom !== bulkMoveTo
+    ? bulkSelectedDrafts.filter((row) => hasPositivePrice(row, bulkMoveFrom) && hasPositivePrice(row, bulkMoveTo)).length
+    : 0;
+
+  function rejectBulkEdit(section: "catalog" | "percentage" | "reassign" | "extracted", message: string, controlId?: string) {
+    setBulkTab(section);
+    setBulkFormError({ section, message });
+    window.requestAnimationFrame(() => {
+      const target = controlId ? document.getElementById(controlId) : document.getElementById(`bulk-section-${section}`);
+      target?.focus();
+      target?.scrollIntoView({ block: "nearest" });
+    });
+    return null;
+  }
 
   function priceFieldCount(field: ImportPriceField | "") {
     return field ? bulkPriceCounts[field] : 0;
@@ -1359,6 +1407,7 @@ export default function ProductImportReviewPage() {
     setBulkPercentageDirection("INCREASE");
     setBulkPercentage("");
     setBulkExtractedMapping({});
+    setBulkFormError(null);
     setBulkPreview(null);
     setDiffFilter("all");
     setDiffSearch("");
@@ -1408,41 +1457,34 @@ export default function ProductImportReviewPage() {
   }
 
   function configuredBulkEdit(): ImportBulkEditConfig | null {
+    setBulkFormError(null);
     if ((bulkMoveFrom || bulkMoveTo) && (!bulkMoveFrom || !bulkMoveTo)) {
-      showToast("danger", "Choose both the source and destination price fields.");
-      return null;
+      return rejectBulkEdit("reassign", "Choose both the source and destination price fields.", !bulkMoveFrom ? "bulk-move-from" : "bulk-move-to");
     }
     if (bulkMoveFrom && bulkMoveTo && bulkMoveFrom === bulkMoveTo) {
-      showToast("danger", "The source and destination price fields must be different.");
-      return null;
+      return rejectBulkEdit("reassign", "The source and destination price fields must be different.", "bulk-move-to");
     }
     if (bulkMoveFrom && priceFieldCount(bulkMoveFrom) === 0) {
-      showToast("danger", "No selected product has a value in the chosen source price field.");
-      return null;
+      return rejectBulkEdit("reassign", "No selected product has a value in the chosen source price field.", "bulk-move-from");
     }
 
     let percentageConfig: ImportBulkEditConfig["percentage"] = null;
     if (bulkPercentageEnabled) {
       const percent = numberInput(bulkPercentage);
       if (!bulkPercentageBase || !bulkPercentageTarget) {
-        showToast("danger", "Choose which price to calculate from and where to save the result.");
-        return null;
+        return rejectBulkEdit("percentage", "Choose which price to calculate from and where to save the result.", !bulkPercentageBase ? "bulk-percentage-base" : "bulk-percentage-target");
       }
       if (bulkPercentageBase === bulkPercentageTarget) {
-        showToast("danger", "The percentage base and target fields must be different.");
-        return null;
+        return rejectBulkEdit("percentage", "The percentage base and target fields must be different.", "bulk-percentage-target");
       }
       if (priceFieldCount(bulkPercentageBase) === 0) {
-        showToast("danger", "No selected product has that starting price. Choose a price that has a value.");
-        return null;
+        return rejectBulkEdit("percentage", "No selected product has that starting price. Choose a price that has a value.", "bulk-percentage-base");
       }
       if (percent === null || percent <= 0 || percent > 100) {
-        showToast("danger", "Enter a percentage greater than 0 and no more than 100.");
-        return null;
+        return rejectBulkEdit("percentage", "Enter a percentage greater than 0 and no more than 100.", "bulk-percentage-value");
       }
       if (bulkPercentageDirection === "DECREASE" && percent >= 100) {
-        showToast("danger", "A markdown must be less than 100%.");
-        return null;
+        return rejectBulkEdit("percentage", "A markdown must be less than 100%.", "bulk-percentage-value");
       }
       percentageConfig = {
         base: bulkPercentageBase,
@@ -1454,8 +1496,10 @@ export default function ProductImportReviewPage() {
 
     const packageQuantity = numberInput(bulkPackageQuantity);
     if (bulkPackageQuantity && (packageQuantity === null || packageQuantity <= 0)) {
-      showToast("danger", "Package quantity must be greater than zero.");
-      return null;
+      return rejectBulkEdit("catalog", "Package quantity must be greater than zero.", "bulk-package-quantity");
+    }
+    if (hasBulkExtractedChanges && (!review?.priceMapping?.complete || review.priceMapping.columns.some((column) => bulkExtractedMapping[column.key] !== review.priceMapping.mapping[column.key]))) {
+      return rejectBulkEdit("extracted", "Price-column meanings must be set for the whole file before you can reapply them to selected rows.");
     }
 
     const config: ImportBulkEditConfig = {
@@ -1480,8 +1524,7 @@ export default function ProductImportReviewPage() {
       || config.priceMove || config.percentage
       || hasBulkExtractedChanges
     )) {
-      showToast("info", "Configure at least one bulk change. Neutral fields leave products unchanged.");
-      return null;
+      return rejectBulkEdit("catalog", "Configure at least one change. Fields marked Keep current will not be changed.");
     }
     return config;
   }
@@ -1499,36 +1542,16 @@ export default function ProductImportReviewPage() {
       }
       const before = selectedRows.map((row) => draftPayload(importRowToDraft(review.batch, row)));
       let initialPayloads = before;
+      let mappingRevision: string | undefined;
 
       if (hasBulkExtractedChanges) {
-        initialPayloads = before.map((original) => {
-          const next = { ...original };
-          const rowObj = selectedRows.find((r) => r.id === original.rowId);
-          const parsed = rowObj ? parsedImportRow(rowObj) : {};
-          for (const [colKey, dest] of Object.entries(bulkExtractedMapping)) {
-            if (!dest || !["ratePerPiece", "retailPrice", "wholesalePrice"].includes(dest)) continue;
-            let val: number | null = null;
-            if (Array.isArray((parsed as any).extractedPrices)) {
-              const found = ((parsed as any).extractedPrices as any[]).find((p) => p && (p.key === colKey || p.label === colKey));
-              if (found && Number.isFinite(Number(found.value)) && Number(found.value) > 0) val = Number(found.value);
-            }
-            if (val === null) {
-              if (colKey === "sourceRatePerPiece" || colKey === "ratePerPiece" || colKey === "rate") {
-                if (Number((parsed as any).ratePerPiece) > 0) val = Number((parsed as any).ratePerPiece);
-              } else if (colKey === "sourceRetailPrice" || colKey === "retailPrice") {
-                if (Number((parsed as any).retailPrice) > 0) val = Number((parsed as any).retailPrice);
-              } else if (colKey === "sourceWholesalePrice" || colKey === "wholesalePrice") {
-                if (Number((parsed as any).wholesalePrice) > 0) val = Number((parsed as any).wholesalePrice);
-              } else if (Number((parsed as any)[colKey]) > 0) {
-                val = Number((parsed as any)[colKey]);
-              }
-            }
-            if (val !== null && val > 0) {
-              (next as any)[dest] = val;
-            }
-          }
-          return next;
-        });
+        const validation = await setProductImportPriceMappingApi(review.batch.id, bulkExtractedMapping as Record<string, ImportPriceField>, before.map((row) => row.rowId), { validateOnly: true });
+        const mappedRows = new Map((validation.previewRows || []).map((row) => [row.id, row.parsed]));
+        if (!validation.reviewRevision || selectedRows.some((row) => !mappedRows.has(row.id))) {
+          throw new Error("The server could not preview every selected row. Refresh the import review before trying again.");
+        }
+        mappingRevision = validation.reviewRevision;
+        initialPayloads = selectedRows.map((row) => draftPayload(importRowToDraft(review.batch, { ...row, parsed: mappedRows.get(row.id) })));
       }
 
       const results = initialPayloads.map((payload) => applyImportBulkEdit(payload, config));
@@ -1537,23 +1560,21 @@ export default function ProductImportReviewPage() {
         && !(Number(result.payload.ratePerPiece) > 0),
       ).length;
       if (missingRateRows > 0) {
-        showToast(
-          "danger",
-          `${missingRateRows.toLocaleString()} selected product${missingRateRows === 1 ? " has" : "s have"} no Rate. Add a Rate or mark ${missingRateRows === 1 ? "it" : "them"} Coming soon.`,
-        );
+        rejectBulkEdit("catalog", `${missingRateRows.toLocaleString()} selected product${missingRateRows === 1 ? " has" : "s have"} no Rate. Add a Rate or mark ${missingRateRows === 1 ? "it" : "them"} Coming soon.`, "bulk-section-catalog");
         return;
       }
 
       const previewItems: BulkEditPreviewItem[] = results.map((result, i) => {
         const orig = before[i];
+        const startingPriceRow = initialPayloads[i];
         const changedFields = describeReviewPayloadChanges(orig, result.payload);
         let skipReason: string | undefined = undefined;
         if (result.skippedOperations > 0) {
-          if (config.percentage && !hasPositivePrice(orig, config.percentage.base)) {
+          if (config.percentage && !hasPositivePrice(startingPriceRow, config.percentage.base)) {
             skipReason = `Missing ${priceFieldLabel(config.percentage.base)} to calculate percentage`;
-          } else if (config.priceMove && !hasPositivePrice(orig, config.priceMove.from)) {
+          } else if (config.priceMove && !hasPositivePrice(startingPriceRow, config.priceMove.from)) {
             skipReason = `Missing ${priceFieldLabel(config.priceMove.from)} to move`;
-          } else if (config.priceMove && config.priceMove.conflictPolicy === "KEEP" && hasPositivePrice(orig, config.priceMove.to)) {
+          } else if (config.priceMove && config.priceMove.conflictPolicy === "KEEP" && hasPositivePrice(startingPriceRow, config.priceMove.to)) {
             skipReason = `Existing ${priceFieldLabel(config.priceMove.to)} kept (conflict policy)`;
           } else {
             skipReason = "Operation skipped for this row";
@@ -1585,6 +1606,7 @@ export default function ProductImportReviewPage() {
         changedRows,
         skippedRows: previewItems.filter((item) => item.skippedOperations > 0).length,
         priceConflicts: previewItems.filter((item) => item.priceConflict).length,
+        mappingRevision,
       });
     } catch (bulkError: any) {
       if (bulkError?.response?.status === 409 && bulkError?.response?.data?.code === "IMPORT_REVIEW_STALE") {
@@ -1608,17 +1630,12 @@ export default function ProductImportReviewPage() {
       if (hasBulkExtractedChanges) {
         const targetIds = bulkPreview.after.map((r) => r.rowId);
         const mappingObj = bulkExtractedMapping as Record<string, "ratePerPiece" | "retailPrice" | "wholesalePrice">;
-        const validation = await setProductImportPriceMappingApi(
-          review!.batch.id,
-          mappingObj,
-          targetIds,
-          { validateOnly: true }
-        );
+        if (!bulkPreview.mappingRevision) throw new Error("The price mapping preview is missing its revision. Review the changes again.");
         const mapped = await setProductImportPriceMappingApi(
           review!.batch.id,
           mappingObj,
           targetIds,
-          { expectedReviewRevision: validation.reviewRevision }
+          { expectedReviewRevision: bulkPreview.mappingRevision }
         );
         mappingApplied = true;
 
@@ -3819,7 +3836,7 @@ export default function ProductImportReviewPage() {
           description="Apply the same changes to selected products. Unchanged fields keep their current values."
           onClose={() => { if (bulkSaving || bulkLoading) return; if (bulkPreview) setBulkPreview(null); else closeBulkEdit(); }}
           drawer
-          maxWidthClass="sm:max-w-[560px]"
+          maxWidthClass="sm:max-w-[680px]"
           bodyClassName="!p-0 flex min-h-0 flex-1 flex-col"
         >
             {/* Inventory Price Presence Bar */}
@@ -3831,15 +3848,15 @@ export default function ProductImportReviewPage() {
                 </div>
               ) : (
                 <div className="flex flex-wrap items-center gap-2 text-xs">
-                  <span className="text-[11px] font-bold uppercase tracking-wider text-[#64748B]">Prices present:</span>
+                  <span className="text-xs font-semibold text-slate-700">Prices in {bulkSelectedDrafts.length.toLocaleString()} selected {bulkSelectedDrafts.length === 1 ? "row" : "rows"}:</span>
                   <span className="inline-flex items-center gap-1 rounded-md border border-[#D8DBE0] bg-[#F8F9FA] px-2 py-0.5 text-xs font-medium text-[#334155]">
-                    Rate: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.ratePerPiece}</strong>
+                    Rate: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.ratePerPiece}/{bulkSelectedDrafts.length}</strong>
                   </span>
                   <span className="inline-flex items-center gap-1 rounded-md border border-[#D8DBE0] bg-[#F8F9FA] px-2 py-0.5 text-xs font-medium text-[#334155]">
-                    Retail: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.retailPrice}</strong>
+                    Retail: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.retailPrice}/{bulkSelectedDrafts.length}</strong>
                   </span>
                   <span className="inline-flex items-center gap-1 rounded-md border border-[#D8DBE0] bg-[#F8F9FA] px-2 py-0.5 text-xs font-medium text-[#334155]">
-                    Wholesale: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.wholesalePrice}</strong>
+                    Wholesale: <strong className="text-[#11120d] font-bold">{bulkPriceCounts.wholesalePrice}/{bulkSelectedDrafts.length}</strong>
                   </span>
                   {bulkPriceCounts.any === 0 ? (
                     <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-900">
@@ -3850,34 +3867,17 @@ export default function ProductImportReviewPage() {
               )}
             </div>
 
-            {/* Tab Navigation */}
-            <div className="border-b border-[#E2E4E8] bg-[#F8F9FA] px-5 py-2.5">
-              <div className="flex rounded-xl border border-[#D8DBE0] bg-white p-1 gap-1" aria-label="Bulk edit sections" role="group">
-                {([
-                  ["catalog", "Catalog", hasBulkCatalogChanges],
-                  ["percentage", "Calculation", hasBulkPercentageChanges],
-                  ["reassign", "Move / Swap", hasBulkReassignChanges],
-                  ["extracted", "Extracted", hasBulkExtractedChanges],
-                ] as const).filter(([key]) => key !== "extracted" || review?.priceMapping.required).map(([key, label, changed]) => (
-                  <button
-                    key={key}
-                    type="button"
-                    onClick={() => setBulkTab(key)}
-                    aria-pressed={bulkTab === key}
-                    className={`flex-1 flex items-center justify-center gap-1.5 py-1.5 px-2 rounded-lg text-xs font-bold transition focus-visible:ring-2 focus-visible:ring-[#11120d] ${bulkTab === key ? "bg-[#11120d] text-white" : "text-[#64748B] hover:text-[#11120d] hover:bg-[#F1F3F5]"}`}
-                  >
-                    {label}
-                    {changed ? <span className={`h-2 w-2 rounded-full ${bulkTab === key ? "bg-amber-400" : "bg-blue-600"}`} title="Changes configured" /> : null}
-                  </button>
-                ))}
-              </div>
-            </div>
-
-            {/* Scrollable Tab Content Body */}
-            <div className="flex-1 overflow-y-auto p-3 pb-5 sm:p-5 sm:pb-6 space-y-3 sm:space-y-4 overscroll-contain">
+            {/* A single scrolling area keeps the section controls and their fields together on mobile. */}
+            <div className="flex-1 overflow-y-auto scroll-pb-24 p-3 pb-5 sm:p-5 sm:pb-6 space-y-3 overscroll-contain" aria-label="Bulk edit sections">
+              <p className="flex items-start gap-2 rounded-lg border border-blue-200 bg-blue-50 px-3 py-2 text-xs leading-5 text-blue-900">
+                <Icon name="info" sizePx={17} className="mt-0.5 shrink-0 text-blue-700" />
+                <span>Changes can be combined. Order: saved price mapping (if selected) → catalog fields → move or exchange → calculation.</span>
+              </p>
+              <BulkSectionHeader id="catalog" title="Catalog fields" summary={hasBulkCatalogChanges ? "Brand, category, supplier, packaging or availability will change" : "Brand, category, supplier, packaging and availability"} configured={hasBulkCatalogChanges} open={bulkTab === "catalog"} onClick={() => setBulkTab(bulkTab === "catalog" ? null : "catalog")} />
               {/* Tab 1: Catalog Details */}
               {bulkTab === "catalog" && (
-                <div className="space-y-3 sm:space-y-4">
+                <div id="bulk-section-content-catalog" className="space-y-3 sm:space-y-4">
+                  {bulkFormError?.section === "catalog" ? <p role="alert" className="rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{bulkFormError.message}</p> : null}
                   {/* Organization Section */}
                   <div className="rounded-xl border border-[#D8DBE0] bg-white p-3.5 sm:p-4">
                     <div className="mb-3 flex items-center justify-between">
@@ -3928,13 +3928,16 @@ export default function ProductImportReviewPage() {
                         <p className="mt-0.5 text-xs font-medium text-[#11120d]">Set standard pack sizes across selected items.</p>
                       </div>
                     </div>
-                    <div className="grid gap-3 grid-cols-2">
+                    <div className="grid gap-3 sm:grid-cols-2">
                       <Field label="Package quantity">
                         <input
+                          id="bulk-package-quantity"
                           type="number"
+                          min="0"
+                          inputMode="decimal"
                           value={bulkPackageQuantity}
                           onChange={(event) => setBulkPackageQuantity(event.target.value)}
-                          className={inputClass}
+                          className={`${inputClass} !h-11 !text-base sm:!text-sm`}
                           placeholder="Keep current"
                         />
                       </Field>
@@ -3988,8 +3991,10 @@ export default function ProductImportReviewPage() {
               )}
 
               {/* Tab 2: Price Calculation */}
+              <BulkSectionHeader id="percentage" title="Calculation" summary={hasBulkPercentageChanges ? bulkPercentageBase && bulkPercentageTarget && bulkPercentage ? `${bulkPercentageDirection === "INCREASE" ? "Increase" : "Decrease"} ${priceFieldLabel(bulkPercentageTarget)} by ${bulkPercentage}% from ${priceFieldLabel(bulkPercentageBase)}` : "Finish choosing the base, target and percentage" : "Calculate a price from another price field"} configured={hasBulkPercentageChanges} open={bulkTab === "percentage"} onClick={() => setBulkTab(bulkTab === "percentage" ? null : "percentage")} />
               {bulkTab === "percentage" && (
-                <div className="space-y-4">
+                <div id="bulk-section-content-percentage" className="space-y-4">
+                  {bulkFormError?.section === "percentage" ? <p role="alert" className="rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{bulkFormError.message}</p> : null}
                   {/* Master Enable Card */}
                   <div className="rounded-xl border border-[#D8DBE0] bg-white p-4">
                     <label className={`flex items-center justify-between gap-3 ${bulkPriceCounts.any === 0 ? "cursor-not-allowed opacity-60" : "cursor-pointer"}`}>
@@ -4008,7 +4013,7 @@ export default function ProductImportReviewPage() {
                           className="sr-only peer"
                           aria-label="Enable percentage markup or markdown"
                         />
-                        <div className="w-11 h-6 bg-slate-200 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#11120d]" />
+                        <div className="w-11 h-6 bg-slate-200 rounded-full peer-focus-visible:ring-2 peer-focus-visible:ring-slate-900 peer-focus-visible:ring-offset-2 peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:border-slate-300 after:border after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#11120d]" />
                       </div>
                     </label>
 
@@ -4024,10 +4029,12 @@ export default function ProductImportReviewPage() {
                     <div className="grid gap-3 grid-cols-2">
                       <Field label="Calculate from (Base price)">
                         <ProjectSelect
+                          id="bulk-percentage-base"
+                          aria-label="Calculate from price field"
                           disabled={!bulkPercentageEnabled}
                           value={bulkPercentageBase}
                           onChange={(event) => setBulkPercentageBase(event.target.value as ImportPriceField | "")}
-                          className="h-10 w-full"
+                          className="h-11 w-full"
                         >
                           <option value="">Choose base price</option>
                           <option value="ratePerPiece" disabled={bulkPriceCounts.ratePerPiece === 0}>
@@ -4044,10 +4051,12 @@ export default function ProductImportReviewPage() {
 
                       <Field label="Save result to (Target field)">
                         <ProjectSelect
+                          id="bulk-percentage-target"
+                          aria-label="Save calculated price to field"
                           disabled={!bulkPercentageEnabled}
                           value={bulkPercentageTarget}
                           onChange={(event) => setBulkPercentageTarget(event.target.value as ImportPriceField | "")}
-                          className="h-10 w-full"
+                          className="h-11 w-full"
                         >
                           <option value="">Choose target field</option>
                           <option value="ratePerPiece">Rate</option>
@@ -4070,15 +4079,16 @@ export default function ProductImportReviewPage() {
                     )}
 
                     {/* Adjustment type and Percentage side-by-side with rigid fixed width */}
-                    <div className="grid grid-cols-[1fr_115px] gap-2.5 items-end">
+                    <div className="grid gap-2.5 sm:grid-cols-[1fr_130px] sm:items-end">
                       <Field label="Adjustment type">
                         <div className="grid grid-cols-2 rounded-xl border border-[#D4D7DC] bg-[#F1F3F5] p-1 gap-1">
                           <button
                             type="button"
                             disabled={!bulkPercentageEnabled}
                             onClick={() => setBulkPercentageDirection("INCREASE")}
-                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "INCREASE"
-                                ? "bg-white text-emerald-800 border border-emerald-200"
+                            aria-pressed={bulkPercentageDirection === "INCREASE"}
+                            className={`min-h-11 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "INCREASE"
+                                ? "bg-white text-slate-950 border border-slate-900"
                                 : "text-[#64748B] hover:text-[#11120d]"
                               }`}
                           >
@@ -4089,8 +4099,9 @@ export default function ProductImportReviewPage() {
                             type="button"
                             disabled={!bulkPercentageEnabled}
                             onClick={() => setBulkPercentageDirection("DECREASE")}
-                            className={`h-9 rounded-lg text-xs font-bold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "DECREASE"
-                                ? "bg-white text-rose-800 border border-rose-200"
+                            aria-pressed={bulkPercentageDirection === "DECREASE"}
+                            className={`min-h-11 rounded-lg text-sm font-semibold transition flex items-center justify-center gap-1.5 ${bulkPercentageDirection === "DECREASE"
+                                ? "bg-white text-slate-950 border border-slate-900"
                                 : "text-[#64748B] hover:text-[#11120d]"
                               }`}
                           >
@@ -4103,14 +4114,17 @@ export default function ProductImportReviewPage() {
                       <Field label="Percentage">
                         <label className="flex h-11 items-center rounded-xl border border-[#D4D7DC] bg-white px-3 focus-within:border-[#11120d]">
                           <input
+                            id="bulk-percentage-value"
+                            aria-label="Percentage adjustment"
                             disabled={!bulkPercentageEnabled}
                             type="number"
+                            inputMode="decimal"
                             min="0.01"
                             max="100"
                             step="0.01"
                             value={bulkPercentage}
                             onChange={(event) => setBulkPercentage(event.target.value)}
-                            className="min-w-0 flex-1 bg-transparent text-right text-xs font-bold outline-none"
+                            className="min-w-0 flex-1 bg-transparent text-right text-base font-bold outline-none sm:text-sm"
                             placeholder="0"
                           />
                           <span className="ml-1 text-xs font-bold text-[#64748B]">%</span>
@@ -4147,8 +4161,10 @@ export default function ProductImportReviewPage() {
               )}
 
               {/* Tab 3: Move / Swap Prices */}
+              <BulkSectionHeader id="reassign" title="Move or exchange prices" summary={hasBulkReassignChanges ? bulkMoveFrom && bulkMoveTo ? `${priceFieldLabel(bulkMoveFrom)} → ${priceFieldLabel(bulkMoveTo)} · ${bulkConflictPolicy === "KEEP" ? "keep occupied destinations" : bulkConflictPolicy === "REPLACE" ? "replace occupied destinations" : "exchange values"}` : "Finish choosing source and destination" : "Choose source, destination and occupied-price behavior"} configured={hasBulkReassignChanges} open={bulkTab === "reassign"} onClick={() => setBulkTab(bulkTab === "reassign" ? null : "reassign")} />
               {bulkTab === "reassign" && (
-                <div className="space-y-4">
+                <div id="bulk-section-content-reassign" className="space-y-4">
+                  {bulkFormError?.section === "reassign" ? <p role="alert" className="rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{bulkFormError.message}</p> : null}
                   <div className="rounded-xl border border-[#D8DBE0] bg-white p-4">
                     <div>
                       <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">Move or Exchange Prices</h3>
@@ -4163,13 +4179,15 @@ export default function ProductImportReviewPage() {
                       </div>
                     )}
 
-                    <div className="mt-4 grid gap-3 grid-cols-2">
+                    <div className="mt-4 grid gap-3 sm:grid-cols-2">
                       <Field label="Source field (Take from)">
                         <ProjectSelect
+                          id="bulk-move-from"
+                          aria-label="Source price field"
                           disabled={bulkPriceCounts.any === 0 || bulkLoading}
                           value={bulkMoveFrom}
                           onChange={(event) => setBulkMoveFrom(event.target.value as ImportPriceField | "")}
-                          className="h-10 w-full"
+                          className="h-11 w-full"
                         >
                           <option value="">Choose source price</option>
                           <option value="ratePerPiece" disabled={bulkPriceCounts.ratePerPiece === 0}>
@@ -4186,10 +4204,12 @@ export default function ProductImportReviewPage() {
 
                       <Field label="Destination field (Put into)">
                         <ProjectSelect
+                          id="bulk-move-to"
+                          aria-label="Destination price field"
                           disabled={bulkPriceCounts.any === 0 || bulkLoading}
                           value={bulkMoveTo}
                           onChange={(event) => setBulkMoveTo(event.target.value as ImportPriceField | "")}
-                          className="h-10 w-full"
+                          className="h-11 w-full"
                         >
                           <option value="">Choose destination field</option>
                           <option value="ratePerPiece">Rate</option>
@@ -4213,7 +4233,7 @@ export default function ProductImportReviewPage() {
 
                     {bulkMoveFrom && bulkMoveTo && bulkMoveFrom !== bulkMoveTo && (
                       <div className="mt-3 rounded-lg border border-blue-200 bg-blue-50/70 p-2.5 text-xs font-medium text-blue-900">
-                        {priceFieldCount(bulkMoveFrom)} source values found. {priceFieldCount(bulkMoveTo)} products already have a price in the destination.
+                        Currently, {priceFieldCount(bulkMoveFrom)} selected rows have a source price and {occupiedDestinationCount} have both a source price and an occupied destination. Final review recalculates this after any extracted-price mapping.
                       </div>
                     )}
                   </div>
@@ -4236,7 +4256,8 @@ export default function ProductImportReviewPage() {
                           key={value}
                           type="button"
                           onClick={() => setBulkConflictPolicy(value as "KEEP" | "REPLACE" | "SWAP")}
-                          className={`rounded-lg py-1.5 px-2 text-xs font-bold transition text-center ${bulkConflictPolicy === value
+                          aria-pressed={bulkConflictPolicy === value}
+                          className={`min-h-11 rounded-lg py-1.5 px-2 text-xs font-bold transition text-center ${bulkConflictPolicy === value
                               ? "bg-[#11120d] text-white"
                               : "text-[#5F6570] hover:text-[#11120d] hover:bg-white/60"
                             }`}
@@ -4250,24 +4271,16 @@ export default function ProductImportReviewPage() {
                     <div className="text-[11px] font-medium text-[#64748B] min-h-[16px]">
                       {bulkConflictPolicy === "KEEP" && "Skip move for rows where destination already has a price."}
                       {bulkConflictPolicy === "REPLACE" && "Overwrite existing destination price with source price."}
-                      {bulkConflictPolicy === "SWAP" && "Swap values between source and destination fields."}
+                      {bulkConflictPolicy === "SWAP" && "Exchange both values. If the destination is empty, its empty value moves to the source, so this becomes a move."}
                     </div>
 
                     {/* Clear source field toggle with Switch component */}
-                    <div
-                      onClick={() => {
-                        if (bulkConflictPolicy !== "SWAP") {
-                          setBulkClearSource(!bulkClearSource);
-                        }
-                      }}
-                      className={`pt-3 border-t border-[#E2E4E8] flex items-center justify-between gap-3 transition select-none ${bulkConflictPolicy === "SWAP" ? "opacity-40 pointer-events-none" : "cursor-pointer"
-                        }`}
-                    >
+                    <div className={`pt-3 border-t border-[#E2E4E8] flex items-center justify-between gap-3 ${bulkConflictPolicy === "SWAP" ? "opacity-50" : ""}`}>
                       <div className="min-w-0">
                         <div className="text-xs font-bold text-[#11120d]">Clear source price after move</div>
                         <div className="text-[11px] text-[#64748B]">Remove price from source field once copied</div>
                       </div>
-                      <div className="shrink-0" onClick={(e) => e.stopPropagation()}>
+                      <div className="shrink-0">
                         <Switch
                           checked={bulkClearSource && bulkConflictPolicy !== "SWAP"}
                           onChange={setBulkClearSource}
@@ -4281,69 +4294,36 @@ export default function ProductImportReviewPage() {
               )}
 
               {/* Tab 4: Extracted Prices */}
+              {review?.priceMapping.required ? <BulkSectionHeader id="extracted" title="Extracted prices" summary={hasBulkExtractedChanges ? "Reapply saved column meanings to selected rows" : "Use the file’s saved price-column meanings"} configured={hasBulkExtractedChanges} open={bulkTab === "extracted"} onClick={() => setBulkTab(bulkTab === "extracted" ? null : "extracted")} /> : null}
               {bulkTab === "extracted" && review?.priceMapping.required && (
-                <div className="space-y-4">
-                  <div className="rounded-xl border border-[#D8DBE0] bg-white p-4 space-y-1.5">
-                    <div className="flex items-center justify-between">
-                      <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">
-                        Exchange Extracted Columns
-                      </h3>
-                      <span className="rounded-full bg-emerald-50 border border-emerald-200 px-2 py-0.5 text-[10px] font-bold text-emerald-800">
-                        {selectedCount.toLocaleString()} selected
-                      </span>
-                    </div>
-                    <p className="text-xs font-medium text-[#11120d] leading-relaxed">
-                      Assign source columns from the file into Rate, Retail, or Wholesale for the selected products.
+                <div id="bulk-section-content-extracted" className="space-y-4">
+                  {bulkFormError?.section === "extracted" ? <p role="alert" className="rounded-lg border border-rose-300 bg-rose-50 p-3 text-sm font-semibold text-rose-800">{bulkFormError.message}</p> : null}
+                  <div className="rounded-xl border border-slate-200 bg-white p-4">
+                    <h3 className="text-sm font-bold text-slate-950">Saved mapping for this file</h3>
+                    <p className="mt-1 text-xs leading-5 text-slate-600">
+                      Column meanings belong to the whole import, not just this selection. Change them in Price setup before using bulk edit. Here you can reapply the saved mapping to {selectedCount.toLocaleString()} selected rows.
                     </p>
-                  </div>
-
-                  <div className="space-y-3">
-                    {review.priceMapping.columns.map((column) => {
-                      const details = getPriceColumnDetails(column.key, review.rows, activeRow, selectedIds);
-                      return (
-                        <div key={column.key} className="rounded-xl border border-[#D8DBE0] bg-white p-4 space-y-2.5">
-                          <div className="flex items-start justify-between gap-2 flex-wrap">
-                            <div>
-                              <div className="text-[10px] font-extrabold uppercase tracking-wider text-[#64748B]">Source Column</div>
-                              <div className="text-sm font-extrabold text-[#11120d] mt-0.5">{column.label}</div>
-                            </div>
-                            <div className="text-right">
-                              {details.sample ? (
-                                <div className="inline-flex items-center gap-1.5 rounded-lg border border-[#D8DBE0] bg-[#F8F9FA] px-2.5 py-1 text-xs font-semibold text-[#11120d]">
-                                  <span className="text-[#64748B]">Sample:</span>
-                                  <strong className="text-[#11120d]">NPR {details.sample.value.toLocaleString()}</strong>
-                                </div>
-                              ) : (
-                                <span className="text-xs text-[#94A3B8]">No values in selection</span>
-                              )}
-                            </div>
-                          </div>
-
-                          {details.sample && (
-                            <div className="text-[11px] text-[#64748B]">
-                              Found in {details.totalMatching} of {selectedCount} selected products{details.sample.name ? ` (e.g. “${details.sample.name}”)` : ""}
-                            </div>
-                          )}
-
-                          <Field label="Assign to price field">
-                            <ProjectSelect
-                              value={bulkExtractedMapping[column.key] || ""}
-                              onChange={(event) => {
-                                const val = event.target.value as ImportPriceField | "";
-                                setBulkExtractedMapping((curr) => ({ ...curr, [column.key]: val }));
-                              }}
-                              className="h-10 w-full"
-                              aria-label={`Assign ${column.label}`}
-                            >
-                              <option value="">Leave unassigned (no change)</option>
-                              <option value="ratePerPiece">Rate (Cost price)</option>
-                              <option value="retailPrice">Retail price</option>
-                              <option value="wholesalePrice">Wholesale price</option>
-                            </ProjectSelect>
-                          </Field>
+                    <dl className="mt-3 divide-y divide-slate-100 rounded-lg border border-slate-200">
+                      {review.priceMapping.columns.map((column) => (
+                        <div key={column.key} className="flex items-center justify-between gap-3 px-3 py-2 text-sm">
+                          <dt className="min-w-0 break-words text-slate-700">{column.label}</dt>
+                          <dd className="shrink-0 font-semibold text-slate-950">{review.priceMapping.mapping[column.key] ? priceFieldLabel(review.priceMapping.mapping[column.key] as ImportPriceField) : "Not mapped"}</dd>
                         </div>
-                      );
-                    })}
+                      ))}
+                    </dl>
+                    {!review.priceMapping.complete ? <p className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">Complete Price setup for the whole file before reapplying extracted prices to selected rows.</p> : null}
+                    <label className="mt-4 flex min-h-11 items-center gap-3 rounded-lg border border-slate-200 p-3 text-sm font-semibold text-slate-900">
+                      <input
+                        type="checkbox"
+                        checked={hasBulkExtractedChanges}
+                        disabled={!review.priceMapping.complete}
+                        onChange={(event) => setBulkExtractedMapping(event.target.checked
+                          ? Object.fromEntries(review.priceMapping.columns.map((column) => [column.key, review.priceMapping.mapping[column.key] as ImportPriceField]))
+                          : {})}
+                        className="h-5 w-5 shrink-0 accent-slate-950"
+                      />
+                      Reapply saved mapping to selected rows
+                    </label>
                   </div>
                 </div>
               )}
@@ -4355,7 +4335,7 @@ export default function ProductImportReviewPage() {
                 type="button"
                 onClick={closeBulkEdit}
                 disabled={bulkSaving}
-                className="h-10 rounded-xl border border-[#D4D7DC] px-4 text-xs font-bold text-[#374151] hover:bg-[#F3F4F6] transition"
+                className="min-h-11 rounded-xl border border-[#D4D7DC] px-4 text-sm font-semibold text-[#374151] hover:bg-[#F3F4F6] transition"
               >
                 Cancel
               </button>
@@ -4363,7 +4343,7 @@ export default function ProductImportReviewPage() {
                 type="button"
                 onClick={() => void prepareBulkEditReview()}
                 disabled={bulkSaving || selectedCount === 0}
-                className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#11120d] px-5 text-xs font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-45"
+                className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#11120d] px-5 text-sm font-semibold text-white transition hover:bg-[#2a2c27] disabled:opacity-45"
               >
                 {bulkSaving ? (
                   <>
@@ -4398,6 +4378,7 @@ export default function ProductImportReviewPage() {
 
               const filteredItems = allItems.filter((item) => {
                 if (diffFilter === "changed" && item.changedFields.length === 0) return false;
+                if (diffFilter === "unchanged" && item.changedFields.length > 0) return false;
                 if (diffFilter === "skipped" && item.skippedOperations === 0) return false;
                 if (diffFilter === "conflicts" && !item.priceConflict) return false;
 
@@ -4433,73 +4414,30 @@ export default function ProductImportReviewPage() {
                   bodyClassName="!p-0 flex min-h-0 flex-1 flex-col"
                 >
                   <div className="flex-1 min-h-0 flex flex-col p-4 sm:p-5 gap-3 overflow-hidden">
-                    {/* Metric Summary Card: Interactive Filter Tabs */}
-                    <div className="rounded-xl border border-[#D8DBE0] bg-white p-4 shrink-0">
-                      <div className="flex items-center justify-between mb-3 flex-wrap gap-2">
-                        <h3 className="text-xs font-extrabold uppercase tracking-wider text-[#64748B]">Impact Summary (Click to Filter)</h3>
-                        <div className="flex flex-wrap gap-1.5">
-                          {bulkPreview.fields.map((field) => (
-                            <span key={field} className="rounded-full border border-blue-200 bg-blue-50 px-2.5 py-0.5 text-[11px] font-bold text-blue-900">
-                              {field}
-                            </span>
-                          ))}
-                        </div>
+                    <div className="shrink-0 rounded-xl border border-slate-200 bg-white p-2.5 sm:p-3">
+                      <p className="flex flex-wrap items-center gap-x-2 gap-y-1 text-xs text-slate-700">
+                        <strong>{allItems.length.toLocaleString()} selected</strong>
+                        <span className="font-semibold text-blue-800">{bulkPreview.changedRows.toLocaleString()} will change</span>
+                        <span>{(allItems.length - bulkPreview.changedRows).toLocaleString()} unchanged</span>
+                        {bulkPreview.skippedRows > 0 ? <span className="font-semibold text-amber-800">{bulkPreview.skippedRows.toLocaleString()} rows with skipped operations</span> : null}
+                        {bulkPreview.priceConflicts > 0 ? <span className="font-semibold text-amber-800">{bulkPreview.priceConflicts.toLocaleString()} occupied destinations</span> : null}
+                      </p>
+                      <div className="mt-2 flex gap-1.5 overflow-x-auto pb-0.5" role="group" aria-label="Filter preview rows">
+                        {([
+                          ["all", "All", allItems.length],
+                          ["changed", "Will change", bulkPreview.changedRows],
+                          ["unchanged", "Unchanged", allItems.length - bulkPreview.changedRows],
+                          ["skipped", "Skipped operations", bulkPreview.skippedRows],
+                          ["conflicts", "Occupied destination", bulkPreview.priceConflicts],
+                        ] as const).map(([value, label, count]) => (
+                          <button key={value} type="button" aria-pressed={diffFilter === value}
+                            onClick={() => { setDiffFilter(value); setDiffPage(1); }}
+                            className={`min-h-10 shrink-0 rounded-lg border px-2.5 text-xs font-semibold focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-700 ${diffFilter === value ? "border-blue-700 bg-blue-700 text-white" : "border-slate-200 bg-white text-slate-700 hover:border-blue-200 hover:bg-blue-50/40"}`}>
+                            {label} {count.toLocaleString()}
+                          </button>
+                        ))}
                       </div>
-
-                      <div className="grid grid-cols-3 gap-2.5">
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDiffFilter(diffFilter === "changed" ? "all" : "changed");
-                            setDiffPage(1);
-                          }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "changed"
-                              ? "bg-emerald-100/80 border-emerald-600 ring-2 ring-emerald-600/30"
-                              : "bg-emerald-50/80 border-emerald-200 hover:bg-emerald-100/50"
-                            }`}
-                        >
-                          <div className="text-xl font-extrabold text-emerald-900">{bulkPreview.changedRows.toLocaleString()}</div>
-                          <div className="text-[11px] font-bold text-emerald-800">Will change</div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDiffFilter(diffFilter === "skipped" ? "all" : "skipped");
-                            setDiffPage(1);
-                          }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "skipped"
-                              ? "bg-amber-100/90 border-amber-600 ring-2 ring-amber-600/30"
-                              : bulkPreview.skippedRows > 0
-                                ? "bg-amber-50/80 border-amber-200 text-amber-900 hover:bg-amber-100/50"
-                                : "bg-[#F8F9FA] border-[#E2E4E8] text-[#64748B]"
-                            }`}
-                        >
-                          <div className={`text-xl font-extrabold ${bulkPreview.skippedRows > 0 ? "text-amber-900" : "text-[#11120d]"}`}>
-                            {bulkPreview.skippedRows.toLocaleString()}
-                          </div>
-                          <div className="text-xs font-semibold">Rows with skipped operations</div>
-                        </button>
-
-                        <button
-                          type="button"
-                          onClick={() => {
-                            setDiffFilter(diffFilter === "conflicts" ? "all" : "conflicts");
-                            setDiffPage(1);
-                          }}
-                          className={`rounded-xl p-3 text-center border transition text-left sm:text-center ${diffFilter === "conflicts"
-                              ? "bg-rose-100/90 border-rose-600 ring-2 ring-rose-600/30"
-                              : bulkPreview.priceConflicts > 0
-                                ? "bg-amber-50/80 border-amber-200 text-amber-900 hover:bg-amber-100/50"
-                                : "bg-[#F8F9FA] border-[#E2E4E8] text-[#64748B]"
-                            }`}
-                        >
-                          <div className={`text-xl font-extrabold ${bulkPreview.priceConflicts > 0 ? "text-amber-900" : "text-[#11120d]"}`}>
-                            {bulkPreview.priceConflicts.toLocaleString()}
-                          </div>
-                          <div className="text-[11px] font-semibold">Conflicts</div>
-                        </button>
-                      </div>
+                      {bulkPreview.fields.length > 0 ? <details className="mt-1.5 text-xs text-slate-600"><summary className="cursor-pointer font-medium">Fields affected ({bulkPreview.fields.length})</summary><p className="mt-1 break-words">{bulkPreview.fields.join(", ")}</p></details> : null}
                     </div>
 
                     {/* Filter & Search Bar */}
@@ -4513,30 +4451,20 @@ export default function ProductImportReviewPage() {
                             setDiffPage(1);
                           }}
                           placeholder="Search preview by name, SKU, brand…"
-                          className="h-9 w-full rounded-xl border border-[#D4D7DC] pl-9 pr-9 text-xs font-medium outline-none focus:border-[#11120d] bg-white"
+                          aria-label="Search products in bulk change preview"
+                          className="h-11 w-full rounded-xl border border-[#D4D7DC] bg-white pl-9 pr-11 text-base font-medium outline-none focus:border-[#11120d] sm:text-sm"
                         />
                         {diffSearch ? (
                           <button
                             type="button"
                             onClick={() => { setDiffSearch(""); setDiffPage(1); }}
-                            className="absolute right-2 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full text-[#7A7F89] hover:bg-slate-100 hover:text-[#11120d] transition"
-                            title="Clear search"
+                            className="absolute right-1 top-1/2 -translate-y-1/2 flex h-10 w-10 items-center justify-center rounded-full text-[#7A7F89] hover:bg-slate-100 hover:text-[#11120d] transition"
+                            aria-label="Clear preview search"
                           >
                             <Icon name="close" sizePx={15} />
                           </button>
                         ) : null}
                       </div>
-                      {diffFilter !== "all" ? (
-                        <button
-                          type="button"
-                          onClick={() => { setDiffFilter("all"); setDiffPage(1); }}
-                          className="inline-flex h-9 shrink-0 items-center gap-1.5 rounded-xl border border-[#D4D7DC] bg-white px-2.5 text-xs font-bold text-[#64748B] hover:text-[#11120d]"
-                          title="Reset filter to all rows"
-                        >
-                          <span>Filter: {diffFilter}</span>
-                          <Icon name="close" sizePx={13} />
-                        </button>
-                      ) : null}
                     </div>
 
                     {/* Diff Review Table: Expands to fill available height, eliminating empty space */}
@@ -4580,8 +4508,8 @@ export default function ProductImportReviewPage() {
                                       </span>
                                     ) : null}
                                     {priceConflict ? (
-                                      <span className="rounded-md border border-rose-300 bg-rose-50 px-2 py-0.5 text-[10px] font-bold text-rose-900 break-words leading-tight">
-                                        Conflict resolved
+                                      <span className="rounded-md border border-amber-200 bg-amber-50 px-2 py-0.5 text-xs font-semibold text-amber-900 break-words leading-tight">
+                                        Occupied destination: {bulkConflictPolicy === "KEEP" ? "kept existing" : bulkConflictPolicy === "REPLACE" ? "replaced existing" : "exchanged values"}
                                       </span>
                                     ) : null}
                                   </div>
@@ -4589,47 +4517,46 @@ export default function ProductImportReviewPage() {
 
                                 <div className="space-y-1">
                                   {priceChanges.map(([label, current, next]) => (
-                                    <div key={label} className="flex items-center gap-2 text-xs flex-wrap min-w-0">
-                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">{label}:</span>
-                                      <span className="text-[#64748B] line-through">{reviewPrice(current)}</span>
-                                      <span className="text-[#94A3B8]">→</span>
-                                      <span className="font-bold text-emerald-800 bg-emerald-50 px-2 py-0.5 rounded-md border border-emerald-200">
-                                        {reviewPrice(next)}
-                                      </span>
+                                    <div key={label} className="grid min-w-0 gap-1 sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
+                                      <span className="text-xs font-semibold text-slate-700">{label}</span>
+                                      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2 text-xs tabular-nums">
+                                        <span className="min-w-0 break-words text-slate-600"><span className="block text-[11px] font-medium">Current</span>{reviewPrice(current)}</span>
+                                        <span aria-hidden="true" className="text-slate-400">→</span>
+                                        <span className="min-w-0 break-words rounded-md border border-emerald-200 bg-emerald-50 px-2 py-1 font-bold text-emerald-900"><span className="block text-[11px] font-medium">Proposed</span>{reviewPrice(next)}</span>
+                                      </div>
                                     </div>
                                   ))}
                                   {availabilityChanged && (
-                                    <div className="flex items-center gap-2 text-xs flex-wrap min-w-0">
-                                      <span className="w-24 sm:w-28 text-[#64748B] shrink-0 font-medium">Availability:</span>
-                                      <span className="text-[#64748B]">{availabilityText(before.availabilityStatus)}</span>
-                                      <span className="text-[#94A3B8]">→</span>
-                                      <span className="font-bold text-[#11120d] bg-slate-100 px-2 py-0.5 rounded-md border border-slate-200">
-                                        {availabilityText(after.availabilityStatus)}
-                                      </span>
+                                    <div className="grid min-w-0 gap-1 text-xs sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
+                                      <span className="font-semibold text-slate-700">Availability</span>
+                                      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                                        <span className="min-w-0 break-words text-slate-600"><span className="block text-[11px]">Current</span>{availabilityText(before.availabilityStatus)}</span>
+                                        <span aria-hidden="true" className="text-slate-400">→</span>
+                                        <span className="min-w-0 break-words rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-semibold text-slate-950"><span className="block text-[11px]">Proposed</span>{availabilityText(after.availabilityStatus)}</span>
+                                      </div>
                                     </div>
                                   )}
                                   {otherChanges.map((change) => (
-                                    <div key={change.field} className="flex min-w-0 flex-wrap items-start gap-2 text-xs">
-                                      <span className="w-24 shrink-0 font-medium text-[#64748B] sm:w-28">{change.label}:</span>
-                                      <span className="min-w-0 break-words text-[#64748B]">{reviewFieldValue(change.before)}</span>
-                                      <span aria-hidden="true" className="text-[#94A3B8]">→</span>
-                                      <span className="min-w-0 break-words rounded-md border border-slate-200 bg-slate-100 px-2 py-0.5 font-bold text-[#11120d]">
-                                        {reviewFieldValue(change.after)}
-                                      </span>
+                                    <div key={change.field} className="grid min-w-0 gap-1 text-xs sm:grid-cols-[120px_minmax(0,1fr)] sm:items-center">
+                                      <span className="font-semibold text-slate-700">{change.label}</span>
+                                      <div className="grid min-w-0 grid-cols-[minmax(0,1fr)_auto_minmax(0,1fr)] items-center gap-2">
+                                        <span className="min-w-0 break-words text-slate-600"><span className="block text-[11px]">Current</span>{reviewFieldValue(change.before)}</span>
+                                        <span aria-hidden="true" className="text-slate-400">→</span>
+                                        <span className="min-w-0 break-words rounded-md border border-slate-200 bg-slate-50 px-2 py-1 font-semibold text-slate-950"><span className="block text-[11px]">Proposed</span>{reviewFieldValue(change.after)}</span>
+                                      </div>
                                     </div>
                                   ))}
-                                  {!skipReason && changedFields.length === 0 && (
-                                    <div className="text-[11px] text-[#7A7F89] italic">
-                                      No values modified for this product.
-                                    </div>
+                                  {changedFields.length === 0 && (
+                                    <div className="text-xs font-medium text-slate-600">Unchanged{skipReason ? "; the noted operation was skipped" : "; no values will be saved for this product"}.</div>
                                   )}
                                 </div>
                               </div>
                             );
                           })
                         ) : (
-                          <div className="p-8 text-center text-xs font-semibold text-[#7A7F89]">
-                            No preview rows match the current filter or search.
+                          <div className="p-8 text-center text-sm text-slate-600">
+                            <p>No products match this preview filter or search.</p>
+                            <button type="button" onClick={() => { setDiffFilter("all"); setDiffSearch(""); setDiffPage(1); }} className="mt-3 min-h-10 rounded-lg border border-slate-300 px-4 font-semibold text-slate-900 hover:bg-slate-50">Show all selected products</button>
                           </div>
                         )}
                       </div>
@@ -4645,7 +4572,7 @@ export default function ProductImportReviewPage() {
                               type="button"
                               disabled={currentPage <= 1}
                               onClick={() => setDiffPage((p) => Math.max(1, p - 1))}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#D4D7DC] bg-white text-[#11120d] disabled:opacity-30 hover:bg-[#F3F4F6]"
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[#D4D7DC] bg-white text-[#11120d] disabled:opacity-30 hover:bg-[#F3F4F6] sm:h-9 sm:w-9"
                               aria-label="Previous page"
                             >
                               <Icon name="chevron_left" sizePx={16} />
@@ -4657,7 +4584,7 @@ export default function ProductImportReviewPage() {
                               type="button"
                               disabled={currentPage >= totalPages}
                               onClick={() => setDiffPage((p) => Math.min(totalPages, p + 1))}
-                              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[#D4D7DC] bg-white text-[#11120d] disabled:opacity-30 hover:bg-[#F3F4F6]"
+                              className="inline-flex h-10 w-10 items-center justify-center rounded-lg border border-[#D4D7DC] bg-white text-[#11120d] disabled:opacity-30 hover:bg-[#F3F4F6] sm:h-9 sm:w-9"
                               aria-label="Next page"
                             >
                               <Icon name="chevron_right" sizePx={16} />
@@ -4668,12 +4595,12 @@ export default function ProductImportReviewPage() {
                     </div>
                   </div>
 
-                  <footer className="sticky bottom-0 z-30 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4">
+                  <footer className="sticky bottom-0 z-30 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
                     <button
                       type="button"
                       onClick={() => setBulkPreview(null)}
                       disabled={bulkSaving}
-                      className="h-10 rounded-xl border border-[#D4D7DC] px-4 text-xs font-bold text-[#374151] hover:bg-[#F3F4F6] transition"
+                      className="min-h-11 rounded-xl border border-[#D4D7DC] px-4 text-sm font-semibold text-[#374151] hover:bg-[#F3F4F6] transition"
                     >
                       Go back
                     </button>
@@ -4681,7 +4608,7 @@ export default function ProductImportReviewPage() {
                       type="button"
                       onClick={() => void applyReviewedBulkEdit()}
                       disabled={bulkSaving}
-                      className="inline-flex h-10 items-center justify-center gap-2 rounded-xl bg-[#11120d] px-5 text-xs font-bold text-white transition hover:bg-[#2a2c27] disabled:opacity-45"
+                      className="inline-flex min-h-11 items-center justify-center gap-2 rounded-xl bg-[#11120d] px-5 text-sm font-semibold text-white transition hover:bg-[#2a2c27] disabled:opacity-45"
                     >
                       <Icon name="check" sizePx={16} />
                       <span>{bulkSaving ? "Applying…" : `Confirm ${bulkPreview.changedRows.toLocaleString()} changes`}</span>

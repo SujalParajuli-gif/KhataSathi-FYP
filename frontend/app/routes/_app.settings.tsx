@@ -1000,6 +1000,7 @@ export default function SettingsPage() {
   );
   const [backupScheduleDraft, setBackupScheduleDraft] =
     useState<BackupScheduleDraft>(INITIAL_BACKUP_SCHEDULE);
+  const [backupScheduleEditorOpen, setBackupScheduleEditorOpen] = useState(false);
   const [backupScheduleBusy, setBackupScheduleBusy] = useState(false);
   const [backupScheduleError, setBackupScheduleError] = useState("");
   const [storageIntegrityReport, setStorageIntegrityReport] =
@@ -1908,9 +1909,11 @@ export default function SettingsPage() {
       setBackupSchedule(nextSchedule);
       setBackupScheduleDraft(nextSchedule);
       setShowBackupScheduleConfirm(false);
+      setBackupScheduleEditorOpen(false);
       showToast("success", "Database export schedule updated.");
       await loadData(false);
     } catch (error: any) {
+      setBackupScheduleEditorOpen(true);
       setBackupScheduleError(
         error?.response?.data?.error ||
         error?.message ||
@@ -2459,6 +2462,10 @@ export default function SettingsPage() {
     : drawerHistory.slice(0, 3);
 
   const pageTitle = tabTitles[tab];
+  const backupScheduleDirty = backupScheduleDraft.enabled !== backupSchedule.enabled
+    || backupScheduleDraft.frequency !== backupSchedule.frequency
+    || backupScheduleDraft.dayOfWeek !== backupSchedule.dayOfWeek
+    || backupScheduleDraft.timeOfDay !== backupSchedule.timeOfDay;
 
   if (loading) {
     return (
@@ -2470,7 +2477,7 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-full text-slate-900">
-      <div className="bg-white px-4 sm:px-7">
+      <div className="-mt-2 bg-white px-4 sm:-mt-3 sm:px-7">
         <PageSectionRail
           items={settingsTabs.map((item) => {
             const next = new URLSearchParams(searchParams);
@@ -2979,17 +2986,18 @@ export default function SettingsPage() {
               </div>
             </div>
 
-            <details open={capabilities.posEnabled} className="group rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
-              <summary className="flex cursor-pointer flex-wrap items-start justify-between gap-3 group-open:mb-5">
-                <div className="flex items-center gap-2.5">
+            <details open={capabilities.posEnabled} className="group self-start rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
+              <summary className="flex min-h-11 cursor-pointer list-none flex-wrap items-center justify-between gap-3 rounded-lg focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-slate-900 group-open:mb-5 [&::-webkit-details-marker]:hidden">
+                <div className="flex min-w-0 items-center gap-2.5">
                   <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-slate-100 text-[#11120D]">
                     <Icon name="tune" sizePx={17} />
                   </div>
-                  <h2 className="text-[16px] font-semibold text-[#11120D]">
-                    Operational Limits
-                  </h2>
+                  <div>
+                    <h2 className="text-[16px] font-semibold text-[#11120D]">Operational Limits</h2>
+                    {!capabilities.posEnabled ? <p className="mt-0.5 text-xs text-slate-600">Expand to view saved billing time limits.</p> : null}
+                  </div>
                 </div>
-                {!capabilities.posEnabled ? <Pill tone="warning">Requires Full POS</Pill> : null}
+                {!capabilities.posEnabled ? <span className="flex items-center gap-2"><Pill tone="warning">Requires Full POS</Pill><Icon name="expand_more" sizePx={20} className="text-slate-600 transition-transform group-open:rotate-180" /></span> : null}
               </summary>
 
               {!capabilities.posEnabled ? (
@@ -4474,7 +4482,7 @@ export default function SettingsPage() {
               </div>
 
               <div className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
-                <div className="mb-5 flex items-center justify-between">
+                <div className="flex items-center justify-between gap-3">
                   <div className="flex items-center gap-3">
                     <Icon
                       name="calendar_month"
@@ -4485,7 +4493,27 @@ export default function SettingsPage() {
                       Database Export Schedule
                     </h2>
                   </div>
-                  <label className="relative inline-flex h-[30px] w-[58px] cursor-pointer items-center">
+                  <span className={cn("rounded-full px-2.5 py-1 text-xs font-bold", backupSchedule.enabled ? "bg-emerald-50 text-emerald-800" : "bg-slate-100 text-slate-600")}>{backupSchedule.enabled ? "On" : "Off"}</span>
+                </div>
+                <p className="mt-3 text-sm text-slate-600">
+                  {backupSchedule.enabled
+                    ? `${backupSchedule.frequency === "WEEKLY" ? `Weekly on ${WEEKDAYS[backupSchedule.dayOfWeek] || "the selected day"}` : "Daily"} at ${backupSchedule.timeOfDay}`
+                    : "Automatic database exports are off."}
+                </p>
+                <button
+                  type="button"
+                  aria-expanded={backupScheduleEditorOpen}
+                  aria-controls="backup-schedule-editor"
+                  onClick={() => setBackupScheduleEditorOpen((open) => !open)}
+                  className="mt-4 inline-flex min-h-11 w-full items-center justify-between rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-800 hover:bg-slate-50 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+                >
+                  <span>{backupScheduleEditorOpen ? "Hide schedule settings" : "Edit schedule"}{backupScheduleDirty ? " · Unsaved changes" : ""}</span>
+                  <Icon name={backupScheduleEditorOpen ? "expand_less" : "expand_more"} sizePx={19} />
+                </button>
+                <div id="backup-schedule-editor" className={backupScheduleEditorOpen ? "mt-5 border-t border-slate-200 pt-5" : "hidden"}>
+                  <label className="flex items-center justify-between gap-3 text-sm font-semibold text-slate-800">
+                    <span>Enable automatic exports</span>
+                    <span className="relative inline-flex h-[30px] w-[58px] cursor-pointer items-center">
                     <input
                       type="checkbox"
                       checked={backupScheduleDraft.enabled}
@@ -4497,10 +4525,10 @@ export default function SettingsPage() {
                       }
                       className="peer sr-only"
                     />
-                    <span className="h-full w-full rounded-full bg-slate-200 transition peer-checked:bg-blue-600" />
+                    <span className="h-full w-full rounded-full bg-slate-200 transition peer-checked:bg-blue-600 peer-focus-visible:outline-2 peer-focus-visible:outline-offset-2 peer-focus-visible:outline-blue-600" />
                     <span className="absolute left-1 h-[24px] w-[24px] rounded-full bg-white transition peer-checked:translate-x-[28px]" />
+                    </span>
                   </label>
-                </div>
                 <label className="block">
                   <span className="text-[11px] font-extrabold uppercase tracking-[0.06em] text-slate-500">
                     Frequency
@@ -4571,6 +4599,7 @@ export default function SettingsPage() {
                 >
                   {backupScheduleBusy ? "Saving..." : "Update Schedule"}
                 </button>
+                </div>
               </div>
             </div>
 

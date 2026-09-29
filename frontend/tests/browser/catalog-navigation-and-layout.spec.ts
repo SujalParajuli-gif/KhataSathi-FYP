@@ -35,6 +35,14 @@ async function mockCatalog(page: Page, role: "admin" | "staff" = "admin") {
     };
     else if (path === "/api/products") body = { products: [], total: 0, page: 1, pageSize: 20 };
     else if (path === "/api/products/import-batches") body = { batches: [] };
+    else if (path === "/api/admin/recovery-backup-status") body = {
+      available: false, status: "NEVER", stage: null, startedAt: null, completedAt: null,
+      snapshotId: null, appCommit: null, totalFilesProcessed: 0, totalBytesProcessed: 0,
+      dataAdded: 0, retentionApplied: false, contents: [], message: "No recovery backup yet.",
+    };
+    else if (path === "/api/admin/backup-schedule") body = {
+      enabled: false, frequency: "DAILY", timeOfDay: "02:00", dayOfWeek: 1,
+    };
     await route.fulfill({ status: 200, contentType: "application/json", body: JSON.stringify(body) });
   });
 }
@@ -61,6 +69,60 @@ test("Settings tabs support direct links and browser Back", async ({ page }) => 
   await page.goBack();
   await expect(page).toHaveURL(/\/settings\?tab=brands$/);
   await expect(page.getByRole("link", { name: "Brands" })).toHaveAttribute("aria-current", "page");
+});
+
+test("Catalog-only operational limits stay compact until expanded on desktop", async ({ page }, testInfo) => {
+  await mockCatalog(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/settings");
+  const limits = page.locator("details").filter({ hasText: "Operational Limits" });
+  await expect(limits).not.toHaveAttribute("open", "");
+  const collapsed = await limits.boundingBox();
+  expect(collapsed).not.toBeNull();
+  expect(collapsed!.height).toBeLessThan(150);
+  await page.screenshot({ path: testInfo.outputPath("settings-limits-collapsed.png") });
+  await limits.locator("summary").click();
+  await expect(limits).toHaveAttribute("open", "");
+  await expect(limits.getByText("Return window", { exact: true })).toBeVisible();
+});
+
+for (const width of [390, 1440]) {
+  test(`Backup schedule shows saved status before its editor is opened at ${width}px`, async ({ page }, testInfo) => {
+    await mockCatalog(page);
+    await page.setViewportSize({ width, height: width < 500 ? 844 : 900 });
+    await page.goto("/settings?tab=backup");
+    const schedule = page.getByRole("heading", { name: "Database Export Schedule" }).locator("xpath=../../..");
+    await expect(schedule.getByText("Automatic database exports are off.")).toBeVisible();
+    const editor = schedule.locator("#backup-schedule-editor");
+    await expect(editor).toBeHidden();
+    await schedule.scrollIntoViewIfNeeded();
+    await page.screenshot({ path: testInfo.outputPath(`backup-schedule-collapsed-${width}.png`) });
+    await schedule.getByRole("button", { name: "Edit schedule" }).click();
+    await expect(editor).toBeVisible();
+    await page.screenshot({ path: testInfo.outputPath(`backup-schedule-expanded-${width}.png`) });
+    await editor.getByText("Enable automatic exports").click();
+    await expect(editor.getByRole("checkbox", { name: "Enable automatic exports" })).toBeChecked();
+    await schedule.getByRole("button", { name: /Hide schedule settings/ }).click();
+    await expect(schedule.getByRole("button", { name: /Unsaved changes/ })).toBeVisible();
+  });
+}
+
+test("Desktop product filters disclose secondary choices and preserve active filters", async ({ page }, testInfo) => {
+  await mockCatalog(page);
+  await page.setViewportSize({ width: 1440, height: 900 });
+  await page.goto("/products");
+  const more = page.getByRole("button", { name: "More filters" });
+  await expect(more).toHaveAttribute("aria-expanded", "false");
+  await expect(page.getByRole("combobox", { name: "Filter products by pricing status" })).toBeHidden();
+  await page.screenshot({ path: testInfo.outputPath("products-filters-collapsed-desktop.png") });
+  await more.click();
+  await page.getByRole("combobox", { name: "Filter products by pricing status" }).click();
+  await page.getByRole("option", { name: "Pricing: Pending" }).click();
+  await page.getByRole("button", { name: /Fewer filters/ }).click();
+  await expect(page.getByRole("button", { name: /More filters.*1 active/ })).toBeVisible();
+  await expect(page.getByRole("button", { name: /Remove filter: Price Pending/ })).toBeVisible();
+  await page.reload();
+  await expect(page.getByRole("button", { name: /Fewer filters.*1 active/ })).toHaveAttribute("aria-expanded", "true");
 });
 
 test("History combines independent filters and restores them with browser Back", async ({ page }, testInfo) => {

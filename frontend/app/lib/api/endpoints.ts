@@ -1041,6 +1041,7 @@ export async function setProductImportPriceMappingApi(
     return res.data as ProductImportReviewPage["priceMapping"] & {
         reviewRevision: string;
         rowRevisions: Record<string, string>;
+        previewRows?: Array<{ id: string; parsed: ProductImportRow["parsed"] }>;
     };
 }
 

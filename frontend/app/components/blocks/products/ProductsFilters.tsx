@@ -203,6 +203,9 @@ export default function ProductsFiltersCard({
 }) {
   const [mobileFiltersOpen, setMobileFiltersOpen] = React.useState(false);
   const [mobileActionsOpen, setMobileActionsOpen] = React.useState(false);
+  const [desktopMoreFiltersOpen, setDesktopMoreFiltersOpen] = React.useState(() =>
+    pricingStatus !== "all" || photoStatus !== "all" || status !== "active" || (stockTracked && stockStatus !== "all"),
+  );
   React.useEffect(() => {
     if (!mobileActionsOpen) return;
     const desktop = window.matchMedia("(min-width: 1024px)");
@@ -259,6 +262,12 @@ export default function ProductsFiltersCard({
     sortBy !== "photos_first",
     pricingStatus !== "all",
     photoStatus !== "all",
+  ].filter(Boolean).length;
+  const secondaryFilterCount = [
+    pricingStatus !== "all",
+    photoStatus !== "all",
+    status !== "active",
+    stockTracked && stockStatus !== "all",
   ].filter(Boolean).length;
 
   function openMobileFilters() {
@@ -592,6 +601,39 @@ export default function ProductsFiltersCard({
                 />
               </div>
 
+              <button
+                type="button"
+                aria-expanded={desktopMoreFiltersOpen}
+                aria-controls="desktop-product-more-filters"
+                onClick={() => setDesktopMoreFiltersOpen((open) => !open)}
+                className="inline-flex h-10 shrink-0 items-center justify-center gap-2 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#334155] transition hover:bg-[#F3F4F6] focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-blue-600"
+              >
+                <GoogleIcon name="tune" className="text-[17px] text-blue-600" />
+                <span>{desktopMoreFiltersOpen ? "Fewer filters" : "More filters"}</span>
+                {secondaryFilterCount > 0 ? <span className="rounded-full bg-blue-50 px-1.5 py-0.5 text-[11px] font-bold text-blue-700">{secondaryFilterCount} active</span> : null}
+                <GoogleIcon name={desktopMoreFiltersOpen ? "expand_less" : "expand_more"} className="text-[17px]" />
+              </button>
+
+              {/* Clear remains available even while the secondary controls are closed. */}
+              {filterCount > 0 || q.trim() ? (
+                <button
+                  type="button"
+                  onClick={onClear}
+                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
+                >
+                  <GoogleIcon name="filter_alt_off" className="text-[16px] text-[#8C8889]" />
+                  <span>Clear</span>
+                  {filterCount > 0 ? (
+                    <span className="rounded-full bg-[#11120d] px-1.5 py-0.5 text-[10px] font-black text-white">
+                      {filterCount}
+                    </span>
+                  ) : null}
+                </button>
+              ) : null}
+            </div>
+
+            <div id="desktop-product-more-filters" className={`${desktopMoreFiltersOpen ? "flex" : "hidden"} flex-wrap items-center gap-2 rounded-[12px] border border-blue-100 bg-blue-50/40 p-2.5 xl:gap-2.5`}>
+
               {/* Pricing Status */}
               <div className="min-w-[110px] flex-1">
                 <Select
@@ -662,23 +704,6 @@ export default function ProductsFiltersCard({
                     </button>
                   ))}
                 </div>
-              ) : null}
-
-              {/* Clear Button */}
-              {filterCount > 0 || q.trim() ? (
-                <button
-                  type="button"
-                  onClick={onClear}
-                  className="inline-flex h-10 shrink-0 items-center justify-center gap-1.5 rounded-[10px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
-                >
-                  <GoogleIcon name="filter_alt_off" className="text-[16px] text-[#8C8889]" />
-                  <span>Clear</span>
-                  {filterCount > 0 ? (
-                    <span className="rounded-full bg-[#11120d] px-1.5 py-0.2 text-[10px] font-black text-white">
-                      {filterCount}
-                    </span>
-                  ) : null}
-                </button>
               ) : null}
             </div>
 

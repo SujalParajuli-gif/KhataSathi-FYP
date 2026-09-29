@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import Icon from "./Icon";
 import ProjectSelect from "./ProjectSelect";
 import MobilePaginationFooter from "./MobilePaginationFooter";
@@ -62,6 +63,16 @@ export default function PaginationBar({
 }) {
   const safeTotalPages = Math.max(1, totalPages);
   const safePage = clampPage(page, 1, safeTotalPages);
+  const [pageDraft, setPageDraft] = useState(String(safePage));
+  useEffect(() => setPageDraft(String(safePage)), [safePage]);
+  function submitPageDraft() {
+    const nextPage = Number(pageDraft);
+    if (Number.isInteger(nextPage) && nextPage >= 1 && nextPage <= safeTotalPages) {
+      if (nextPage !== safePage) onPageChange(nextPage);
+    } else {
+      setPageDraft(String(safePage));
+    }
+  }
   const paginationItems = buildPaginationItems(safePage, safeTotalPages);
   const mobileFooter = (
     <MobilePaginationFooter
@@ -138,7 +149,7 @@ export default function PaginationBar({
             aria-label="Previous page"
             disabled={safePage <= 1}
             onClick={() => onPageChange(clampPage(safePage - 1, 1, safeTotalPages))}
-            className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
           >
             <Icon name="chevron_left" className="text-[18px]" />
           </button>
@@ -157,7 +168,7 @@ export default function PaginationBar({
                 type="button"
                 onClick={() => onPageChange(item)}
                 className={cn(
-                  "inline-flex h-[32px] min-w-[32px] items-center justify-center rounded-[10px] border px-[8px] text-[12px] font-extrabold transition",
+                  "inline-flex h-10 min-w-10 items-center justify-center rounded-[10px] border px-[8px] text-[13px] font-extrabold transition",
                   item === safePage
                     ? "border-[#11120d] bg-[#11120d] text-white"
                     : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
@@ -173,7 +184,7 @@ export default function PaginationBar({
             aria-label="Next page"
             disabled={safePage >= safeTotalPages}
             onClick={() => onPageChange(clampPage(safePage + 1, 1, safeTotalPages))}
-            className="inline-flex h-[32px] w-[32px] items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
+            className="inline-flex h-10 w-10 items-center justify-center rounded-[10px] border border-[#CFCFD3] bg-white text-[#565449] transition hover:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-40"
           >
             <Icon name="chevron_right" className="text-[18px]" />
           </button>
@@ -184,14 +195,11 @@ export default function PaginationBar({
               type="number"
               min={1}
               max={safeTotalPages}
-              value={safePage}
-              onChange={(event) => {
-                const nextPage = Number(event.target.value);
-                if (Number.isFinite(nextPage)) {
-                  onPageChange(clampPage(nextPage, 1, safeTotalPages));
-                }
-              }}
-              className="h-[34px] w-[74px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-center text-[12px] font-bold text-[#565449] outline-none"
+              value={pageDraft}
+              onChange={(event) => setPageDraft(event.target.value)}
+              onKeyDown={(event) => { if (event.key === "Enter") submitPageDraft(); }}
+              onBlur={submitPageDraft}
+              className="h-10 w-[74px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-center text-[13px] font-bold text-[#565449] outline-none"
               aria-label="Go to page"
             />
             <span>of {safeTotalPages}</span>
@@ -222,7 +230,7 @@ export default function PaginationBar({
           aria-label="First page"
           disabled={safePage <= 1}
           onClick={() => onPageChange(1)}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
         >
           <Icon name="keyboard_double_arrow_left" className="text-[18px]" />
         </button>
@@ -233,7 +241,7 @@ export default function PaginationBar({
           aria-label="Previous page"
           disabled={safePage <= 1}
           onClick={() => onPageChange(clampPage(safePage - 1, 1, safeTotalPages))}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
         >
           <Icon name="chevron_left" className="text-[18px]" />
         </button>
@@ -242,7 +250,7 @@ export default function PaginationBar({
           typeof item !== "number" ? (
             <span
               key={`${item}-${index}`}
-              className="inline-flex h-8 min-w-[32px] items-center justify-center text-[13px] font-bold text-slate-600"
+              className="inline-flex h-10 min-w-10 items-center justify-center text-[13px] font-bold text-slate-600"
             >
               ...
             </span>
@@ -252,7 +260,7 @@ export default function PaginationBar({
               type="button"
               onClick={() => onPageChange(item)}
               className={cn(
-                "inline-flex h-8 min-w-[32px] items-center justify-center rounded-md px-2 text-[13px] font-bold transition",
+                "inline-flex h-10 min-w-10 items-center justify-center rounded-md px-2 text-[13px] font-bold transition",
                 item === safePage
                   ? "bg-[#11120d] text-white"
                   : "bg-[#F3F4F6] text-slate-700 hover:bg-slate-200",
@@ -269,7 +277,7 @@ export default function PaginationBar({
           aria-label="Next page"
           disabled={safePage >= safeTotalPages}
           onClick={() => onPageChange(clampPage(safePage + 1, 1, safeTotalPages))}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
         >
           <Icon name="chevron_right" className="text-[18px]" />
         </button>
@@ -280,7 +288,7 @@ export default function PaginationBar({
           aria-label="Last page"
           disabled={safePage >= safeTotalPages}
           onClick={() => onPageChange(safeTotalPages)}
-          className="inline-flex h-8 w-8 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
+          className="inline-flex h-10 w-10 items-center justify-center rounded-md bg-[#F3F4F6] text-slate-600 transition hover:bg-slate-200 disabled:opacity-50"
         >
           <Icon name="keyboard_double_arrow_right" className="text-[18px]" />
         </button>
@@ -291,20 +299,17 @@ export default function PaginationBar({
             type="number"
             min={1}
             max={safeTotalPages}
-            value={safePage}
-            onChange={(event) => {
-              const nextPage = Number(event.target.value);
-              if (Number.isFinite(nextPage)) {
-                onPageChange(clampPage(nextPage, 1, safeTotalPages));
-              }
-            }}
-            className="h-8 w-10 rounded-md border border-[#CFCFD3] bg-white text-center text-[13px] font-bold text-slate-700 outline-none hover:bg-slate-50 appearance-none m-0"
+            value={pageDraft}
+            onChange={(event) => setPageDraft(event.target.value)}
+            onKeyDown={(event) => { if (event.key === "Enter") submitPageDraft(); }}
+            className="m-0 h-10 w-16 appearance-none rounded-md border border-[#CFCFD3] bg-white text-center text-[14px] font-bold text-slate-700 outline-none hover:bg-slate-50"
             aria-label="Go to page"
             style={{ MozAppearance: 'textfield' }}
           />
           <button
             type="button"
-            className="text-[14px] font-medium text-[#11120d] flex items-center transition hover:opacity-70"
+            onClick={submitPageDraft}
+            className="flex min-h-10 items-center text-[14px] font-semibold text-[#11120d] transition hover:opacity-70"
           >
             Go <Icon name="chevron_right" className="text-[18px] ml-0.5" />
           </button>
@@ -317,7 +322,7 @@ export default function PaginationBar({
           <ProjectSelect
             value={pageSize}
             onChange={(event) => onPageSizeChange(Number(event.target.value))}
-            className="h-8 rounded-md border border-[#CFCFD3] bg-white pl-3 pr-7 text-[14px] font-bold text-slate-700 outline-none hover:bg-slate-50 cursor-pointer appearance-none"
+            className="h-10 rounded-md border border-[#CFCFD3] bg-white pl-3 pr-7 text-[14px] font-bold text-slate-700 outline-none hover:bg-slate-50 cursor-pointer appearance-none"
           >
             {pageSizeOptions.map((value) => (
               <option key={value} value={value}>

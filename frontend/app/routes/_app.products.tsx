@@ -77,6 +77,7 @@ import ProductsModals from "~/components/blocks/products/ProductsModals";
 import ProductSearchInsightsModal from "~/components/blocks/products/ProductSearchInsightsModal";
 import { useToast } from "~/components/ui/Toast";
 import { DialogButton, ModalFrame } from "~/components/ui/Modal";
+import MobilePaginationFooter from "~/components/ui/MobilePaginationFooter";
 import Icon from "~/components/ui/Icon";
 import CreatableCombobox from "~/components/ui/CreatableCombobox";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
@@ -158,6 +159,9 @@ function describeProductFilterChange(change: PendingProductFilterChange | null) 
 
 type PriceField = "ratePerPiece" | "wholesalePrice" | "retailPrice";
 type PriceDraft = Record<PriceField, string>;
+const formatReviewPrice = (value: number | null | undefined) => value == null
+  ? "None"
+  : `NPR ${Number(value).toLocaleString("en-NP", { maximumFractionDigits: 2 })}`;
 type BulkPriceMode = "CALCULATE" | "MANUAL";
 type BulkPriceErrors = {
   reason?: string;
@@ -578,7 +582,7 @@ export default function ProductsPage() {
     updatedCount: number;
     skippedCount: number;
     errorCount: number;
-    errors: Array<{ productId: string; message: string; code?: string }>;
+    errors: Array<{ productId: string; message: string; code?: string; name?: string; sku?: string }>;
     products: Array<{ id: string; name: string; sku: string }>;
     isPartialSuccess: boolean;
     auditWarning: string | null;
@@ -742,6 +746,16 @@ export default function ProductsPage() {
     skippedExisting: 0,
   });
   const [bulkPricePreviewRevision, setBulkPricePreviewRevision] = useState<string | null>(null);
+  const [explicitReviewPreview, setExplicitReviewPreview] = useState<Awaited<ReturnType<typeof bulkUpdateProductPricesApi>> | null>(null);
+  const [filteredReviewPreview, setFilteredReviewPreview] = useState<Awaited<ReturnType<typeof bulkUpdateProductPricesApi>> | null>(null);
+  const [reviewPage, setReviewPage] = useState(1);
+  const [reviewLoading, setReviewLoading] = useState(false);
+  const reviewRequestIdRef = useRef(0);
+  const [retryLoading, setRetryLoading] = useState(false);
+  const [saveOutcomeUncertain, setSaveOutcomeUncertain] = useState(false);
+  const [pendingInvalidPriceFocus, setPendingInvalidPriceFocus] = useState<{ productId: string; field: PriceField } | null>(null);
+  const [invalidFilteredOverrideId, setInvalidFilteredOverrideId] = useState<string | null>(null);
+  useEffect(() => { if (!openBulkPrice) reviewRequestIdRef.current += 1; }, [openBulkPrice]);
 
   const sampleFilteredProducts = useMemo(() => {
     return filteredPreviewItems.map((item) => ({
@@ -843,6 +857,7 @@ export default function ProductsPage() {
   const step1TotalCount = isFilteredSelection
     ? (filteredPreviewLoaded ? filteredPreviewStats.previewMatchedCount : selectedCount)
     : visibleBulkPriceProducts.length;
+  const compactBulkPriceFlow = !isFilteredSelection && selectedProducts.length > 0 && selectedProducts.length <= 5;
   const step1Items = isFilteredSelection ? sampleFilteredProducts : visibleBulkPriceProducts;
   const step1TotalPages = Math.max(1, Math.ceil(step1TotalCount / BULK_PRICE_STEP1_PAGE_SIZE));
   const activeStep1Page = Math.min(bulkPriceStep1Page, step1TotalPages);
@@ -862,12 +877,49 @@ export default function ProductsPage() {
   const activeStep2FilteredPage = Math.min(filteredPreviewStats.previewPage, step2FilteredTotalPages);
   const paginatedFilteredPreviewItems = visibleFilteredPreviewItems;
 
-  const step2ExplicitTotalPages = Math.max(1, Math.ceil(visibleBulkPriceProducts.length / bulkPriceStep2PageSize));
+  const explicitPreviewProducts = useMemo(() => visibleBulkPriceProducts.filter((product) => {
+    const included = priceMarginTargetIds[product.id] !== false;
+    if (bulkPricePreviewFilter === "PRESERVED") return !included;
+    if (bulkPricePreviewFilter === "READY") {
+      return included && (bulkPriceMode === "MANUAL" || (product.availabilityStatus !== "COMING_SOON" && Number(product.ratePerPiece) > 0));
+    }
+    return true;
+  }), [visibleBulkPriceProducts, priceMarginTargetIds, bulkPricePreviewFilter, bulkPriceMode]);
+  const step2ExplicitTotalPages = Math.max(1, Math.ceil(explicitPreviewProducts.length / bulkPriceStep2PageSize));
   const activeStep2ExplicitPage = Math.min(bulkPriceStep2Page, step2ExplicitTotalPages);
   const paginatedExplicitPreviewItems = useMemo(() => {
     const start = (activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize;
-    return visibleBulkPriceProducts.slice(start, start + bulkPriceStep2PageSize);
-  }, [visibleBulkPriceProducts, activeStep2ExplicitPage, bulkPriceStep2PageSize]);
+    return explicitPreviewProducts.slice(start, start + bulkPriceStep2PageSize);
+  }, [explicitPreviewProducts, activeStep2ExplicitPage, bulkPriceStep2PageSize]);
+
+  useEffect(() => {
+    if (!pendingInvalidPriceFocus || !pricePreviewReady || confirmBulkPriceSave) return;
+    if (!isFilteredSelection) {
+      if (bulkPricePreviewFilter !== "ALL") {
+        setBulkPricePreviewFilter("ALL");
+        return;
+      }
+      const index = visibleBulkPriceProducts.findIndex((product) => product.id === pendingInvalidPriceFocus.productId);
+      if (index < 0) {
+        if (priceSearch) setPriceSearch("");
+        return;
+      }
+      const targetPage = Math.floor(index / bulkPriceStep2PageSize) + 1;
+      if (activeStep2ExplicitPage !== targetPage) {
+        setBulkPriceStep2Page(targetPage);
+        return;
+      }
+    }
+    const frame = window.requestAnimationFrame(() => {
+      const targets = document.querySelectorAll<HTMLElement>(`[data-price-field="${pendingInvalidPriceFocus.productId}-${pendingInvalidPriceFocus.field}"]`);
+      const visible = Array.from(targets).find((target) => target.getClientRects().length > 0);
+      if (visible) {
+        focusInvalidField(visible);
+        setPendingInvalidPriceFocus(null);
+      }
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [pendingInvalidPriceFocus, pricePreviewReady, confirmBulkPriceSave, isFilteredSelection, visibleBulkPriceProducts, activeStep2ExplicitPage, bulkPriceStep2PageSize, priceSearch, filteredPreviewItems, bulkPricePreviewFilter]);
 
   const priceMarginTargetCount = selectedProducts.filter((product) => priceMarginTargetIds[product.id]).length;
   const selectedPriceStatus = useMemo(() => selectedProducts.reduce(
@@ -2508,6 +2560,12 @@ export default function ProductsPage() {
   async function openBulkPriceForSelection() {
     if (selectedCount === 0) return;
     const resetPriceWorkspace = () => {
+      reviewRequestIdRef.current += 1;
+      setExplicitReviewPreview(null);
+      setFilteredReviewPreview(null);
+      setReviewLoading(false);
+      setSaveOutcomeUncertain(false);
+      setInvalidFilteredOverrideId(null);
       setBulkPriceMode("CALCULATE");
       setFilteredPriceOverrides({});
       lastFilteredPreviewRequestRef.current = "";
@@ -2528,6 +2586,7 @@ export default function ProductsPage() {
       setShowMobileDetails(false);
       setMobileStep1Tab("formula");
       setBulkPriceSort("affected_first");
+      setBulkPricePreviewFilter("ALL");
     };
     if (isFilteredSelection) {
       setFilteredPreviewItems([]);
@@ -3033,6 +3092,8 @@ export default function ProductsPage() {
   }
 
   function useCalculatedPriceForFilteredItem(productId: string) {
+    setInvalidFilteredOverrideId((current) => current === productId ? null : current);
+    setPendingInvalidPriceFocus((current) => current?.productId === productId ? null : current);
     setFilteredPriceOverrides((current) => {
       const next = { ...current };
       delete next[productId];
@@ -3476,17 +3537,50 @@ export default function ProductsPage() {
 
 
   const bulkPriceImpactAnalytics = useMemo(() => {
+    if (!isFilteredSelection && confirmBulkPriceSave && explicitReviewPreview) {
+      const affectedItems = explicitReviewPreview.preview.filter((item) => item.willChange).map((item) => {
+        const oldWholesale = item.currentWholesalePrice === null ? null : Number(item.currentWholesalePrice);
+        const newWholesale = item.newWholesalePrice === null ? null : Number(item.newWholesalePrice);
+        const oldRetail = item.currentRetailPrice === null ? null : Number(item.currentRetailPrice);
+        const newRetail = item.newRetailPrice === null ? null : Number(item.newRetailPrice);
+        return {
+          id: item.productId,
+          name: item.name,
+          sku: item.sku,
+          rate: Number(item.newRate || 0),
+          oldRate: item.currentRate === null ? null : Number(item.currentRate),
+          newRate: item.newRate === null ? null : Number(item.newRate),
+          oldWholesale,
+          newWholesale,
+          wholesaleChanged: newWholesale !== oldWholesale,
+          wholesaleDelta: newWholesale !== null && oldWholesale !== null ? newWholesale - oldWholesale : null,
+          oldRetail,
+          newRetail,
+          retailChanged: newRetail !== oldRetail,
+          retailDelta: newRetail !== null && oldRetail !== null ? newRetail - oldRetail : null,
+          stockPieces: 0,
+        };
+      });
+      return {
+        affectedCount: explicitReviewPreview.previewCount,
+        preservedCount: Math.max(0, selectedProducts.length - explicitReviewPreview.previewCount - explicitReviewPreview.errorCount),
+        affectedItems,
+        avgWholesaleDelta: null,
+        totalStockImpact: 0,
+      };
+    }
     if (isFilteredSelection) {
-      const affectedCount = filteredPreviewStats.previewCount || 0;
-      const preservedCount = (filteredPreviewStats.skippedExisting || 0) + (filteredPreviewStats.skippedComingSoon || 0) + (filteredPreviewStats.skippedMissingRate || 0);
-      const affectedItems = filteredPreviewItems.filter((i) => i.willChange || Boolean(filteredPriceOverrides[i.productId]));
+      const review = confirmBulkPriceSave ? filteredReviewPreview : null;
+      const stats = review || filteredPreviewStats;
+      const affectedCount = stats.previewCount || 0;
+      const preservedCount = (stats.skippedExisting || 0) + (stats.skippedComingSoon || 0) + (stats.skippedMissingRate || 0);
+      const affectedItems = (review?.preview || filteredPreviewItems).filter((item) => item.willChange);
       return {
         affectedCount,
         preservedCount,
         affectedItems: affectedItems.map((item) => {
-          const override = filteredPriceOverrides[item.productId];
-          const newWholesale = override?.wholesalePrice ? Number(override.wholesalePrice) : item.newWholesalePrice;
-          const newRetail = override?.retailPrice ? Number(override.retailPrice) : item.newRetailPrice;
+          const newWholesale = item.newWholesalePrice;
+          const newRetail = item.newRetailPrice;
           const oldWholesale = item.currentWholesalePrice;
           const oldRetail = item.currentRetailPrice;
           const wholesaleDelta = newWholesale !== null && oldWholesale !== null ? newWholesale - oldWholesale : null;
@@ -3496,6 +3590,8 @@ export default function ProductsPage() {
             name: item.name,
             sku: item.sku,
             rate: item.rate,
+            oldRate: item.currentRate,
+            newRate: item.newRate,
             oldWholesale,
             newWholesale,
             wholesaleChanged: newWholesale !== oldWholesale,
@@ -3544,6 +3640,8 @@ export default function ProductsPage() {
           name: product.name,
           sku: product.sku,
           rate: Number(product.ratePerPiece || 0),
+          oldRate: product.ratePerPiece === null ? null : Number(product.ratePerPiece),
+          newRate: update.ratePerPiece === undefined ? (product.ratePerPiece === null ? null : Number(product.ratePerPiece)) : Number(update.ratePerPiece),
           oldWholesale,
           newWholesale,
           wholesaleChanged: newWholesale !== oldWholesale,
@@ -3568,6 +3666,9 @@ export default function ProductsPage() {
       affectedItems,
     };
   }, [
+    confirmBulkPriceSave,
+    explicitReviewPreview,
+    filteredReviewPreview,
     isFilteredSelection,
     filteredPreviewStats,
     filteredPreviewItems,
@@ -3634,13 +3735,24 @@ export default function ProductsPage() {
     const firstInvalidField = firstInvalidRow
       ? (Object.keys(firstInvalidRow[1])[0] as PriceField | undefined)
       : undefined;
-    const firstInvalidPrice = firstInvalidRow && firstInvalidField
-      ? document.querySelector<HTMLElement>(`[data-price-field="${firstInvalidRow[0]}-${firstInvalidField}"]`)
-      : null;
     if (firstInvalidRow && firstInvalidField) {
       const message = firstInvalidRow?.[1]?.[firstInvalidField!] || "Check the highlighted price.";
       setBulkPriceNotice({ tone: "danger", message });
-      if (firstInvalidPrice) focusInvalidField(firstInvalidPrice);
+      setPendingInvalidPriceFocus({ productId: firstInvalidRow[0], field: firstInvalidField });
+      if (isFilteredSelection) {
+        setInvalidFilteredOverrideId(firstInvalidRow[0]);
+        if (!filteredPreviewItems.some((item) => item.productId === firstInvalidRow[0]) && !selectedProductCache[firstInvalidRow[0]]) {
+          void fetchProductsByIds([firstInvalidRow[0]]).then((products) => {
+            if (products[0]) {
+              setSelectedProductCache((current) => ({ ...current, [products[0].id]: products[0] }));
+            }
+          }).catch(() => {
+            // The correction remains available by product ID even when its name cannot load.
+          });
+        }
+      } else if (priceSearch && !visibleBulkPriceProducts.some((product) => product.id === firstInvalidRow[0])) {
+        setPriceSearch("");
+      }
       return;
     }
     if (nextErrors.reason) {
@@ -3662,12 +3774,17 @@ export default function ProductsPage() {
         // The confirmation must show a representative affected sample, not an
         // empty list caused by a temporary search in the editable preview.
         const result = await loadFilteredPricePreview(1, "", bulkPriceStep2PageSize);
+        if (result.errorCount > 0) {
+          setBulkPriceNotice({ tone: "danger", message: `${result.errorCount} product${result.errorCount === 1 ? "" : "s"} could not be previewed. ${result.errors[0]?.message || "Check the selected products before saving."}` });
+          return;
+        }
         if (result.previewCount === 0) {
           const message = "No prices are ready to save. Adjust a product or change the pricing choices.";
           setBulkPriceNotice({ tone: "danger", message });
           toastMsg("info", message);
           return;
         }
+        setFilteredReviewPreview(result);
       } catch (error: any) {
         const message = error?.response?.data?.error || error?.message || "The latest prices could not be checked.";
         setBulkPriceNotice({ tone: "danger", message });
@@ -3685,7 +3802,19 @@ export default function ProductsPage() {
           updates,
           existingPricePolicy: bulkPriceMode === "MANUAL" ? "REPLACE" : existingSellingPricePolicy,
           previewOnly: true,
+          previewPage: 1,
+          previewPageSize: 25,
         });
+        if (result.errorCount > 0) {
+          setBulkPriceNotice({ tone: "danger", message: `${result.errorCount} product${result.errorCount === 1 ? "" : "s"} could not be previewed. ${result.errors[0]?.message || "Check the selected products before saving."}` });
+          return;
+        }
+        if (!result.previewRevision || result.previewCount === 0) {
+          setBulkPriceNotice({ tone: "danger", message: "No products can be updated with these choices. Check the latest prices and try again." });
+          return;
+        }
+        setExplicitReviewPreview(result);
+        setReviewPage(1);
         setBulkPricePreviewRevision(result.previewRevision || null);
       } catch (error: any) {
         const message = error?.response?.data?.error || error?.message || "The latest prices could not be checked.";
@@ -3699,12 +3828,50 @@ export default function ProductsPage() {
 
     setBulkPriceNotice(null);
     setBulkPriceErrors({});
+    setInvalidFilteredOverrideId(null);
+    setSaveOutcomeUncertain(false);
     setConfirmBulkPriceSave(true);
   }
 
+  async function loadExplicitReviewPage(nextPage: number) {
+    if (!explicitReviewPreview || reviewLoading) return;
+    const requestId = ++reviewRequestIdRef.current;
+    try {
+      setReviewLoading(true);
+      const result = await bulkUpdateProductPricesApi({
+        reason: priceReason.trim() || "Preview",
+        scope: "IDS",
+        updates: buildBulkPriceUpdates(),
+        existingPricePolicy: bulkPriceMode === "MANUAL" ? "REPLACE" : existingSellingPricePolicy,
+        previewOnly: true,
+        previewPage: nextPage,
+        previewPageSize: 25,
+      });
+      if (requestId !== reviewRequestIdRef.current) return;
+      if (result.previewRevision !== bulkPricePreviewRevision) {
+        setConfirmBulkPriceSave(false);
+        setBulkPricePreviewRevision(null);
+        setBulkPriceNotice({ tone: "danger", message: "Prices changed while you were reviewing. Check a fresh preview before saving." });
+        return;
+      }
+      setExplicitReviewPreview(result);
+      setReviewPage(result.previewPage);
+    } catch (error: any) {
+      if (requestId === reviewRequestIdRef.current) setBulkPriceNotice({ tone: "danger", message: error?.response?.data?.error || error?.message || "The requested review page could not be loaded." });
+    } finally {
+      if (requestId === reviewRequestIdRef.current) setReviewLoading(false);
+    }
+  }
+
   async function confirmBulkPriceUpdate() {
+    if (!priceReason.trim()) {
+      setBulkPriceErrors((current) => ({ ...current, reason: "Enter a reason so this price change has an audit record." }));
+      focusInvalidField(priceReasonRef);
+      return;
+    }
     const updates = buildBulkPriceUpdates();
-    if (!bulkPricePreviewRevision) {
+    const finalRevision = isFilteredSelection ? filteredReviewPreview?.previewRevision : explicitReviewPreview?.previewRevision;
+    if (!finalRevision) {
       const message = "The price preview is no longer available. Preview the latest prices before saving.";
       setBulkPriceNotice({ tone: "danger", message });
       setConfirmBulkPriceSave(false);
@@ -3714,7 +3881,7 @@ export default function ProductsPage() {
       setPriceBusy(true);
       const result = await bulkUpdateProductPricesApi({
         reason: priceReason.trim(),
-        expectedPreviewRevision: bulkPricePreviewRevision,
+        expectedPreviewRevision: finalRevision,
         ...(isFilteredSelection
           ? {
               scope: "FILTERED" as const,
@@ -3736,7 +3903,11 @@ export default function ProductsPage() {
         updatedCount: result.updatedCount,
         skippedCount: result.skippedComingSoon + result.skippedMissingRate + result.skippedExisting,
         errorCount: result.errorCount,
-        errors: result.errors || [],
+        errors: (result.errors || []).map((failure) => {
+          const product = selectedProducts.find((item) => item.id === failure.productId)
+            || products.find((item) => item.id === failure.productId);
+          return { ...failure, name: product?.name, sku: product?.sku };
+        }),
         products: result.products || [],
         isPartialSuccess: result.partialSuccess,
         auditWarning: result.auditWarning || null,
@@ -3746,19 +3917,44 @@ export default function ProductsPage() {
       if (error?.response?.status === 409 && error?.response?.data?.code === "PRICE_PREVIEW_STALE") {
         setBulkPriceNotice({ tone: "danger", message: "Prices were updated by another action while you were reviewing. Please preview again with the latest data." });
         setConfirmBulkPriceSave(false);
+        setPricePreviewReady(false);
+        setExplicitReviewPreview(null);
         setBulkPricePreviewRevision(null);
         await refreshProductsAfterSavedMutation();
         return;
       }
-      const message = error?.response?.data?.error || error?.message || "Failed to update prices.";
+      // The request may have committed some row transactions before the connection
+      // failed. Never allow the same preview revision to be submitted again.
+      setSaveOutcomeUncertain(true);
+      setConfirmBulkPriceSave(false);
+      setPricePreviewReady(false);
+      setExplicitReviewPreview(null);
+      setBulkPricePreviewRevision(null);
+      const message = "Save outcome is uncertain. Some prices may already have changed. Check History, then calculate and review a fresh preview before retrying.";
       setBulkPriceNotice({ tone: "danger", message });
-      toastMsg(
-        "danger",
-        message,
-      );
-      // On timeout or unknown error, we should refresh products
-      if (error?.message?.toLowerCase().includes("timeout")) {
+      toastMsg("danger", message);
+      try {
+        if (!isFilteredSelection) {
+          const fresh = await fetchProductsByIds(selectedIds);
+          const freshIds = new Set(fresh.map((product) => product.id));
+          setSelectedProductCache((current) => ({ ...current, ...Object.fromEntries(fresh.map((product) => [product.id, product])) }));
+          if (bulkPriceMode === "CALCULATE") {
+            setPriceRows((current) => ({
+              ...current,
+              ...Object.fromEntries(fresh.filter((product) => !explicitAdjustedIds[product.id]).map((product) => [product.id, {
+                ratePerPiece: product.ratePerPiece === null ? "" : String(product.ratePerPiece),
+                wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
+                retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+              }])),
+            }));
+          }
+          if (selectedIds.some((id) => !freshIds.has(id))) {
+            setBulkPriceNotice({ tone: "danger", message: `${message} Some selected products could not be reloaded; do not retry until they are checked.` });
+          }
+        }
         await refreshProductsAfterSavedMutation();
+      } catch {
+        setBulkPriceNotice({ tone: "danger", message: `${message} The latest products could not be loaded; do not retry until connectivity is restored.` });
       }
     } finally {
       setPriceBusy(false);
@@ -5231,24 +5427,62 @@ export default function ProductsPage() {
         descriptionClassName="hidden lg:block"
         onClose={requestCloseBulkPrice}
         maxWidthClass="max-w-[1100px]"
-        dialogClassName={`flex flex-col lg:max-h-[calc(100vh-32px)] ${confirmBulkPriceSave && bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "lg:h-auto" : "lg:h-[820px]"}`}
-        bodyClassName="flex-1 min-h-0 flex flex-col p-3 sm:p-4 lg:p-4 overflow-hidden"
-        mobileFullScreen
+        dialogClassName={`flex flex-col lg:max-h-[calc(100vh-32px)] ${compactBulkPriceFlow || (confirmBulkPriceSave && bulkPriceImpactAnalytics.affectedItems.length <= 10) ? "lg:h-auto" : "lg:h-[820px]"}`}
+        bodyClassName={confirmBulkPriceSave || compactBulkPriceFlow ? "min-h-0 flex-1 flex flex-col overflow-y-auto overscroll-contain p-3 sm:p-4 lg:p-4" : "flex-1 min-h-0 flex flex-col overflow-y-auto overscroll-contain p-3 sm:p-4 xl:overflow-hidden lg:p-4"}
+        mobileFullScreen={!compactBulkPriceFlow}
+        mobileBottomSheet={compactBulkPriceFlow}
         footer={
           confirmBulkPriceSave ? (
-            <div className="flex w-full flex-col gap-2 sm:flex-row sm:items-center sm:justify-between sm:gap-3">
-              <DialogButton onClick={() => setConfirmBulkPriceSave(false)} disabled={priceBusy}>
-                ← Back to preview
-              </DialogButton>
+            <div className="flex w-full flex-col gap-2 lg:flex-row lg:items-center lg:gap-4">
+              <div className="flex min-w-0 flex-col lg:flex-1">
+                <div className="flex min-w-0 items-center gap-2">
+                <label htmlFor="bulk-price-reason-combobox-confirm" className="flex shrink-0 items-center gap-1 text-[12px] font-extrabold text-[#11120d]">
+                  <Icon name="verified" sizePx={14} className="text-blue-600" />
+                  Audit reason <span className="text-rose-600">*</span>
+                </label>
+                <div className="min-w-0 flex-1 lg:max-w-[390px]">
+                  <CreatableCombobox
+                    compact
+                    inputRef={priceReasonRef}
+                    value={priceReason}
+                    onChange={(val) => {
+                      setPriceReason(val);
+                      setBulkPriceTouched(true);
+                      if (bulkPriceErrors.reason) setBulkPriceErrors((current) => ({ ...current, reason: undefined }));
+                    }}
+                    options={[
+                      "Supplier Rate changed",
+                      "Market price changed",
+                      "Seasonal price adjustment",
+                      "Promotion ended",
+                      "Correcting an entry mistake",
+                      "Management-approved price review",
+                    ]}
+                    placeholder="Choose or type a reason..."
+                    ariaLabel="Price update audit reason"
+                    allowCreate
+                    required
+                    invalid={Boolean(bulkPriceErrors.reason)}
+                  />
+                </div>
+                </div>
+                {bulkPriceErrors.reason ? <p role="alert" className="mt-1 text-xs font-semibold text-rose-700">{bulkPriceErrors.reason}</p> : null}
+              </div>
+              <div className="flex w-full items-center justify-between gap-2 lg:w-auto lg:justify-end">
+              <button type="button" onClick={() => setConfirmBulkPriceSave(false)} disabled={priceBusy || reviewLoading} className="inline-flex min-h-11 items-center justify-center rounded-[9px] border border-[#CFCFD3] bg-white px-3 text-[12px] font-bold text-[#11120d] disabled:opacity-50">
+                <span className="sm:hidden">← Back</span><span className="hidden sm:inline">← Back to preview</span>
+              </button>
               <button
                 type="button"
                 onClick={confirmBulkPriceUpdate}
-                disabled={priceBusy}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40 sm:min-w-[220px]"
+                aria-label={priceBusy ? "Updating prices" : `Confirm ${bulkPriceImpactAnalytics.affectedCount.toLocaleString()} updates`}
+                disabled={priceBusy || reviewLoading || saveOutcomeUncertain || bulkPriceImpactAnalytics.affectedCount === 0}
+                className="inline-flex min-h-11 min-w-0 items-center justify-center gap-1.5 whitespace-nowrap rounded-[9px] border border-[#11120d] bg-[#11120d] px-3 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40 sm:min-w-[220px]"
               >
                 <Icon name="sell" sizePx={15} />
-                <span>{priceBusy ? "Updating..." : `Confirm updates (${bulkPriceImpactAnalytics.affectedCount.toLocaleString()})`}</span>
+                <span>{priceBusy ? "Updating..." : <><span className="sm:hidden">Confirm {bulkPriceImpactAnalytics.affectedCount.toLocaleString()}</span><span className="hidden sm:inline">Confirm {bulkPriceImpactAnalytics.affectedCount.toLocaleString()} updates</span></>}</span>
               </button>
+              </div>
             </div>
           ) : !pricePreviewReady ? (
             <div className="flex w-full items-center justify-between gap-3">
@@ -5256,14 +5490,16 @@ export default function ProductsPage() {
               <button
                 type="button"
                 onClick={calculateBulkPricePreview}
-                disabled={priceBusy || (!isFilteredSelection && priceMarginTargetCount === 0)}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
+                aria-label={bulkPriceMode === "MANUAL" ? "Review selected prices" : `Calculate preview for ${isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()} ${((isFilteredSelection ? selectedCount : priceMarginTargetCount) === 1) ? "product" : "products"}`}
+                disabled={priceBusy || (isFilteredSelection ? selectedCount === 0 : priceMarginTargetCount === 0)}
+                className="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-[9px] border border-[#11120d] bg-[#11120d] px-3 sm:px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
               >
                 <Icon name="calculate" sizePx={15} />
                 <span>
-                  {bulkPriceMode === "MANUAL"
+                  <span className="sm:hidden">{bulkPriceMode === "MANUAL" ? "Preview prices" : `Preview ${(isFilteredSelection ? selectedCount : priceMarginTargetCount).toLocaleString()}`}</span>
+                  <span className="hidden sm:inline">{bulkPriceMode === "MANUAL"
                     ? "Review selected prices"
-                    : `Calculate preview for ${isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()} ${((isFilteredSelection ? selectedCount : priceMarginTargetCount) === 1) ? "product" : "products"}`} →
+                    : `Calculate preview for ${isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()} ${((isFilteredSelection ? selectedCount : priceMarginTargetCount) === 1) ? "product" : "products"}`} →</span>
                 </span>
               </button>
             </div>
@@ -5272,27 +5508,29 @@ export default function ProductsPage() {
               <button
                 type="button"
                 onClick={() => setPricePreviewReady(false)}
-                className="inline-flex min-h-10 items-center justify-center gap-1.5 rounded-[9px] border border-[#CFCFD3] bg-white px-3.5 text-[12px] font-bold text-[#565449] hover:bg-slate-50 transition touch-manipulation"
+                aria-label="Modify settings"
+                className="inline-flex min-h-11 items-center justify-center gap-1.5 whitespace-nowrap rounded-[9px] border border-[#CFCFD3] bg-white px-3.5 text-[12px] font-bold text-[#565449] hover:bg-slate-50 transition touch-manipulation"
               >
                 <Icon name="arrow_back" sizePx={15} />
-                <span>Modify settings</span>
+                <span className="sm:hidden">Back</span><span className="hidden sm:inline">Modify settings</span>
               </button>
               <button
                 type="button"
                 onClick={requestBulkPriceUpdate}
+                aria-label="Review changes"
                 disabled={priceBusy}
-                className="inline-flex min-h-10 items-center justify-center gap-2 rounded-[9px] border border-[#11120d] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
+                className="inline-flex min-h-11 items-center justify-center gap-2 whitespace-nowrap rounded-[9px] border border-[#11120d] bg-[#11120d] px-3 sm:px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] active:scale-[0.99] disabled:opacity-40"
               >
                 <Icon name="sell" sizePx={15} />
-                <span>{priceBusy ? "Checking..." : "Review changes →"}</span>
+                <span>{priceBusy ? "Checking..." : <><span className="sm:hidden">Review prices</span><span className="hidden sm:inline">Review changes →</span></>}</span>
               </button>
             </div>
           )
         }
       >
-        <div className="flex flex-col h-full min-h-0 gap-2">
+        <div className={`flex flex-col gap-2 max-lg:shrink-0 ${compactBulkPriceFlow || confirmBulkPriceSave ? "min-h-0" : "min-h-0 xl:h-full"}`}>
           {/* TOP BAR: CLEAN STEPPER BREADCRUMB & COMPACT MODE SEGMENT */}
-          <div className="flex shrink-0 flex-col items-start gap-2 border-b border-[#E5E7EB] pb-2 sm:flex-row sm:items-center sm:justify-between">
+          <div className="flex shrink-0 flex-col items-start gap-2 border-b border-[#E5E7EB] pb-2 lg:flex-row lg:items-center lg:justify-between">
             {/* Minimalist Workflow Stepper (Not buttons!) */}
             <div className="flex items-center gap-2 sm:gap-4 text-[11px] font-bold" aria-label="Workflow steps">
               {/* Step 1 */}
@@ -5338,11 +5576,14 @@ export default function ProductsPage() {
 
             {/* Mode Segmented Control (Compact capsule, not action buttons!) */}
             {!pricePreviewReady ? (
-              <div className="inline-flex shrink-0 self-end rounded-lg border border-slate-200 bg-slate-100 p-0.5 sm:self-auto">
+              <div className="flex w-full items-center justify-between gap-2 lg:w-auto">
+                <span className="text-[12px] font-bold text-slate-600 lg:sr-only">Pricing method</span>
+                <div className="inline-flex shrink-0 rounded-lg border border-slate-200 bg-slate-100 p-0.5" role="group" aria-label="Pricing method">
                 <button
                   type="button"
                   onClick={() => { setBulkPriceMode("CALCULATE"); setBulkPriceNotice(null); setBulkPriceTouched(true); setExplicitAdjustedIds({}); }}
-                  className={`h-7 rounded-md px-2.5 text-[11px] font-bold transition flex items-center gap-1.5 touch-manipulation ${
+                  aria-pressed={bulkPriceMode === "CALCULATE"}
+                  className={`min-h-11 rounded-md px-4 text-[13px] font-bold transition flex items-center gap-1.5 whitespace-nowrap touch-manipulation ${
                     bulkPriceMode === "CALCULATE"
                       ? "bg-white text-[#11120d] shadow-2xs border border-slate-200/80 font-extrabold"
                       : "text-slate-600 hover:text-slate-900"
@@ -5355,7 +5596,8 @@ export default function ProductsPage() {
                   type="button"
                   disabled={isFilteredSelection}
                   onClick={() => { setBulkPriceMode("MANUAL"); setBulkPriceNotice(null); setBulkPriceTouched(true); setExplicitAdjustedIds({}); }}
-                  className={`h-7 rounded-md px-2.5 text-[11px] font-bold transition flex items-center gap-1.5 touch-manipulation disabled:cursor-not-allowed disabled:opacity-40 ${
+                  aria-pressed={bulkPriceMode === "MANUAL"}
+                  className={`min-h-11 rounded-md px-4 text-[13px] font-bold transition flex items-center gap-1.5 whitespace-nowrap touch-manipulation disabled:cursor-not-allowed disabled:opacity-40 ${
                     bulkPriceMode === "MANUAL"
                       ? "bg-white text-[#11120d] shadow-2xs border border-slate-200/80 font-extrabold"
                       : "text-slate-600 hover:text-slate-900"
@@ -5365,6 +5607,7 @@ export default function ProductsPage() {
                   <Icon name="edit" sizePx={14} className={bulkPriceMode === "MANUAL" ? "text-blue-600" : "text-slate-400"} />
                   <span>Manual</span>
                 </button>
+                </div>
               </div>
             ) : (
               <span className="rounded-md border border-blue-200 bg-blue-50 px-2 py-0.5 text-[10.5px] font-extrabold text-blue-700">
@@ -5396,7 +5639,7 @@ export default function ProductsPage() {
             <div className="rounded-[8px] border border-slate-200 bg-slate-50 px-2.5 py-1 text-[11px] font-semibold text-slate-600 shrink-0">
               <div className="flex flex-wrap items-center justify-between gap-1.5">
                 <div className="flex items-center gap-1.5 flex-wrap text-[10.5px]">
-                  <span>Selected: <strong className="text-[#11120d] font-bold">{selectedCount}</strong></span>
+                  <span>To edit: <strong className="text-[#11120d] font-bold">{priceMarginTargetCount}</strong> of {selectedCount} in scope</span>
                   <span className="text-slate-300">·</span>
                   <span className="text-emerald-700 font-bold">{selectedPriceStatus.withRate} with Rate</span>
                   <span className="hidden sm:inline text-slate-300">·</span>
@@ -5424,11 +5667,11 @@ export default function ProductsPage() {
           )}
 
           {/* Notice Alert Banner */}
-          {bulkPriceNotice && bulkPriceNotice.tone !== "info" && (!pricePreviewReady || bulkPriceNotice.tone === "danger") && !(!isFilteredSelection && bulkPriceNotice.tone === "success") ? (
+          {bulkPriceNotice && (!pricePreviewReady || bulkPriceNotice.tone === "danger") && !(!isFilteredSelection && bulkPriceNotice.tone === "success") ? (
             <div role="status" className={`shrink-0 rounded-[8px] border px-2.5 py-1 text-[11px] font-bold leading-5 ${
               bulkPriceNotice.tone === "danger"
                 ? "border-rose-200 bg-rose-50 text-rose-800"
-                : "border-emerald-200 bg-emerald-50 text-emerald-800"
+                : bulkPriceNotice.tone === "info" ? "border-blue-200 bg-blue-50 text-blue-900" : "border-emerald-200 bg-emerald-50 text-emerald-800"
             }`}>
               {bulkPriceNotice.message}
             </div>
@@ -5436,98 +5679,76 @@ export default function ProductsPage() {
 
           {/* STEP 1: CONFIGURE VIEW */}
           {confirmBulkPriceSave ? (
-        <div className={`flex flex-col gap-3 py-1 text-xs ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "flex-none overflow-y-auto" : "min-h-0 flex-1 overflow-hidden"}`}>
-          {/* 4 Impact Analytics KPI Cards */}
-          <div className="grid grid-cols-2 sm:grid-cols-4 gap-2">
-            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">To Update</div>
-              <div className="mt-0.5 text-[17px] font-black tabular-nums text-blue-800">
-                {bulkPriceImpactAnalytics.affectedCount.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-[#8C8889]">Preserved</div>
-              <div className="mt-0.5 text-[17px] font-black tabular-nums text-[#565449]">
-                {bulkPriceImpactAnalytics.preservedCount.toLocaleString()}
-              </div>
-            </div>
-
-            <div className="rounded-[9px] border border-blue-200 bg-blue-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-blue-700">Wholesale Rule</div>
-              <div className="mt-0.5 text-[13px] font-black text-blue-900">
-                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateWholesalePrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${wholesaleMarginPercent}%` : "Unchanged"}
-              </div>
-            </div>
-
-            <div className="rounded-[9px] border border-purple-200 bg-purple-50 p-2 text-center sm:text-left">
-              <div className="text-[9.5px] font-extrabold uppercase tracking-wide text-purple-700">Retail Rule</div>
-              <div className="mt-0.5 text-[13px] font-black text-purple-900">
-                {bulkPriceMode === "MANUAL" ? "Manual Edit" : updateRetailPrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"} ${retailMarginPercent}%` : "Unchanged"}
-              </div>
-            </div>
+        <div className="flex flex-col gap-3 py-1 text-xs">
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-1 rounded-[9px] border border-blue-200 bg-blue-50 px-3 py-2 text-[12px]">
+            <span className="font-extrabold text-blue-900">To update: <strong className="tabular-nums">{bulkPriceImpactAnalytics.affectedCount.toLocaleString()}</strong></span>
+            <span className="font-semibold text-slate-700">Preserved: <strong className="tabular-nums">{bulkPriceImpactAnalytics.preservedCount.toLocaleString()}</strong></span>
+            {explicitReviewPreview?.errorCount && !isFilteredSelection ? <span className="font-bold text-rose-800">Cannot preview: {explicitReviewPreview.errorCount}</span> : null}
+            <span className="font-medium text-slate-700">
+              {bulkPriceMode === "MANUAL" ? "Exact prices" : `Wholesale ${updateWholesalePrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"}${wholesaleMarginPercent}%` : "unchanged"} · Retail ${updateRetailPrice ? `Rate ${priceChangeDirection === "INCREASE" ? "+" : "−"}${retailMarginPercent}%` : "unchanged"}`}
+              {bulkPriceMode !== "MANUAL" ? ` · ${existingSellingPricePolicy === "FILL_EMPTY" ? "Fill empty only" : "Replace prices"}` : ""}
+            </span>
           </div>
 
           {/* Affected Products Review Table */}
-          <div className={`flex flex-col overflow-hidden rounded-[10px] border border-[#E5E7EB] bg-white ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "flex-none" : "min-h-0 flex-1"}`}>
+          <div className="flex flex-col rounded-[10px] border border-[#E5E7EB] bg-white">
             <div className="border-b border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 flex items-center justify-between">
               <div className="flex items-center gap-1.5">
                 <Icon name="list_alt" sizePx={14} className="text-blue-600" />
                 <span className="text-[12px] font-extrabold text-[#11120d]">
-                  {isFilteredSelection ? "Preview sample" : "Affected products"} ({bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} shown)
+                  {isFilteredSelection
+                    ? `Preview sample (${bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} of ${bulkPriceImpactAnalytics.affectedCount.toLocaleString()})`
+                    : `Affected products (${bulkPriceImpactAnalytics.affectedCount.toLocaleString()})`}
                 </span>
               </div>
             </div>
 
-            <div className={`divide-y divide-[#E5E7EB] overflow-y-auto ${bulkPriceImpactAnalytics.affectedItems.length <= 10 ? "max-h-[min(45vh,400px)]" : "min-h-0 flex-1"}`}>
-              {bulkPriceImpactAnalytics.affectedItems.slice(0, 50).map((item) => (
-                <div key={item.id} className="p-2.5 flex flex-col gap-2.5 hover:bg-[#F8FAFC] transition sm:flex-row sm:items-center sm:justify-between">
+            <div className="divide-y divide-[#E5E7EB]">
+              {bulkPriceImpactAnalytics.affectedItems.map((item) => {
+                const changedFieldCount = Number(item.oldRate !== item.newRate)
+                  + Number(item.wholesaleChanged && item.newWholesale !== null)
+                  + Number(item.retailChanged && item.newRetail !== null);
+                return (
+                <div key={item.id} className="flex flex-col gap-2 p-3 hover:bg-[#F8FAFC] lg:grid lg:grid-cols-[minmax(0,30%)_minmax(0,1fr)] lg:items-center lg:gap-4">
                   <div className="min-w-0 flex-1">
-                    <div className="truncate font-extrabold text-[12px] text-[#11120d]">{item.name}</div>
-                    <div className="text-[10px] text-[#8C8889]">
-                      SKU: {item.sku || "None"} · Rate: <span className="font-semibold text-[#565449]">{Number(item.rate) > 0 ? `NPR ${item.rate}` : "Not set"}</span>
+                    <div className="break-words font-extrabold text-[13px] leading-5 text-[#11120d]">{item.name}</div>
+                    <div className="break-all text-[11px] leading-5 text-slate-600">
+                      SKU: {item.sku || "None"}
                     </div>
                   </div>
 
-                  <div className="grid w-full grid-cols-1 gap-2 text-left sm:w-auto sm:grid-cols-2 sm:text-right">
+                  <div className={`grid w-full min-w-0 grid-cols-1 gap-2 text-left ${changedFieldCount === 2 ? "lg:grid-cols-2" : changedFieldCount === 3 ? "lg:grid-cols-3" : "lg:grid-cols-1"}`}>
+                    {item.oldRate !== item.newRate ? (
+                      <div className={`min-w-0 rounded-md bg-slate-50 px-3 py-2 text-[12px] ${changedFieldCount === 1 ? "lg:flex lg:items-center lg:justify-between lg:gap-4" : ""}`}>
+                        <span className="block font-bold text-slate-700">Rate</span>
+                        <div className="mt-1 flex flex-wrap items-baseline gap-x-2 tabular-nums lg:mt-0 lg:justify-end">
+                          <span className="text-slate-600">Current {formatReviewPrice(item.oldRate)}</span>
+                          <span className="font-extrabold text-slate-900">→ Proposed {formatReviewPrice(item.newRate)}</span>
+                        </div>
+                      </div>
+                    ) : null}
                     {item.wholesaleChanged && item.newWholesale !== null ? (
-                      <div className="rounded-md bg-blue-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
-                        <span className="text-[9px] font-bold text-blue-700 block uppercase">Wholesale</span>
-                        <div className="flex items-center gap-1 font-bold">
-                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
-                            {item.oldWholesale !== null ? `NPR ${item.oldWholesale}` : "None"}
-                          </span>
-                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
-                          <span className="text-blue-700 tabular-nums font-black">NPR {item.newWholesale}</span>
-                          {item.wholesaleDelta !== null ? (
-                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.wholesaleDelta >= 0 ? "bg-blue-50 text-blue-700" : "bg-rose-50 text-rose-700"}`}>
-                              {item.wholesaleDelta >= 0 ? "+" : ""}{item.wholesaleDelta.toFixed(1)}
-                            </span>
-                          ) : null}
+                      <div className={`min-w-0 rounded-md bg-blue-50 px-3 py-2 text-[12px] ${changedFieldCount === 1 ? "lg:flex lg:items-center lg:justify-between lg:gap-4" : ""}`}>
+                        <span className="block font-bold text-blue-800">Wholesale</span>
+                        <div className="mt-1 flex flex-wrap items-baseline gap-x-2 tabular-nums lg:mt-0 lg:justify-end">
+                          <span className="text-slate-600">Current {formatReviewPrice(item.oldWholesale)}</span>
+                          <span className="font-extrabold text-blue-900">→ Proposed {formatReviewPrice(item.newWholesale)}</span>
                         </div>
                       </div>
                     ) : null}
 
                     {item.retailChanged && item.newRetail !== null ? (
-                      <div className="rounded-md bg-purple-50/60 px-2 py-1 text-[11px] sm:bg-transparent sm:p-0">
-                        <span className="text-[9px] font-bold text-purple-700 block uppercase">Retail</span>
-                        <div className="flex items-center gap-1 font-bold">
-                          <span className="text-[#8C8889] line-through tabular-nums text-[10px]">
-                            {item.oldRetail !== null ? `NPR ${item.oldRetail}` : "None"}
-                          </span>
-                          <Icon name="arrow_forward" sizePx={10} className="text-[#8C8889]" />
-                          <span className="text-purple-700 tabular-nums font-black">NPR {item.newRetail}</span>
-                          {item.retailDelta !== null ? (
-                            <span className={`ml-0.5 rounded px-1 py-0.2 text-[9px] font-extrabold tabular-nums ${item.retailDelta >= 0 ? "bg-purple-50 text-purple-700" : "bg-rose-50 text-rose-700"}`}>
-                              {item.retailDelta >= 0 ? "+" : ""}{item.retailDelta.toFixed(1)}
-                            </span>
-                          ) : null}
+                      <div className={`min-w-0 rounded-md bg-purple-50 px-3 py-2 text-[12px] ${changedFieldCount === 1 ? "lg:flex lg:items-center lg:justify-between lg:gap-4" : ""}`}>
+                        <span className="block font-bold text-purple-800">Retail</span>
+                        <div className="mt-1 flex flex-wrap items-baseline gap-x-2 tabular-nums lg:mt-0 lg:justify-end">
+                          <span className="text-slate-600">Current {formatReviewPrice(item.oldRetail)}</span>
+                          <span className="font-extrabold text-purple-900">→ Proposed {formatReviewPrice(item.newRetail)}</span>
                         </div>
                       </div>
                     ) : null}
                   </div>
                 </div>
-              ))}
+              );})}
 
               {bulkPriceImpactAnalytics.affectedItems.length === 0 ? (
                 <div className="p-5 text-center text-[11px] font-semibold text-[#8C8889]">
@@ -5537,78 +5758,47 @@ export default function ProductsPage() {
                 <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
                   Showing {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} products from this preview. {bulkPriceImpactAnalytics.affectedCount.toLocaleString()} products will be updated.
                 </div>
-              ) : bulkPriceImpactAnalytics.affectedItems.length > 50 ? (
-                <div className="p-2 text-center text-[10px] font-bold text-[#8C8889] bg-[#F8FAFC]">
-                  Showing the first 50 of {bulkPriceImpactAnalytics.affectedItems.length.toLocaleString()} affected products.
-                </div>
               ) : null}
             </div>
+            {!isFilteredSelection && explicitReviewPreview && explicitReviewPreview.previewTotalPages > 1 ? (
+              <div className="flex flex-wrap items-center justify-between gap-2 border-t border-slate-200 bg-slate-50 px-3 py-2 text-[12px] font-semibold text-slate-700">
+                <span>Showing {(reviewPage - 1) * explicitReviewPreview.previewPageSize + 1}–{Math.min(explicitReviewPreview.previewCount, reviewPage * explicitReviewPreview.previewPageSize)} of {explicitReviewPreview.previewCount.toLocaleString()}</span>
+                <div className="flex items-center gap-2">
+                  <span className="tabular-nums">Page {reviewPage} of {explicitReviewPreview.previewTotalPages}</span>
+                  <button type="button" aria-label="Previous review page" disabled={reviewPage <= 1 || reviewLoading} onClick={() => void loadExplicitReviewPage(reviewPage - 1)} className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white disabled:opacity-40"><Icon name="chevron_left" sizePx={20} /></button>
+                  <button type="button" aria-label="Next review page" disabled={reviewPage >= explicitReviewPreview.previewTotalPages || reviewLoading} onClick={() => void loadExplicitReviewPage(reviewPage + 1)} className="flex h-10 w-10 items-center justify-center rounded-lg border border-slate-300 bg-white disabled:opacity-40"><Icon name="chevron_right" sizePx={20} /></button>
+                </div>
+              </div>
+            ) : null}
           </div>
 
-          {/* Audit Record Card */}
-          <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 flex flex-col sm:flex-row items-start sm:items-center justify-between gap-2">
-            <label htmlFor="bulk-price-reason-combobox-confirm" className="text-[13px] font-extrabold text-[#11120d] flex items-center gap-1 shrink-0">
-              <Icon name="verified" sizePx={14} className="text-blue-600" />
-              Audit reason <span className="text-rose-600">*</span>
-            </label>
-            <div className="w-full sm:max-w-[400px]">
-              <CreatableCombobox
-                compact
-                inputRef={priceReasonRef}
-                value={priceReason}
-                onChange={(val) => {
-                  setPriceReason(val);
-                  setBulkPriceTouched(true);
-                  if (bulkPriceErrors.reason) setBulkPriceErrors((c) => ({ ...c, reason: undefined }));
-                  if (bulkPriceNotice?.message?.includes("Enter a reason")) setBulkPriceNotice(null);
-                }}
-                options={[
-                  "Supplier Rate changed",
-                  "Market price changed",
-                  "Seasonal price adjustment",
-                  "Promotion ended",
-                  "Correcting an entry mistake",
-                  "Management-approved price review",
-                ]}
-                placeholder="Choose or type a reason..."
-                ariaLabel="Price update audit reason"
-                allowCreate
-                required
-                invalid={Boolean(bulkPriceErrors.reason)}
-              />
-              {bulkPriceErrors.reason ? (
-                <p className="mt-1 text-[10.5px] font-bold text-[#BE123C] flex items-center gap-1" role="alert">
-                  <Icon name="error" sizePx={13} />
-                  {bulkPriceErrors.reason}
-                </p>
-              ) : null}
-            </div>
-          </div>
         </div>
           ) : !pricePreviewReady ? (
             bulkPriceMode === "MANUAL" ? (
               /* MANUAL MODE: FULL-WIDTH CLEAN PRODUCT SELECTOR */
-              <div className="w-full flex-1 min-h-0 flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden">
+              <div className={`w-full flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden ${compactBulkPriceFlow ? "shrink-0" : "flex-1 min-h-0"}`}>
                 <div className="border-b border-[#E5E7EB] px-3 py-2 bg-[#F8FAFC] shrink-0 space-y-1.5">
-                  <div className="flex items-center justify-between gap-2">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
                     <div className="flex items-center gap-1.5">
                       <h4 className="text-[12.5px] font-extrabold text-[#11120d]">Target Products ({priceMarginTargetCount})</h4>
                       <span className="rounded border border-blue-200 bg-blue-50 px-1.5 py-0.2 text-[9.5px] font-extrabold text-blue-700">Manual</span>
                     </div>
-                    <div className="flex items-center gap-1 shrink-0">
+                    <div className="flex w-full items-center gap-2 sm:w-auto">
                       <button
                         type="button"
                         onClick={() => setVisiblePriceMarginTargets(true)}
-                        className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[10.5px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation"
+                        aria-label={`Select all ${visibleBulkPriceProducts.length} ${priceSearch ? "matching" : "visible"} products`}
+                        className="inline-flex min-h-11 flex-1 items-center justify-center whitespace-nowrap rounded-[7px] border border-[#CBD5E1] bg-white px-2.5 text-[12px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation sm:flex-none"
                       >
-                        Select all
+                        Select {visibleBulkPriceProducts.length}
                       </button>
                       <button
                         type="button"
                         onClick={() => setVisiblePriceMarginTargets(false)}
-                        className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[12.5px] font-bold text-[#565449] hover:bg-slate-50 touch-manipulation"
+                        aria-label={`Clear all ${visibleBulkPriceProducts.length} ${priceSearch ? "matching" : "visible"} products`}
+                        className="inline-flex min-h-11 flex-1 items-center justify-center whitespace-nowrap rounded-[7px] border border-[#CBD5E1] bg-white px-2.5 text-[12px] font-bold text-[#565449] hover:bg-slate-50 touch-manipulation sm:flex-none"
                       >
-                        Clear all
+                        Clear {visibleBulkPriceProducts.length}
                       </button>
                     </div>
                   </div>
@@ -5654,7 +5844,7 @@ export default function ProductsPage() {
                 </div>
 
                 {/* Full-width Scrollable Checklist */}
-                <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#E5E7EB] bg-white">
+                <div className={`divide-y divide-[#E5E7EB] bg-white ${compactBulkPriceFlow ? "lg:max-h-[400px] lg:overflow-y-auto" : "min-h-0 lg:flex-1 lg:overflow-y-auto"}`}>
                   {paginatedStep1Items.map((product) => {
                     const isChecked = Boolean(priceMarginTargetIds[product.id]);
                     const isComingSoon = product.availabilityStatus === "COMING_SOON";
@@ -5750,7 +5940,7 @@ export default function ProductsPage() {
               </div>
             ) : (
               /* CALCULATE MODE: CLEAN UNDERLINE TABS ON MOBILE / 2-COLUMN ON DESKTOP */
-              <div className="flex-1 min-h-0 flex flex-col xl:grid xl:grid-cols-[360px_1fr] gap-2.5 items-stretch">
+              <div className={`flex flex-col xl:grid xl:grid-cols-[360px_1fr] gap-2.5 items-stretch ${compactBulkPriceFlow ? "xl:max-h-[630px]" : "xl:flex-1 xl:min-h-0"}`}>
                 {/* Mobile Underline Tab Bar (Clean tab navigation, NOT buttons!) */}
                 <div className="flex border-b border-slate-200 text-[12px] font-bold shrink-0 xl:hidden">
                   <button
@@ -5979,10 +6169,10 @@ export default function ProductsPage() {
                 </div>
 
                 {/* Right Column: Target Products Checklist */}
-                <div className={`flex-1 min-h-0 ${mobileStep1Tab === "products" ? "flex flex-col h-full" : "hidden xl:flex xl:flex-col xl:h-full"}`}>
-                  <section className="flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden min-h-0 h-full">
+                <div className={`${compactBulkPriceFlow ? "min-h-0" : "min-h-0 xl:flex-1"} ${mobileStep1Tab === "products" ? `flex flex-col ${compactBulkPriceFlow ? "" : "xl:h-full"}` : `hidden xl:flex xl:flex-col ${compactBulkPriceFlow ? "" : "xl:h-full"}`}`}>
+                  <section className={`flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden min-h-0 ${compactBulkPriceFlow ? "" : "xl:h-full"}`}>
                     <div className="border-b border-[#E5E7EB] px-3 py-2 bg-[#F8FAFC] shrink-0 space-y-1.5">
-                      <div className="flex items-center justify-between gap-2">
+                      <div className="flex flex-wrap items-center justify-between gap-2">
                         <div className="flex items-center gap-1.5 min-w-0">
                           <h4 className="text-[12px] font-extrabold text-[#11120d] truncate">
                             Target Products <span className="text-blue-700 font-black">({isFilteredSelection ? selectedCount.toLocaleString() : priceMarginTargetCount.toLocaleString()})</span>
@@ -5993,9 +6183,10 @@ export default function ProductsPage() {
                             </span>
                           ) : null}
                         </div>
-                        <div className="flex items-center gap-1 shrink-0">
+                        <div className="flex w-full items-center gap-2 sm:w-auto">
                           <button
                             type="button"
+                            disabled={isFilteredSelection ? filteredExcludedIds.length === 0 : visibleBulkPriceProducts.length === 0}
                             onClick={() => {
                               if (isFilteredSelection) {
                                 setFilteredSelectionExclusions({});
@@ -6005,15 +6196,17 @@ export default function ProductsPage() {
                               setBulkPriceNotice(null);
                               setBulkPriceTouched(true);
                             }}
-                            className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[10.5px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation"
+                            className="inline-flex min-h-11 flex-1 items-center justify-center whitespace-nowrap rounded-[7px] border border-[#CBD5E1] bg-white px-2.5 text-[12px] font-bold text-[#11120d] hover:bg-slate-50 touch-manipulation disabled:cursor-default disabled:opacity-55 sm:flex-none"
+                            aria-label={isFilteredSelection ? filteredExcludedIds.length === 0 ? `All ${total.toLocaleString()} matching products included` : `Include all ${total.toLocaleString()} matching products` : `Select ${visibleBulkPriceProducts.length} ${priceSearch ? "matching" : "visible"} products`}
                           >
-                            Select all
+                            {isFilteredSelection ? filteredExcludedIds.length === 0 ? "All included" : "Include all" : `Select ${visibleBulkPriceProducts.length}`}
                           </button>
                           <button
                             type="button"
+                            disabled={isFilteredSelection ? step1Items.length === 0 : visibleBulkPriceProducts.length === 0}
                             onClick={() => {
                               if (isFilteredSelection) {
-                                const next: Record<string, { id: string; name: string; sku: string }> = {};
+                                const next: Record<string, { id: string; name: string; sku: string }> = { ...filteredSelectionExclusions };
                                 step1Items.forEach((p) => { next[p.id] = { id: p.id, name: p.name, sku: p.sku || "" }; });
                                 setFilteredSelectionExclusions(next);
                               } else {
@@ -6022,9 +6215,10 @@ export default function ProductsPage() {
                               setBulkPriceNotice(null);
                               setBulkPriceTouched(true);
                             }}
-                            className="inline-flex h-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#CBD5E1] bg-white px-2.5 text-[10.5px] font-bold text-[#64748B] hover:bg-slate-50 touch-manipulation"
+                            className="inline-flex min-h-11 flex-1 items-center justify-center whitespace-nowrap rounded-[7px] border border-[#CBD5E1] bg-white px-2.5 text-[12px] font-bold text-[#565449] hover:bg-slate-50 touch-manipulation disabled:cursor-default disabled:opacity-55 sm:flex-none"
+                            aria-label={isFilteredSelection ? `Exclude ${step1Items.length} products shown on this page` : `Clear ${visibleBulkPriceProducts.length} ${priceSearch ? "matching" : "visible"} products`}
                           >
-                            Clear all
+                            {isFilteredSelection ? "Exclude shown" : `Clear ${visibleBulkPriceProducts.length}`}
                           </button>
                         </div>
                       </div>
@@ -6071,7 +6265,7 @@ export default function ProductsPage() {
                     </div>
 
                     {/* Scrollable Checklist */}
-                    <div className="flex-1 min-h-0 overflow-y-auto divide-y divide-[#E5E7EB] bg-white">
+                    <div className={`divide-y divide-[#E5E7EB] bg-white ${compactBulkPriceFlow ? "xl:max-h-[380px] xl:overflow-y-auto" : "min-h-0 xl:flex-1 xl:overflow-y-auto"}`}>
                       {priceBusy && paginatedStep1Items.length === 0 ? (
                         <div className="flex h-48 flex-col items-center justify-center gap-2 text-[12px] font-semibold text-[#8C8889]">
                           <div className="h-5 w-5 animate-spin rounded-full border-2 border-slate-300 border-t-blue-600" />
@@ -6174,21 +6368,36 @@ export default function ProductsPage() {
                           );
                         })
                       )}
-                      {!priceBusy && paginatedStep1Items.length === 0 ? (
+                      {isFilteredSelection && !filteredPreviewLoaded ? (
+                        <div role="status" className="p-6 text-center text-[13px] font-semibold text-slate-600">
+                          {bulkPriceNotice?.tone === "danger" ? (
+                            <>
+                              <p>Matching products could not be loaded.</p>
+                              <button type="button" disabled={priceBusy} onClick={() => {
+                                setPriceBusy(true);
+                                void loadFilteredPricePreview(1, priceSearch, BULK_PRICE_STEP1_PAGE_SIZE)
+                                  .then(() => setBulkPriceNotice(null))
+                                  .catch((error: any) => setBulkPriceNotice({ tone: "danger", message: error?.response?.data?.error || error?.message || "Products could not be loaded." }))
+                                  .finally(() => setPriceBusy(false));
+                              }} className="mt-3 min-h-10 rounded-lg border border-slate-300 bg-white px-4 text-sm font-bold text-slate-900 disabled:opacity-50">Retry loading</button>
+                            </>
+                          ) : "Loading matching products…"}
+                        </div>
+                      ) : !priceBusy && paginatedStep1Items.length === 0 ? (
                         <div className="p-6 text-center text-[12px] font-semibold text-[#8C8889]">
                           No products match this search.
                         </div>
                       ) : null}
 
-                      {/* Pagination Footer (now scrolls with content) */}
-                    <div className="border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1.5 text-[10.5px] font-semibold text-[#6B7280] flex items-center justify-between shrink-0">
+                    </div>
+                    <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[12px] font-semibold text-[#565449]">
                       <span>
-                        Showing <strong className="text-[#11120d]">{step1TotalCount === 0 ? 0 : (activeStep1Page - 1) * BULK_PRICE_STEP1_PAGE_SIZE + 1}–{Math.min(step1TotalCount, activeStep1Page * BULK_PRICE_STEP1_PAGE_SIZE)}</strong> of <strong className="text-[#11120d]">{step1TotalCount.toLocaleString()}</strong>
+                        Showing <strong className="text-[#11120d]">{step1TotalCount === 0 || (isFilteredSelection && !filteredPreviewLoaded) ? 0 : (activeStep1Page - 1) * BULK_PRICE_STEP1_PAGE_SIZE + 1}–{isFilteredSelection && !filteredPreviewLoaded ? 0 : Math.min(step1TotalCount, activeStep1Page * BULK_PRICE_STEP1_PAGE_SIZE)}</strong> of <strong className="text-[#11120d]">{step1TotalCount.toLocaleString()}</strong>
                       </span>
-                      {step1TotalPages > 1 ? (
+                      {step1TotalPages > 1 && (!isFilteredSelection || filteredPreviewLoaded) ? (
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] font-bold text-[#565449] tabular-nums">
-                            {activeStep1Page}/{step1TotalPages}
+                          <span className="text-[12px] font-bold text-[#565449] tabular-nums">
+                            Page {activeStep1Page} of {step1TotalPages}
                           </span>
                           <button
                             type="button"
@@ -6204,10 +6413,10 @@ export default function ProductsPage() {
                                 setBulkPriceStep1Page(prev);
                               }
                             }}
-                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] transition hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none touch-manipulation"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-[7px] border border-[#D8DBE0] bg-white text-[#11120d] transition hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none touch-manipulation"
                             aria-label="Previous page"
                           >
-                            <Icon name="chevron_left" sizePx={13} />
+                            <Icon name="chevron_left" sizePx={20} />
                           </button>
                           <button
                             type="button"
@@ -6223,14 +6432,13 @@ export default function ProductsPage() {
                                 setBulkPriceStep1Page(next);
                               }
                             }}
-                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] transition hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none touch-manipulation"
+                            className="inline-flex h-10 w-10 items-center justify-center rounded-[7px] border border-[#D8DBE0] bg-white text-[#11120d] transition hover:bg-slate-50 disabled:opacity-30 disabled:pointer-events-none touch-manipulation"
                             aria-label="Next page"
                           >
-                            <Icon name="chevron_right" sizePx={13} />
+                            <Icon name="chevron_right" sizePx={20} />
                           </button>
                         </div>
                       ) : null}
-                    </div>
                     </div>
                   </section>
                 </div>
@@ -6240,12 +6448,32 @@ export default function ProductsPage() {
 
           {/* STEP 2: PREVIEW & EDIT VIEW */}
           {pricePreviewReady && !confirmBulkPriceSave ? (
-            <div className="flex-1 min-h-0 flex flex-col gap-2">
+            <div className={`flex flex-col gap-2 max-lg:shrink-0 ${compactBulkPriceFlow ? "shrink-0" : "lg:flex-1 lg:min-h-0"}`}>
+              {isFilteredSelection && invalidFilteredOverrideId && filteredPriceOverrides[invalidFilteredOverrideId] ? (
+                <section className="shrink-0 rounded-[10px] border border-rose-300 bg-rose-50 p-3" aria-label="Price needing correction">
+                  <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                    <div>
+                      <h4 className="text-sm font-bold text-rose-900">Correct this price before review</h4>
+                      <p className="text-xs text-rose-800">{selectedProductCache[invalidFilteredOverrideId]?.name || filteredPreviewItems.find((item) => item.productId === invalidFilteredOverrideId)?.name || `Product ${invalidFilteredOverrideId}`}</p>
+                    </div>
+                    <button type="button" onClick={() => useCalculatedPriceForFilteredItem(invalidFilteredOverrideId)} className="min-h-10 rounded-md border border-rose-300 bg-white px-3 text-xs font-bold text-rose-900">Use rule instead</button>
+                  </div>
+                  <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
+                    {([['ratePerPiece', 'Rate'], ['wholesalePrice', 'Wholesale'], ['retailPrice', 'Retail']] as const).map(([field, label]) => bulkPriceErrors.rows?.[invalidFilteredOverrideId]?.[field] ? (
+                      <label key={field} className="block text-xs font-bold text-rose-900">
+                        {label}
+                        <input type="number" min="0.01" step="0.01" inputMode="decimal" value={filteredPriceOverrides[invalidFilteredOverrideId][field]} onChange={(event) => updateFilteredPriceOverride(invalidFilteredOverrideId, field, event.target.value)} data-price-field={`${invalidFilteredOverrideId}-${field}`} aria-invalid="true" className="mt-1 h-11 w-full rounded-md border border-rose-400 bg-white px-3 text-base tabular-nums text-slate-900" />
+                        <span className="mt-1 block font-medium">{bulkPriceErrors.rows[invalidFilteredOverrideId]?.[field]}</span>
+                      </label>
+                    ) : null)}
+                  </div>
+                </section>
+              ) : null}
               {/* DESKTOP VIEW (lg:flex) */}
-              <div className="hidden lg:flex flex-1 min-h-0 flex-col gap-2">
+              <div className={`hidden lg:flex flex-col gap-2 ${compactBulkPriceFlow ? "shrink-0" : "flex-1 min-h-0"}`}>
                 {isFilteredSelection ? (
                   /* Desktop Filtered Selection Preview Table Card */
-                  <div className="flex-1 min-h-0 flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden">
+                  <div className={`flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden ${compactBulkPriceFlow ? "shrink-0" : "flex-1 min-h-0"}`}>
                     <div className="flex flex-col gap-1.5 border-b border-[#E5E7EB] px-3 py-1.5 bg-[#F8FAFC] sm:flex-row sm:items-center sm:justify-between shrink-0">
                       <div>
                         <div className="flex items-center gap-2">
@@ -6341,6 +6569,8 @@ export default function ProductsPage() {
                                       step="0.01"
                                       inputMode="decimal"
                                       value={filteredPriceOverrides[item.productId]?.ratePerPiece ?? ""}
+                                      data-price-field={`${item.productId}-ratePerPiece`}
+                                      aria-label={`New Rate for ${item.name}`}
                                       onChange={(e) => updateFilteredPriceOverride(item.productId, "ratePerPiece", e.target.value)}
                                       className="h-7.5 w-full rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[11.5px] font-bold tabular-nums outline-none focus:border-blue-600"
                                     />
@@ -6357,6 +6587,8 @@ export default function ProductsPage() {
                                       step="0.01"
                                       inputMode="decimal"
                                       value={filteredPriceOverrides[item.productId]?.wholesalePrice ?? ""}
+                                      data-price-field={`${item.productId}-wholesalePrice`}
+                                      aria-label={`New wholesale price for ${item.name}`}
                                       onChange={(e) => updateFilteredPriceOverride(item.productId, "wholesalePrice", e.target.value)}
                                       className="h-8 w-[120px] rounded-[6px] border border-blue-300 bg-blue-50/50 px-2 text-center text-[13px] font-bold tabular-nums outline-none focus:border-blue-600"
                                     />
@@ -6377,6 +6609,8 @@ export default function ProductsPage() {
                                       step="0.01"
                                       inputMode="decimal"
                                       value={filteredPriceOverrides[item.productId]?.retailPrice ?? ""}
+                                      data-price-field={`${item.productId}-retailPrice`}
+                                      aria-label={`New retail price for ${item.name}`}
                                       onChange={(e) => updateFilteredPriceOverride(item.productId, "retailPrice", e.target.value)}
                                       className="h-8 w-[120px] rounded-[6px] border border-purple-300 bg-purple-50/50 px-2 text-center text-[13px] font-bold tabular-nums outline-none focus:border-purple-600"
                                     />
@@ -6416,12 +6650,12 @@ export default function ProductsPage() {
                       </table>
 
                       {/* Pagination Footer (now scrolls with content) */}
-                      <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1 shrink-0 text-[11px] font-medium text-[#6B7280] mt-auto">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[12px] font-medium text-[#565449]">
                       <div className="flex items-center gap-2.5">
                         <span>
                           Showing <strong className="text-[#11120d] font-bold">{(activeStep2FilteredPage - 1) * bulkPriceStep2PageSize + 1}–{Math.min(filteredPreviewStats.previewMatchedCount, activeStep2FilteredPage * bulkPriceStep2PageSize)}</strong> of <strong className="text-[#11120d] font-bold">{filteredPreviewStats.previewMatchedCount.toLocaleString()}</strong>
                         </span>
-                        <label className="flex items-center gap-1.5 text-[11px] font-semibold text-[#8C8889]">
+                        <label className="flex items-center gap-1.5 text-[12px] font-semibold text-[#565449]">
                           <span>Rows:</span>
                           <div className="w-auto">
                             <ProjectSelect
@@ -6433,7 +6667,7 @@ export default function ProductsPage() {
                                 setPriceBusy(true);
                                 void loadFilteredPricePreview(1, priceSearch, newSize).finally(() => setPriceBusy(false));
                               }}
-                              className="h-[30px] rounded-[7px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold text-[#11120d] outline-none"
+                              className="h-10 rounded-[7px] border border-[#CFCFD3] bg-white px-2 text-[12px] font-bold text-[#11120d] outline-none"
                             >
                               <option value={10}>10</option>
                               <option value={25}>25</option>
@@ -6445,7 +6679,7 @@ export default function ProductsPage() {
                       </div>
                       {step2FilteredTotalPages > 1 ? (
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] font-bold text-[#565449]">
+                          <span className="text-[12px] font-bold text-[#565449]">
                             Page <span className="text-[#11120d]">{activeStep2FilteredPage}</span> of {step2FilteredTotalPages}
                           </span>
                           <div className="flex items-center gap-1">
@@ -6456,7 +6690,7 @@ export default function ProductsPage() {
                                 setPriceBusy(true);
                                 void loadFilteredPricePreview(activeStep2FilteredPage - 1).finally(() => setPriceBusy(false));
                               }}
-                              className="inline-flex h-6.5 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-2 text-[10px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
+                              className="inline-flex h-10 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
                               aria-label="Previous preview page"
                             >
                               <Icon name="chevron_left" sizePx={13} />
@@ -6469,7 +6703,7 @@ export default function ProductsPage() {
                                 setPriceBusy(true);
                                 void loadFilteredPricePreview(activeStep2FilteredPage + 1).finally(() => setPriceBusy(false));
                               }}
-                              className="inline-flex h-6.5 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-2 text-[10px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
+                              className="inline-flex h-10 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
                               aria-label="Next preview page"
                             >
                               <span>Next</span>
@@ -6483,7 +6717,7 @@ export default function ProductsPage() {
                   </div>
                 ) : (
                   /* Desktop Explicit Selection Preview Table Card */
-                  <div className="flex-1 min-h-0 flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden">
+                  <div className={`flex flex-col rounded-[12px] border border-[#E5E7EB] bg-white overflow-hidden ${compactBulkPriceFlow ? "shrink-0" : "flex-1 min-h-0"}`}>
                     <div className="flex flex-col gap-1.5 border-b border-[#E5E7EB] px-3 py-1.5 bg-[#F8FAFC] sm:flex-row sm:items-center sm:justify-between shrink-0">
                       <div className="flex flex-col gap-2 w-full sm:w-auto">
                         <div className="flex items-center gap-2">
@@ -6495,26 +6729,29 @@ export default function ProductsPage() {
                           ) : null}
                         </div>
 
-                        <div className="flex items-center rounded-lg bg-[#E2E8F0] p-0.5 w-full sm:w-auto self-start">
+                        <div className="flex items-center rounded-lg bg-[#E2E8F0] p-0.5 w-full sm:w-auto self-start" role="group" aria-label="Preview products">
                           <button
                             type="button"
-                            onClick={() => setBulkPricePreviewFilter("ALL")}
-                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition ${bulkPricePreviewFilter === "ALL" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
+                            onClick={() => { setBulkPricePreviewFilter("ALL"); setBulkPriceStep2Page(1); }}
+                            aria-pressed={bulkPricePreviewFilter === "ALL"}
+                            className={`flex-1 sm:flex-none min-h-10 whitespace-nowrap px-3 text-[12px] font-bold rounded-md transition ${bulkPricePreviewFilter === "ALL" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
                           >
                             All
                           </button>
                           <button
                             type="button"
-                            onClick={() => setBulkPricePreviewFilter("READY")}
-                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition flex items-center justify-center gap-1 ${bulkPricePreviewFilter === "READY" ? "bg-white shadow-sm text-emerald-700" : "text-[#64748B] hover:text-emerald-700"}`}
+                            onClick={() => { setBulkPricePreviewFilter("READY"); setBulkPriceStep2Page(1); }}
+                            aria-pressed={bulkPricePreviewFilter === "READY"}
+                            className={`flex-1 sm:flex-none min-h-10 whitespace-nowrap px-3 text-[12px] font-bold rounded-md transition flex items-center justify-center gap-1 ${bulkPricePreviewFilter === "READY" ? "bg-white shadow-sm text-emerald-700" : "text-[#64748B] hover:text-emerald-700"}`}
                           >
                             <span className="w-1 h-1 rounded-full bg-emerald-500"></span>
-                            Ready
+                            {bulkPriceMode === "MANUAL" ? "Included" : "Ready"}
                           </button>
                           <button
                             type="button"
-                            onClick={() => setBulkPricePreviewFilter("PRESERVED")}
-                            className={`flex-1 sm:flex-none px-2 py-1 text-[9px] font-bold rounded-md transition ${bulkPricePreviewFilter === "PRESERVED" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
+                            onClick={() => { setBulkPricePreviewFilter("PRESERVED"); setBulkPriceStep2Page(1); }}
+                            aria-pressed={bulkPricePreviewFilter === "PRESERVED"}
+                            className={`flex-1 sm:flex-none min-h-10 whitespace-nowrap px-3 text-[12px] font-bold rounded-md transition ${bulkPricePreviewFilter === "PRESERVED" ? "bg-white shadow-sm text-[#11120d]" : "text-[#64748B] hover:text-[#0F172A]"}`}
                           >
                             Excluded
                           </button>
@@ -6549,7 +6786,7 @@ export default function ProductsPage() {
                       </div>
                     </div>
 
-                    <div className="relative flex-1 min-h-0 overflow-y-auto">
+                    <div className={`relative overflow-y-auto ${compactBulkPriceFlow ? "max-h-[min(42dvh,420px)]" : "flex-1 min-h-0"}`}>
                       <table className="w-full text-[12.5px]">
                         <thead className="bg-[#F8FAFC] sticky top-0 z-10 border-b border-[#E5E7EB]">
                           <tr className="text-[11px] font-extrabold uppercase tracking-wide text-[#8C8889]">
@@ -6579,7 +6816,9 @@ export default function ProductsPage() {
 
                             const willChangeWholesale = updateWholesalePrice && (existingSellingPricePolicy === "REPLACE" || !(Number(product.wholesalePrice) > 0));
                             const willChangeRetail = updateRetailPrice && (existingSellingPricePolicy === "REPLACE" || !(Number(product.retailPrice) > 0));
-                            const willChange = isIncluded && !isComingSoon && !hasNoRate && (willChangeWholesale || willChangeRetail);
+                            const willChange = isIncluded && (bulkPriceMode === "MANUAL"
+                              ? (["ratePerPiece", "wholesalePrice", "retailPrice"] as const).some((field) => row[field]?.trim() && Number(row[field]) !== Number(product[field]))
+                              : !isComingSoon && !hasNoRate && (willChangeWholesale || willChangeRetail));
 
                             return (
                               <tr key={product.id} className={`transition-colors ${!isIncluded ? "bg-rose-50/40 opacity-70" : "hover:bg-[#F8FAFC]"}`}>
@@ -6589,9 +6828,9 @@ export default function ProductsPage() {
                                     <span className="font-extrabold text-[#11120d]">{product.name}</span>
                                     {!isIncluded ? (
                                       <span className="rounded-full border border-rose-200 bg-rose-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-rose-700">Excluded</span>
-                                    ) : isComingSoon ? (
+                                    ) : bulkPriceMode === "CALCULATE" && isComingSoon ? (
                                       <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-amber-800">Coming soon</span>
-                                    ) : hasNoRate ? (
+                                    ) : bulkPriceMode === "CALCULATE" && hasNoRate ? (
                                       <span className="rounded-full border border-amber-200 bg-amber-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-amber-800">No Rate</span>
                                     ) : isAdjusted ? (
                                       <span className="rounded-full border border-blue-200 bg-blue-50 px-1.5 py-0.2 text-[8.5px] font-extrabold text-blue-700">Adjusted</span>
@@ -6625,6 +6864,8 @@ export default function ProductsPage() {
                                       inputMode="decimal"
                                       disabled={!isIncluded}
                                       value={row.ratePerPiece}
+                                      data-price-field={`${product.id}-ratePerPiece`}
+                                      aria-label={`New Rate for ${product.name}`}
                                       onChange={(e) => {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), ratePerPiece: e.target.value } }));
                                         setBulkPriceTouched(true);
@@ -6645,6 +6886,8 @@ export default function ProductsPage() {
                                       inputMode="decimal"
                                       disabled={!isIncluded}
                                       value={row.wholesalePrice}
+                                      data-price-field={`${product.id}-wholesalePrice`}
+                                      aria-label={`New wholesale price for ${product.name}`}
                                       onChange={(e) => {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), wholesalePrice: e.target.value } }));
                                         setBulkPriceTouched(true);
@@ -6669,6 +6912,8 @@ export default function ProductsPage() {
                                       inputMode="decimal"
                                       disabled={!isIncluded}
                                       value={row.retailPrice}
+                                      data-price-field={`${product.id}-retailPrice`}
+                                      aria-label={`New retail price for ${product.name}`}
                                       onChange={(e) => {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), retailPrice: e.target.value } }));
                                         setBulkPriceTouched(true);
@@ -6726,12 +6971,12 @@ export default function ProductsPage() {
                       </table>
 
                       {/* Pagination Footer (now scrolls with content) */}
-                      <div className="flex items-center justify-between border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-1 shrink-0 text-[11px] font-medium text-[#6B7280] mt-auto">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-t border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[12px] font-medium text-[#565449]">
                       <div className="flex items-center gap-2.5">
                         <span>
-                          Showing <strong className="text-[#11120d] font-bold">{visibleBulkPriceProducts.length === 0 ? 0 : (activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–{Math.min(visibleBulkPriceProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}</strong> of <strong className="text-[#11120d] font-bold">{visibleBulkPriceProducts.length.toLocaleString()}</strong>
+                          Showing <strong className="text-[#11120d] font-bold">{explicitPreviewProducts.length === 0 ? 0 : (activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–{Math.min(explicitPreviewProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}</strong> of <strong className="text-[#11120d] font-bold">{explicitPreviewProducts.length.toLocaleString()}</strong>
                         </span>
-                        <label className="flex items-center gap-1.5 text-[11px] font-semibold text-[#8C8889]">
+                        <label className="flex items-center gap-1.5 text-[12px] font-semibold text-[#565449]">
                           <span>Rows:</span>
                           <div className="w-auto">
                             <select
@@ -6740,7 +6985,7 @@ export default function ProductsPage() {
                                 setBulkPriceStep2PageSize(Number(e.target.value));
                                 setBulkPriceStep2Page(1);
                               }}
-                              className="h-[26px] w-[60px] rounded-[6px] border border-[#CFCFD3] bg-white px-1.5 py-0 text-[11px] font-bold text-[#11120d] outline-none"
+                              className="h-10 w-[68px] rounded-[6px] border border-[#CFCFD3] bg-white px-2 text-[12px] font-bold text-[#11120d] outline-none"
                             >
                               <option value={10}>10</option>
                               <option value={25}>25</option>
@@ -6752,7 +6997,7 @@ export default function ProductsPage() {
                       </div>
                       {step2ExplicitTotalPages > 1 ? (
                         <div className="flex items-center gap-1.5">
-                          <span className="text-[10px] font-bold text-[#565449]">
+                          <span className="text-[12px] font-bold text-[#565449]">
                             Page <span className="text-[#11120d]">{activeStep2ExplicitPage}</span> of {step2ExplicitTotalPages}
                           </span>
                           <div className="flex items-center gap-1">
@@ -6760,7 +7005,7 @@ export default function ProductsPage() {
                               type="button"
                               disabled={activeStep2ExplicitPage <= 1}
                               onClick={() => setBulkPriceStep2Page((p) => Math.max(1, p - 1))}
-                              className="inline-flex h-6.5 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-2 text-[10px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
+                              className="inline-flex h-10 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
                               aria-label="Previous preview page"
                             >
                               <Icon name="chevron_left" sizePx={13} />
@@ -6770,7 +7015,7 @@ export default function ProductsPage() {
                               type="button"
                               disabled={activeStep2ExplicitPage >= step2ExplicitTotalPages}
                               onClick={() => setBulkPriceStep2Page((p) => Math.min(step2ExplicitTotalPages, p + 1))}
-                              className="inline-flex h-6.5 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-2 text-[10px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
+                              className="inline-flex h-10 items-center gap-1 rounded-[6px] border border-[#D8DBE0] bg-white px-3 text-[12px] font-bold text-[#11120d] transition hover:bg-slate-50 disabled:opacity-35 disabled:pointer-events-none touch-manipulation"
                               aria-label="Next preview page"
                             >
                               <span>Next</span>
@@ -6830,7 +7075,22 @@ export default function ProductsPage() {
               </div>
 
               {/* MOBILE VIEW (lg:hidden): PROPER FINGER-FRIENDLY SCROLLABLE ARCHITECTURE */}
-              <div className="lg:hidden flex-1 min-h-0 flex flex-col gap-2">
+              <div className="flex shrink-0 flex-col gap-2 lg:hidden">
+                {!isFilteredSelection ? (
+                  <div className="flex items-center rounded-lg bg-slate-100 p-0.5" role="group" aria-label="Preview products">
+                    {(["ALL", "READY", "PRESERVED"] as const).map((filter) => (
+                      <button
+                        key={filter}
+                        type="button"
+                        aria-pressed={bulkPricePreviewFilter === filter}
+                        onClick={() => { setBulkPricePreviewFilter(filter); setBulkPriceStep2Page(1); }}
+                        className={`min-h-11 flex-1 whitespace-nowrap rounded-md px-2 text-[12px] font-bold transition ${bulkPricePreviewFilter === filter ? "bg-white text-slate-900 shadow-sm" : "text-slate-600"}`}
+                      >
+                        {filter === "ALL" ? "All" : filter === "PRESERVED" ? "Excluded" : bulkPriceMode === "MANUAL" ? "Included" : "Ready"}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
                 {/* Search & Modify Bar */}
                 <div className="flex items-center gap-2 shrink-0">
                   <div className="relative flex-1 flex items-center h-10 rounded-[9px] border border-[#CFCFD3] bg-[#F8FAFC] px-3 transition focus-within:border-blue-600 focus-within:bg-white focus-within:ring-1 focus-within:ring-blue-600">
@@ -6872,20 +7132,20 @@ export default function ProductsPage() {
                 </div>
 
                 {/* Mobile Cards List: The primary scrollable container */}
-                <div className="flex-1 min-h-0 overflow-y-auto overscroll-contain rounded-[10px] border border-[#E5E7EB] bg-white divide-y divide-[#E5E7EB]">
+                <div className="divide-y divide-[#E5E7EB] rounded-[10px] border border-[#E5E7EB] bg-white">
                   {isFilteredSelection ? (
                     paginatedFilteredPreviewItems.map((item) => (
                       <article key={item.productId} className="p-2.5 space-y-1.5">
                         <div className="flex items-start justify-between gap-2">
                           <div className="min-w-0 flex-1">
-                            <div className="font-extrabold text-[12px] text-[#11120d] truncate">{item.name}</div>
-                            <div className="text-[9.5px] text-[#8C8889] truncate">SKU: {item.sku || "-"} · Rate: NPR {item.rate}</div>
+                          <div className="break-words font-extrabold text-[13px] text-[#11120d]">{item.name}</div>
+                          <div className="break-all text-[11px] leading-5 text-slate-600">SKU: {item.sku || "-"} · Rate: {formatReviewPrice(item.rate)}</div>
                           </div>
                           <div className="flex shrink-0 items-center gap-1.5">
                             <button
                               type="button"
                               onClick={() => filteredPriceOverrides[item.productId] ? useCalculatedPriceForFilteredItem(item.productId) : editFilteredPreviewItem(item)}
-                              className={`inline-flex h-8.5 min-h-[36px] min-w-[58px] items-center justify-center rounded-[7px] border px-2.5 text-[11px] font-bold active:scale-[0.97] touch-manipulation transition ${
+                              className={`inline-flex min-h-10 min-w-[62px] items-center justify-center rounded-[7px] border px-2.5 text-[12px] font-bold active:scale-[0.97] touch-manipulation transition ${
                                 filteredPriceOverrides[item.productId]
                                   ? "border-blue-300 bg-blue-50 text-blue-700 shadow-2xs font-extrabold"
                                   : "border-[#CBD5E1] bg-white text-[#11120d] hover:bg-slate-50"
@@ -6896,7 +7156,7 @@ export default function ProductsPage() {
                             <button
                               type="button"
                               onClick={() => excludeFilteredPreviewItem(item)}
-                              className="inline-flex h-8.5 min-h-[36px] min-w-[58px] items-center justify-center rounded-[7px] border border-rose-200 bg-white px-2.5 text-[11px] font-extrabold text-rose-700 hover:bg-rose-50 active:scale-[0.97] touch-manipulation transition"
+                              className="inline-flex min-h-10 min-w-[62px] items-center justify-center rounded-[7px] border border-rose-200 bg-white px-2.5 text-[12px] font-extrabold text-rose-700 hover:bg-rose-50 active:scale-[0.97] touch-manipulation transition"
                             >
                               Exclude
                             </button>
@@ -6904,7 +7164,7 @@ export default function ProductsPage() {
                         </div>
                         <div className="grid grid-cols-2 gap-1.5 text-xs">
                           <div className="rounded-[6px] bg-[#F8FAFC] border border-[#E5E7EB] p-1.5">
-                            <div className="text-[9px] font-bold uppercase text-blue-700">Wholesale</div>
+                            <div className="text-[11px] font-bold text-blue-800">Wholesale</div>
                             <div className="mt-0.5 flex items-center gap-1">
                               <span className="text-[#565449]">{item.currentWholesalePrice !== null ? `NPR ${item.currentWholesalePrice}` : "None"}</span>
                               {item.newWholesalePrice !== null ? (
@@ -6916,7 +7176,7 @@ export default function ProductsPage() {
                             </div>
                           </div>
                           <div className="rounded-[6px] bg-[#F8FAFC] border border-[#E5E7EB] p-1.5">
-                            <div className="text-[9px] font-bold uppercase text-purple-700">Retail</div>
+                            <div className="text-[11px] font-bold text-purple-800">Retail</div>
                             <div className="mt-0.5 flex items-center gap-1">
                               <span className="text-[#565449]">{item.currentRetailPrice !== null ? `NPR ${item.currentRetailPrice}` : "None"}</span>
                               {item.newRetailPrice !== null ? (
@@ -6929,13 +7189,13 @@ export default function ProductsPage() {
                           </div>
                         </div>
                         {filteredPriceOverrides[item.productId] ? (
-                          <div className="grid gap-1 rounded-[7px] border border-blue-200 bg-blue-50/50 p-1.5 min-[430px]:grid-cols-3">
+                          <div className="grid grid-cols-2 gap-2 rounded-[7px] border border-blue-200 bg-blue-50/50 p-2">
                             {([['ratePerPiece', 'Rate'], ['wholesalePrice', 'Wholesale'], ['retailPrice', 'Retail']] as const).map(([field, label]) => (
-                              <label key={field} className="min-w-0">
-                                <span className="block text-[9px] font-bold uppercase tracking-wide text-[#475569]">{label}</span>
-                                <div className="flex h-7.5 items-center overflow-hidden rounded-[5px] border border-blue-300 bg-white">
-                                  <span className="border-r border-blue-200 px-1 text-[9px] font-bold text-[#6B7280]">NPR</span>
-                                  <input type="number" min="0.01" step="0.01" inputMode="decimal" value={filteredPriceOverrides[item.productId][field]} onChange={(event) => updateFilteredPriceOverride(item.productId, field, event.target.value)} data-price-field={`${item.productId}-${field}`} aria-label={`New ${label} for ${item.name}`} className="h-full min-w-0 flex-1 bg-transparent px-1 text-right text-[11px] font-bold tabular-nums outline-none" />
+                              <label key={field} className={`min-w-0 ${field === "ratePerPiece" ? "col-span-2" : ""}`}>
+                                <span className="block text-[11px] font-bold text-[#475569]">{label}</span>
+                                <div className="flex h-11 items-center overflow-hidden rounded-[6px] border border-blue-300 bg-white">
+                                  <span className="border-r border-blue-200 px-2 text-[11px] font-bold text-[#6B7280]">NPR</span>
+                                  <input type="number" min="0.01" step="0.01" inputMode="decimal" value={filteredPriceOverrides[item.productId][field]} onChange={(event) => updateFilteredPriceOverride(item.productId, field, event.target.value)} data-price-field={`${item.productId}-${field}`} aria-label={`New ${label} for ${item.name}`} className="h-full min-w-0 flex-1 bg-transparent px-2 text-right text-[16px] font-bold tabular-nums outline-none" />
                                 </div>
                               </label>
                             ))}
@@ -6959,8 +7219,8 @@ export default function ProductsPage() {
                         <article key={product.id} className={`p-2.5 space-y-1.5 ${!isIncluded ? "bg-rose-50/40 opacity-70" : ""}`}>
                           <div className="flex items-start justify-between gap-2">
                             <div className="min-w-0 flex-1">
-                              <div className="font-extrabold text-[12px] text-[#11120d] truncate">{product.name}</div>
-                              <div className="text-[9.5px] text-[#8C8889] truncate">SKU: {product.sku || "-"} · Rate: NPR {product.ratePerPiece || 0}</div>
+                        <div className="break-words font-extrabold text-[13px] text-[#11120d]">{product.name}</div>
+                        <div className="break-all text-[11px] leading-5 text-slate-600">SKU: {product.sku || "-"} · Rate: {formatReviewPrice(product.ratePerPiece)}</div>
                             </div>
                             <div className="flex shrink-0 items-center gap-1.5">
                               {bulkPriceMode === "CALCULATE" ? (
@@ -6968,7 +7228,7 @@ export default function ProductsPage() {
                                   type="button"
                                   disabled={!isIncluded || isComingSoon || hasNoRate}
                                   onClick={() => setExplicitAdjustedIds((c) => ({ ...c, [product.id]: !c[product.id] }))}
-                                  className={`inline-flex h-8.5 min-h-[36px] min-w-[58px] items-center justify-center rounded-[7px] border px-2.5 text-[11px] font-bold active:scale-[0.97] touch-manipulation transition disabled:opacity-35 ${
+                                  className={`inline-flex min-h-10 min-w-[62px] items-center justify-center rounded-[7px] border px-2.5 text-[12px] font-bold active:scale-[0.97] touch-manipulation transition disabled:opacity-35 ${
                                     isAdjusted
                                       ? "border-blue-300 bg-blue-50 text-blue-700 shadow-2xs font-extrabold"
                                       : "border-[#CBD5E1] bg-white text-[#11120d] hover:bg-slate-50"
@@ -6984,7 +7244,7 @@ export default function ProductsPage() {
                                   setBulkPriceNotice(null);
                                   setBulkPriceTouched(true);
                                 }}
-                                className={`inline-flex h-8.5 min-h-[36px] min-w-[58px] items-center justify-center rounded-[7px] border px-2.5 text-[11px] font-extrabold active:scale-[0.97] touch-manipulation transition ${
+                                className={`inline-flex min-h-10 min-w-[62px] items-center justify-center rounded-[7px] border px-2.5 text-[12px] font-extrabold active:scale-[0.97] touch-manipulation transition ${
                                   !isIncluded
                                     ? "border-emerald-300 bg-emerald-50 text-emerald-800 shadow-2xs"
                                     : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
@@ -6997,7 +7257,7 @@ export default function ProductsPage() {
 
                           <div className="grid grid-cols-2 gap-1.5 text-xs">
                             <div className="rounded-[6px] bg-[#F8FAFC] border border-[#E5E7EB] p-1.5">
-                              <div className="text-[9px] font-bold uppercase text-blue-700">Wholesale</div>
+                              <div className="text-[11px] font-bold text-blue-800">Wholesale</div>
                               <div className="mt-0.5 flex items-center gap-1">
                                 <span className="text-[#565449]">{product.wholesalePrice ? `NPR ${product.wholesalePrice}` : "None"}</span>
                                 {row.wholesalePrice && row.wholesalePrice !== String(product.wholesalePrice) && isIncluded ? (
@@ -7009,7 +7269,7 @@ export default function ProductsPage() {
                               </div>
                             </div>
                             <div className="rounded-[6px] bg-[#F8FAFC] border border-[#E5E7EB] p-1.5">
-                              <div className="text-[9px] font-bold uppercase text-purple-700">Retail</div>
+                              <div className="text-[11px] font-bold text-purple-800">Retail</div>
                               <div className="mt-0.5 flex items-center gap-1">
                                 <span className="text-[#565449]">{product.retailPrice ? `NPR ${product.retailPrice}` : "None"}</span>
                                 {row.retailPrice && row.retailPrice !== String(product.retailPrice) && isIncluded ? (
@@ -7023,23 +7283,25 @@ export default function ProductsPage() {
                           </div>
 
                           {(bulkPriceMode === "MANUAL" || isAdjusted) && isIncluded ? (
-                            <div className="grid gap-1 rounded-[7px] border border-blue-200 bg-blue-50/50 p-1.5 min-[430px]:grid-cols-3">
+                            <div className="grid grid-cols-2 gap-2 rounded-[7px] border border-blue-200 bg-blue-50/50 p-2">
                               {([['ratePerPiece', 'Rate'], ['wholesalePrice', 'Wholesale'], ['retailPrice', 'Retail']] as const).map(([field, label]) => (
-                                <label key={field} className="min-w-0">
-                                  <span className="block text-[9px] font-bold uppercase tracking-wide text-[#475569]">{label}</span>
-                                  <div className="flex h-7.5 items-center overflow-hidden rounded-[5px] border border-blue-300 bg-white">
-                                    <span className="border-r border-blue-200 px-1 text-[9px] font-bold text-[#6B7280]">NPR</span>
+                                <label key={field} className={`min-w-0 ${field === "ratePerPiece" ? "col-span-2" : ""}`}>
+                                  <span className="block text-[11px] font-bold text-[#475569]">{label}</span>
+                                  <div className="flex h-11 items-center overflow-hidden rounded-[6px] border border-blue-300 bg-white">
+                                    <span className="border-r border-blue-200 px-2 text-[11px] font-bold text-[#6B7280]">NPR</span>
                                     <input
                                       type="number"
                                       min="0.01"
                                       step="0.01"
                                       inputMode="decimal"
                                       value={row[field]}
+                                      data-price-field={`${product.id}-${field}`}
+                                      aria-label={`New ${label} for ${product.name}`}
                                       onChange={(e) => {
                                         setPriceRows((c) => ({ ...c, [product.id]: { ...(c[product.id] || row), [field]: e.target.value } }));
                                         setBulkPriceTouched(true);
                                       }}
-                                      className="h-full min-w-0 flex-1 bg-transparent px-1 text-right text-[11px] font-bold tabular-nums outline-none"
+                                      className="h-full min-w-0 flex-1 bg-transparent px-2 text-right text-[16px] font-bold tabular-nums outline-none"
                                     />
                                   </div>
                                 </label>
@@ -7056,73 +7318,32 @@ export default function ProductsPage() {
                       No preview items match this search.
                     </div>
                   ) : null}
-                      {/* Mobile Pagination Row (Moved inside scroll) */}
-                      <div className="flex items-center justify-between bg-[#F8FAFC] px-2.5 py-3 mt-auto text-[10.5px] font-semibold text-[#6B7280] shrink-0 border-t border-[#E5E7EB]">
-                        <div className="flex items-center gap-1.5 min-w-0">
-                          <span className="truncate">
-                            Showing <strong className="text-[#11120d]">
-                              {isFilteredSelection
-                                ? `${(activeStep2FilteredPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(filteredPreviewStats.previewMatchedCount, activeStep2FilteredPage * bulkPriceStep2PageSize)}`
-                                : `${(activeStep2ExplicitPage - 1) * bulkPriceStep2PageSize + 1}–${Math.min(visibleBulkPriceProducts.length, activeStep2ExplicitPage * bulkPriceStep2PageSize)}`}
-                            </strong> of <strong className="text-[#11120d]">{isFilteredSelection ? filteredPreviewStats.previewMatchedCount : visibleBulkPriceProducts.length}</strong>
-                          </span>
-                          <div className="w-[66px] shrink-0">
-                            <ProjectSelect
-                              value={bulkPriceStep2PageSize}
-                              onChange={(e) => {
-                                const newSize = Number(e.target.value);
-                                setBulkPriceStep2PageSize(newSize);
-                                setBulkPriceStep2Page(1);
-                                if (isFilteredSelection) {
-                                  setPriceBusy(true);
-                                  void loadFilteredPricePreview(1, priceSearch, newSize).finally(() => setPriceBusy(false));
-                                }
-                              }}
-                              className="h-[26px] rounded-[6px] border border-[#D8DBE0] bg-white px-1.5 text-[10px] font-bold text-[#11120d] outline-none"
-                            >
-                              <option value={10}>10</option>
-                              <option value={20}>20</option>
-                              <option value={50}>50</option>
-                            </ProjectSelect>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-1.5 shrink-0">
-                          <span className="text-[10px] font-bold text-[#565449] tabular-nums hidden min-[360px]:inline">
-                            {isFilteredSelection ? `${activeStep2FilteredPage}/${step2FilteredTotalPages}` : `${activeStep2ExplicitPage}/${step2ExplicitTotalPages}`}
-                          </span>
-                          <button
-                            type="button"
-                            disabled={isFilteredSelection ? activeStep2FilteredPage <= 1 : activeStep2ExplicitPage <= 1}
-                            onClick={() => {
-                              if (isFilteredSelection) {
-                                setPriceBusy(true);
-                                void loadFilteredPricePreview(activeStep2FilteredPage - 1).finally(() => setPriceBusy(false));
-                              } else {
-                                setBulkPriceStep2Page((p) => Math.max(1, p - 1));
-                              }
-                            }}
-                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
-                          >
-                            <Icon name="chevron_left" sizePx={13} />
-                          </button>
-                          <button
-                            type="button"
-                            disabled={isFilteredSelection ? activeStep2FilteredPage >= step2FilteredTotalPages : activeStep2ExplicitPage >= step2ExplicitTotalPages}
-                            onClick={() => {
-                              if (isFilteredSelection) {
-                                setPriceBusy(true);
-                                void loadFilteredPricePreview(activeStep2FilteredPage + 1).finally(() => setPriceBusy(false));
-                              } else {
-                                setBulkPriceStep2Page((p) => Math.min(step2ExplicitTotalPages, p + 1));
-                              }
-                            }}
-                            className="inline-flex h-6.5 w-6.5 !min-h-0 !min-w-0 items-center justify-center rounded-[5px] border border-[#D8DBE0] bg-white text-[#11120d] disabled:opacity-30 touch-manipulation"
-                          >
-                            <Icon name="chevron_right" sizePx={13} />
-                          </button>
-                        </div>
-                      </div>
                     </div>
+                <MobilePaginationFooter
+                  page={isFilteredSelection ? activeStep2FilteredPage : activeStep2ExplicitPage}
+                  totalPages={isFilteredSelection ? step2FilteredTotalPages : step2ExplicitTotalPages}
+                  total={isFilteredSelection ? filteredPreviewStats.previewMatchedCount : explicitPreviewProducts.length}
+                  start={((isFilteredSelection ? activeStep2FilteredPage : activeStep2ExplicitPage) - 1) * bulkPriceStep2PageSize}
+                  end={Math.min(isFilteredSelection ? filteredPreviewStats.previewMatchedCount : explicitPreviewProducts.length, (isFilteredSelection ? activeStep2FilteredPage : activeStep2ExplicitPage) * bulkPriceStep2PageSize)}
+                  label="products"
+                  pageSize={bulkPriceStep2PageSize}
+                  pageSizeOptions={[10, 20, 50]}
+                  onPageChange={(page) => {
+                    if (isFilteredSelection) {
+                      setPriceBusy(true);
+                      void loadFilteredPricePreview(page).finally(() => setPriceBusy(false));
+                    } else setBulkPriceStep2Page(page);
+                  }}
+                  onPageSizeChange={(size) => {
+                    setBulkPriceStep2PageSize(size);
+                    setBulkPriceStep2Page(1);
+                    if (isFilteredSelection) {
+                      setPriceBusy(true);
+                      void loadFilteredPricePreview(1, priceSearch, size).finally(() => setPriceBusy(false));
+                    }
+                  }}
+                  className="shrink-0 border border-t-0 border-[#E5E7EB] bg-[#F8FAFC] px-2.5"
+                />
                 {/* Mobile Audit Reason Box */}
                 <div className="rounded-[9px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1.5 shrink-0">
                   <div className="flex items-center justify-between gap-2">
@@ -7315,13 +7536,17 @@ export default function ProductsPage() {
             {bulkPriceResult?.errorCount ? (
               <button
                 type="button"
+                disabled={retryLoading}
                 onClick={async () => {
-                  const failedIds = bulkPriceResult.errors.map(e => e.productId).filter(Boolean);
+                  const failedIds = [...new Set(bulkPriceResult.errors.map(e => e.productId).filter(Boolean))];
                   if (failedIds.length > 0) {
                     try {
-                      // setSaving(true) if there's a busy state for this button? The user just said "preserve the result dialog"
+                      setRetryLoading(true);
                       const failedProducts = await fetchProductsByIds(failedIds);
-                      const newSelected = Object.fromEntries(failedIds.map(id => [id, true]));
+                      if (failedProducts.length !== failedIds.length || failedIds.some((id) => !failedProducts.some((product) => product.id === id))) {
+                        throw new Error("Not all failed products could be reloaded. The result remains available; check the missing products before retrying.");
+                      }
+                      const newSelected = Object.fromEntries(failedProducts.map((product) => [product.id, true]));
                       const newCache = Object.fromEntries(failedProducts.map((p: any) => [p.id, p]));
 
                       setSelected(newSelected);
@@ -7330,24 +7555,41 @@ export default function ProductsPage() {
                       setPriceMarginTargetIds(newSelected);
 
                       // Clear stale preview state to rebuild fresh
-                      setPriceRows({});
+                      setPriceRows((current) => Object.fromEntries(failedProducts.map((product) => [product.id,
+                        bulkPriceMode === "MANUAL" || explicitAdjustedIds[product.id]
+                          ? current[product.id] || {
+                              ratePerPiece: product.ratePerPiece === null ? "" : String(product.ratePerPiece),
+                              wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
+                              retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+                            }
+                          : {
+                              ratePerPiece: product.ratePerPiece === null ? "" : String(product.ratePerPiece),
+                              wholesalePrice: product.wholesalePrice === null ? "" : String(product.wholesalePrice),
+                              retailPrice: product.retailPrice === null ? "" : String(product.retailPrice),
+                            },
+                      ])));
                       setPricePreviewReady(false);
                       setBulkPricePreviewRevision(null);
+                      setExplicitReviewPreview(null);
+                      setSaveOutcomeUncertain(false);
+                      setBulkPriceNotice({ tone: "info", message: "Failed products were reloaded. Calculate and review a fresh preview before saving." });
 
                       setBulkPriceResult(null);
                       setOpenBulkPrice(true);
-                    } catch (e) {
-                      toastMsg("danger", "Could not load failed products for retry.");
+                    } catch (error: any) {
+                      toastMsg("danger", error?.message || "Could not load failed products for retry.");
+                    } finally {
+                      setRetryLoading(false);
                     }
                   } else {
                     setBulkPriceResult(null);
                     clearBulkSelection();
                   }
                 }}
-                className="inline-flex min-h-10 flex-1 sm:flex-none items-center justify-center gap-2 rounded-[9px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27]"
+                className="inline-flex min-h-10 flex-1 sm:flex-none items-center justify-center gap-2 rounded-[9px] bg-[#11120d] px-4 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
               >
                 <Icon name="refresh" sizePx={15} />
-                Retry {bulkPriceResult.errorCount} failed
+                {retryLoading ? "Loading failed products..." : `Retry ${bulkPriceResult.errorCount} failed`}
               </button>
             ) : null}
           </div>
@@ -7381,10 +7623,9 @@ export default function ProductsPage() {
                 <div className="text-[12px] font-extrabold text-rose-900">Error Details</div>
                 <div className="max-h-[200px] overflow-y-auto divide-y divide-rose-100 rounded-[9px] border border-rose-200 bg-white">
                   {bulkPriceResult.errors.map((error, idx) => {
-                    const product = products.find(p => p.id === error.productId) || bulkPriceResult.products.find(p => p.id === error.productId);
                     return (
                       <div key={idx} className="p-2.5 flex flex-col gap-1 text-xs">
-                        <div className="font-bold text-slate-900">{product?.name || "Unknown Product"}</div>
+                        <div className="break-all font-bold text-slate-900">{error.name || `Product ${error.productId}`}{error.sku ? ` · ${error.sku}` : ""}</div>
                         <div className="text-rose-700">{error.message} {error.code ? `(${error.code})` : ""}</div>
                       </div>
                     );

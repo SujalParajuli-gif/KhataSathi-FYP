@@ -38,7 +38,7 @@ export default function PageSectionRail<T extends string>({
       data-horizontal-scroll
       className="max-w-full overflow-x-auto border-b border-slate-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
     >
-      <div className="flex w-max min-w-full items-end gap-1 px-1 sm:gap-3">
+      <div className="flex w-max min-w-full items-end gap-1 sm:gap-3">
         {items.map((item) => {
           const active = item.value === value;
           return (
@@ -46,7 +46,7 @@ export default function PageSectionRail<T extends string>({
               key={item.value}
               to={item.to}
               aria-current={active ? "page" : undefined}
-              className={`inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm font-semibold transition-colors focus-visible:rounded-t-md focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600 sm:px-4 ${
+              className={`inline-flex min-h-11 shrink-0 items-center border-b-2 px-3 text-sm font-semibold transition-colors focus-visible:rounded-t-md focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-blue-600 ${
                 active
                   ? "border-slate-950 text-slate-950"
                   : "border-transparent text-slate-600 hover:border-slate-300 hover:text-slate-950"

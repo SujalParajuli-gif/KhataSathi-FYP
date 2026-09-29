@@ -263,6 +263,34 @@ for (const width of [390, 1440]) {
   });
 }
 
+test("iPhone-sized import history keeps filenames and actions readable", async ({ page }, testInfo) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  const state = review();
+  const batches = [
+    { ...state.batch, id: "first-batch", fileName: "SPL Casroll Item.pdf" },
+    { ...state.batch, id: "second-batch", fileName: "Panas Jars supplier September.pdf" },
+  ];
+  await mockApp(page, state, { batches });
+  await page.goto("/products");
+  await page.getByRole("button", { name: "More product actions" }).click();
+  await page.getByRole("dialog", { name: "Product actions" }).getByRole("button", { name: "Import products" }).click();
+  const dialog = page.getByRole("dialog", { name: "Import Products", exact: true });
+  await expect(dialog.getByText("Recent Import History")).toBeVisible();
+  const row = dialog.locator("#recent-import-history").locator(".divide-y > div").first();
+  await expect(row.getByText("SPL Casroll Item.pdf")).toBeVisible();
+  await expect(row.getByRole("button", { name: /Delete import/ })).toBeVisible();
+  const nameBox = await row.getByText("SPL Casroll Item.pdf").boundingBox();
+  const actionBox = await row.getByRole("button", { name: /Delete import/ }).boundingBox();
+  expect(nameBox && actionBox && actionBox.y > nameBox.y).toBe(true);
+  const secondAction = dialog.locator("#recent-import-history").getByRole("button", { name: "Delete import Panas Jars supplier September.pdf" });
+  await secondAction.scrollIntoViewIfNeeded();
+  const secondBox = await secondAction.boundingBox();
+  const footerBox = await dialog.getByRole("button", { name: "Review Spreadsheet" }).boundingBox();
+  expect(secondBox && footerBox && secondBox.y + secondBox.height < footerBox.y).toBe(true);
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  await page.screenshot({ path: testInfo.outputPath("import-history-iphone14.png") });
+});
+
 for (const width of [390, 1440]) {
   test(`documents and history distinguish failed reads from empty results at ${width}px`, async ({ page }) => {
     await page.setViewportSize({ width, height: 900 });
@@ -465,6 +493,89 @@ test(`bulk drawer reuses modal focus and fetches only the selected page at ${wid
   await expect(trigger).toBeFocused();
 });
 }
+
+for (const width of [390, 1440]) {
+test(`bulk operation sections and comparison filters work at ${width}px`, async ({ page }, testInfo) => {
+  await page.setViewportSize({ width, height: 844 });
+  await mockApp(page, review());
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("checkbox", { name: "Select Test bucket for bulk editing" }).check();
+  await page.getByRole("button", { name: "Bulk edit (1)" }).click();
+  const drawer = page.getByRole("dialog", { name: /Bulk edit/ });
+  const catalog = drawer.getByRole("button", { name: /^Catalog fields/ });
+  await expect(catalog).toHaveAttribute("aria-expanded", "true");
+  await drawer.getByRole("button", { name: /^Move or exchange prices/ }).click();
+  await expect(catalog).toHaveAttribute("aria-expanded", "false");
+  await expect(drawer.getByRole("combobox", { name: "Source price field" })).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath(`bulk-setup-${width}.png`) });
+  await drawer.getByRole("button", { name: "Review changes" }).click();
+  await expect(drawer.getByRole("alert")).toContainText("Configure at least one change");
+  await expect(catalog).toBeFocused();
+  await drawer.getByRole("combobox", { name: "Bulk brand", exact: true }).click();
+  await page.getByRole("option", { name: "Updated supplier", exact: true }).click();
+  await drawer.getByRole("button", { name: "Review changes" }).click();
+  const preview = page.getByRole("dialog", { name: "Confirm bulk changes", exact: true });
+  await expect(preview.getByRole("button", { name: "Will change 1" })).toBeVisible();
+  await preview.getByRole("button", { name: "Unchanged 0" }).click();
+  await expect(preview.getByText("No products match this preview filter or search.")).toBeVisible();
+  await preview.getByRole("button", { name: "Show all selected products" }).click();
+  await expect(preview.getByText("Current", { exact: true }).first()).toBeVisible();
+  await expect(preview.getByText("Proposed", { exact: true }).first()).toBeVisible();
+  await page.screenshot({ path: testInfo.outputPath(`bulk-review-${width}.png`) });
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+}
+
+test("selected-row bulk edit does not offer whole-file price-column remapping", async ({ page }) => {
+  const state: any = review();
+  state.priceMapping = { required: true, complete: false, columns: [{ key: "price", label: "File price" }], mapping: {} };
+  await mockApp(page, state);
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("checkbox", { name: "Select Test bucket for bulk editing" }).check();
+  await page.getByRole("button", { name: "Bulk edit (1)" }).click();
+  const drawer = page.getByRole("dialog", { name: /Bulk edit/ });
+  await drawer.getByRole("button", { name: /^Extracted prices/ }).click();
+  await expect(drawer.getByText("Column meanings belong to the whole import", { exact: false })).toBeVisible();
+  await expect(drawer.getByRole("checkbox", { name: "Reapply saved mapping to selected rows" })).toBeDisabled();
+  await expect(drawer.getByRole("combobox", { name: /Assign File price/ })).toHaveCount(0);
+});
+
+test("saved price mapping uses the server preview and its exact revision before applying", async ({ page }) => {
+  const state: any = review();
+  state.priceMapping = { required: true, complete: true, columns: [{ key: "mrp", label: "MRP" }], mapping: { mrp: "retailPrice" } };
+  state.rows[0].parsed.extractedPrices = [{ key: "mrp", label: "MRP", value: 200 }];
+  await mockApp(page, state);
+  const mappingRequests: any[] = [];
+  let rowSaves = 0;
+  await page.route("**/api/products/import-batches/test-batch/price-mapping", async (route) => {
+    const input = route.request().postDataJSON();
+    mappingRequests.push(input);
+    if (input.validateOnly) {
+      await route.fulfill({ json: {
+        ...state.priceMapping, reviewRevision: "a".repeat(64), rowRevisions: {},
+        previewRows: [{ id: "row-1", parsed: { ...state.rows[0].parsed, retailPrice: 200 } }],
+      } });
+    } else {
+      await route.fulfill({ status: 409, json: { code: "IMPORT_REVIEW_STALE", error: "Review changed" } });
+    }
+  });
+  page.on("request", (request) => {
+    if (request.method() === "PUT" && request.url().endsWith("/rows")) rowSaves++;
+  });
+  await page.goto("/products/imports/test-batch");
+  await page.getByRole("checkbox", { name: "Select Test bucket for bulk editing" }).check();
+  await page.getByRole("button", { name: "Bulk edit (1)" }).click();
+  const drawer = page.getByRole("dialog", { name: /Bulk edit/ });
+  await drawer.getByRole("button", { name: /^Extracted prices/ }).click();
+  await drawer.getByRole("checkbox", { name: "Reapply saved mapping to selected rows" }).check();
+  await drawer.getByRole("button", { name: "Review changes" }).click();
+  const preview = page.getByRole("dialog", { name: "Confirm bulk changes", exact: true });
+  await expect(preview.getByText("NPR 200")).toBeVisible();
+  await preview.getByRole("button", { name: "Confirm 1 changes" }).click();
+  await expect.poll(() => mappingRequests.length).toBe(2);
+  expect(mappingRequests[1].expectedReviewRevision).toBe("a".repeat(64));
+  expect(rowSaves).toBe(0);
+});
 
 test("column mapping contains keyboard focus and returns to its trigger", async ({ page }, testInfo) => {
   const state: any = review();

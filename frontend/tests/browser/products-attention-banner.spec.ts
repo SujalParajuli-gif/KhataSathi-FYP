@@ -110,8 +110,9 @@ test("product page status filter defaults to Active with only Active and Inactiv
   await setupProductsPageMock(page);
   await page.goto("/products");
 
-  // On desktop toolbar: verify only Active and Inactive buttons exist (no All button)
-  const statusFilterGroup = page.locator("div.inline-flex.shrink-0.items-center.rounded-\\[10px\\].border");
+  // Status is a secondary desktop filter; opening it must preserve the Active default.
+  await page.getByRole("button", { name: "More filters" }).click();
+  const statusFilterGroup = page.locator("#desktop-product-more-filters div.inline-flex.shrink-0.items-center.rounded-\\[10px\\].border");
   await expect(statusFilterGroup.getByRole("button", { name: "Active", exact: true })).toBeVisible();
   await expect(statusFilterGroup.getByRole("button", { name: "Inactive", exact: true })).toBeVisible();
   await expect(statusFilterGroup.getByRole("button", { name: "All", exact: true })).toHaveCount(0);

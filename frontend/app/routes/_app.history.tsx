@@ -892,7 +892,7 @@ export default function HistoryPage() {
   });
 
   const categoryTabs = (
-    <div className="bg-white px-4 sm:px-7">
+    <div className="-mt-2 bg-white px-4 sm:-mt-3 sm:px-7">
       <PageSectionRail
         items={visibleHistoryCategories.map((category) => {
           const next = new URLSearchParams(searchParams);
@@ -926,6 +926,7 @@ export default function HistoryPage() {
   if (historyCategory !== "sales") {
     const eventPageStart = eventTotal === 0 ? 0 : (page - 1) * pageSize;
     const eventPageEnd = eventTotal === 0 ? 0 : eventPageStart + eventRows.length;
+    const hasEventFilters = Boolean(query || fromDate || toDate || eventActorFilter !== "All" || eventActionFilter !== "All");
 
     return (
       <div {...historySwipeGesture} className="min-h-full text-slate-900">
@@ -951,15 +952,17 @@ export default function HistoryPage() {
 
 
           <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-3 shadow-2xs xl:rounded-[18px]">
-            <div className="flex flex-col gap-3 xl:flex-row xl:items-end">
-              <div className="flex min-w-0 items-center gap-2 xl:w-[min(32vw,420px)]">
+            <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(260px,1.4fr)_minmax(0,3fr)] xl:items-end">
+              <div className="flex min-w-0 items-end gap-2">
                 <div className="relative min-w-0 flex-1">
+                  <label htmlFor="history-event-search" className="mb-1 hidden text-xs font-semibold text-slate-600 xl:block">Search</label>
                   <Icon
                     name="search"
-                    className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-[#7A7F89]"
+                    className="pointer-events-none absolute bottom-[13px] left-3 text-[#7A7F89]"
                     sizePx={18}
                   />
                   <input
+                    id="history-event-search"
                     value={query}
                     onChange={(event) => {
                       setQuery(event.target.value);
@@ -982,8 +985,10 @@ export default function HistoryPage() {
                 </div>
               ) : null}
 
-              <div className="hidden flex-wrap items-end gap-2 xl:flex">
-                <div className="w-[150px]">
+              <div className={`hidden min-w-0 items-end gap-2 xl:grid ${isAdminView
+                ? hasEventFilters ? "xl:grid-cols-[repeat(4,minmax(0,1fr))_auto]" : "xl:grid-cols-4"
+                : hasEventFilters ? "xl:grid-cols-[repeat(3,minmax(0,1fr))_auto]" : "xl:grid-cols-3"}`}>
+                <div className="min-w-0">
                   <span className="mb-1 block text-xs font-semibold text-slate-600">From</span>
                   <ProjectDateInput
                     value={fromDate}
@@ -996,7 +1001,7 @@ export default function HistoryPage() {
                     className="h-11 w-full rounded-[10px] border border-[#D4D7DC] bg-white px-2.5 text-sm font-semibold text-[#11120d] outline-none focus:border-[#11120d]"
                   />
                 </div>
-                <div className="w-[150px]">
+                <div className="min-w-0">
                   <span className="mb-1 block text-xs font-semibold text-slate-600">To</span>
                   <ProjectDateInput
                     value={toDate}
@@ -1010,7 +1015,7 @@ export default function HistoryPage() {
                   />
                 </div>
                 {isAdminView ? (
-                  <label className="w-[155px] text-xs font-semibold text-slate-600">
+                  <label className="min-w-0 text-xs font-semibold text-slate-600">
                     Performed by
                     <ProjectSelect
                       value={eventActorFilter}
@@ -1022,7 +1027,7 @@ export default function HistoryPage() {
                     </ProjectSelect>
                   </label>
                 ) : null}
-                <label className="w-[175px] text-xs font-semibold text-slate-600">
+                <label className="min-w-0 text-xs font-semibold text-slate-600">
                   Activity
                   <ProjectSelect
                     value={eventActionFilter}
@@ -1035,7 +1040,7 @@ export default function HistoryPage() {
                     ))}
                   </ProjectSelect>
                 </label>
-                {(query || fromDate || toDate || eventActorFilter !== "All" || eventActionFilter !== "All") ? (
+                {hasEventFilters ? (
                   <button
                     type="button"
                     onClick={() => {

@@ -306,6 +306,29 @@ test("selected price mapping returns exact post-save revisions even if rows leav
   assert.equal(mapped.rowRevisions["row-1"], review.rows[0].reviewRevision);
 });
 
+test("mapping validation previews selected rows without overwriting manual prices or writing data", async t => {
+  const candidate = (sku: string) => source({ sku, retailPrice: 200, extractedPrices: [{ key: "mrp", label: "MRP", value: 210.125 }] });
+  const { rows } = installBatchMocks(t, [candidate("AUTO-1"), candidate("AUTO-2")], [], { mrp: "retailPrice" });
+  rows[0].parsed.reviewSetupBaseline = { retailPrice: 200 };
+  rows[1].parsed.reviewSetupBaseline = { retailPrice: 200 };
+  rows[1].parsed.retailPrice = 250;
+  assert.ok(importReviewChanges(rows[1].parsed, rows[1].extracted).includes("Retail price"));
+  const validation = await setProductImportPriceMapping({
+    batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, rowIds: ["row-1", "row-2"], validateOnly: true,
+  });
+  assert.deepEqual(validation.previewRows.map((row: any) => [row.id, row.parsed.retailPrice]), [["row-1", 210.13], ["row-2", 250]]);
+  assert.ok(!importReviewChanges(validation.previewRows[0].parsed, rows[0].extracted).includes("Retail price"));
+  assert.equal(rows[0].parsed.retailPrice, 200);
+  assert.equal(rows[1].parsed.retailPrice, 250);
+  await setProductImportPriceMapping({
+    batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" }, rowIds: ["row-1", "row-2"],
+    expectedReviewRevision: validation.reviewRevision,
+  });
+  assert.equal(rows[0].parsed.retailPrice, 210.13);
+  assert.equal(rows[1].parsed.retailPrice, 250);
+  assert.ok(importReviewChanges(rows[1].parsed, rows[1].extracted).includes("Retail price"));
+});
+
 test("mapping revision detects a changed mapping even when row contents stay the same", async t => {
   const { batch } = installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
   const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" } };

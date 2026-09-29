@@ -2758,7 +2758,7 @@ export default function ProductsModals({
             </div>
           ) : (
             <div className="flex flex-col sm:flex-row w-full sm:items-center sm:justify-between gap-2.5 sm:gap-3">
-              <div className="text-[12px] font-semibold text-[#64748B]">
+              <div className={`${importFile && detectedImportFileType !== importTab ? "block" : "hidden sm:block"} text-[12px] font-semibold text-[#64748B]`}>
                 {importFile && detectedImportFileType !== importTab ? (
                   <span className="text-amber-700 flex items-center gap-1.5 font-bold">
                     <Icon name="info" sizePx={15} />
@@ -4092,7 +4092,7 @@ export default function ProductsModals({
                           return (
                             <div
                               key={batch.id}
-                              className={`flex min-w-0 items-center justify-between gap-3 p-[14px] transition-colors sm:p-[16px] ${
+                              className={`flex min-w-0 flex-col items-stretch gap-2.5 p-[14px] transition-colors sm:flex-row sm:items-center sm:justify-between sm:p-[16px] ${
                                 meta.tier === "completed"
                                   ? "bg-emerald-50/40 border-l-[3px] border-l-emerald-500 hover:bg-emerald-100/40"
                                   : "hover:bg-slate-50"
@@ -4107,10 +4107,10 @@ export default function ProductsModals({
                                 </div>
                                 <div className="min-w-0 flex-1">
                                   <div className="flex flex-wrap items-center gap-2">
-                                    <span className="line-clamp-2 break-all text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate sm:break-normal">
+                                    <span className="line-clamp-2 break-words text-[13px] font-bold leading-5 text-[#1E293B] sm:truncate">
                                       {batch.fileName || "Supplier import"}
                                     </span>
-                                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[9.5px] font-extrabold ${meta.badgeClass}`}>
+                                    <span className={`inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-extrabold ${meta.badgeClass}`}>
                                       <Icon name={meta.badgeIcon} sizePx={12} />
                                       <span>{meta.badgeLabel}</span>
                                     </span>
@@ -4120,7 +4120,7 @@ export default function ProductsModals({
                                   </div>
                                 </div>
                               </div>
-                              <div className="flex shrink-0 items-center gap-2 sm:gap-[20px]">
+                              <div className="flex items-center justify-end gap-2 sm:shrink-0 sm:gap-[20px]">
                                 <div className="hidden text-right sm:block">
                                   <div className={`text-[12px] font-bold ${meta.tier === "completed" ? "text-emerald-800" : meta.tier === "pending" ? "text-amber-800" : "text-[#334155]"}`}>
                                     {meta.processedText}
@@ -4128,13 +4128,13 @@ export default function ProductsModals({
                                   <div className="mt-[2px] text-[10.5px] font-semibold text-[#64748B]">{meta.processedSubtext}</div>
                                 </div>
                                 <div className="flex shrink-0 items-center gap-[8px]">
-                                  <button type="button" onClick={() => setDeleteImportBatchId(batch.id)} className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#64748B] transition hover:bg-[#FEE2E2] hover:text-[#EF4444]" title="Delete import review" aria-label={`Delete import ${batch.fileName || "file"}`}>
+                                  <button type="button" onClick={() => setDeleteImportBatchId(batch.id)} className="flex h-11 w-11 items-center justify-center rounded-[8px] text-[#64748B] transition hover:bg-[#FEE2E2] hover:text-[#EF4444] sm:h-9 sm:w-9" title="Delete import review" aria-label={`Delete import ${batch.fileName || "file"}`}>
                                     <Icon name="delete" className="text-[18px]" />
                                   </button>
                                   <button
                                     type="button"
                                     onClick={() => onOpenImportBatch(batch.id)}
-                                    className={`flex h-[32px] items-center gap-1.5 justify-center rounded-[8px] px-[14px] text-[12px] font-bold transition ${meta.buttonClass}`}
+                                    className={`flex min-h-11 items-center gap-1.5 justify-center rounded-[8px] px-[14px] text-[12px] font-bold transition sm:min-h-9 ${meta.buttonClass}`}
                                   >
                                     <Icon name={meta.buttonIcon} sizePx={15} />
                                     <span>{meta.buttonText}</span>
