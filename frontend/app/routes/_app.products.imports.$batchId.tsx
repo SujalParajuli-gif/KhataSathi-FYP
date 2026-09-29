@@ -83,7 +83,7 @@ type BulkEditPreview = {
   mappingRevision?: string;
 };
 
-type ReviewFilter = "ALL" | "EDITED" | "ATTENTION" | "IGNORED" | NonNullable<ProductImportRow["comparisonStatus"]>;
+type ReviewFilter = "ALL" | "ATTENTION" | "EDITED" | "IGNORED" | "COMING_SOON" | NonNullable<ProductImportRow["comparisonStatus"]>;
 
 const COMPARISON_FILTERS: Array<{
   value: NonNullable<ProductImportRow["comparisonStatus"]>;
@@ -99,7 +99,7 @@ const COMPARISON_FILTERS: Array<{
   ];
 
 function reviewFilterFromQuery(value: string | null): ReviewFilter {
-  if (value === "ALL" || value === "EDITED" || value === "ATTENTION" || value === "IGNORED") return value;
+  if (value === "ALL" || value === "ATTENTION" || value === "EDITED" || value === "IGNORED" || value === "COMING_SOON") return value;
   return COMPARISON_FILTERS.some((item) => item.value === value)
     ? value as ReviewFilter
     : "ALL";
@@ -111,7 +111,7 @@ function positiveReviewQueryNumber(value: string | null, fallback: number) {
 }
 
 function reviewFilterParams(filter: ReviewFilter) {
-  if (filter === "EDITED" || filter === "ATTENTION" || filter === "IGNORED") return { reviewState: filter } as const;
+  if (filter === "EDITED" || filter === "ATTENTION" || filter === "IGNORED" || filter === "COMING_SOON") return { reviewState: filter } as const;
   if (filter === "ALL") return {};
   return { comparisonStatus: filter };
 }
@@ -2710,39 +2710,50 @@ export default function ProductImportReviewPage() {
         </fieldset>
 
         {/* Docked Triage Action Bar */}
-        <div className="fixed inset-x-2 bottom-[max(8px,env(safe-area-inset-bottom))] z-40 rounded-[14px] border border-[#D8DBE0] bg-white/95 backdrop-blur-md p-2.5 shadow-[0_10px_30px_rgba(0,0,0,0.15)] xl:static xl:inset-auto xl:bottom-0 xl:z-30 xl:rounded-none xl:border-x-0 xl:border-b-0 xl:border-t xl:border-[#E2E4E8] xl:bg-white xl:px-3.5 xl:py-2.5 xl:shadow-[0_-4px_16px_rgba(0,0,0,0.06)] shrink-0">
-          <div className="flex items-center justify-between gap-2">
+        <div className="fixed inset-x-2 bottom-[max(8px,env(safe-area-inset-bottom))] z-40 rounded-[16px] border border-[#D8DBE0] bg-white/95 backdrop-blur-md p-2 sm:p-2.5 shadow-[0_10px_30px_rgba(0,0,0,0.18)] xl:static xl:inset-auto xl:bottom-0 xl:z-30 xl:rounded-none xl:border-x-0 xl:border-b-0 xl:border-t xl:border-[#E2E4E8] xl:bg-white xl:px-4 xl:py-3 xl:shadow-[0_-4px_16px_rgba(0,0,0,0.06)] shrink-0">
+          <div className="grid grid-cols-[auto_auto_auto_1fr] sm:flex sm:items-center sm:justify-between gap-1.5 sm:gap-2.5">
             {/* Left: Ignore / Restore Row */}
             <button
               type="button"
               onClick={() => updateDraft("resolution", draft.resolution === "IGNORE" ? restoreResolution(activeRow) : "IGNORE")}
               disabled={committed || saving}
-              className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] border px-3 text-[11.5px] font-bold transition shrink-0 ${draft.resolution === "IGNORE"
+              className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-[11px] border px-3 sm:px-3.5 text-[12px] sm:text-[12.5px] font-bold transition shrink-0 ${draft.resolution === "IGNORE"
                   ? "border-slate-300 bg-slate-100 text-slate-800 hover:bg-slate-200"
-                  : "border-rose-200 bg-white text-rose-700 hover:bg-rose-50"
+                  : "border-rose-200 bg-rose-50/70 text-rose-700 hover:bg-rose-100 active:bg-rose-200/80"
                 }`}
               title={draft.resolution === "IGNORE" ? "Restore row to import" : "Skip this row completely from import"}
             >
-              <Icon name={draft.resolution === "IGNORE" ? "undo" : "close"} sizePx={15} />
+              <Icon name={draft.resolution === "IGNORE" ? "undo" : "close"} sizePx={16} />
               <span>{draft.resolution === "IGNORE" ? "Restore" : "Ignore"}</span>
-              <span className="hidden sm:inline"> row</span>
             </button>
 
-            {/* Right: Actions Cluster */}
-            <div className="flex items-center gap-1.5 sm:gap-2 justify-end shrink-0">
+            {/* Middle & Right: Prev, Next, and Save & Next */}
+            <div className="contents sm:flex sm:items-center sm:gap-2 sm:justify-end">
               <button
                 type="button"
                 onClick={() => moveActiveRow(-1)}
                 disabled={!canMovePrevious || saving}
-                className="inline-flex h-10 items-center justify-center gap-1 rounded-[9px] border border-[#D4D7DC] bg-white px-2.5 sm:px-3 text-[11.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6] disabled:opacity-35 shrink-0 shadow-sm"
+                className="inline-flex min-h-[44px] items-center justify-center gap-1 rounded-[11px] border border-[#D4D7DC] bg-white px-3 sm:px-3.5 text-[12px] sm:text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6] active:bg-[#E5E7EB] disabled:opacity-35 shrink-0 shadow-xs"
                 title="Previous product row"
                 aria-label="Previous product row"
               >
-                <Icon name="chevron_left" sizePx={16} />
+                <Icon name="chevron_left" sizePx={17} />
                 <span>Prev</span>
               </button>
 
-              {/* Single Save & Next button: Grayed out when clean, active when dirty, emerald green when saving/saved */}
+              <button
+                type="button"
+                onClick={() => moveActiveRow(1)}
+                disabled={!canMoveNext || saving}
+                className="inline-flex min-h-[44px] items-center justify-center gap-1 rounded-[11px] border border-[#D4D7DC] bg-white px-3 sm:px-3.5 text-[12px] sm:text-[12.5px] font-bold text-[#374151] transition hover:bg-[#F3F4F6] active:bg-[#E5E7EB] disabled:opacity-35 shrink-0 shadow-xs"
+                title="Next product row (warns if unsaved changes)"
+                aria-label="Next product row"
+              >
+                <span>Next</span>
+                <Icon name="chevron_right" sizePx={17} />
+              </button>
+
+              {/* Dedicated Green Save & Next button */}
               <button
                 type="button"
                 disabled={saving || committed || (!dirty && !canMoveNext)}
@@ -2753,17 +2764,19 @@ export default function ProductImportReviewPage() {
                     moveActiveRow(1);
                   }
                 }}
-                className={`inline-flex h-10 items-center justify-center gap-1.5 rounded-[9px] px-4 sm:px-5 text-[12px] font-bold transition shadow-sm shrink-0 ${
-                  justSaved || (saving && dirty)
+                className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-[11px] px-3.5 sm:px-5 text-[12px] sm:text-[13px] font-extrabold transition shadow-sm ${
+                  justSaved
                     ? "bg-emerald-600 border border-emerald-600 text-white"
-                    : dirty && !committed
-                      ? "bg-[#11120d] text-white hover:bg-[#2a2c27] active:scale-[0.98]"
-                      : "border border-slate-200 bg-slate-100 text-slate-400 hover:bg-slate-200/70 hover:text-slate-600"
+                    : saving && dirty
+                      ? "bg-emerald-700 border border-emerald-700 text-white cursor-wait"
+                      : dirty && !committed
+                        ? "bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 border border-emerald-600 text-white active:scale-[0.98]"
+                        : "border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 disabled:hover:bg-emerald-50"
                 }`}
-                title={dirty ? "Save changes and advance to next row" : canMoveNext ? "Next row (no changes to save)" : "No more rows"}
+                title={dirty ? "Save changes and advance to next row" : canMoveNext ? "Next row" : "No more rows"}
               >
-                <Icon name={justSaved || (saving && dirty) ? "check" : "save"} sizePx={15} />
-                <span>
+                <Icon name={justSaved || (saving && dirty) ? "check" : "save"} sizePx={16} />
+                <span className="truncate">
                   {justSaved
                     ? "Saved!"
                     : saving && dirty
@@ -2773,7 +2786,7 @@ export default function ProductImportReviewPage() {
                         : "Save row"}
                 </span>
                 {canMoveNext && !justSaved && !(saving && dirty) ? (
-                  <Icon name="arrow_forward" sizePx={14} />
+                  <Icon name="arrow_forward" sizePx={15} />
                 ) : null}
               </button>
             </div>
@@ -3229,12 +3242,13 @@ export default function ProductImportReviewPage() {
               return (
                 <>
                   <div className="flex w-full items-center gap-1 sm:gap-1.5">
-                    <div className="flex flex-1 items-center gap-1.5 overflow-x-auto no-scrollbar py-0.5 sm:grid sm:grid-cols-4 sm:gap-1">
+                    <div className="hide-scrollbar flex flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:flex sm:flex-wrap">
                       {[
                         { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
                         { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
                         { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
                         { value: "IGNORED" as const, label: "Ignored", count: review?.reviewCounts?.ignored ?? review?.decisionCounts?.ignore ?? 0 },
+                        { value: "COMING_SOON" as const, label: "Coming Soon", count: review?.reviewCounts?.comingSoon ?? 0 },
                       ].map((item) => {
                         const active = filter === item.value;
                         return (
@@ -4748,6 +4762,7 @@ export default function ProductImportReviewPage() {
                 { value: "ATTENTION" as const, label: "Needs Attention", count: review?.reviewCounts?.attention ?? 0 },
                 { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
                 { value: "IGNORED" as const, label: "Ignored", count: review?.reviewCounts?.ignored ?? review?.decisionCounts?.ignore ?? 0 },
+                { value: "COMING_SOON" as const, label: "Coming Soon", count: review?.reviewCounts?.comingSoon ?? 0 },
               ].map((item) => {
                 const selected = draftFilter === item.value;
                 return (

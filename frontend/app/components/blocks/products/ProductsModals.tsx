@@ -4467,7 +4467,7 @@ export default function ProductsModals({
                 alt={activeProduct.name}
                 title={activeProduct.name}
                 subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
-                enablePreview="desktop"
+                enablePreview={true}
                 imgClassName="h-full w-full object-contain p-3"
                 className="flex aspect-[16/10] w-full items-center justify-center overflow-hidden rounded-[16px] border border-[#E5E7EB] bg-[#F8FAFC]"
                 fallback={<GoogleIcon name="inventory_2" sizePx={70} className="text-[#8C8889]" />}
@@ -4558,7 +4558,7 @@ export default function ProductsModals({
                     alt={activeProduct.name}
                     title={activeProduct.name}
                     subtitle={`SKU: ${activeProduct.sku || "NO-SKU"}`}
-                    enablePreview="desktop"
+                    enablePreview={true}
                     imgClassName="h-full w-full object-contain p-2"
                     className="flex aspect-square w-[124px] h-[124px] items-center justify-center overflow-hidden rounded-[14px] border border-[#E2E8F0] bg-[#F8FAFC]"
                     fallback={
@@ -4706,8 +4706,9 @@ export default function ProductsModals({
             </div>
           </>
         ) : (
-          <div className="flex h-full items-center justify-center text-[14px] font-semibold text-[#8C8889]">
-            No product selected.
+          <div className="flex min-h-[320px] flex-col items-center justify-center gap-3 p-8 text-center text-[#8C8889]" role="status" aria-label="Loading product details">
+            <div className="h-9 w-9 animate-spin rounded-full border-[3px] border-slate-200 border-t-[#11120d]" />
+            <p className="animate-pulse text-[13px] font-semibold text-slate-600">Loading product details…</p>
           </div>
         )}
       </ModalShell>

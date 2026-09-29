@@ -838,6 +838,7 @@ export type ProductImportReviewPage = {
         attention: number;
         ignored?: number;
         missingBrand?: number;
+        comingSoon?: number;
     };
     outcomeCounts?: { created: number; updated: number; kept: number; ignored: number };
     decisionCounts: {
@@ -940,7 +941,7 @@ export async function getProductImportReviewApi(
         search?: string;
         comparisonStatus?: ProductImportRow["comparisonStatus"];
         rowStatus?: string;
-        reviewState?: "EDITED" | "ATTENTION" | "IGNORED";
+        reviewState?: "EDITED" | "ATTENTION" | "IGNORED" | "COMING_SOON";
     } = {},
     options?: { signal?: AbortSignal },
 ) {

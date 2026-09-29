@@ -89,7 +89,9 @@ export default function PreviewableImage({
         {!image.ready ? (
           <div className="absolute inset-0 flex items-center justify-center bg-inherit">
             {image.loading ? (
-              <div className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100" aria-label={`Loading image for ${alt}`} />
+              <div className="flex h-full w-full items-center justify-center rounded-[inherit] bg-slate-100/70 p-1" aria-label={`Loading image for ${alt}`}>
+                <div className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#11120d]" />
+              </div>
             ) : fallback}
           </div>
         ) : null}
@@ -115,7 +117,9 @@ export default function PreviewableImage({
         {!image.ready ? (
           <span className="absolute inset-0 flex items-center justify-center bg-inherit">
             {image.loading ? (
-              <span className="h-full w-full animate-pulse rounded-[inherit] bg-slate-100" aria-label={`Loading image for ${alt}`} />
+              <span className="flex h-full w-full items-center justify-center rounded-[inherit] bg-slate-100/70 p-1" aria-label={`Loading image for ${alt}`}>
+                <span className="h-4 w-4 animate-spin rounded-full border-2 border-slate-300 border-t-[#11120d]" />
+              </span>
             ) : fallback}
           </span>
         ) : null}

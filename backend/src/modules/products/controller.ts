@@ -1245,8 +1245,9 @@ export async function getImportBatchReview(req: Request, res: Response) {
       reviewState:
         req.query.reviewState === "EDITED" ||
         req.query.reviewState === "ATTENTION" ||
-        req.query.reviewState === "IGNORED"
-          ? (req.query.reviewState as "EDITED" | "ATTENTION" | "IGNORED")
+        req.query.reviewState === "IGNORED" ||
+        req.query.reviewState === "COMING_SOON"
+          ? (req.query.reviewState as "EDITED" | "ATTENTION" | "IGNORED" | "COMING_SOON")
           : undefined,
     });
     res.json(result);

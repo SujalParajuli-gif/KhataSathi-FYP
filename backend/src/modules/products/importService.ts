@@ -2965,7 +2965,7 @@ export async function getProductImportReview(input: {
     search?: string;
     comparisonStatus?: string;
     rowStatus?: string;
-    reviewState?: "EDITED" | "ATTENTION" | "IGNORED";
+    reviewState?: "EDITED" | "ATTENTION" | "IGNORED" | "COMING_SOON";
 }) {
     const page = Math.max(1, Math.floor(input.page || 1));
     const pageSize = Math.max(1, Math.min(100, Math.floor(input.pageSize || 25)));
@@ -2995,6 +2995,7 @@ export async function getProductImportReview(input: {
     ).map((row) => row.id);
     const editedIds = reviewMetricRows.filter((row) => (reviewChangesById.get(row.id)?.length || 0) > 0).map((row) => row.id);
     const ignoredIds = reviewMetricRows.filter((row) => row.resolution === "IGNORE" || row.status === "IGNORED").map((row) => row.id);
+    const comingSoonIds = reviewMetricRows.filter((row) => row.resolution !== "IGNORE" && importMetadata(row.parsed).availabilityStatus === "COMING_SOON").map((row) => row.id);
     const missingBrandCount = reviewMetricRows.filter((row) => {
         const parsed = importMetadata(row.parsed);
         return row.resolution !== "IGNORE" && !["IMPORTED", "UPDATED", "KEPT_EXISTING"].includes(row.status) && !normalizeCsvText(parsed.brand);
@@ -3011,11 +3012,13 @@ export async function getProductImportReview(input: {
         where.id = { in: ignoredIds };
     } else if (input.reviewState === "ATTENTION") {
         where.id = { in: attentionIds };
+    } else if (input.reviewState === "COMING_SOON") {
+        where.id = { in: comingSoonIds };
     }
     const search = normalizeCsvText(input.search);
     if (search) {
         const query = search.toLocaleLowerCase();
-        const allowedIds = input.reviewState === "EDITED" ? editedIds : input.reviewState === "IGNORED" ? ignoredIds : input.reviewState === "ATTENTION" ? attentionIds : null;
+        const allowedIds = input.reviewState === "EDITED" ? editedIds : input.reviewState === "IGNORED" ? ignoredIds : input.reviewState === "ATTENTION" ? attentionIds : input.reviewState === "COMING_SOON" ? comingSoonIds : null;
         where.id = { in: reviewMetricRows.filter(row => (!allowedIds || allowedIds.includes(row.id)) &&
             [row.rowNumber, row.rawText, row.error, ...["name", "productName", "sku", "barcode", "productCodeVariant"].map(key => importMetadata(row.parsed)[key])]
                 .some(value => String(value ?? "").toLocaleLowerCase().includes(query))).map(row => row.id) };
@@ -3092,6 +3095,7 @@ export async function getProductImportReview(input: {
             attention: attentionIds.length,
             ignored: decisionCounts.ignore,
             missingBrand: missingBrandCount,
+            comingSoon: comingSoonIds.length,
         },
         decisionCounts,
         outcomeCounts: {
