@@ -2756,12 +2756,10 @@ export default function ProductImportReviewPage() {
               {/* Dedicated Green Save & Next button */}
               <button
                 type="button"
-                disabled={saving || committed || (!dirty && !canMoveNext)}
+                disabled={saving || committed || !dirty}
                 onClick={() => {
                   if (dirty && !committed) {
                     void saveAndAdvance();
-                  } else if (canMoveNext) {
-                    moveActiveRow(1);
                   }
                 }}
                 className={`inline-flex min-h-[44px] items-center justify-center gap-1.5 rounded-[11px] px-3.5 sm:px-5 text-[12px] sm:text-[13px] font-extrabold transition shadow-sm ${
@@ -2771,9 +2769,9 @@ export default function ProductImportReviewPage() {
                       ? "bg-emerald-700 border border-emerald-700 text-white cursor-wait"
                       : dirty && !committed
                         ? "bg-emerald-600 hover:bg-emerald-700 active:bg-emerald-800 border border-emerald-600 text-white active:scale-[0.98]"
-                        : "border border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100 disabled:opacity-40 disabled:hover:bg-emerald-50"
+                        : "border border-emerald-200 bg-emerald-50 text-emerald-800 opacity-40 cursor-not-allowed pointer-events-none"
                 }`}
-                title={dirty ? "Save changes and advance to next row" : canMoveNext ? "Next row" : "No more rows"}
+                title={dirty ? (canMoveNext ? "Save changes and advance to next row" : "Save changes to this row") : "No changes to save"}
               >
                 <Icon name={justSaved || (saving && dirty) ? "check" : "save"} sizePx={16} />
                 <span className="truncate">
@@ -3205,69 +3203,41 @@ export default function ProductImportReviewPage() {
         <div className={`${mobilePanel === "list" ? "flex flex-col flex-1 min-h-0" : "hidden"} xl:flex xl:flex-col xl:h-full xl:min-h-0`}>
           <section className="flex flex-col flex-1 overflow-hidden rounded-[16px] border border-[#D8DBE0] bg-white xl:h-full xl:min-h-0 xl:rounded-[18px]">
           <div className="shrink-0 space-y-1.5 border-b border-[#E2E4E8] p-2 sm:p-2.5">
-            <div className="relative">
-              <Icon name="search" sizePx={17} className="absolute left-3 top-2.5 text-[#7A7F89]" />
-              <input
-                name="import-review-search"
-                aria-label="Search import rows"
-                autoComplete="off"
-                value={searchInput}
-                onChange={(event) => {
-                  const value = event.target.value;
-                  requestReviewNavigation(() => setSearchInput(value), "Change the product search and discard the changes to the current product.");
-                }}
-                placeholder="Search name, SKU or source row…"
-                className="h-9 w-full rounded-[9px] border border-[#D4D7DC] pl-9 pr-9 text-[12px] font-semibold outline-none focus:border-[#11120d] xl:text-[11px]"
-              />
-              {searchInput && (
-                <button
-                  type="button"
-                  onClick={() => {
-                    requestReviewNavigation(() => {
-                      setSearchInput("");
-                      setSearch("");
-                    }, "Clear the product search and discard the changes to the current product.");
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full text-[#7A7F89] hover:bg-slate-100 hover:text-[#11120d] transition"
-                  aria-label="Clear search"
-                >
-                  <Icon name="close" sizePx={15} />
-                </button>
-              )}
-            </div>
-
             {(() => {
               const activeComparisonFilter = COMPARISON_FILTERS.find((item) => item.value === filter);
               const isComparisonFilterActive = Boolean(activeComparisonFilter);
               return (
                 <>
-                  <div className="flex w-full items-center gap-1 sm:gap-1.5">
-                    <div className="hide-scrollbar flex flex-1 items-center gap-1.5 overflow-x-auto py-0.5 sm:flex sm:flex-wrap">
-                      {[
-                        { value: "ALL" as const, label: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
-                        { value: "ATTENTION" as const, label: "Attention", count: review?.reviewCounts?.attention ?? 0 },
-                        { value: "EDITED" as const, label: "Edited", count: review?.reviewCounts?.edited ?? 0 },
-                        { value: "IGNORED" as const, label: "Ignored", count: review?.reviewCounts?.ignored ?? review?.decisionCounts?.ignore ?? 0 },
-                        { value: "COMING_SOON" as const, label: "Coming Soon", count: review?.reviewCounts?.comingSoon ?? 0 },
-                      ].map((item) => {
-                        const active = filter === item.value;
-                        return (
-                          <button
-                            key={item.value}
-                            type="button"
-                            onClick={() => requestReviewNavigation(() => { setFilter(item.value); setPage(1); }, `Open the ${item.label} list and discard the changes to the current product.`)}
-                            className={`inline-flex h-9 shrink-0 sm:shrink min-w-0 items-center justify-center gap-1 rounded-[8px] border px-2.5 text-[10.5px] font-extrabold transition touch-manipulation active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] whitespace-nowrap sm:px-2 sm:text-[11px] ${active
-                                ? "border-[#11120d] bg-[#11120d] text-white shadow-xs"
-                                : "border-[#D4D7DC] bg-white text-[#4B5563] hover:bg-[#F3F4F6]"
-                              }`}
-                          >
-                            <span>{item.label}</span>
-                            <span className={`rounded-full px-1.5 py-0.2 text-[8.5px] sm:text-[9px] font-extrabold ${active ? "bg-white/20 text-white" : "bg-slate-100 text-[#4B5563]"}`}>
-                              {item.count > 999 ? `${Math.floor(item.count / 1000)}k` : item.count}
-                            </span>
-                          </button>
-                        );
-                      })}
+                  <div className="flex items-center gap-1.5">
+                    <div className="relative min-w-0 flex-1">
+                      <Icon name="search" sizePx={17} className="absolute left-3 top-2.5 text-[#7A7F89]" />
+                      <input
+                        name="import-review-search"
+                        aria-label="Search import rows"
+                        autoComplete="off"
+                        value={searchInput}
+                        onChange={(event) => {
+                          const value = event.target.value;
+                          requestReviewNavigation(() => setSearchInput(value), "Change the product search and discard the changes to the current product.");
+                        }}
+                        placeholder="Search name, SKU or source row…"
+                        className="h-9 w-full rounded-[9px] border border-[#D4D7DC] pl-9 pr-9 text-[12px] font-semibold outline-none focus:border-[#11120d] xl:text-[11px]"
+                      />
+                      {searchInput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            requestReviewNavigation(() => {
+                              setSearchInput("");
+                              setSearch("");
+                            }, "Clear the product search and discard the changes to the current product.");
+                          }}
+                          className="absolute right-2 top-1/2 -translate-y-1/2 flex h-6 w-6 items-center justify-center rounded-full text-[#7A7F89] hover:bg-slate-100 hover:text-[#11120d] transition"
+                          aria-label="Clear search"
+                        >
+                          <Icon name="close" sizePx={15} />
+                        </button>
+                      )}
                     </div>
 
                     <button
@@ -3276,7 +3246,7 @@ export default function ProductImportReviewPage() {
                         setDraftFilter(filter);
                         setMobileFiltersOpen(true);
                       }}
-                      className={`relative inline-flex h-9 w-9 shrink-0 items-center justify-center gap-1.5 rounded-[8px] border transition-colors touch-manipulation active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] sm:w-auto sm:px-2.5 ${
+                      className={`relative inline-flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-[9px] border px-2.5 transition-colors touch-manipulation active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] ${
                         isComparisonFilterActive
                           ? "border-[#11120d] bg-[#11120d] text-white shadow-xs"
                           : "border-slate-200 bg-white text-[#11120d] hover:border-slate-300 active:bg-slate-50"
@@ -3285,13 +3255,47 @@ export default function ProductImportReviewPage() {
                       title="Filter products"
                     >
                       <GoogleIcon name="filter_alt" className="text-[17px]" />
-                      <span className="hidden sm:inline text-[11px] font-bold">Filter</span>
+                      <span className="hidden min-[400px]:inline text-[11px] font-bold">Filter</span>
                       {isComparisonFilterActive ? (
                         <span className="absolute -top-1 -right-1 sm:static inline-flex h-4 min-w-4 items-center justify-center rounded-full bg-emerald-600 px-1 text-[8.5px] font-extrabold text-white">
                           1
                         </span>
                       ) : null}
                     </button>
+                  </div>
+
+                  <div className="grid grid-cols-5 gap-1 w-full" role="tablist" aria-label="Review status filters">
+                    {[
+                      { value: "ALL" as const, label: "All", shortLabel: "All", count: review?.reviewCounts?.all ?? review?.pagination.total ?? 0 },
+                      { value: "ATTENTION" as const, label: "Attention", shortLabel: "Attn", count: review?.reviewCounts?.attention ?? 0 },
+                      { value: "EDITED" as const, label: "Edited", shortLabel: "Edited", count: review?.reviewCounts?.edited ?? 0 },
+                      { value: "IGNORED" as const, label: "Ignored", shortLabel: "Ignored", count: review?.reviewCounts?.ignored ?? review?.decisionCounts?.ignore ?? 0 },
+                      { value: "COMING_SOON" as const, label: "Coming Soon", shortLabel: "Soon", count: review?.reviewCounts?.comingSoon ?? 0 },
+                    ].map((item) => {
+                      const active = filter === item.value;
+                      return (
+                        <button
+                          key={item.value}
+                          type="button"
+                          role="tab"
+                          aria-selected={active}
+                          onClick={() => requestReviewNavigation(() => { setFilter(item.value); setPage(1); }, `Open the ${item.label} list and discard the changes to the current product.`)}
+                          className={`flex flex-col min-[420px]:flex-row min-h-[34px] items-center justify-center gap-0.5 min-[420px]:gap-1 rounded-[8px] border px-1 py-1 text-[9.5px] min-[380px]:text-[10px] xl:text-[10.5px] font-extrabold transition touch-manipulation active:scale-[0.97] focus:outline-none focus-visible:ring-2 focus-visible:ring-[#11120d] leading-none ${active
+                              ? "border-[#11120d] bg-[#11120d] text-white shadow-xs"
+                              : "border-[#D4D7DC] bg-white text-[#4B5563] hover:bg-[#F3F4F6]"
+                            }`}
+                          title={`${item.label} (${item.count.toLocaleString()})`}
+                        >
+                          <span className="truncate text-center">
+                            <span className="min-[380px]:hidden">{item.shortLabel}</span>
+                            <span className="hidden min-[380px]:inline">{item.label === "Coming Soon" ? <><span><span className="hidden min-[480px]:inline">Coming </span>Soon</span></> : item.label}</span>
+                          </span>
+                          <span className={`shrink-0 rounded-full px-1 py-0.2 text-[8px] min-[380px]:text-[8.5px] font-extrabold ${active ? "bg-white/20 text-white" : "bg-slate-100 text-[#4B5563]"}`}>
+                            {item.count > 999 ? `${Math.floor(item.count / 1000)}k` : item.count}
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
 
                   <ActiveFilterChips

@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import Icon from "./Icon";
+import ProjectSelect from "./ProjectSelect";
 
 function cn(...values: Array<string | false | null | undefined>) {
   return values.filter(Boolean).join(" ");
@@ -52,37 +53,68 @@ export default function MobilePaginationFooter({
 
   return (
     <>
-      <div className={cn("flex items-center justify-between gap-3 bg-white px-1 py-2 lg:hidden", className)}>
-        <button
-          type="button"
-          onClick={() => setSheetOpen(true)}
-          className="min-h-11 min-w-0 text-left text-[13px] leading-5 text-[#565449]"
-          aria-label={`Open pagination. Page ${safePage} of ${safeTotalPages}`}
-        >
-          Showing <strong className="text-[#11120D]">{first}–{end}</strong> of{" "}
-          <strong className="text-[#11120D]">{total}</strong> {displayLabel}
-        </button>
+      <div
+        className={cn(
+          "flex shrink-0 items-center justify-between gap-1.5 sm:gap-2 rounded-[14px] border border-[#E2E4E8] bg-white p-2 sm:p-2.5 text-[10px] font-bold text-[#5F6570] lg:hidden shadow-xs",
+          className,
+        )}
+      >
+        <div className="flex min-w-0 items-center gap-1.5 sm:gap-2">
+          <span className="shrink-0 whitespace-nowrap text-[10.5px] sm:text-[11.5px] font-bold text-[#565449]">
+            {total === 0 ? `0 ${displayLabel}` : `${first}–${end} of ${total.toLocaleString()}`}
+          </span>
+          {showPageSize && pageSizeOptions.length > 0 ? (
+            <ProjectSelect
+              className="h-9 w-[94px] sm:w-[100px] shrink-0 text-[11px]"
+              value={String(pageSize)}
+              onChange={(event) => {
+                const nextSize = Number(event.target.value);
+                if (!Number.isNaN(nextSize) && nextSize > 0) {
+                  onPageSizeChange(nextSize);
+                }
+              }}
+              aria-label="Rows per page"
+            >
+              {pageSizeOptions.map((opt) => (
+                <option key={opt} value={String(opt)}>
+                  {opt} rows
+                </option>
+              ))}
+            </ProjectSelect>
+          ) : null}
+        </div>
 
-        <div className="flex shrink-0 gap-2">
+        <nav className="flex items-center gap-1 sm:gap-1.5 shrink-0" aria-label="Pagination navigation">
           <button
             type="button"
             disabled={safePage <= 1}
             onClick={() => changePage(safePage - 1)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white text-[#11120D] transition active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120D] transition active:scale-95 active:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-35 touch-manipulation"
+            title="Previous page"
             aria-label="Previous page"
           >
-            <Icon name="chevron_left" className="text-[22px]" />
+            <Icon name="chevron_left" sizePx={18} />
+          </button>
+          <button
+            type="button"
+            onClick={() => setSheetOpen(true)}
+            className="min-w-[54px] sm:min-w-[62px] px-1 whitespace-nowrap text-center text-[10.5px] sm:text-[11px] font-extrabold tabular-nums text-[#374151] hover:text-[#11120D] transition touch-manipulation"
+            title="Tap to jump to page"
+            aria-label={`Current page ${safePage} of ${safeTotalPages}. Tap to jump.`}
+          >
+            Page {safePage} of {safeTotalPages}
           </button>
           <button
             type="button"
             disabled={safePage >= safeTotalPages}
             onClick={() => changePage(safePage + 1)}
-            className="inline-flex h-11 w-11 items-center justify-center rounded-[11px] border border-[#CFCFD3] bg-white text-[#11120D] transition active:scale-95 disabled:pointer-events-none disabled:opacity-35"
+            className="inline-flex h-9 w-9 items-center justify-center rounded-[8px] border border-[#D4D7DC] bg-white text-[#11120D] transition active:scale-95 active:bg-[#F3F4F6] disabled:pointer-events-none disabled:opacity-35 touch-manipulation"
+            title="Next page"
             aria-label="Next page"
           >
-            <Icon name="chevron_right" className="text-[22px]" />
+            <Icon name="chevron_right" sizePx={18} />
           </button>
-        </div>
+        </nav>
       </div>
 
       {sheetOpen ? (
