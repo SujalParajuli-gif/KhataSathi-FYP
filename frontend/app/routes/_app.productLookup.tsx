@@ -1105,6 +1105,8 @@ export default function ProductLookupPage() {
   const imagePreviewTriggerRef = useRef<HTMLButtonElement | null>(null);
   const productRequestSequenceRef = useRef(0);
   const mobileLoadMoreControllerRef = useRef<AbortController | null>(null);
+  const cashierRequestRef = useRef(0);
+  const cashierCompletedRef = useRef(0);
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
     setRateLimitRecoveryKey((current) => current + 1);
   });
@@ -1482,12 +1484,17 @@ export default function ProductLookupPage() {
     }).catch(() => undefined);
   }
 
-  async function loadCashiers(options?: { signal?: AbortSignal }) {
+  async function loadCashiers(options?: { signal?: AbortSignal, isPoll?: boolean }) {
     if (!isStaff) return;
+    if (options?.isPoll && cashierRequestRef.current !== cashierCompletedRef.current) {
+      return;
+    }
+    const request = ++cashierRequestRef.current;
     setCashiersLoading(true);
     setCashierLoadIssue("");
     try {
       const result = await listCashierPresenceApi(options);
+      if (options?.signal?.aborted || request !== cashierRequestRef.current) return;
       const nextCashiers = [...(result.cashiers || [])]
         .filter((cashier) => cashier.isActive)
         .sort(
@@ -1505,11 +1512,14 @@ export default function ProductLookupPage() {
         return "";
       });
     } catch (error: any) {
-      if (options?.signal?.aborted || error?.code === "ERR_CANCELED") return;
+      if (options?.signal?.aborted || error?.code === "ERR_CANCELED" || request !== cashierRequestRef.current) return;
       if (isRateLimitError(error)) requestRateLimitRecovery();
       setCashierLoadIssue("Cashier availability is temporarily unavailable");
     } finally {
-      setCashiersLoading(false);
+      if (request === cashierRequestRef.current) {
+        cashierCompletedRef.current = request;
+        setCashiersLoading(false);
+      }
     }
   }
 
@@ -1618,7 +1628,7 @@ export default function ProductLookupPage() {
       void loadCustomers({ signal: controller.signal });
       if (isStaff) {
         interval = window.setInterval(
-          () => void loadCashiers({ signal: controller.signal }),
+          () => void loadCashiers({ signal: controller.signal, isPoll: true }),
           45_000,
         );
       }
