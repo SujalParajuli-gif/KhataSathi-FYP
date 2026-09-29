@@ -162,8 +162,9 @@ export default function DocumentFullViewPage() {
       <main className="min-h-0 flex-1 lg:p-4">
         <section className="flex h-full min-h-0 overflow-hidden bg-white lg:rounded-[18px] lg:border lg:border-[#CFCFD3] lg:shadow-sm">
           {loading ? (
-            <div className="flex flex-1 items-center justify-center text-[13px] font-extrabold text-[#8C8889]">
-              Loading preview...
+            <div className="flex flex-1 flex-col items-center justify-center gap-3 p-8 text-center text-[#8C8889]" role="status" aria-label="Loading document preview">
+              <div className="h-9 w-9 animate-spin rounded-full border-[3px] border-slate-200 border-t-[#11120D]" />
+              <p className="animate-pulse text-[13px] font-semibold text-slate-600">Loading document preview…</p>
             </div>
           ) : error ? (
             <div className="flex flex-1 flex-col items-center justify-center px-6 text-center">

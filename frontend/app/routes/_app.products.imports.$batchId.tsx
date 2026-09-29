@@ -2079,8 +2079,9 @@ export default function ProductImportReviewPage() {
               </div>
             )
           ) : sourceLoading ? (
-            <div className="flex h-full min-h-[320px] items-center justify-center text-[12px] font-extrabold text-[#7A7F89]">
-              Rendering source page…
+            <div className="flex h-full min-h-[320px] flex-col items-center justify-center gap-3 p-6 text-center text-[#7A7F89]" role="status" aria-label="Rendering source page">
+              <div className="h-8 w-8 animate-spin rounded-full border-[3px] border-slate-200 border-t-[#11120D]" />
+              <p className="animate-pulse text-[12px] font-semibold text-slate-600">Rendering catalog source page…</p>
             </div>
           ) : sourcePreviewUrl && sourceMimeType === "application/pdf" && !region ? (
             <iframe

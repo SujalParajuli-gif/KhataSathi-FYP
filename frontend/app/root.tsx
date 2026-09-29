@@ -65,6 +65,39 @@ export function Layout({ children }: { children: React.ReactNode }) {
   );
 }
 
+// initial hydration fallback — rendered while React Router SPA client loads bundles
+export function HydrateFallback() {
+  return (
+    <div
+      className="flex min-h-dvh flex-col items-center justify-center bg-[#F7F7F5] px-4 text-[#11120D]"
+      role="status"
+      aria-label="Loading KhataSathi"
+    >
+      <div className="flex flex-col items-center gap-4 text-center">
+        <div className="relative flex h-16 w-16 items-center justify-center rounded-2xl bg-white p-2 shadow-sm ring-1 ring-black/5">
+          <img
+            src="/assets/icons/smalllogo.png"
+            alt="KhataSathi logo"
+            className="h-12 w-12 object-contain"
+            width={48}
+            height={48}
+          />
+          <span className="absolute -inset-1.5 -z-10 animate-pulse rounded-[22px] bg-slate-200/60" />
+        </div>
+        <div className="space-y-1.5">
+          <div className="text-[16px] font-extrabold tracking-tight text-[#11120D]">
+            KhataSathi
+          </div>
+          <div className="flex items-center justify-center gap-2 text-[12px] font-semibold text-[#6E6B5F]">
+            <span className="inline-block h-2 w-2 animate-ping rounded-full bg-[#11120D]" />
+            <span>Loading workspace…</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // the main App component — renders whatever route is currently active via Outlet
 export default function App() {
   return <Outlet />;
