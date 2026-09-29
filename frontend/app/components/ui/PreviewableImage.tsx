@@ -134,17 +134,7 @@ export default function PreviewableImage({
         onClose={() => setOpen(false)}
         maxWidthClass="max-w-[980px]"
         layer="critical"
-        headerActions={
-          <a
-            href={previewUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="inline-flex min-h-11 items-center gap-2 rounded-lg border border-slate-300 px-3 text-sm font-medium hover:bg-slate-50"
-          >
-            <Icon name="open_in_new" sizePx={17} />
-            Full size
-          </a>
-        }
+
       >
         <div className="relative flex max-h-[70dvh] min-h-[260px] w-full items-center justify-center overflow-auto rounded-xl bg-slate-100/60 p-3">
           {modalLoading && !modalFailed ? (

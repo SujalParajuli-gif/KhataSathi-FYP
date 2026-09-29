@@ -36,7 +36,7 @@ export default function PageSectionRail<T extends string>({
       ref={railRef}
       aria-label={ariaLabel}
       data-horizontal-scroll
-      className="max-w-full overflow-x-auto border-b border-slate-200 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="hide-scrollbar max-w-full overflow-x-auto border-b border-slate-200 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0"
     >
       <div className="flex w-max min-w-full items-end gap-1 sm:gap-3">
         {items.map((item) => {

@@ -60,7 +60,7 @@ export function ActiveFilterChips({
   return (
     <div
       className={cn(
-        "flex max-w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        "hide-scrollbar flex max-w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0",
         className,
       )}
       aria-label="Active filters"
@@ -120,7 +120,7 @@ export function MobileFilterTabs<T extends string>({
       aria-label={ariaLabel}
       data-horizontal-scroll
       className={cn(
-        "flex max-w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden",
+        "hide-scrollbar flex max-w-full gap-2 overflow-x-auto pb-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0",
         className,
       )}
     >

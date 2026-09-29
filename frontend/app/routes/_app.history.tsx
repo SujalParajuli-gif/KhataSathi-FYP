@@ -892,7 +892,7 @@ export default function HistoryPage() {
   });
 
   const categoryTabs = (
-    <div className="-mt-2 bg-white px-4 sm:-mt-3 sm:px-7">
+    <div className="bg-white">
       <PageSectionRail
         items={visibleHistoryCategories.map((category) => {
           const next = new URLSearchParams(searchParams);
@@ -932,7 +932,7 @@ export default function HistoryPage() {
       <div {...historySwipeGesture} className="min-h-full text-slate-900">
         {categoryTabs}
 
-        <section className="px-4 py-5 sm:px-7 sm:py-7" aria-label="History overview">
+        <section className="py-4 sm:py-6" aria-label="History overview">
           {contextNotice ? (
             <div className="mt-4 flex items-start justify-between gap-3 rounded-[14px] border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] font-semibold leading-5 text-amber-800">
               <div className="flex items-start gap-2">
@@ -1413,7 +1413,7 @@ export default function HistoryPage() {
     <div {...historySwipeGesture} className="-m-[12px] min-h-[calc(100dvh-72px)] bg-white text-slate-900 sm:-m-[20px] lg:-m-[24px]">
       {categoryTabs}
 
-      <section className="px-4 py-5 sm:px-7 sm:py-7" aria-label="History records">
+      <section className="py-4 sm:py-6" aria-label="History records">
         <div className="text-[13px] font-bold text-[#8C8889]">
           {new Date().toLocaleDateString(undefined, {
             weekday: "long",

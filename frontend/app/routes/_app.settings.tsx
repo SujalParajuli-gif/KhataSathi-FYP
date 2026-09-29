@@ -2477,7 +2477,7 @@ export default function SettingsPage() {
 
   return (
     <div className="min-h-full text-slate-900">
-      <div className="-mt-2 bg-white px-4 sm:-mt-3 sm:px-7">
+      <div className="bg-white">
         <PageSectionRail
           items={settingsTabs.map((item) => {
             const next = new URLSearchParams(searchParams);
@@ -2490,7 +2490,7 @@ export default function SettingsPage() {
         />
       </div>
 
-      <main {...settingsSwipeGesture} className="w-full px-4 py-5 sm:px-7 sm:py-6">
+      <div {...settingsSwipeGesture} className="w-full py-4 sm:py-6">
         {settingsLoadIssue ? <div role="alert" className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
           <span>{settingsLoadIssue}</span>
           <button type="button" disabled={refreshing} onClick={() => void loadData(false, tab)} className="min-h-11 rounded-lg border border-amber-300 bg-white px-3 font-semibold">{refreshing ? "Retrying…" : "Retry settings"}</button>
@@ -4757,7 +4757,7 @@ export default function SettingsPage() {
             </div>
           </section>
         ) : null}
-      </main>
+      </div>
 
       {drawerAction ? (
         <ModalFrame

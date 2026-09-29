@@ -19,7 +19,7 @@ export default function ProfileWorkspaceNav<T extends string>({
   return (
     <nav
       aria-label="Account settings sections"
-      className="overflow-x-auto rounded-[10px] border border-slate-200 bg-white p-2 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+      className="hide-scrollbar overflow-x-auto rounded-[10px] border border-slate-200 bg-white p-2 [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden [&::-webkit-scrollbar]:h-0 [&::-webkit-scrollbar]:w-0"
     >
       <div className="flex min-w-max gap-1 lg:min-w-0 lg:flex-col">
         {tabs.map((tab) => {

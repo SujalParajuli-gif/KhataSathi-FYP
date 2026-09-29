@@ -535,15 +535,7 @@ function ProductImagePreviewModal({
             </div>
           </div>
           <div className="flex shrink-0 items-center gap-2">
-            <a
-              href={imageUrl}
-              target="_blank"
-              rel="noreferrer"
-              className="hidden h-[42px] items-center justify-center gap-2 rounded-[13px] border border-slate-300 bg-white px-3 text-[12px] font-black text-slate-700 transition hover:bg-[#ECEFF3] sm:flex"
-            >
-              <Icon name="open_in_new" sizePx={17} />
-              Open full size
-            </a>
+
             <button
               type="button"
               onClick={onClose}
