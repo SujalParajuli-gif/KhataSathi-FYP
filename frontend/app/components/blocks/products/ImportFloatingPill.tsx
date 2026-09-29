@@ -15,7 +15,7 @@ export function ImportFloatingPill({ batchId, onClick, onDismiss, hidden = false
   }, [hidden]);
   if (hidden) return null;
   return (
-    <aside aria-label="Import task" className="fixed bottom-3 right-3 z-[80] flex max-w-[calc(100vw-24px)] items-center gap-2 rounded-xl border border-slate-200 bg-white p-2 shadow-lg">
+    <aside aria-label="Import task" className="fixed bottom-[max(14px,calc(env(safe-area-inset-bottom)+10px))] right-[max(14px,env(safe-area-inset-right))] z-[80] flex max-w-[calc(100vw-28px)] items-center gap-2 rounded-2xl border border-slate-200 bg-white p-2.5 shadow-xl">
       <button type="button" onClick={onClick} className="min-h-12 min-w-0 px-2 text-left">
         <span className="block truncate text-sm font-semibold">{data?.batch.fileName || "Product import"}</span>
         <span role="status" className="block text-xs text-slate-600">{active ? (error || importTaskLabel(data?.batch.status)) : (unavailable ? "This import is no longer available." : data ? importTerminalSummary(data.batch) : error)}</span>

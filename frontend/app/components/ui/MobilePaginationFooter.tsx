@@ -97,7 +97,7 @@ export default function MobilePaginationFooter({
             role="dialog"
             aria-modal="true"
             aria-label="Pagination"
-            className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-4 pb-[max(16px,env(safe-area-inset-bottom))] pt-3 shadow-2xl"
+            className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(20px,calc(env(safe-area-inset-bottom)+12px))] pt-3 shadow-2xl"
           >
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-3 flex items-center justify-between">

@@ -275,7 +275,7 @@ export function MobileFilterSheet({
           {children}
         </div>
 
-        <div className="shrink-0 border-t border-slate-200 bg-white px-4 pt-3 pb-[max(12px,env(safe-area-inset-bottom))] shadow-[0_-8px_20px_rgba(15,23,42,0.06)]">
+        <div className="shrink-0 border-t border-slate-200 bg-white px-5 pt-3.5 pb-[max(18px,calc(env(safe-area-inset-bottom)+12px))] shadow-[0_-8px_20px_rgba(15,23,42,0.06)]">
           {footerMessage ? <div className="mb-2 text-[12px] font-semibold text-rose-600">{footerMessage}</div> : null}
           <div className="grid grid-cols-2 gap-3">
             <button

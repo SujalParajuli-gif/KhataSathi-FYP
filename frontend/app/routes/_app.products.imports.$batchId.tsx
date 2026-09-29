@@ -2710,7 +2710,7 @@ export default function ProductImportReviewPage() {
         </fieldset>
 
         {/* Docked Triage Action Bar */}
-        <div className="fixed inset-x-2 bottom-[max(8px,env(safe-area-inset-bottom))] z-40 rounded-[16px] border border-[#D8DBE0] bg-white/95 backdrop-blur-md p-2 sm:p-2.5 shadow-[0_10px_30px_rgba(0,0,0,0.18)] xl:static xl:inset-auto xl:bottom-0 xl:z-30 xl:rounded-none xl:border-x-0 xl:border-b-0 xl:border-t xl:border-[#E2E4E8] xl:bg-white xl:px-4 xl:py-3 xl:shadow-[0_-4px_16px_rgba(0,0,0,0.06)] shrink-0">
+        <div className="fixed inset-x-3.5 bottom-[max(14px,calc(env(safe-area-inset-bottom)+10px))] z-40 rounded-[20px] border border-[#D8DBE0] bg-white/95 backdrop-blur-md p-2.5 sm:p-3 shadow-[0_12px_36px_rgba(0,0,0,0.20)] xl:static xl:inset-auto xl:bottom-0 xl:z-30 xl:rounded-none xl:border-x-0 xl:border-b-0 xl:border-t xl:border-[#E2E4E8] xl:bg-white xl:px-5 xl:py-3 xl:shadow-[0_-4px_16px_rgba(0,0,0,0.06)] shrink-0">
           <div className="grid grid-cols-[auto_auto_auto_1fr] sm:flex sm:items-center sm:justify-between gap-1.5 sm:gap-2.5">
             {/* Left: Ignore / Restore Row */}
             <button
@@ -3518,7 +3518,7 @@ export default function ProductImportReviewPage() {
 
       {/* Bulk Selection Bar: Clean Single-Line, Docked without Covering Pagination */}
       {selectedCount > 0 ? (
-        <div className={`fixed inset-x-3 bottom-[max(12px,env(safe-area-inset-bottom))] z-40 items-center justify-between gap-3 rounded-[14px] border border-[#D8DBE0] bg-white px-3.5 py-2.5 shadow-[0_10px_35px_rgba(15,23,42,0.18)] xl:static xl:z-auto xl:shrink-0 xl:shadow-none ${mobilePanel === "list" ? "flex" : "hidden xl:flex"}`}>
+        <div className={`fixed inset-x-3.5 sm:inset-x-6 bottom-[max(14px,calc(env(safe-area-inset-bottom)+10px))] z-40 items-center justify-between gap-3 rounded-[18px] border border-[#D8DBE0] bg-white px-4 py-3 shadow-[0_12px_36px_rgba(15,23,42,0.18)] xl:static xl:z-auto xl:shrink-0 xl:shadow-none ${mobilePanel === "list" ? "flex" : "hidden xl:flex"}`}>
           <div className="flex items-center gap-2 min-w-0">
             <span className="flex h-6 min-w-6 items-center justify-center rounded-full bg-[#11120d] px-1.5 text-[11px] font-extrabold text-white">
               {selectedCount.toLocaleString()}
@@ -4345,7 +4345,7 @@ export default function ProductImportReviewPage() {
             </div>
 
             {/* Bottom Sticky Action Bar */}
-            <div className="sticky bottom-0 z-20 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+            <div className="sticky bottom-0 z-20 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white px-5 pt-3.5 pb-[max(16px,calc(env(safe-area-inset-bottom)+12px))]">
               <button
                 type="button"
                 onClick={closeBulkEdit}
@@ -4610,7 +4610,7 @@ export default function ProductImportReviewPage() {
                     </div>
                   </div>
 
-                  <footer className="sticky bottom-0 z-30 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white p-4 pb-[max(1rem,env(safe-area-inset-bottom))]">
+                  <footer className="sticky bottom-0 z-30 flex items-center justify-between gap-3 border-t border-[#D8DBE0] bg-white px-5 pt-3.5 pb-[max(16px,calc(env(safe-area-inset-bottom)+12px))]">
                     <button
                       type="button"
                       onClick={() => setBulkPreview(null)}

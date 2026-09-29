@@ -585,7 +585,7 @@ export default function ProductsTableCard({
       {mobileActionProduct ? (
         <div className="fixed inset-0 z-[130] lg:hidden">
           <button type="button" className="absolute inset-0 bg-slate-950/50" onClick={() => setMobileActionProduct(null)} aria-label="Close product actions" />
-          <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,env(safe-area-inset-bottom))] pt-3 shadow-2xl">
+          <section role="dialog" aria-modal="true" aria-label={`${mobileActionProduct.name} actions`} className="absolute inset-x-0 bottom-0 rounded-t-[26px] bg-white px-5 pb-[max(1.5rem,calc(env(safe-area-inset-bottom)+12px))] pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-4 flex items-center gap-3 border-b border-[#E5E7EB] pb-4">
               <PreviewableImage src={mobileActionProduct.thumbnailUrl || mobileActionProduct.imageUrl} fallbackSrc={mobileActionProduct.thumbnailUrl ? mobileActionProduct.imageUrl : undefined} previewSrc={mobileActionProduct.imageUrl} alt={mobileActionProduct.name} title={mobileActionProduct.name} enablePreview imgClassName="h-full w-full object-contain p-1" className="flex h-14 w-14 items-center justify-center overflow-hidden rounded-[12px] border border-[#E5E7EB] bg-white" fallback={<GoogleIcon name="inventory_2" className="text-[#8C8889]" />} />

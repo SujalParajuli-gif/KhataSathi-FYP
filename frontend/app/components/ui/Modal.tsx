@@ -226,7 +226,7 @@ export function ModalFrame({
 
           {/* optional footer — typically contains action buttons */}
           {footer ? (
-            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-[16px] pb-[max(16px,env(safe-area-inset-bottom))] pt-[16px] lg:px-[24px] lg:py-[16px]">
+            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-4 sm:px-6 pb-[max(18px,calc(env(safe-area-inset-bottom)+12px))] pt-3.5 lg:px-6 lg:py-4">
               {footer}
             </div>
           ) : null}

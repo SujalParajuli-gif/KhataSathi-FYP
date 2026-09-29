@@ -2844,7 +2844,7 @@ export default function ProductLookupPage() {
       </div>
 
       {isStaff && draftItems.length > 0 ? (
-        <div className="fixed inset-x-0 bottom-[calc(64px+env(safe-area-inset-bottom))] z-40 border-t border-slate-200 bg-white/95 px-3 py-3 shadow-[0_-18px_44px_rgba(15,23,42,0.12)] backdrop-blur lg:hidden">
+        <div className="fixed inset-x-3.5 bottom-[calc(68px+max(10px,env(safe-area-inset-bottom)))] z-40 rounded-[18px] border border-slate-200 bg-white/95 px-4 py-3 shadow-[0_-8px_24px_rgba(15,23,42,0.12)] backdrop-blur lg:hidden">
           <div className="mx-auto flex max-w-[720px] items-center justify-between gap-3">
             <div>
               <div className="text-[13px] font-black text-slate-950">
@@ -2886,7 +2886,7 @@ export default function ProductLookupPage() {
                 <Icon name="close" sizePx={20} />
               </button>
             </div>
-            <div className="max-h-[calc(92vh-66px)] overflow-y-auto p-3">
+            <div className="max-h-[calc(92vh-66px)] overflow-y-auto p-4 pb-[max(16px,calc(env(safe-area-inset-bottom)+12px))]">
               <DraftPanel
                 items={draftItems}
                 cashiers={cashiers}

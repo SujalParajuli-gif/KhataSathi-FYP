@@ -4324,7 +4324,7 @@ export default function ProductsPage() {
       {openMobileBulkActions && selectedCount > 0 ? (
         <div className="fixed inset-0 z-[125] lg:hidden">
           <button type="button" onClick={() => setOpenMobileBulkActions(false)} className="absolute inset-0 bg-slate-950/55" aria-label="Close selected product actions" />
-          <section role="dialog" aria-modal="true" aria-label="Selected product actions" className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[26px] bg-white px-4 pb-0 pt-3 shadow-2xl">
+          <section role="dialog" aria-modal="true" aria-label="Selected product actions" className="absolute inset-x-0 bottom-0 max-h-[88dvh] overflow-y-auto rounded-t-[26px] bg-white px-5 pb-[max(20px,calc(env(safe-area-inset-bottom)+14px))] pt-3 shadow-2xl">
             <div className="mx-auto h-1.5 w-14 rounded-full bg-[#CFCFD3]" />
             <div className="mt-3 flex items-center justify-between border-b border-[#E5E7EB] pb-3"><h2 className="text-[22px] font-extrabold text-[#11120d]">{selectedCount.toLocaleString()} products selected</h2><button type="button" onClick={() => setOpenMobileBulkActions(false)} className="h-11 w-11" aria-label="Close actions"><Icon name="close" className="text-[26px]" /></button></div>
             {isFilteredSelection ? (
@@ -4341,7 +4341,7 @@ export default function ProductsPage() {
               <button key={item.label} type="button" onClick={() => { setOpenMobileBulkActions(false); item.action(); }} className="flex min-h-[66px] w-full items-center gap-3 border-b border-[#E5E7EB] text-left"><span className={`inline-flex h-11 w-11 items-center justify-center rounded-[12px] ${item.tone}`}><Icon name={item.icon} className="text-[22px]" /></span><span className="flex-1 text-[15px] font-bold text-[#11120d]">{item.label}</span><Icon name="chevron_right" className="text-[#565449]" /></button>
             ))}
             <button type="button" onClick={() => setOpenMobileBulkActions(false)} className="mt-4 h-[50px] w-full rounded-[12px] bg-[#11120d] text-[14px] font-bold text-white">Done</button>
-            <button type="button" onClick={() => { setOpenMobileBulkActions(false); clearBulkSelection(); }} className="mt-2 min-h-[calc(44px+env(safe-area-inset-bottom))] w-full pb-[env(safe-area-inset-bottom)] text-[14px] font-bold text-[#565449]">Cancel selection</button>
+            <button type="button" onClick={() => { setOpenMobileBulkActions(false); clearBulkSelection(); }} className="mt-2 min-h-[44px] w-full text-[14px] font-bold text-[#565449]">Cancel selection</button>
           </section>
         </div>
       ) : null}
@@ -4518,6 +4518,7 @@ export default function ProductsPage() {
         setOpenConfirmDelete={setOpenConfirmDelete}
         activeProduct={activeProduct}
         activeProductId={activeProductId}
+        isDirty={isProductEditorDirty}
         form={form}
         setForm={setForm}
         formErrors={formErrors}
@@ -5382,7 +5383,7 @@ export default function ProductsPage() {
             </div>
           </div>
 
-          <div className="sticky bottom-0 z-20 -mx-[4px] border-t border-[#E5E7EB] bg-white/95 px-[4px] pt-[12px] backdrop-blur">
+          <div className="sticky bottom-0 z-20 -mx-[4px] border-t border-[#E5E7EB] bg-white/95 px-4 pt-3 pb-[max(16px,calc(env(safe-area-inset-bottom)+12px))] backdrop-blur">
             <div className="grid grid-cols-[auto_1fr] gap-2 lg:hidden">
               <button
                 type="button"

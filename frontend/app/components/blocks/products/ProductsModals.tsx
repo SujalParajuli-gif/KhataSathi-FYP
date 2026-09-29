@@ -654,6 +654,7 @@ function Button({
   disabled,
   icon,
   size = "md",
+  title,
   className,
 }: {
   children: React.ReactNode;
@@ -662,6 +663,7 @@ function Button({
   disabled?: boolean;
   icon?: string;
   size?: "sm" | "md";
+  title?: string;
   className?: string;
 }) {
   const base =
@@ -681,6 +683,7 @@ function Button({
       type="button"
       onClick={onClick}
       disabled={disabled}
+      title={title}
       className={cn(
         base,
         sizeClass,
@@ -907,7 +910,7 @@ function ModalShell({
           </div>
 
           {footer ? (
-            <div className={cn("shrink-0 border-t border-[#CFCFD3] bg-white px-[16px] pb-[max(10px,env(safe-area-inset-bottom))] pt-[10px] lg:py-[10px]", footerClassName)}>
+            <div className={cn("shrink-0 border-t border-[#CFCFD3] bg-white px-4 sm:px-6 pb-[max(16px,calc(env(safe-area-inset-bottom)+12px))] pt-3 lg:py-3", footerClassName)}>
               {footer}
             </div>
           ) : null}
@@ -957,6 +960,7 @@ export default function ProductsModals({
 
   onSave,
   productSaveBusy,
+  isDirty = true,
   onValidateProductStep,
   onClearFormError,
   onConfirmDelete,
@@ -1050,6 +1054,7 @@ export default function ProductsModals({
 
   onSave: () => void;
   productSaveBusy: boolean;
+  isDirty?: boolean;
   onValidateProductStep: (step: "basic" | "units" | "pricing" | "stock") => boolean;
   onClearFormError: (field: keyof ProductFormErrors) => void;
   onConfirmDelete: () => void;
@@ -1802,24 +1807,25 @@ export default function ProductsModals({
         footer={
           <div className="flex w-full items-center justify-between gap-2.5">
             <div className="flex items-center gap-2">
-              {editorStepIndex > 0 ? (
+              <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy} className="h-10 min-w-[76px]">
+                Cancel
+              </Button>
+            </div>
+            <div className="flex items-center gap-2">
+              {!activeProductId && editorStepIndex > 0 ? (
                 <Button onClick={goToPreviousProductStep} disabled={productSaveBusy} className="h-10 min-w-[76px]">
                   Back
                 </Button>
-              ) : (
-                <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy} className="h-10 min-w-[76px]">
-                  Cancel
-                </Button>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              {editorStepIndex > 0 ? (
-                <Button onClick={() => setOpenAddEdit(false)} disabled={productSaveBusy} className="hidden sm:inline-flex h-10">
-                  Cancel
-                </Button>
               ) : null}
               {activeProductId ? (
-                <Button variant="primary" icon="save" onClick={onSave} disabled={productSaveBusy} className="h-10">
+                <Button
+                  variant="primary"
+                  icon="save"
+                  onClick={onSave}
+                  disabled={productSaveBusy || !isDirty}
+                  title={!isDirty ? "No changes to save" : undefined}
+                  className="h-10"
+                >
                   {productSaveBusy ? "Saving..." : "Save Changes"}
                 </Button>
               ) : mobileEditorTab === "review" ? (
@@ -4716,7 +4722,7 @@ export default function ProductsModals({
       {openConfirmDelete && (
         <div className="fixed inset-0 z-[120] flex items-end justify-center p-0 sm:items-center sm:p-[16px]">
           <div className="absolute inset-0 bg-[#0F172A]/45 backdrop-blur-[2px]" onClick={() => setOpenConfirmDelete(false)} />
-          <div role="dialog" aria-modal="true" aria-labelledby="single-product-delete-title" className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] border border-slate-200 bg-white px-[20px] pb-[max(20px,env(safe-area-inset-bottom))] pt-[20px] text-center sm:max-w-[560px] sm:rounded-[24px] sm:p-[32px]">
+          <div role="dialog" aria-modal="true" aria-labelledby="single-product-delete-title" className="relative max-h-[92dvh] w-full overflow-y-auto rounded-t-[26px] border border-slate-200 bg-white px-5 sm:px-8 pb-[max(20px,calc(env(safe-area-inset-bottom)+12px))] pt-5 text-center sm:max-w-[560px] sm:rounded-[24px] sm:p-8">
             <div className="mx-auto mb-4 h-1.5 w-14 rounded-full bg-[#CFCFD3] sm:hidden" />
             <div className="w-[56px] h-[56px] rounded-full bg-red-50 flex items-center justify-center mx-auto mb-[20px]">
               <GoogleIcon name="warning" className="text-[28px] text-red-600" />
@@ -4832,7 +4838,7 @@ export default function ProductsModals({
               <p className="mt-3 rounded-[12px] bg-[#F8FAFC] p-3 text-[12px] font-medium leading-5 text-[#6B7280]">Products become unavailable to selling flows, while invoice history and audit records remain intact.</p>
             </div>
 
-            <footer className="grid shrink-0 grid-cols-2 gap-3 border-t border-[#E5E7EB] bg-white px-5 pb-[max(16px,env(safe-area-inset-bottom))] pt-4 sm:px-6">
+            <footer className="grid shrink-0 grid-cols-2 gap-3 border-t border-[#E5E7EB] bg-white px-5 sm:px-6 pb-[max(18px,calc(env(safe-area-inset-bottom)+12px))] pt-3.5">
               <button onClick={onCloseBulkAction} className="inline-flex min-h-11 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white px-4 text-[14px] font-bold text-[#565449] transition hover:bg-[#F3F4F6]">
                 Cancel
               </button>
