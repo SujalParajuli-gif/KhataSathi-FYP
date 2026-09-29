@@ -293,7 +293,9 @@ test("mapping validation rejects empty or foreign selected-row scopes", async t 
 });
 
 test("selected price mapping returns exact post-save revisions even if rows leave the active filter", async t => {
-  installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
+  const { rows, mockMethod } = installBatchMocks(t, [source({ extractedPrices: [{ key: "mrp", label: "MRP", value: 200 }] })]);
+  mockMethod(prisma.productImportRow, "count", async () => rows.length);
+  mockMethod(prisma.productImportRow, "groupBy", async () => []);
   const input = { batchId: "batch", actorId: "actor", mapping: { mrp: "retailPrice" } };
   await setProductImportPriceMapping(input);
   const selected = { ...input, rowIds: ["row-1"] };
