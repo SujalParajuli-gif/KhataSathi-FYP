@@ -1,17 +1,25 @@
 export type ProductLookupVisibility = {
   canViewPurchaseCost: boolean;
   canViewWholesalePrice: boolean;
+  canViewCatalogRate?: boolean;
 };
 
 export function resolveProductLookupVisibility(
   role: string,
   canViewWholesalePrice: boolean,
+  options?: { allowCatalogRate?: boolean },
 ): ProductLookupVisibility {
   const normalizedRole = String(role || "").toUpperCase();
+  const isAdmin = normalizedRole === "ADMIN";
+  const isManager = normalizedRole === "MANAGER";
+  const canViewCatalogRate =
+    isAdmin || (options?.allowCatalogRate === true && isManager);
+
   return {
-    canViewPurchaseCost: normalizedRole === "ADMIN",
+    canViewPurchaseCost: isAdmin,
     canViewWholesalePrice:
-      normalizedRole === "ADMIN" || canViewWholesalePrice === true,
+      isAdmin || canViewWholesalePrice === true,
+    canViewCatalogRate,
   };
 }
 
@@ -21,7 +29,12 @@ export function redactProductForLookup<T extends Record<string, any>>(
 ) {
   const visibleProduct = { ...product } as Record<string, any>;
 
-  if (!visibility.canViewPurchaseCost) {
+  const allowsCatalogRate =
+    visibility.canViewCatalogRate !== undefined
+      ? visibility.canViewCatalogRate
+      : visibility.canViewPurchaseCost;
+
+  if (!allowsCatalogRate) {
     delete visibleProduct.ratePerPiece;
     delete visibleProduct.rateUpdatedAt;
   }
@@ -56,4 +69,14 @@ export function redactInventoryFromProduct<T extends Record<string, any>>(
     delete catalogProduct[field];
   }
   return catalogProduct;
+}
+
+export function sanitizeProductForResponse<T extends Record<string, any>>(
+  product: T,
+  visibility: ProductLookupVisibility,
+  stockTracked: boolean,
+) {
+  if (!product) return product;
+  const visible = redactProductForLookup(product, visibility);
+  return stockTracked ? visible : redactInventoryFromProduct(visible);
 }

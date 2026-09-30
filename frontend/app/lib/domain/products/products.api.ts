@@ -2,6 +2,7 @@ import {
   createProductApi,
   deactivateProductApi,
   getCategoriesApi,
+  getCatalogProductsByIdsApi,
   getProductsByIdsApi,
   getProductDeleteSafetyApi,
   discardStockAndDeleteProductApi,
@@ -131,8 +132,8 @@ function toFrontendProduct(product: BackendProduct): Product {
   };
 }
 
-/** Resolve products that may no longer be on the visible catalog page. */
-export async function fetchProductsByIds(
+/** Resolve products for catalog management workflows (preserves rate for authorized roles). */
+export async function fetchCatalogProductsByIds(
   ids: string[],
   options?: { signal?: AbortSignal },
 ) {
@@ -145,7 +146,7 @@ export async function fetchProductsByIds(
   }
 
   const responses = await Promise.all(
-    chunks.map((chunk) => getProductsByIdsApi(chunk, options)),
+    chunks.map((chunk) => getCatalogProductsByIdsApi(chunk, options)),
   );
   const products = responses.flatMap((response) =>
     (response?.products ?? response ?? []).map(toFrontendProduct),
@@ -153,6 +154,8 @@ export async function fetchProductsByIds(
   const byId = new Map(products.map((product) => [product.id, product]));
   return uniqueIds.map((id) => byId.get(id)).filter(Boolean) as Product[];
 }
+
+export const fetchProductsByIds = fetchCatalogProductsByIds;
 
 // looking up a brand's ID from the cached list by its display name
 function getBrandIdByName(name?: string): string | undefined {

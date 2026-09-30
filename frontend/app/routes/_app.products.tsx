@@ -49,7 +49,7 @@ import {
 import {
   bulkSetStatus,
   createProduct,
-  fetchProductsByIds,
+  fetchCatalogProductsByIds,
   fetchProducts,
   fetchProductsMeta,
   getProductDeleteSafety,
@@ -1439,7 +1439,7 @@ export default function ProductsPage() {
     let active = true;
     setReturnAfterProductEditSnapshot(undefined);
     setOpeningRequestedEditProduct(true);
-    void fetchProductsByIds([requestedEditProductId], {
+    void fetchCatalogProductsByIds([requestedEditProductId], {
       signal: controller.signal,
     })
       .then(([product]) => {
@@ -2612,7 +2612,7 @@ export default function ProductsPage() {
     let resolvedProducts = selectedProducts;
     try {
       setPriceBusy(true);
-      resolvedProducts = await fetchProductsByIds(selectedIds);
+      resolvedProducts = await fetchCatalogProductsByIds(selectedIds);
       const resolvedIds = new Set(resolvedProducts.map((product) => product.id));
       const unavailableCount = selectedIds.filter((id) => !resolvedIds.has(id)).length;
       if (unavailableCount > 0) {
@@ -3742,7 +3742,7 @@ export default function ProductsPage() {
       if (isFilteredSelection) {
         setInvalidFilteredOverrideId(firstInvalidRow[0]);
         if (!filteredPreviewItems.some((item) => item.productId === firstInvalidRow[0]) && !selectedProductCache[firstInvalidRow[0]]) {
-          void fetchProductsByIds([firstInvalidRow[0]]).then((products) => {
+          void fetchCatalogProductsByIds([firstInvalidRow[0]]).then((products) => {
             if (products[0]) {
               setSelectedProductCache((current) => ({ ...current, [products[0].id]: products[0] }));
             }
@@ -3935,7 +3935,7 @@ export default function ProductsPage() {
       toastMsg("danger", message);
       try {
         if (!isFilteredSelection) {
-          const fresh = await fetchProductsByIds(selectedIds);
+          const fresh = await fetchCatalogProductsByIds(selectedIds);
           const freshIds = new Set(fresh.map((product) => product.id));
           setSelectedProductCache((current) => ({ ...current, ...Object.fromEntries(fresh.map((product) => [product.id, product])) }));
           if (bulkPriceMode === "CALCULATE") {
@@ -7543,7 +7543,7 @@ export default function ProductsPage() {
                   if (failedIds.length > 0) {
                     try {
                       setRetryLoading(true);
-                      const failedProducts = await fetchProductsByIds(failedIds);
+                      const failedProducts = await fetchCatalogProductsByIds(failedIds);
                       if (failedProducts.length !== failedIds.length || failedIds.some((id) => !failedProducts.some((product) => product.id === id))) {
                         throw new Error("Not all failed products could be reloaded. The result remains available; check the missing products before retrying.");
                       }

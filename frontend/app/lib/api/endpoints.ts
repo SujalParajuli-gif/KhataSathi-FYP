@@ -467,6 +467,17 @@ export async function getProductsByIdsApi(
     return res.data;
 }
 
+export async function getCatalogProductsByIdsApi(
+    ids: string[],
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products/catalog-lookup", {
+        params: { ids: [...new Set(ids)].join(",") },
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
 export async function getProductByCodeApi(
     code: string,
     options?: { signal?: AbortSignal },
