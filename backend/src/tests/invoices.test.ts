@@ -7,6 +7,7 @@ import {
   buildCheckoutPayloadHash,
   getInvoice,
   listParkedDrafts,
+  modifyFinalizedInvoice,
   parkedDraftInclude,
   projectReplayInvoiceItem,
   publicDraftItemSelect,
@@ -498,5 +499,170 @@ test("parked invoice queries use explicit publicParkedInvoiceItemSelect excludin
     assert.equal("costAtSale" in drafts[0].items[0], false);
   } finally {
     prisma.invoice.findMany = originalFindMany;
+  }
+});
+
+test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSelect and creditNote contains no items", async () => {
+  let capturedReplacementQueryArgs: any = null;
+  let capturedCreditNoteCreateArgs: any = null;
+  const originalTransaction = prisma.$transaction;
+  try {
+    (prisma as any).$transaction = async (callback: any) => {
+      const mockTx = {
+        $queryRaw: async () => [],
+        invoice: {
+          findUnique: async (args: any) => {
+            if (args.where?.id === "inv-orig-1") {
+              return {
+                id: "inv-orig-1",
+                invoiceNo: "INV-20260930-0001",
+                status: "FINALIZED",
+                paymentStatus: "PAID",
+                paidTotal: 100,
+                netTotal: 100,
+                items: [],
+                payments: [],
+                customer: null,
+              };
+            }
+            if (args.where?.id === "inv-repl-1" && args.include?.items?.include) {
+              // inside finalizeCheckoutInvoiceTx
+              return {
+                id: "inv-repl-1",
+                invoiceNo: "INV-20260930-0002",
+                status: "DRAFT",
+                items: [
+                  {
+                    id: "item-repl-1",
+                    productId: "prod-1",
+                    qty: 1,
+                    appliedUnitPrice: 100,
+                    lineTotal: 100,
+                    product: {
+                      id: "prod-1",
+                      name: "Sugar 1kg",
+                      stock: 50,
+                      isActive: true,
+                      retailPrice: 100,
+                      wholesalePrice: 90,
+                      wholesaleEligible: true,
+                    },
+                  },
+                ],
+                customer: null,
+              };
+            }
+            // The final replacementInvoice query returned to caller
+            capturedReplacementQueryArgs = args;
+            return {
+              id: "inv-repl-1",
+              invoiceNo: "INV-20260930-0002",
+              items: [
+                {
+                  id: "item-repl-1",
+                  invoiceId: "inv-repl-1",
+                  productId: "prod-1",
+                  qty: 1,
+                  appliedUnitPrice: 100,
+                  originalUnitPrice: null,
+                  overrideUnitPrice: null,
+                  overrideReason: null,
+                  overrideById: null,
+                  overrideAt: null,
+                  lineTotal: 100,
+                  createdAt: new Date("2026-09-30T10:00:00Z"),
+                  product: { id: "prod-1", name: "Sugar 1kg", sku: "SUG-001", barcode: null },
+                },
+              ],
+              payments: [],
+              cashier: { id: "user-1", name: "Cashier", email: "cashier@test.com" },
+              customer: null,
+              cancelledBy: null,
+            };
+          },
+          update: async () => ({
+            id: "inv-repl-1",
+            invoiceNo: "INV-20260930-0002",
+            paymentStatus: "PAID",
+            netTotal: 100,
+          }),
+          create: async () => ({ id: "inv-repl-1", invoiceNo: "INV-20260930-0002" }),
+          findFirst: async () => null,
+        },
+        returnRequest: {
+          findFirst: async () => null,
+        },
+        user: {
+          findUnique: async () => ({ id: "user-1", name: "Admin", role: "ADMIN" }),
+        },
+        creditNoteSequence: {
+          upsert: async () => ({ lastNumber: 1 }),
+        },
+        creditNote: {
+          findFirst: async () => null,
+          create: async (args: any) => {
+            capturedCreditNoteCreateArgs = args;
+            return {
+              id: "cn-1",
+              creditNoteNo: "CN-20260930-0001",
+              reason: "Invoice modified",
+              originalInvoice: { id: "inv-orig-1", invoiceNo: "INV-20260930-0001" },
+              replacementInvoice: { id: "inv-repl-1", invoiceNo: "INV-20260930-0002" },
+              createdBy: { id: "user-1", name: "Admin", role: "ADMIN" },
+            };
+          },
+        },
+        invoiceSequence: {
+          upsert: async () => ({ lastNumber: 2 }),
+        },
+        product: {
+          findMany: async () => [
+            {
+              id: "prod-1",
+              name: "Sugar 1kg",
+              stock: 50,
+              isActive: true,
+              retailPrice: 100,
+              wholesalePrice: 90,
+              wholesaleEligible: true,
+            },
+          ],
+          update: async () => ({}),
+          updateMany: async () => ({ count: 1 }),
+        },
+        invoiceItem: {
+          findMany: async () => [],
+          create: async () => ({}),
+        },
+        stockTransaction: {
+          create: async () => ({}),
+        },
+        payment: {
+          create: async () => ({}),
+        },
+        auditLog: {
+          create: async () => ({}),
+        },
+      };
+      return callback(mockTx);
+    };
+
+    const result = await modifyFinalizedInvoice("inv-orig-1", "user-1", {
+      reason: "Customer changed mind",
+      items: [{ productId: "prod-1", qty: 1 }],
+    });
+
+    assert.ok(result);
+    // 1. Verify replacementInvoice query uses publicInvoiceItemSelect
+    assert.deepEqual(capturedReplacementQueryArgs?.include?.items?.select, publicInvoiceItemSelect);
+    assert.equal("costAtSale" in capturedReplacementQueryArgs.include.items.select, false);
+    assert.ok(result.replacementInvoice);
+    assert.equal("costAtSale" in result.replacementInvoice.items[0], false);
+
+    // 2. Verify creditNote does not include or expose invoice items
+    assert.equal("items" in capturedCreditNoteCreateArgs?.include, false);
+    assert.equal("items" in result.creditNote, false);
+  } finally {
+    prisma.$transaction = originalTransaction;
   }
 });

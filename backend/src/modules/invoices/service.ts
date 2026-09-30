@@ -2165,9 +2165,7 @@ export async function modifyFinalizedInvoice(
       where: { id: finalizedReplacement.id },
       include: {
         items: {
-          include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true } },
-          },
+          select: publicInvoiceItemSelect,
         },
         payments: {
           include: { createdBy: { select: { id: true, name: true } } },
