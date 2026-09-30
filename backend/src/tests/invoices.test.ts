@@ -2,13 +2,19 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import prisma from "../db/prisma";
 import {
+  addItem,
   buildActiveReturnBlockMessage,
   buildCheckoutPayloadHash,
   getInvoice,
+  listParkedDrafts,
+  parkedDraftInclude,
   projectReplayInvoiceItem,
+  publicDraftItemSelect,
   publicInvoiceItemSelect,
+  publicParkedInvoiceItemSelect,
   shouldAssignFinalInvoiceNo,
   toPublicCheckoutResponse,
+  updateItem,
 } from "../modules/invoices/service";
 import { checkoutBodySchema } from "../modules/invoices/validation";
 
@@ -293,4 +299,204 @@ test("stored replay structural validation fails clearly on malformed data withou
   assert.throws(() => toPublicCheckoutResponse(null), /Checkout response must be an object/);
   assert.throws(() => toPublicCheckoutResponse({}), /Checkout response must contain an invoice property/);
   assert.throws(() => toPublicCheckoutResponse({ invoice: { items: "not-an-array" } }), /invoice items must be an array/);
+});
+
+test("draft item mutations use explicit publicDraftItemSelect excluding costAtSale", () => {
+  assert.equal(publicDraftItemSelect.id, true);
+  assert.equal(publicDraftItemSelect.invoiceId, true);
+  assert.equal(publicDraftItemSelect.productId, true);
+  assert.equal(publicDraftItemSelect.qty, true);
+  assert.equal(publicDraftItemSelect.appliedUnitPrice, true);
+  assert.equal(publicDraftItemSelect.originalUnitPrice, true);
+  assert.equal(publicDraftItemSelect.overrideUnitPrice, true);
+  assert.equal(publicDraftItemSelect.overrideReason, true);
+  assert.equal(publicDraftItemSelect.overrideById, true);
+  assert.equal(publicDraftItemSelect.overrideAt, true);
+  assert.equal(publicDraftItemSelect.lineTotal, true);
+  assert.equal(publicDraftItemSelect.createdAt, true);
+  assert.equal("costAtSale" in publicDraftItemSelect, false);
+});
+
+test("addItem and updateItem pass publicDraftItemSelect to Prisma queries", async () => {
+  let capturedCreateArgs: any = null;
+  let capturedUpdateArgs: any = null;
+  const originalTransaction = prisma.$transaction;
+  try {
+    (prisma as any).$transaction = async (callback: any) => {
+      const mockTx = {
+        $queryRaw: async () => [],
+        invoice: {
+          findUnique: async () => ({
+            id: "draft-1",
+            status: "DRAFT",
+            customer: null,
+          }),
+          update: async () => ({}),
+        },
+        product: {
+          findUnique: async () => ({
+            id: "prod-1",
+            name: "Rice 25kg",
+            stock: 50,
+            isActive: true,
+            retailPrice: 1500,
+            wholesalePrice: 1400,
+            wholesaleEligible: true,
+          }),
+        },
+        invoiceItem: {
+          findFirst: async () => null,
+          findUnique: async () => ({
+            id: "item-1",
+            invoiceId: "draft-1",
+            productId: "prod-1",
+            product: {
+              id: "prod-1",
+              name: "Rice 25kg",
+              stock: 50,
+              isActive: true,
+              retailPrice: 1500,
+              wholesalePrice: 1400,
+              wholesaleEligible: true,
+            },
+          }),
+          findMany: async () => [{ lineTotal: 1500 }],
+          create: async (args: any) => {
+            capturedCreateArgs = args;
+            return {
+              id: "item-1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 1,
+              appliedUnitPrice: 1500,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 1500,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+            };
+          },
+          update: async (args: any) => {
+            capturedUpdateArgs = args;
+            return {
+              id: "item-1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 2,
+              appliedUnitPrice: 1500,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 3000,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+            };
+          },
+        },
+      };
+      return callback(mockTx);
+    };
+
+    const item = await addItem("draft-1", "prod-1", 1);
+    assert.ok(item);
+    assert.deepEqual(capturedCreateArgs?.select, publicDraftItemSelect);
+    assert.equal("costAtSale" in item, false);
+
+    const updated = await updateItem("draft-1", "item-1", 2);
+    assert.ok(updated);
+    assert.deepEqual(capturedUpdateArgs?.select, publicDraftItemSelect);
+    assert.equal("costAtSale" in updated, false);
+  } finally {
+    prisma.$transaction = originalTransaction;
+  }
+});
+
+test("parked invoice queries use explicit publicParkedInvoiceItemSelect excluding costAtSale", async () => {
+  // 1. Verify selection shape
+  assert.equal(publicParkedInvoiceItemSelect.id, true);
+  assert.equal(publicParkedInvoiceItemSelect.invoiceId, true);
+  assert.equal(publicParkedInvoiceItemSelect.productId, true);
+  assert.equal(publicParkedInvoiceItemSelect.qty, true);
+  assert.equal(publicParkedInvoiceItemSelect.appliedUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.originalUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideReason, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideById, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideAt, true);
+  assert.equal(publicParkedInvoiceItemSelect.lineTotal, true);
+  assert.equal(publicParkedInvoiceItemSelect.createdAt, true);
+  assert.deepEqual(publicParkedInvoiceItemSelect.product.select, {
+    id: true,
+    name: true,
+    sku: true,
+    barcode: true,
+    retailPrice: true,
+    wholesalePrice: true,
+    wholesaleQtyThreshold: true,
+    stock: true,
+    reservedStock: true,
+    isActive: true,
+    imageUrl: true,
+  });
+  assert.equal("costAtSale" in publicParkedInvoiceItemSelect, false);
+
+  // 2. parkedDraftInclude uses publicParkedInvoiceItemSelect
+  assert.deepEqual(parkedDraftInclude.items.select, publicParkedInvoiceItemSelect);
+
+  // 3. listParkedDrafts passes parkedDraftInclude to findMany
+  let capturedFindManyArgs: any = null;
+  const originalFindMany = prisma.invoice.findMany;
+  try {
+    (prisma.invoice as any).findMany = async (args: any) => {
+      capturedFindManyArgs = args;
+      return [
+        {
+          id: "draft-1",
+          invoiceNo: "DRF-20260930-0001",
+          status: "DRAFT",
+          parkedAt: new Date("2026-09-30T10:00:00Z"),
+          items: [
+            {
+              id: "item-p1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 2,
+              appliedUnitPrice: 120,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 240,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+              product: {
+                id: "prod-1",
+                name: "Mustard Oil 1L",
+                sku: "OIL-001",
+                barcode: null,
+                retailPrice: 120,
+                wholesalePrice: 110,
+                wholesaleQtyThreshold: 5,
+                stock: 20,
+                reservedStock: 2,
+                isActive: true,
+                imageUrl: null,
+              },
+            },
+          ],
+        },
+      ];
+    };
+
+    const drafts = await listParkedDrafts("user-1", "CASHIER");
+    assert.equal(drafts.length, 1);
+    assert.deepEqual(capturedFindManyArgs?.include?.items?.select, publicParkedInvoiceItemSelect);
+    assert.equal(drafts[0].items[0].id, "item-p1");
+    assert.equal("costAtSale" in drafts[0].items[0], false);
+  } finally {
+    prisma.invoice.findMany = originalFindMany;
+  }
 });

@@ -90,6 +90,51 @@ export type PublicInvoiceItem = {
   } | null;
 };
 
+export const publicDraftItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+} as const;
+
+export const publicParkedInvoiceItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+  product: {
+    select: {
+      id: true,
+      name: true,
+      sku: true,
+      barcode: true,
+      retailPrice: true,
+      wholesalePrice: true,
+      wholesaleQtyThreshold: true,
+      stock: true,
+      reservedStock: true,
+      isActive: true,
+      imageUrl: true,
+    },
+  },
+} as const;
+
 // projects stored replay JSON items using an explicit allowlist and basic structural checks
 export function projectReplayInvoiceItem(raw: unknown): PublicInvoiceItem {
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
@@ -2153,25 +2198,9 @@ export async function modifyFinalizedInvoice(
   });
 }
 
-const parkedDraftInclude = {
+export const parkedDraftInclude = {
   items: {
-    include: {
-      product: {
-        select: {
-          id: true,
-          name: true,
-          sku: true,
-          barcode: true,
-          retailPrice: true,
-          wholesalePrice: true,
-          wholesaleQtyThreshold: true,
-          stock: true,
-          reservedStock: true,
-          isActive: true,
-          imageUrl: true,
-        },
-      },
-    },
+    select: publicParkedInvoiceItemSelect,
   },
   customer: {
     select: {
@@ -2963,6 +2992,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
           appliedUnitPrice: recalculatedUnitPrice,
           lineTotal: newLineTotal,
         },
+        select: publicDraftItemSelect,
       });
 
       await recomputeSubtotal(invoiceId, tx); // updating the invoice subtotal after changing the item
@@ -2995,6 +3025,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
         appliedUnitPrice,
         lineTotal,
       },
+      select: publicDraftItemSelect,
     });
 
     await recomputeSubtotal(invoiceId, tx);
@@ -3058,6 +3089,7 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
     const updated = await tx.invoiceItem.update({
       where: { id: itemId },
       data: { qty: normalizedQty, appliedUnitPrice, lineTotal },
+      select: publicDraftItemSelect,
     });
 
     await recomputeSubtotal(invoiceId, tx); // updating the invoice subtotal
