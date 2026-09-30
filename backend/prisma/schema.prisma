@@ -428,6 +428,9 @@ model Customer {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  panNo   String?
+  address String?  @db.Text
+
   createdBy        User?                     @relation("CustomerCreator", fields: [createdById], references: [id])
   invoices         Invoice[]
   discountRequests CustomerDiscountRequest[] @relation("CustomerDiscountRequestApprovedCustomer")
@@ -499,9 +502,13 @@ model Invoice {
   paidTotal              Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
-  parkedLabel            String?
-  parkedAt               DateTime?
-  createdAt              DateTime             @default(now())
+  parkedLabel                String?
+  parkedAt                   DateTime?
+  customerNameSnapshot       String?
+  customerPanSnapshot        String?
+  customerAddressSnapshot    String?              @db.Text
+  customerSnapshotCapturedAt DateTime?
+  createdAt                  DateTime             @default(now())
   finalizedAt            DateTime?
   cancelledAt            DateTime?
   deletedAt              DateTime?
@@ -592,6 +599,11 @@ model BusinessSettings {
   draftRequestExpiryMinutes    Int          @default(30)
   overridePinHash              String?
   overridePinUpdatedAt         DateTime?
+  businessName                 String?
+  legalName                    String?
+  panNo                        String?
+  businessAddress              String?      @db.Text
+  businessPhone                String?
   createdAt                    DateTime     @default(now())
   updatedAt                    DateTime     @updatedAt
 }
@@ -614,8 +626,12 @@ model InvoiceItem {
   overrideReason    String?   @db.Text
   overrideById      String?
   overrideAt        DateTime?
-  lineTotal         Float
-  createdAt         DateTime  @default(now())
+  lineTotal           Float
+  productNameSnapshot String?
+  productSkuSnapshot  String?
+  costAtSale          Float?
+  snapshotCapturedAt  DateTime?
+  createdAt           DateTime  @default(now())
 
   invoice     Invoice      @relation(fields: [invoiceId], references: [id])
   product     Product      @relation(fields: [productId], references: [id])
