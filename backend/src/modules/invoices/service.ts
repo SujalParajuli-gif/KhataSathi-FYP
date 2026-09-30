@@ -46,6 +46,162 @@ function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
 }
 
+export const publicInvoiceItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+  product: {
+    select: {
+      id: true,
+      name: true,
+      sku: true,
+      barcode: true,
+    },
+  },
+} as const;
+
+export type PublicInvoiceItem = {
+  id: string;
+  invoiceId: string;
+  productId: string;
+  qty: number;
+  appliedUnitPrice: number;
+  originalUnitPrice: number | null;
+  overrideUnitPrice: number | null;
+  overrideReason: string | null;
+  overrideById: string | null;
+  overrideAt: Date | string | null;
+  lineTotal: number;
+  createdAt: Date | string;
+  product?: {
+    id: string;
+    name: string;
+    sku: string | null;
+    barcode: string | null;
+  } | null;
+};
+
+// projects stored replay JSON items using an explicit allowlist and basic structural checks
+export function projectReplayInvoiceItem(raw: unknown): PublicInvoiceItem {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Replay invoice item must be an object");
+  }
+
+  const item = raw as Record<string, unknown>;
+
+  // Structural checks: required fields must be present and correctly typed
+  if (typeof item.id !== "string" || !item.id) {
+    throw new Error("Replay invoice item missing required string id");
+  }
+  if (typeof item.invoiceId !== "string" || !item.invoiceId) {
+    throw new Error("Replay invoice item missing required string invoiceId");
+  }
+  if (typeof item.productId !== "string" || !item.productId) {
+    throw new Error("Replay invoice item missing required string productId");
+  }
+  if (typeof item.qty !== "number" || !Number.isFinite(item.qty)) {
+    throw new Error("Replay invoice item missing required numeric qty");
+  }
+  if (typeof item.appliedUnitPrice !== "number" || !Number.isFinite(item.appliedUnitPrice)) {
+    throw new Error("Replay invoice item missing required numeric appliedUnitPrice");
+  }
+  if (typeof item.lineTotal !== "number" || !Number.isFinite(item.lineTotal)) {
+    throw new Error("Replay invoice item missing required numeric lineTotal");
+  }
+  if (!(item.createdAt instanceof Date) && typeof item.createdAt !== "string") {
+    throw new Error("Replay invoice item missing required createdAt");
+  }
+
+  let product: PublicInvoiceItem["product"] = undefined;
+  if ("product" in item && item.product !== undefined) {
+    if (item.product === null) {
+      product = null;
+    } else if (typeof item.product === "object" && !Array.isArray(item.product)) {
+      const p = item.product as Record<string, unknown>;
+      if (typeof p.id !== "string" || typeof p.name !== "string") {
+        throw new Error("Replay invoice item product must include valid id and name");
+      }
+      product = {
+        id: p.id,
+        name: p.name,
+        sku: typeof p.sku === "string" ? p.sku : null,
+        barcode: typeof p.barcode === "string" ? p.barcode : null,
+      };
+    } else {
+      throw new Error("Replay invoice item product must be an object or null");
+    }
+  }
+
+  const projected: PublicInvoiceItem = {
+    id: item.id,
+    invoiceId: item.invoiceId,
+    productId: item.productId,
+    qty: item.qty,
+    appliedUnitPrice: item.appliedUnitPrice,
+    originalUnitPrice: typeof item.originalUnitPrice === "number" ? item.originalUnitPrice : null,
+    overrideUnitPrice: typeof item.overrideUnitPrice === "number" ? item.overrideUnitPrice : null,
+    overrideReason: typeof item.overrideReason === "string" ? item.overrideReason : null,
+    overrideById: typeof item.overrideById === "string" ? item.overrideById : null,
+    overrideAt:
+      item.overrideAt instanceof Date || typeof item.overrideAt === "string"
+        ? item.overrideAt
+        : null,
+    lineTotal: item.lineTotal,
+    createdAt: item.createdAt,
+  };
+
+  if (product !== undefined) {
+    projected.product = product;
+  }
+
+  return projected;
+}
+
+export type PublicCheckoutResponse = Record<string, unknown> & {
+  invoice: (Record<string, unknown> & { items: PublicInvoiceItem[] }) | null;
+  esewaPaymentIntent?: unknown;
+};
+
+// sanitizes a stored checkout response on replay to guarantee explicit item allowlist
+export function toPublicCheckoutResponse(payload: unknown): PublicCheckoutResponse {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Checkout response must be an object");
+  }
+  const raw = payload as Record<string, unknown>;
+  if (!("invoice" in raw)) {
+    throw new Error("Checkout response must contain an invoice property");
+  }
+
+  if (raw.invoice === null) {
+    return { ...raw, invoice: null };
+  }
+  if (!raw.invoice || typeof raw.invoice !== "object" || Array.isArray(raw.invoice)) {
+    throw new Error("Checkout response invoice must be an object or null");
+  }
+
+  const rawInvoice = raw.invoice as Record<string, unknown>;
+  if (!("items" in rawInvoice) || !Array.isArray(rawInvoice.items)) {
+    throw new Error("Checkout response invoice items must be an array");
+  }
+
+  return {
+    ...raw,
+    invoice: {
+      ...rawInvoice,
+      items: rawInvoice.items.map(projectReplayInvoiceItem),
+    },
+  };
+}
+
 export function buildActiveReturnBlockMessage(
   actionLabel: string,
   status: string,
@@ -511,7 +667,7 @@ async function replayCheckoutOperation(
   if (!operation.completedAt || !operation.invoiceId || !operation.responseJson) {
     throw new Error("Checkout operation is still being resolved. Please retry shortly.");
   }
-  return operation.responseJson as {
+  return toPublicCheckoutResponse(operation.responseJson as Record<string, unknown>) as {
     invoice: { id: string } | null;
     esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
   };
@@ -1675,9 +1831,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
       where: { id: invoice.id },
       include: {
         items: {
-          include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true } },
-          },
+          select: publicInvoiceItemSelect,
         },
         payments: {
           include: { createdBy: { select: { id: true, name: true } } },
@@ -2691,9 +2845,7 @@ export async function getInvoice(id: string) {
     where: { id },
     include: {
       items: {
-        include: {
-          product: { select: { id: true, name: true, sku: true, barcode: true } },
-        },
+        select: publicInvoiceItemSelect,
       },
       payments: {
         include: { createdBy: { select: { id: true, name: true } } },
