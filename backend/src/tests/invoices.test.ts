@@ -18,6 +18,33 @@ import {
   updateItem,
 } from "../modules/invoices/service";
 import { checkoutBodySchema } from "../modules/invoices/validation";
+import { invalidateBusinessSettingsCache } from "../modules/settings/service";
+
+function mockBusinessSettingsForInvoiceTest() {
+  const originalUpsert = prisma.businessSettings.upsert;
+  invalidateBusinessSettingsCache();
+  (prisma.businessSettings as any).upsert = async () => ({
+    id: 1,
+    businessMode: "FULL_POS",
+    staffDraftRequestsEnabled: true,
+    defaultInitialStock: 30,
+    defaultLowStockThreshold: 5,
+    defaultWholesaleQtyThreshold: 15,
+    loyaltyDiscountPercent: 2,
+    returnWindowDays: 7,
+    parkedBillExpiryHours: 8,
+    draftRequestExpiryMinutes: 30,
+    businessName: null,
+    legalName: null,
+    panNo: null,
+    businessAddress: null,
+    businessPhone: null,
+  });
+  return () => {
+    prisma.businessSettings.upsert = originalUpsert;
+    invalidateBusinessSettingsCache();
+  };
+}
 
 test("buildActiveReturnBlockMessage explains why invoice edits are blocked", () => {
   const message = buildActiveReturnBlockMessage("modify this invoice", "APPROVED");
@@ -322,6 +349,7 @@ test("addItem and updateItem pass publicDraftItemSelect to Prisma queries", asyn
   let capturedCreateArgs: any = null;
   let capturedUpdateArgs: any = null;
   const originalTransaction = prisma.$transaction;
+  const restoreSettings = mockBusinessSettingsForInvoiceTest();
   try {
     (prisma as any).$transaction = async (callback: any) => {
       const mockTx = {
@@ -412,6 +440,7 @@ test("addItem and updateItem pass publicDraftItemSelect to Prisma queries", asyn
     assert.equal("costAtSale" in updated, false);
   } finally {
     prisma.$transaction = originalTransaction;
+    restoreSettings();
   }
 });
 
@@ -506,6 +535,7 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
   let capturedReplacementQueryArgs: any = null;
   let capturedCreditNoteCreateArgs: any = null;
   const originalTransaction = prisma.$transaction;
+  const restoreSettings = mockBusinessSettingsForInvoiceTest();
   try {
     (prisma as any).$transaction = async (callback: any) => {
       const mockTx = {
@@ -664,5 +694,6 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
     assert.equal("items" in result.creditNote, false);
   } finally {
     prisma.$transaction = originalTransaction;
+    restoreSettings();
   }
 });
