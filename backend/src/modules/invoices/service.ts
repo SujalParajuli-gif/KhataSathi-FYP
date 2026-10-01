@@ -1226,6 +1226,7 @@ async function finalizeCheckoutInvoiceTx(
   tx: any,
   invoiceId: string,
   userId: string,
+  snapshotMode: "CAPTURE_CURRENT" | "DEFER_TO_CORRECTION",
   discountAmount?: number,
   overridePin?: string | null,
 ) {
@@ -1240,6 +1241,19 @@ async function finalizeCheckoutInvoiceTx(
   if (!invoice) throw new Error("Invoice not found");
   if (invoice.status !== "DRAFT") throw new Error("Invoice is already finalized");
   if (invoice.items.length === 0) throw new Error("Cannot finalize an empty invoice");
+
+  if (snapshotMode === "CAPTURE_CURRENT") {
+    for (const item of invoice.items) {
+      if (
+        typeof item.product?.name !== "string" ||
+        !item.product.name.trim() ||
+        typeof item.product?.sku !== "string" ||
+        !item.product.sku.trim()
+      ) {
+        throw new Error("Cannot finalize invoice with missing product name or SKU");
+      }
+    }
+  }
 
   const subTotal = roundCurrency(
     invoice.items.reduce((sum: number, item: any) => sum + item.lineTotal, 0),
@@ -1273,7 +1287,20 @@ async function finalizeCheckoutInvoiceTx(
     );
   }
 
+  const captureTimestamp = snapshotMode === "CAPTURE_CURRENT" ? new Date() : null;
+
   for (const item of invoice.items) {
+    if (captureTimestamp) {
+      await tx.invoiceItem.update({
+        where: { id: item.id },
+        data: {
+          productNameSnapshot: item.product.name,
+          productSkuSnapshot: item.product.sku,
+          costAtSale: null,
+          snapshotCapturedAt: captureTimestamp,
+        },
+      });
+    }
     const updated = await tx.product.updateMany({
       where: {
         id: item.productId,
@@ -1325,6 +1352,12 @@ async function finalizeCheckoutInvoiceTx(
       paidTotal: 0,
       paymentStatus: netTotal <= 0 ? "PAID" : "UNPAID",
       finalizedAt: new Date(),
+      ...(captureTimestamp && {
+        customerNameSnapshot: invoice.customer?.name ?? null,
+        customerPanSnapshot: invoice.customer?.panNo ?? null,
+        customerAddressSnapshot: invoice.customer?.address ?? null,
+        customerSnapshotCapturedAt: captureTimestamp,
+      }),
     },
     include: { payments: true },
   });
@@ -1790,6 +1823,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
       tx,
       invoice.id,
       cashierId,
+      "CAPTURE_CURRENT",
       input.discountAmount,
       input.overridePin,
     );
@@ -2120,6 +2154,7 @@ export async function modifyFinalizedInvoice(
       tx,
       replacement.id,
       userId,
+      "DEFER_TO_CORRECTION",
       input.discountAmount,
       input.overridePin,
     );
