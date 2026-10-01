@@ -97,6 +97,8 @@ export async function create(req: Request, res: Response) {
         req.body.wholesalePercent,
         "Wholesale percent",
       ),
+      panNo: custService.parseCustomerPan(req.body.panNo),
+      address: custService.parseCustomerAddress(req.body.address),
       createdById: req.user!.id,
       createdByRole:
         req.user!.role === "ADMIN"
@@ -107,6 +109,10 @@ export async function create(req: Request, res: Response) {
     });
     res.status(201).json(newCust);
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     // checking if the error is a known validation error from our parse functions
     if (
       err.message.includes("Customer name") ||
@@ -316,10 +322,20 @@ export async function update(req: Request, res: Response) {
     if (body.isActive !== undefined) {
       data.isActive = parseBooleanValue(body.isActive);
     }
+    if (body.panNo !== undefined) {
+      data.panNo = custService.parseCustomerPan(body.panNo);
+    }
+    if (body.address !== undefined) {
+      data.address = custService.parseCustomerAddress(body.address);
+    }
 
     const customer = await custService.updateCustomer(String(req.params.id), data);
     res.json(customer);
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     if (
       err.message.includes("Customer name") ||
       err.message.includes("percent")

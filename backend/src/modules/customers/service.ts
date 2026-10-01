@@ -1,20 +1,86 @@
 import prisma from "../../db/prisma";
 import { getCashierPrivilege } from "../settings/service";
 
+export class CustomerValidationError extends Error {
+  field: string;
+  constructor(field: string, message: string) {
+    super(message);
+    this.name = "CustomerValidationError";
+    this.field = field;
+  }
+}
+
+export const CUSTOMER_PAN_VARCHAR_LIMIT = 191;
+export const CUSTOMER_ADDRESS_TEXT_BYTE_LIMIT = 65_535;
+
+function countCodePoints(str: string, max?: number): number {
+  let count = 0;
+  for (const _ of str) {
+    count++;
+    if (max !== undefined && count > max) {
+      return count;
+    }
+  }
+  return count;
+}
+
+export function parseCustomerPan(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new CustomerValidationError("panNo", "PAN must be text.");
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  if (countCodePoints(trimmed, CUSTOMER_PAN_VARCHAR_LIMIT) > CUSTOMER_PAN_VARCHAR_LIMIT) {
+    throw new CustomerValidationError(
+      "panNo",
+      `PAN cannot exceed ${CUSTOMER_PAN_VARCHAR_LIMIT} characters.`,
+    );
+  }
+  return trimmed;
+}
+
+export function parseCustomerAddress(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new CustomerValidationError("address", "Address must be text.");
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  const byteLength = Buffer.byteLength(trimmed, "utf8");
+  if (byteLength > CUSTOMER_ADDRESS_TEXT_BYTE_LIMIT) {
+    throw new CustomerValidationError(
+      "address",
+      `Address cannot exceed ${CUSTOMER_ADDRESS_TEXT_BYTE_LIMIT} bytes.`,
+    );
+  }
+  return trimmed;
+}
+
 // defining the shape of data needed to create a new customer
-type CustomerInput = {
+export type CustomerInput = {
   name: string;
-  phone?: string;
-  email?: string;
+  phone?: string | null;
+  email?: string | null;
   loyaltyPercent?: number;
   wholesalePercent?: number;
+  panNo?: string | null;
+  address?: string | null;
   createdById?: string;
   createdByRole?: "ADMIN" | "MANAGER" | "CASHIER";
 };
 
 // extending CustomerInput with optional isActive field for updates
 // Partial makes all fields optional so we can update just the ones that changed
-type CustomerUpdateInput = Partial<CustomerInput> & { isActive?: boolean };
+export type CustomerUpdateInput = Partial<CustomerInput> & { isActive?: boolean };
 
 type DiscountRequestInput = {
   name: string;
@@ -121,6 +187,9 @@ export async function getCustomer(id: string) {
 // creating a new customer in the database
 // optional fields default to null or 0 if not provided, so the database always has valid values
 export async function createCustomer(data: CustomerInput) {
+  const panNo = data.panNo !== undefined ? parseCustomerPan(data.panNo) : null;
+  const address = data.address !== undefined ? parseCustomerAddress(data.address) : null;
+
   return prisma.$transaction(async (tx) => {
     const customer = await tx.customer.create({
       data: {
@@ -129,6 +198,8 @@ export async function createCustomer(data: CustomerInput) {
         email: data.email || null,
         loyaltyPercent: data.loyaltyPercent || 0, // defaults to 0 if no loyalty discount is assigned
         wholesalePercent: data.wholesalePercent || 0, // defaults to 0 if no wholesale discount is assigned
+        panNo,
+        address,
         createdById: data.createdById || null,
         createdByRole: data.createdByRole || null,
       },
@@ -419,7 +490,14 @@ export async function rejectCustomerDiscountRequest(
 }
 
 export async function updateCustomer(id: string, data: CustomerUpdateInput) {
-  return prisma.customer.update({ where: { id }, data });
+  const updateData: any = { ...data };
+  if (data.panNo !== undefined) {
+    updateData.panNo = parseCustomerPan(data.panNo);
+  }
+  if (data.address !== undefined) {
+    updateData.address = parseCustomerAddress(data.address);
+  }
+  return prisma.customer.update({ where: { id }, data: updateData });
 }
 
 export async function getCustomerDiscountDeleteSafety(
