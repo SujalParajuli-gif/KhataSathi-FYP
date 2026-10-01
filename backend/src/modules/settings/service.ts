@@ -24,6 +24,11 @@ export type BusinessSettingsSnapshot = {
   returnWindowDays: number;
   parkedBillExpiryHours: number;
   draftRequestExpiryMinutes: number;
+  businessName: string | null;
+  legalName: string | null;
+  panNo: string | null;
+  businessAddress: string | null;
+  businessPhone: string | null;
   createdAt?: Date;
   updatedAt?: Date;
 };
@@ -76,7 +81,7 @@ const DEFAULT_BUSINESS_SETTINGS = {
   draftRequestExpiryMinutes: 30,
 } as const;
 
-type BusinessDefaultsInput = {
+export type BusinessDefaultsInput = {
   defaultInitialStock?: number;
   defaultLowStockThreshold?: number;
   defaultWholesaleQtyThreshold?: number;
@@ -84,6 +89,11 @@ type BusinessDefaultsInput = {
   returnWindowDays?: number;
   parkedBillExpiryHours?: number;
   draftRequestExpiryMinutes?: number;
+  businessName?: string | null;
+  legalName?: string | null;
+  panNo?: string | null;
+  businessAddress?: string | null;
+  businessPhone?: string | null;
 };
 
 export class BusinessSettingsValidationError extends Error {
@@ -94,6 +104,69 @@ export class BusinessSettingsValidationError extends Error {
     this.name = "BusinessSettingsValidationError";
     this.field = field;
   }
+}
+
+const IDENTITY_VARCHAR_LIMIT = 191;
+const IDENTITY_TEXT_BYTE_LIMIT = 65_535;
+
+function countCodePoints(str: string, max?: number): number {
+  let count = 0;
+  for (const _ of str) {
+    count++;
+    if (max !== undefined && count > max) {
+      return count;
+    }
+  }
+  return count;
+}
+
+function validateIdentityTextField(
+  field: "businessName" | "legalName" | "panNo" | "businessPhone",
+  value: unknown,
+  label: string,
+): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new BusinessSettingsValidationError(field, `${label} must be text.`);
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  if (countCodePoints(trimmed, IDENTITY_VARCHAR_LIMIT) > IDENTITY_VARCHAR_LIMIT) {
+    throw new BusinessSettingsValidationError(
+      field,
+      `${label} cannot exceed ${IDENTITY_VARCHAR_LIMIT} characters.`,
+    );
+  }
+  return trimmed;
+}
+
+function validateIdentityAddressField(
+  field: "businessAddress",
+  value: unknown,
+  label: string,
+): string | null {
+  if (value === null) {
+    return null;
+  }
+  if (typeof value !== "string") {
+    throw new BusinessSettingsValidationError(field, `${label} must be text.`);
+  }
+  const trimmed = value.trim();
+  if (trimmed === "") {
+    return null;
+  }
+  const byteLength = Buffer.byteLength(trimmed, "utf8");
+  if (byteLength > IDENTITY_TEXT_BYTE_LIMIT) {
+    throw new BusinessSettingsValidationError(
+      field,
+      `${label} cannot exceed ${IDENTITY_TEXT_BYTE_LIMIT} bytes.`,
+    );
+  }
+  return trimmed;
 }
 
 function validateSettingNumber(
@@ -125,7 +198,9 @@ function validateSettingNumber(
   return value;
 }
 
-export function normalizeBusinessSettingsPatch(data: BusinessDefaultsInput) {
+export function normalizeBusinessSettingsPatch(
+  data: Partial<Record<keyof BusinessDefaultsInput, unknown>>,
+) {
   const normalized: BusinessDefaultsInput = {};
   if (data.defaultInitialStock !== undefined) {
     normalized.defaultInitialStock = validateSettingNumber(
@@ -176,6 +251,41 @@ export function normalizeBusinessSettingsPatch(data: BusinessDefaultsInput) {
       { label: "Draft request expiry", min: 1, integer: true },
     );
   }
+  if (data.businessName !== undefined) {
+    normalized.businessName = validateIdentityTextField(
+      "businessName",
+      data.businessName,
+      "Business name",
+    );
+  }
+  if (data.legalName !== undefined) {
+    normalized.legalName = validateIdentityTextField(
+      "legalName",
+      data.legalName,
+      "Legal name",
+    );
+  }
+  if (data.panNo !== undefined) {
+    normalized.panNo = validateIdentityTextField(
+      "panNo",
+      data.panNo,
+      "PAN",
+    );
+  }
+  if (data.businessAddress !== undefined) {
+    normalized.businessAddress = validateIdentityAddressField(
+      "businessAddress",
+      data.businessAddress,
+      "Business address",
+    );
+  }
+  if (data.businessPhone !== undefined) {
+    normalized.businessPhone = validateIdentityTextField(
+      "businessPhone",
+      data.businessPhone,
+      "Business phone",
+    );
+  }
   return normalized;
 }
 
@@ -189,6 +299,21 @@ export function normalizeBusinessSettingsInput(data: BusinessDefaultsInput) {
     ...DEFAULT_BUSINESS_SETTINGS,
     ...data,
   }) as Required<BusinessDefaultsInput>;
+}
+
+function toSafeBusinessSettings(
+  row: OverridePolicyRow,
+): BusinessSettingsSnapshot {
+  const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
+    row;
+  return {
+    ...safe,
+    businessName: safe.businessName ?? null,
+    legalName: safe.legalName ?? null,
+    panNo: safe.panNo ?? null,
+    businessAddress: safe.businessAddress ?? null,
+    businessPhone: safe.businessPhone ?? null,
+  };
 }
 
 // fetching the business settings from the database
@@ -210,8 +335,7 @@ export async function getBusinessSettings(
     },
   });
 
-  const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
-    settings as OverridePolicyRow;
+  const safe = toSafeBusinessSettings(settings as OverridePolicyRow);
   if (client === prisma) {
     businessSettingsCache = {
       value: safe,
@@ -224,7 +348,7 @@ export async function getBusinessSettings(
 // updating the business settings with new values
 // we use upsert again so it works even if the settings row was never created before
 export async function updateBusinessSettings(
-  data: BusinessDefaultsInput,
+  data: Partial<Record<keyof BusinessDefaultsInput, unknown>>,
   actorId: string,
 ) {
   const normalized = normalizeBusinessSettingsPatch(data);
@@ -263,8 +387,7 @@ export async function updateBusinessSettings(
     return updated;
   });
 
-  const { overridePinHash: _hash, overridePinUpdatedAt: _pinDate, ...safe } =
-    settings as OverridePolicyRow;
+  const safe = toSafeBusinessSettings(settings as OverridePolicyRow);
   businessSettingsCache = {
     value: safe,
     expiresAt: Date.now() + BUSINESS_SETTINGS_CACHE_TTL_MS,
