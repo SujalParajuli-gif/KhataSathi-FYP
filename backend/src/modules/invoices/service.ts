@@ -3141,6 +3141,20 @@ export async function finalizeInvoice(
     if (invoice.status !== "DRAFT") throw new Error("Invoice is already finalized");
     if (invoice.items.length === 0) throw new Error("Cannot finalize an empty invoice");
 
+    const captureTimestamp = new Date();
+
+    for (const item of invoice.items) {
+      const productName =
+        typeof item.product?.name === "string" ? item.product.name.trim() : "";
+      const productSku =
+        typeof item.product?.sku === "string" ? item.product.sku.trim() : "";
+      if (!productName || !productSku) {
+        throw new Error(
+          `Cannot finalize invoice: product name and SKU are required for line item ${item.id}`,
+        );
+      }
+    }
+
     // recalculating subtotal from all line items instead of using the stored value
     // we do this because items might have been added or changed since the last subtotal update
     const subTotal = roundCurrency(
@@ -3223,6 +3237,17 @@ export async function finalizeInvoice(
           createdById: userId,
         },
       });
+
+      // capture historical item snapshot atomically in the financial transaction
+      await tx.invoiceItem.update({
+        where: { id: item.id },
+        data: {
+          productNameSnapshot: item.product.name,
+          productSkuSnapshot: item.product.sku,
+          costAtSale: null,
+          snapshotCapturedAt: captureTimestamp,
+        },
+      });
     }
 
     // updating the invoice record to mark it as finalized and saving all the computed totals
@@ -3236,7 +3261,11 @@ export async function finalizeInvoice(
         netTotal,
         paidTotal: 0, // no payment has been recorded yet at the time of finalization
         paymentStatus: netTotal <= 0 ? "PAID" : "UNPAID", // if the discount covers everything, we mark it as paid automatically
-        finalizedAt: new Date(),
+        finalizedAt: captureTimestamp,
+        customerNameSnapshot: invoice.customer ? invoice.customer.name : null,
+        customerPanSnapshot: invoice.customer?.panNo ?? null,
+        customerAddressSnapshot: invoice.customer?.address ?? null,
+        customerSnapshotCapturedAt: captureTimestamp,
       },
     });
 
