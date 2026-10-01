@@ -1974,6 +1974,9 @@ export async function modifyFinalizedInvoice(
           where: { id: customerId },
           select: {
             id: true,
+            name: true,
+            panNo: true,
+            address: true,
             isActive: true,
             loyaltyPercent: true,
             wholesalePercent: true,
@@ -1983,6 +1986,36 @@ export async function modifyFinalizedInvoice(
 
     if (customerId && (!customer || !customer.isActive)) {
       throw new Error("Customer not found");
+    }
+
+    // Group original items by productId to check correspondence and detect ambiguous duplicates
+    const originalItemsByProductId = new Map<string, typeof original.items>();
+    for (const item of original.items) {
+      const list = originalItemsByProductId.get(item.productId) || [];
+      list.push(item);
+      originalItemsByProductId.set(item.productId, list);
+    }
+
+    for (const line of replacementItems) {
+      const candidates = originalItemsByProductId.get(line.productId);
+      if (candidates && candidates.length > 1) {
+        const first = candidates[0];
+        const isConflict = candidates.slice(1).some((c) => {
+          const nameDiff = c.productNameSnapshot !== first.productNameSnapshot;
+          const skuDiff = c.productSkuSnapshot !== first.productSkuSnapshot;
+          const costDiff = c.costAtSale !== first.costAtSale;
+          const timeDiff =
+            (c.snapshotCapturedAt?.getTime() ?? null) !==
+            (first.snapshotCapturedAt?.getTime() ?? null);
+          return nameDiff || skuDiff || costDiff || timeDiff;
+        });
+
+        if (isConflict) {
+          throw new Error(
+            `Cannot modify invoice: conflicting historical snapshots found for retained product ${line.productId}. Ambiguous line correspondence cannot be inherited.`,
+          );
+        }
+      }
     }
 
     const actor = await tx.user.findUnique({
@@ -2022,6 +2055,21 @@ export async function modifyFinalizedInvoice(
       tx,
       replacementItems,
     );
+
+    for (const line of replacementItems) {
+      const isRetained = (originalItemsByProductId.get(line.productId)?.length ?? 0) > 0;
+      if (!isRetained) {
+        const prod = replacementProductsById.get(line.productId);
+        const name = typeof prod?.name === "string" ? prod.name.trim() : "";
+        const sku = typeof prod?.sku === "string" ? prod.sku.trim() : "";
+        if (!name || !sku) {
+          throw new Error(
+            `Cannot modify invoice: valid product name and SKU are required for new line item (${line.productId})`,
+          );
+        }
+      }
+    }
+
     const replacementInvoiceNo = await generateInvoiceNo(tx);
     const replacement = await tx.invoice.create({
       data: {
@@ -2031,6 +2079,12 @@ export async function modifyFinalizedInvoice(
         customerId,
       },
     });
+
+    const createdReplacementLines: Array<{
+      id: string;
+      productId: string;
+      sourceOriginalItemIds: string[];
+    }> = [];
 
     for (const line of replacementItems) {
       const product = replacementProductsById.get(line.productId);
@@ -2044,7 +2098,7 @@ export async function modifyFinalizedInvoice(
         ? Number(product.wholesalePrice)
         : Number(product.retailPrice);
 
-      await tx.invoiceItem.create({
+      const created = await tx.invoiceItem.create({
         data: {
           invoiceId: replacement.id,
           productId: line.productId,
@@ -2052,6 +2106,13 @@ export async function modifyFinalizedInvoice(
           appliedUnitPrice,
           lineTotal: roundCurrency(appliedUnitPrice * line.qty),
         },
+      });
+
+      const candidates = originalItemsByProductId.get(line.productId) || [];
+      createdReplacementLines.push({
+        id: created.id,
+        productId: line.productId,
+        sourceOriginalItemIds: candidates.map((c) => c.id),
       });
     }
 
@@ -2062,6 +2123,74 @@ export async function modifyFinalizedInvoice(
       input.discountAmount,
       input.overridePin,
     );
+
+    const correctionTimestamp = new Date();
+
+    // Determine replacement customer snapshot
+    let customerNameSnapshot: string | null = null;
+    let customerPanSnapshot: string | null = null;
+    let customerAddressSnapshot: string | null = null;
+    let customerSnapshotCapturedAt: Date | null = null;
+
+    if (customerId === original.customerId) {
+      // Retained customer (same customer or both walk-in): inherit original snapshot exactly
+      customerNameSnapshot = original.customerNameSnapshot ?? null;
+      customerPanSnapshot = original.customerPanSnapshot ?? null;
+      customerAddressSnapshot = original.customerAddressSnapshot ?? null;
+      customerSnapshotCapturedAt = original.customerSnapshotCapturedAt ?? null;
+    } else if (customerId === null) {
+      // Changed to walk-in: capture null customer values with a correction marker
+      customerNameSnapshot = null;
+      customerPanSnapshot = null;
+      customerAddressSnapshot = null;
+      customerSnapshotCapturedAt = correctionTimestamp;
+    } else {
+      // Changed to new registered customer: capture current customer values with correction marker
+      customerNameSnapshot = customer?.name ?? null;
+      customerPanSnapshot = customer?.panNo ?? null;
+      customerAddressSnapshot = customer?.address ?? null;
+      customerSnapshotCapturedAt = correctionTimestamp;
+    }
+
+    await tx.invoice.update({
+      where: { id: finalizedReplacement.id },
+      data: {
+        customerNameSnapshot,
+        customerPanSnapshot,
+        customerAddressSnapshot,
+        customerSnapshotCapturedAt,
+      },
+    });
+
+    // Update replacement items with inherited or newly captured snapshots
+    for (const line of createdReplacementLines) {
+      const candidates = originalItemsByProductId.get(line.productId);
+      if (candidates && candidates.length > 0) {
+        // Retained line: inherit original tuple exactly (including legacy null marker or original timestamp)
+        const source = candidates[0];
+        await tx.invoiceItem.update({
+          where: { id: line.id },
+          data: {
+            productNameSnapshot: source.productNameSnapshot ?? null,
+            productSkuSnapshot: source.productSkuSnapshot ?? null,
+            costAtSale: source.costAtSale ?? null,
+            snapshotCapturedAt: source.snapshotCapturedAt ?? null,
+          },
+        });
+      } else {
+        // Newly introduced product: capture current product identity with null cost and correction marker
+        const prod = replacementProductsById.get(line.productId)!;
+        await tx.invoiceItem.update({
+          where: { id: line.id },
+          data: {
+            productNameSnapshot: prod.name,
+            productSkuSnapshot: prod.sku,
+            costAtSale: null,
+            snapshotCapturedAt: correctionTimestamp,
+          },
+        });
+      }
+    }
 
     const creditedAmount = roundCurrency(
       Math.min(original.paidTotal, finalizedReplacement.netTotal),
@@ -2157,6 +2286,11 @@ export async function modifyFinalizedInvoice(
           creditedAmount,
           actorName: actor?.name || null,
           actorRole: actor?.role || null,
+          lineInheritance: createdReplacementLines.map((line) => ({
+            replacementItemId: line.id,
+            productId: line.productId,
+            sourceOriginalItemIds: line.sourceOriginalItemIds,
+          })),
         },
       },
     });

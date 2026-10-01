@@ -650,6 +650,7 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
             {
               id: "prod-1",
               name: "Sugar 1kg",
+              sku: "SUG-001",
               stock: 50,
               isActive: true,
               retailPrice: 100,
@@ -662,7 +663,8 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
         },
         invoiceItem: {
           findMany: async () => [],
-          create: async () => ({}),
+          create: async () => ({ id: "item-repl-1" }),
+          update: async () => ({}),
         },
         stockTransaction: {
           create: async () => ({}),
