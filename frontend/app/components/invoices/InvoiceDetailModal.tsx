@@ -10,6 +10,7 @@ import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
 import type { AppInvoice } from "~/lib/invoices";
 import {
   formatNpr,
+  getIdentitySourceLabel,
   openInvoicePrint,
   openInvoiceReceiptPrint,
 } from "~/lib/invoices";
@@ -115,17 +116,36 @@ export default function InvoiceDetailModal({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+          <div className="flex items-start gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#FFFFFF] text-[#2F67D8]">
               <Icon name="person" />
             </div>
-            <div className="min-w-0">
-              <div className="truncate text-[13px] font-extrabold text-[#000000]">
-                {invoice.customerName}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="truncate text-[13px] font-extrabold text-[#000000]">
+                  {invoice.customerName}
+                </span>
+                <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#FFFFFF] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                  {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                </span>
               </div>
-              <div className="truncate text-[12px] font-bold text-[#8C8889]">
-                {invoice.customerSubtitle}
-              </div>
+              {invoice.customerSubtitle ? (
+                <div className="mt-0.5 truncate text-[12px] font-bold text-[#8C8889]">
+                  {invoice.customerSubtitle}
+                </div>
+              ) : null}
+              {invoice.customerPanNo ? (
+                <div className="mt-1 text-[11px] font-semibold text-[#565449]">
+                  <span className="font-extrabold text-[#64748B]">PAN:</span>{" "}
+                  <span className="font-mono">{invoice.customerPanNo}</span>
+                </div>
+              ) : null}
+              {invoice.customerAddress ? (
+                <div className="mt-0.5 truncate text-[11px] font-semibold text-[#565449]">
+                  <span className="font-extrabold text-[#64748B]">Address:</span>{" "}
+                  {invoice.customerAddress}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-[14px] border border-[#2F67D8] bg-[#EFF6FF] p-3">
@@ -169,8 +189,18 @@ export default function InvoiceDetailModal({
                       className="flex items-center justify-between gap-3 rounded-[12px] px-3 py-3 transition hover:bg-[#F3F4F6]"
                     >
                       <div className="min-w-0">
-                        <div className="truncate font-bold text-[#000000]">
-                          {item.name}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate font-bold text-[#000000]">
+                            {item.name}
+                          </span>
+                          {item.sku ? (
+                            <span className="font-mono text-[11px] font-semibold text-[#64748B]">
+                              ({item.sku})
+                            </span>
+                          ) : null}
+                          <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#FFFFFF] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                            {getIdentitySourceLabel(item.identitySource)}
+                          </span>
                         </div>
                         <div className="mt-[2px] text-[11px] text-[#8C8889]">
                           {formatNpr(item.unitPrice)} / unit

@@ -30,6 +30,8 @@ import {
 import type { AppInvoice, InvoiceStatusLabel } from "~/lib/invoices";
 import {
   formatNpr,
+  getIdentitySourceLabel,
+  getInvoiceItemProvenanceNotice,
   getInvoiceReference,
   normalizeInvoice,
 } from "~/lib/invoices";
@@ -1773,15 +1775,30 @@ export default function HistoryPage() {
                         <div className="mt-1 text-[12px] text-slate-500">
                           {invoice.itemSummary}
                         </div>
+                        {(() => {
+                          const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                          return notice ? (
+                            <div className="mt-0.5 text-[10px] font-bold text-[#8C8889]">
+                              {notice}
+                            </div>
+                          ) : null;
+                        })()}
                       </td>
 
                       <td className="px-4 py-3">
-                        <div className="text-[13px] font-extrabold text-slate-900">
-                          {invoice.customerName}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="text-[13px] font-extrabold text-slate-900">
+                            {invoice.customerName}
+                          </span>
+                          <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                            {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                          </span>
                         </div>
-                        <div className="mt-1 text-[12px] text-slate-500">
-                          {invoice.customerSubtitle}
-                        </div>
+                        {invoice.customerSubtitle ? (
+                          <div className="mt-1 text-[12px] text-slate-500">
+                            {invoice.customerSubtitle}
+                          </div>
+                        ) : null}
                       </td>
 
                       <td className="px-4 py-3">
@@ -1894,17 +1911,35 @@ export default function HistoryPage() {
                   </div>
 
                   <div className="mt-3 min-w-0 border-t border-[#E5E7EB] pt-3">
-                    <div className="break-words text-[14px] font-extrabold leading-5 text-[#000000]">
-                      {invoice.customerName}
+                    <div className="flex flex-wrap items-center gap-1.5">
+                      <span className="break-words text-[14px] font-extrabold leading-5 text-[#000000]">
+                        {invoice.customerName}
+                      </span>
+                      <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                        {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                      </span>
                     </div>
-                    <div className="mt-1 break-words text-[12px] font-semibold leading-5 text-[#8C8889]">
-                      {invoice.customerSubtitle} | Cashier: {invoice.cashierName}
+                    {invoice.customerSubtitle ? (
+                      <div className="mt-1 break-words text-[12px] font-semibold leading-5 text-[#8C8889]">
+                        {invoice.customerSubtitle}
+                      </div>
+                    ) : null}
+                    <div className="mt-0.5 text-[12px] font-semibold leading-5 text-[#8C8889]">
+                      Cashier: {invoice.cashierName}
                     </div>
                   </div>
 
                   <div className="mt-3 break-words rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold leading-5 text-[#565449]">
                     {invoice.itemSummary}
                   </div>
+                  {(() => {
+                    const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                    return notice ? (
+                      <div className="mt-1 px-1 text-[10px] font-bold text-[#8C8889]">
+                        {notice}
+                      </div>
+                    ) : null;
+                  })()}
 
                   <div className="mt-3 grid grid-cols-2 gap-2">
                     <div className="min-w-0 rounded-[11px] border border-[#E5E7EB] bg-[#FFFFFF] px-3 py-2">

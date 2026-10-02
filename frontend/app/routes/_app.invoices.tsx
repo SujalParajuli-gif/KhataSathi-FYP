@@ -50,7 +50,13 @@ import type {
   InvoiceStatusLabel,
   PaymentMethodLabel,
 } from "~/lib/invoices";
-import { formatNpr, normalizeInvoice, openInvoicePrint } from "~/lib/invoices";
+import {
+  formatNpr,
+  getIdentitySourceLabel,
+  getInvoiceItemProvenanceNotice,
+  normalizeInvoice,
+  openInvoicePrint,
+} from "~/lib/invoices";
 
 // we use this helper function to easily join multiple tailwind class strings
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -4249,8 +4255,15 @@ export default function CashierInvoicesPage() {
                           <div className="truncate text-[14px] font-extrabold text-[#000000]">
                             {invoice.customerName}
                           </div>
-                          <div className="mt-0.5 max-w-[220px] truncate text-[13px] font-semibold text-[#8C8889]">
-                            {invoice.customerSubtitle}
+                          {invoice.customerSubtitle ? (
+                            <div className="mt-0.5 max-w-[220px] truncate text-[13px] font-semibold text-[#8C8889]">
+                              {invoice.customerSubtitle}
+                            </div>
+                          ) : null}
+                          <div className="mt-1">
+                            <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                              {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -4260,6 +4273,14 @@ export default function CashierInvoicesPage() {
                       <div className="max-w-[280px] truncate rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
                         {getCompactInvoiceSummary(invoice)}
                       </div>
+                      {(() => {
+                        const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                        return notice ? (
+                          <div className="mt-1 max-w-[280px] truncate text-[10px] font-bold text-[#8C8889]">
+                            {notice}
+                          </div>
+                        ) : null;
+                      })()}
                     </td>
 
                     <td className="px-4 py-3 align-top">
@@ -4364,17 +4385,35 @@ export default function CashierInvoicesPage() {
               </div>
 
               <div className="mt-3 border-t border-[#E5E7EB] pt-3">
-                <div className="text-[14px] font-extrabold text-[#000000]">
-                  {invoice.customerName}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[14px] font-extrabold text-[#000000]">
+                    {invoice.customerName}
+                  </span>
+                  <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                    {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                  </span>
                 </div>
-                <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
-                  {invoice.customerSubtitle} | By {invoice.cashierName}
+                {invoice.customerSubtitle ? (
+                  <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                    {invoice.customerSubtitle}
+                  </div>
+                ) : null}
+                <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889]">
+                  By {invoice.cashierName}
                 </div>
               </div>
 
               <div className="mt-3 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
                 {getCompactInvoiceSummary(invoice)}
               </div>
+              {(() => {
+                const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                return notice ? (
+                  <div className="mt-1 px-1 text-[10px] font-bold text-[#8C8889]">
+                    {notice}
+                  </div>
+                ) : null;
+              })()}
 
               <div className="mt-3 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1.5">
