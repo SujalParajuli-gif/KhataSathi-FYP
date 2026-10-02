@@ -5,6 +5,7 @@ import {
   addItem,
   buildActiveReturnBlockMessage,
   buildCheckoutPayloadHash,
+  detailInvoiceItemSelect,
   getInvoice,
   listParkedDrafts,
   modifyFinalizedInvoice,
@@ -134,7 +135,7 @@ test("checkout fingerprint detects bill changes without persisting PINs", () => 
   assert.doesNotMatch(first, /1111|9999/);
 });
 
-test("getInvoice query uses explicit publicInvoiceItemSelect", async () => {
+test("getInvoice query uses explicit detailInvoiceItemSelect and excludes costAtSale", async () => {
   // 1. Verify publicInvoiceItemSelect definition preserves required public fields and excludes internal fields
   assert.equal(publicInvoiceItemSelect.id, true);
   assert.equal(publicInvoiceItemSelect.invoiceId, true);
@@ -156,7 +157,14 @@ test("getInvoice query uses explicit publicInvoiceItemSelect", async () => {
   });
   assert.equal("costAtSale" in publicInvoiceItemSelect, false);
 
-  // 2. Verify getInvoice passes publicInvoiceItemSelect to Prisma findUnique
+  // Verify detailInvoiceItemSelect extends publicInvoiceItemSelect with snapshot fields, excluding costAtSale
+  assert.equal(detailInvoiceItemSelect.id, true);
+  assert.equal(detailInvoiceItemSelect.productNameSnapshot, true);
+  assert.equal(detailInvoiceItemSelect.productSkuSnapshot, true);
+  assert.equal(detailInvoiceItemSelect.snapshotCapturedAt, true);
+  assert.equal("costAtSale" in detailInvoiceItemSelect, false);
+
+  // 2. Verify getInvoice passes detailInvoiceItemSelect to Prisma findUnique
   let capturedArgs: any = null;
   const originalFindUnique = prisma.invoice.findUnique;
   try {
@@ -165,6 +173,11 @@ test("getInvoice query uses explicit publicInvoiceItemSelect", async () => {
       return {
         id: "inv-live-1",
         invoiceNo: "INV-20260930-0001",
+        status: "FINALIZED",
+        customerNameSnapshot: null,
+        customerPanSnapshot: null,
+        customerAddressSnapshot: null,
+        customerSnapshotCapturedAt: null,
         items: [
           {
             id: "item-1",
@@ -178,6 +191,9 @@ test("getInvoice query uses explicit publicInvoiceItemSelect", async () => {
             overrideById: null,
             overrideAt: null,
             lineTotal: 200,
+            productNameSnapshot: null,
+            productSkuSnapshot: null,
+            snapshotCapturedAt: null,
             createdAt: new Date("2026-09-30T10:00:00Z"),
             product: { id: "prod-1", name: "Mustard Oil 1L", sku: "OIL-001", barcode: null },
           },
@@ -187,9 +203,11 @@ test("getInvoice query uses explicit publicInvoiceItemSelect", async () => {
 
     const invoice = await getInvoice("inv-live-1");
     assert.ok(invoice);
-    assert.deepEqual(capturedArgs?.include?.items?.select, publicInvoiceItemSelect);
+    assert.deepEqual(capturedArgs?.include?.items?.select, detailInvoiceItemSelect);
     assert.equal(invoice.items[0].id, "item-1");
     assert.equal("costAtSale" in invoice.items[0], false);
+    assert.equal(invoice.items[0].displayProduct.name, "Mustard Oil 1L");
+    assert.equal(invoice.items[0].displayProduct.source, "LEGACY_LIVE_FALLBACK");
 
     // When invoice is not found in database, getInvoice returns null
     (prisma.invoice as any).findUnique = async () => null;

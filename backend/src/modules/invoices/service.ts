@@ -90,6 +90,179 @@ export type PublicInvoiceItem = {
   } | null;
 };
 
+export const detailInvoiceItemSelect = {
+  ...publicInvoiceItemSelect,
+  productNameSnapshot: true,
+  productSkuSnapshot: true,
+  snapshotCapturedAt: true,
+} as const;
+
+export type DisplayIdentitySource =
+  | "CAPTURED"
+  | "LEGACY_LIVE_FALLBACK"
+  | "LEGACY_UNAVAILABLE"
+  | "DRAFT_CURRENT";
+
+export type DisplayCustomer = {
+  name: string | null;
+  panNo: string | null;
+  address: string | null;
+  source: DisplayIdentitySource;
+};
+
+export type DisplayProduct = {
+  name: string | null;
+  sku: string | null;
+  source: DisplayIdentitySource;
+};
+
+export function cleanDisplayString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.trim().length === 0) return null;
+  return value;
+}
+
+export function resolveDisplayCustomer(invoice: {
+  status: string;
+  customerId?: string | null;
+  customerNameSnapshot?: string | null;
+  customerPanSnapshot?: string | null;
+  customerAddressSnapshot?: string | null;
+  customerSnapshotCapturedAt?: Date | string | null;
+  customer?: {
+    name?: string | null;
+    [key: string]: any;
+  } | null;
+}): DisplayCustomer {
+  if (invoice.status === "DRAFT") {
+    const liveName = cleanDisplayString(invoice.customer?.name);
+    return {
+      name: liveName,
+      panNo: null,
+      address: null,
+      source: "DRAFT_CURRENT",
+    };
+  }
+
+  // FINALIZED (or any non-draft, e.g. cancelled finalized)
+  if (invoice.customerSnapshotCapturedAt != null) {
+    return {
+      name: cleanDisplayString(invoice.customerNameSnapshot),
+      panNo: cleanDisplayString(invoice.customerPanSnapshot),
+      address: cleanDisplayString(invoice.customerAddressSnapshot),
+      source: "CAPTURED",
+    };
+  }
+
+  // Legacy finalized without snapshot capture marker
+  const liveName = cleanDisplayString(invoice.customer?.name);
+  if (liveName !== null) {
+    return {
+      name: liveName,
+      panNo: null,
+      address: null,
+      source: "LEGACY_LIVE_FALLBACK",
+    };
+  }
+
+  return {
+    name: null,
+    panNo: null,
+    address: null,
+    source: "LEGACY_UNAVAILABLE",
+  };
+}
+
+export function resolveDisplayProduct(
+  item: {
+    productNameSnapshot?: string | null;
+    productSkuSnapshot?: string | null;
+    snapshotCapturedAt?: Date | string | null;
+    product?: {
+      name?: string | null;
+      sku?: string | null;
+      [key: string]: any;
+    } | null;
+  },
+  invoiceStatus: string,
+): DisplayProduct {
+  if (invoiceStatus === "DRAFT") {
+    const liveName = cleanDisplayString(item.product?.name);
+    const liveSku = cleanDisplayString(item.product?.sku);
+    return {
+      name: liveName,
+      sku: liveSku,
+      source: "DRAFT_CURRENT",
+    };
+  }
+
+  // FINALIZED (or any non-draft)
+  if (item.snapshotCapturedAt != null) {
+    return {
+      name: cleanDisplayString(item.productNameSnapshot),
+      sku: cleanDisplayString(item.productSkuSnapshot),
+      source: "CAPTURED",
+    };
+  }
+
+  // Legacy item without snapshot capture marker
+  const liveName = cleanDisplayString(item.product?.name);
+  const liveSku = cleanDisplayString(item.product?.sku);
+  if (liveName !== null || liveSku !== null) {
+    return {
+      name: liveName,
+      sku: liveSku,
+      source: "LEGACY_LIVE_FALLBACK",
+    };
+  }
+
+  return {
+    name: null,
+    sku: null,
+    source: "LEGACY_UNAVAILABLE",
+  };
+}
+
+export function resolveInvoiceDisplayIdentity<
+  T extends {
+    status: string;
+    customerId?: string | null;
+    customerNameSnapshot?: string | null;
+    customerPanSnapshot?: string | null;
+    customerAddressSnapshot?: string | null;
+    customerSnapshotCapturedAt?: Date | string | null;
+    customer?: {
+      name?: string | null;
+      [key: string]: any;
+    } | null;
+    items?: any[];
+    [key: string]: any;
+  },
+>(invoice: T): T & {
+  displayCustomer: DisplayCustomer;
+  items: Array<any>;
+} {
+  const displayCustomer = resolveDisplayCustomer(invoice);
+  if (!Array.isArray(invoice.items)) {
+    return {
+      ...invoice,
+      displayCustomer,
+      items: [],
+    };
+  }
+
+  const items = invoice.items.map((item) => ({
+    ...item,
+    displayProduct: resolveDisplayProduct(item, invoice.status),
+  }));
+
+  return {
+    ...invoice,
+    displayCustomer,
+    items,
+  };
+}
+
 export const publicDraftItemSelect = {
   id: true,
   invoiceId: true,
@@ -2951,6 +3124,9 @@ export async function listInvoices(filters: InvoiceFilters) {
             qty: true,
             appliedUnitPrice: true,
             lineTotal: true,
+            productNameSnapshot: true,
+            productSkuSnapshot: true,
+            snapshotCapturedAt: true,
             product: {
               select: { id: true, name: true, sku: true, barcode: true },
             },
@@ -3011,8 +3187,10 @@ export async function listInvoices(filters: InvoiceFilters) {
   const totalSales = roundCurrency(Number(financials._sum.netTotal || 0));
   const totalPaid = roundCurrency(Number(financials._sum.paidTotal || 0));
 
+  const mappedInvoices = invoices.map((inv) => resolveInvoiceDisplayIdentity(inv));
+
   return {
-    invoices,
+    invoices: mappedInvoices,
     total,
     page: safePage,
     pageSize: safePageSize,
@@ -3037,11 +3215,11 @@ export async function listInvoices(filters: InvoiceFilters) {
 // fetching a single invoice with all its related data — items, payments, cashier, customer
 // we include full details here because this is used for the invoice detail view and print page
 export async function getInvoice(id: string) {
-  return prisma.invoice.findUnique({
+  const invoice = await prisma.invoice.findUnique({
     where: { id },
     include: {
       items: {
-        select: publicInvoiceItemSelect,
+        select: detailInvoiceItemSelect,
       },
       payments: {
         include: { createdBy: { select: { id: true, name: true } } },
@@ -3094,6 +3272,8 @@ export async function getInvoice(id: string) {
       },
     },
   });
+
+  return invoice ? resolveInvoiceDisplayIdentity(invoice) : null;
 }
 
 // --
