@@ -508,6 +508,12 @@ Do **not** restart a full review.
 
 A third review cycle requires a genuinely new HIGH-risk issue, architecture-changing fix, or concrete fix-induced regression.
 
+### Development startup verification
+
+At the user's request, every senior review/approval must also verify startup with `pnpm --dir backend dev` and `pnpm --dir frontend dev`, inspect startup/runtime errors, and check backend health and the frontend HTTP response. Record the checked revision, database target category, and any unavailable or unsafe checks. A build, mocked browser suite, or listening process alone does not prove connected development startup works.
+
+Backend startup can run scheduled cleanup and recovery writes. Verify the database target before launching it; use a disposable test database unless the user explicitly authorizes the configured local database. Do not start against production, apply migrations automatically, or stop a user's existing dev processes without authorization. Temporary smoke-check processes should use available alternate ports where needed and be stopped after verification. Record missing migrations as a runtime blocker rather than claiming safe local startup.
+
 Review reports belong under:
 
 `/docs/engineering/ai/reviews/`
