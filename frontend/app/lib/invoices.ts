@@ -136,6 +136,40 @@ export function getIdentitySourceLabel(source: FrontendIdentitySource): string {
   }
 }
 
+export type PrintBusinessIdentity = {
+  displayName: string;
+  legalName: string | null;
+  panNo: string | null;
+  address: string | null;
+  phone: string | null;
+};
+
+export function resolvePrintBusinessIdentity(settings?: {
+  businessName?: string | null;
+  legalName?: string | null;
+  panNo?: string | null;
+  businessAddress?: string | null;
+  businessPhone?: string | null;
+} | null): PrintBusinessIdentity {
+  const cleanBusinessName = cleanDisplayString(settings?.businessName);
+  const cleanLegalName = cleanDisplayString(settings?.legalName);
+  const cleanPanNo = cleanDisplayString(settings?.panNo);
+  const cleanAddress = cleanDisplayString(settings?.businessAddress);
+  const cleanPhone = cleanDisplayString(settings?.businessPhone);
+
+  const displayName = cleanBusinessName || cleanLegalName || "KhataSathi";
+  const legalName =
+    cleanLegalName && cleanLegalName !== displayName ? cleanLegalName : null;
+
+  return {
+    displayName,
+    legalName,
+    panNo: cleanPanNo,
+    address: cleanAddress,
+    phone: cleanPhone,
+  };
+}
+
 export function getInvoiceItemProvenanceNotice(
   items: InvoiceItemSummary[],
 ): string | null {

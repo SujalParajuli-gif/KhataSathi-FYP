@@ -52,6 +52,11 @@ export type BusinessSettings = {
     returnWindowDays: number;
     parkedBillExpiryHours: number;
     draftRequestExpiryMinutes: number;
+    businessName?: string | null;
+    legalName?: string | null;
+    panNo?: string | null;
+    businessAddress?: string | null;
+    businessPhone?: string | null;
 };
 
 export type BusinessMode = "CATALOG_ONLY" | "INVENTORY_ONLY" | "FULL_POS";

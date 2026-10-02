@@ -6,6 +6,7 @@ import {
   getInvoiceItemProvenanceNotice,
   buildCustomerSubtitle,
   normalizeInvoice,
+  resolvePrintBusinessIdentity,
 } from "../app/lib/invoices.ts";
 
 test("cleanDisplayString preserves leading zeros and ignores blanks/non-strings", () => {
@@ -519,4 +520,47 @@ test("normalizeInvoice: raw input object is not mutated and all financial/paymen
   assert.equal(normalized.creditNotes.length, 1);
   assert.equal(normalized.creditNotes[0].creditNoteNo, "CN-001");
   assert.equal(normalized.creditNotes[0].customerCreditAmount, 200);
+});
+
+test("resolvePrintBusinessIdentity: default fallback to KhataSathi on null/empty settings", () => {
+  const defaultFromNull = resolvePrintBusinessIdentity(null);
+  assert.equal(defaultFromNull.displayName, "KhataSathi");
+  assert.equal(defaultFromNull.legalName, null);
+  assert.equal(defaultFromNull.panNo, null);
+  assert.equal(defaultFromNull.address, null);
+  assert.equal(defaultFromNull.phone, null);
+
+  const defaultFromEmpty = resolvePrintBusinessIdentity({});
+  assert.equal(defaultFromEmpty.displayName, "KhataSathi");
+  assert.equal(defaultFromEmpty.legalName, null);
+  assert.equal(defaultFromEmpty.panNo, null);
+});
+
+test("resolvePrintBusinessIdentity: prefers businessName and sets legalName when different", () => {
+  const resolved = resolvePrintBusinessIdentity({
+    businessName: "KhataSathi Retail Store",
+    legalName: "KhataSathi Solutions Pvt. Ltd.",
+    panNo: "009876543",
+    businessAddress: "New Road, Kathmandu",
+    businessPhone: "01-4200000",
+  });
+
+  assert.equal(resolved.displayName, "KhataSathi Retail Store");
+  assert.equal(resolved.legalName, "KhataSathi Solutions Pvt. Ltd.");
+  assert.equal(resolved.panNo, "009876543"); // Preserves leading zero
+  assert.equal(resolved.address, "New Road, Kathmandu");
+  assert.equal(resolved.phone, "01-4200000");
+});
+
+test("resolvePrintBusinessIdentity: falls back to legalName when businessName is missing or blank", () => {
+  const resolved = resolvePrintBusinessIdentity({
+    businessName: "   ",
+    legalName: "ABC Enterprises Pvt. Ltd.",
+    panNo: "601234567",
+  });
+
+  assert.equal(resolved.displayName, "ABC Enterprises Pvt. Ltd.");
+  // When legalName is used as displayName, legalName field should be null (not duplicated)
+  assert.equal(resolved.legalName, null);
+  assert.equal(resolved.panNo, "601234567");
 });
