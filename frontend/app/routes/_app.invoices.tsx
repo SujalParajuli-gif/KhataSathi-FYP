@@ -47,13 +47,16 @@ import { isRateLimitError } from "~/lib/api/client";
 import { submitEsewaForm } from "~/lib/esewa";
 import type {
   AppInvoice,
+  FrontendIdentitySource,
   InvoiceStatusLabel,
   PaymentMethodLabel,
 } from "~/lib/invoices";
 import {
+  cleanDisplayString,
   formatNpr,
   getIdentitySourceLabel,
   getInvoiceItemProvenanceNotice,
+  isValidBackendIdentitySource,
   normalizeInvoice,
   openInvoicePrint,
 } from "~/lib/invoices";
@@ -231,6 +234,7 @@ type ReturnLineState = {
   productId?: string;
   name: string;
   sku?: string;
+  identitySource: FrontendIdentitySource;
   qtyPurchased: number;
   qtyReturning: number;
   unitPrice: number;
@@ -240,6 +244,7 @@ type AppReturnRequestItem = {
   id: string;
   name: string;
   sku?: string;
+  identitySource: FrontendIdentitySource;
   qtyReturned: number;
   unitPrice: number;
   lineTotal: number;
@@ -353,14 +358,49 @@ function normalizeReturnRequest(raw: any): AppReturnRequest {
       ? String(raw.reviewedBy.name)
       : undefined,
     items: Array.isArray(raw.items)
-      ? raw.items.map((item: any) => ({
-          id: String(item.id),
-          name: String(item.product?.name || "Returned item"),
-          sku: item.product?.sku ? String(item.product.sku) : undefined,
-          qtyReturned: Number(item.qtyReturned || 0),
-          unitPrice: Number(item.unitPrice || 0),
-          lineTotal: Number(item.lineTotal || 0),
-        }))
+      ? raw.items.map((item: any) => {
+          let identitySource: FrontendIdentitySource;
+          let name: string;
+          let sku: string | undefined = undefined;
+
+          if (!("displayProduct" in item)) {
+            identitySource = "COMPATIBILITY_UNVERIFIED";
+            name =
+              cleanDisplayString(item.product?.name) ||
+              cleanDisplayString(item.name) ||
+              "Returned item";
+            sku =
+              cleanDisplayString(item.product?.sku) ||
+              cleanDisplayString(item.sku) ||
+              undefined;
+          } else {
+            const dp = item.displayProduct;
+            if (
+              dp === null ||
+              typeof dp !== "object" ||
+              !isValidBackendIdentitySource(dp.source)
+            ) {
+              identitySource = "UNRESOLVED";
+              name = "Returned item";
+              sku = undefined;
+            } else {
+              identitySource = dp.source;
+              name = cleanDisplayString(dp.name) || "Returned item";
+              const cleanSku = cleanDisplayString(dp.sku);
+              sku = cleanSku !== null ? cleanSku : undefined;
+            }
+          }
+
+          return {
+            id: String(item.id),
+            name,
+            sku,
+            identitySource,
+            qtyReturned: Number(item.qtyReturned || 0),
+            unitPrice: Number(item.unitPrice || 0),
+            lineTotal: Number(item.lineTotal || 0),
+          };
+        })
       : [],
   };
 }
@@ -1537,8 +1577,14 @@ function InvoiceReturnRequestModal({
                         <div className="truncate text-[13px] font-extrabold text-[#000000]">
                           {line.name}
                         </div>
-                        <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
                           {line.sku ? <span>SKU: {line.sku}</span> : null}
+                          <span
+                            className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                            title={getIdentitySourceLabel(line.identitySource)}
+                          >
+                            [{getIdentitySourceLabel(line.identitySource)}]
+                          </span>
                           <span>{formatNpr(line.unitPrice)} / unit</span>
                         </div>
                       </div>
@@ -1611,8 +1657,15 @@ function InvoiceReturnRequestModal({
                         <div className="text-[13px] font-extrabold text-[#000000] truncate">
                           {line.name}
                         </div>
-                        <div className="text-[11px] font-semibold text-[#8C8889] mt-0.5">
-                          {line.sku ? `SKU: ${line.sku} · ` : ""}{formatNpr(line.unitPrice)}/unit
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] font-semibold text-[#8C8889] mt-0.5">
+                          {line.sku ? <span>SKU: {line.sku} · </span> : null}
+                          <span
+                            className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                            title={getIdentitySourceLabel(line.identitySource)}
+                          >
+                            [{getIdentitySourceLabel(line.identitySource)}]
+                          </span>
+                          <span>· {formatNpr(line.unitPrice)}/unit</span>
                         </div>
                       </div>
                       <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-extrabold text-[#565449]">
@@ -2011,8 +2064,14 @@ function ReturnReviewModal({
                             <div className="truncate font-extrabold text-[#000000]">
                               {item.name}
                             </div>
-                            <div className="mt-0.5 text-[11px] font-semibold text-[#8C8889]">
-                              {item.sku || "No SKU"}
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] font-semibold text-[#8C8889]">
+                              <span>{item.sku || "No SKU"}</span>
+                              <span
+                                className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                                title={getIdentitySourceLabel(item.identitySource)}
+                              >
+                                [{getIdentitySourceLabel(item.identitySource)}]
+                              </span>
                             </div>
                           </div>
                           <div className="font-mono font-extrabold text-[#000000]">
@@ -2976,6 +3035,7 @@ export default function CashierInvoicesPage() {
         productId: item.productId,
         name: item.name,
         sku: item.sku,
+        identitySource: item.identitySource,
         qtyPurchased:
           item.remainingReturnableQty !== undefined
             ? item.remainingReturnableQty

@@ -5,6 +5,7 @@ import {
   getIdentitySourceLabel,
   getInvoiceItemProvenanceNotice,
   buildCustomerSubtitle,
+  isValidBackendIdentitySource,
   normalizeInvoice,
   resolvePrintBusinessIdentity,
 } from "../app/lib/invoices.ts";
@@ -563,4 +564,152 @@ test("resolvePrintBusinessIdentity: falls back to legalName when businessName is
   // When legalName is used as displayName, legalName field should be null (not duplicated)
   assert.equal(resolved.legalName, null);
   assert.equal(resolved.panNo, "601234567");
+});
+
+test("return request items: normalizeReturnRequest handles displayProduct and legacy fallbacks", () => {
+  function normalizeReturnRequestItem(item) {
+    let identitySource;
+    let name;
+    let sku = undefined;
+
+    if (!("displayProduct" in item)) {
+      identitySource = "COMPATIBILITY_UNVERIFIED";
+      name =
+        cleanDisplayString(item.product?.name) ||
+        cleanDisplayString(item.name) ||
+        "Returned item";
+      sku =
+        cleanDisplayString(item.product?.sku) ||
+        cleanDisplayString(item.sku) ||
+        undefined;
+    } else {
+      const dp = item.displayProduct;
+      if (
+        dp === null ||
+        typeof dp !== "object" ||
+        !isValidBackendIdentitySource(dp.source)
+      ) {
+        identitySource = "UNRESOLVED";
+        name = "Returned item";
+        sku = undefined;
+      } else {
+        identitySource = dp.source;
+        name = cleanDisplayString(dp.name) || "Returned item";
+        const cleanSku = cleanDisplayString(dp.sku);
+        sku = cleanSku !== null ? cleanSku : undefined;
+      }
+    }
+
+    return {
+      id: String(item.id),
+      name,
+      sku,
+      identitySource,
+      qtyReturned: Number(item.qtyReturned || 0),
+      unitPrice: Number(item.unitPrice || 0),
+      lineTotal: Number(item.lineTotal || 0),
+    };
+  }
+
+  // 1. Captured snapshot item (exact backend shape: { name, sku, source })
+  const capturedItem = normalizeReturnRequestItem({
+    id: "item-1",
+    qtyReturned: 2,
+    unitPrice: 200,
+    lineTotal: 400,
+    product: { name: "Current Renamed Name", sku: "LIVE-01" },
+    displayProduct: {
+      name: "Historical Item Name",
+      sku: "00HIST-01",
+      source: "CAPTURED",
+    },
+  });
+  assert.equal(capturedItem.name, "Historical Item Name");
+  assert.equal(capturedItem.sku, "00HIST-01");
+  assert.equal(capturedItem.identitySource, "CAPTURED");
+  assert.equal(getIdentitySourceLabel(capturedItem.identitySource), "Captured at sale");
+
+  // 2. Captured null snapshot item: must NOT fall back to live product name or SKU
+  const capturedNullItem = normalizeReturnRequestItem({
+    id: "item-null-snap",
+    qtyReturned: 1,
+    unitPrice: 300,
+    lineTotal: 300,
+    product: { name: "Live Should Not Leak", sku: "LIVE-LEAK-SKU" },
+    displayProduct: {
+      name: null,
+      sku: null,
+      source: "CAPTURED",
+    },
+  });
+  assert.equal(capturedNullItem.name, "Returned item");
+  assert.equal(capturedNullItem.sku, undefined);
+  assert.equal(capturedNullItem.identitySource, "CAPTURED");
+  assert.equal(getIdentitySourceLabel(capturedNullItem.identitySource), "Captured at sale");
+
+  // 3. Legacy item with live product fallback
+  const legacyItem = normalizeReturnRequestItem({
+    id: "item-2",
+    qtyReturned: 1,
+    unitPrice: 150,
+    lineTotal: 150,
+    product: { name: "Live Catalog Item", sku: "LIVE-02" },
+    displayProduct: {
+      name: "Live Catalog Item",
+      sku: "LIVE-02",
+      source: "LEGACY_LIVE_FALLBACK",
+    },
+  });
+  assert.equal(legacyItem.name, "Live Catalog Item");
+  assert.equal(legacyItem.sku, "LIVE-02");
+  assert.equal(legacyItem.identitySource, "LEGACY_LIVE_FALLBACK");
+  assert.equal(getIdentitySourceLabel(legacyItem.identitySource), "Legacy identity — current labels");
+
+  // 4. Legacy unavailable item
+  const unavailItem = normalizeReturnRequestItem({
+    id: "item-unavail",
+    qtyReturned: 1,
+    unitPrice: 150,
+    lineTotal: 150,
+    product: null,
+    displayProduct: {
+      name: null,
+      sku: null,
+      source: "LEGACY_UNAVAILABLE",
+    },
+  });
+  assert.equal(unavailItem.name, "Returned item");
+  assert.equal(unavailItem.sku, undefined);
+  assert.equal(unavailItem.identitySource, "LEGACY_UNAVAILABLE");
+  assert.equal(getIdentitySourceLabel(unavailItem.identitySource), "Historical identity unavailable");
+
+  // 5. Malformed displayProduct: fails closed to UNRESOLVED without live fallback
+  const malformedItem = normalizeReturnRequestItem({
+    id: "item-malformed",
+    qtyReturned: 1,
+    unitPrice: 100,
+    lineTotal: 100,
+    product: { name: "Live Product Name", sku: "LIVE-SKU" },
+    displayProduct: {
+      name: "Some Name",
+      source: "INVALID_SOURCE",
+    },
+  });
+  assert.equal(malformedItem.name, "Returned item");
+  assert.equal(malformedItem.sku, undefined);
+  assert.equal(malformedItem.identitySource, "UNRESOLVED");
+  assert.equal(getIdentitySourceLabel(malformedItem.identitySource), "Identity unavailable");
+
+  // 6. Old legacy API response without displayProduct group
+  const unverifiedItem = normalizeReturnRequestItem({
+    id: "item-3",
+    qtyReturned: 1,
+    unitPrice: 100,
+    lineTotal: 100,
+    product: { name: "Direct Live Product", sku: "DIR-01" },
+  });
+  assert.equal(unverifiedItem.name, "Direct Live Product");
+  assert.equal(unverifiedItem.sku, "DIR-01");
+  assert.equal(unverifiedItem.identitySource, "COMPATIBILITY_UNVERIFIED");
+  assert.equal(getIdentitySourceLabel(unverifiedItem.identitySource), "Historical identity unverified");
 });
