@@ -21,6 +21,8 @@ import {
   listProductsApi,
   checkoutInvoiceApi,
   listCustomersApi,
+  getCustomerProductHistoryApi,
+  type CustomerProductPurchaseHistoryItem,
   createQuickCustomerApi,
   authorizePriceOverrideApi,
   discardParkedDraftApi,
@@ -1482,6 +1484,9 @@ export default function BillingPage() {
     string | null
   >(null); // accepted staff request currently loaded into the billing cart
   const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
+  const [customerHistory, setCustomerHistory] = useState<CustomerProductPurchaseHistoryItem[]>([]);
+  const [customerHistoryLoading, setCustomerHistoryLoading] = useState(false);
+  const [customerHistoryError, setCustomerHistoryError] = useState<string | null>(null);
   const [pendingCheckout, setPendingCheckout] =
     useState<PendingCheckoutSnapshot | null>(null);
   const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
@@ -1821,6 +1826,40 @@ export default function BillingPage() {
     () => [...new Set(cart.map((line) => line.productId).filter(Boolean))],
     [cart],
   );
+
+  useEffect(() => {
+    if (!selectedCustomerId || cartProductIds.length === 0) {
+      setCustomerHistory([]);
+      setCustomerHistoryLoading(false);
+      setCustomerHistoryError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setCustomerHistoryLoading(true);
+    setCustomerHistoryError(null);
+
+    const boundedProductIds = cartProductIds.slice(0, 20);
+
+    getCustomerProductHistoryApi(selectedCustomerId, boundedProductIds, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        setCustomerHistory(data.history || []);
+        setCustomerHistoryLoading(false);
+        setCustomerHistoryError(null);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setCustomerHistory([]);
+        setCustomerHistoryLoading(false);
+        setCustomerHistoryError("Unable to load recent purchase history");
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [selectedCustomerId, cartProductIds]);
 
   // Restored and resumed carts may contain products that are not in the small
   // search cache yet. Hydrate just those rows in one focused request.
@@ -5085,6 +5124,68 @@ export default function BillingPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Customer Purchase History (Advisory Context) */}
+                {selectedCustomer && cart.length > 0 && (
+                  <div className="rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3 text-[12px]">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#E5E7EB] pb-2 mb-2">
+                      <div className="flex items-center gap-1.5 font-extrabold text-[#111827]">
+                        <Icon name="history" className="text-[16px] text-[#2563EB]" />
+                        <span>Recent Cart Purchases</span>
+                      </div>
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-700 uppercase tracking-wide">
+                        Advisory
+                      </span>
+                    </div>
+
+                    {customerHistoryLoading ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
+                        Loading purchase history…
+                      </div>
+                    ) : customerHistoryError ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-amber-700">
+                        {customerHistoryError}
+                      </div>
+                    ) : customerHistory.length === 0 ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
+                        No previous purchases recorded for items in this cart.
+                      </div>
+                    ) : (
+                      <div className="max-h-[160px] overflow-y-auto space-y-2 pr-1">
+                        {customerHistory.map((item) => (
+                          <div
+                            key={item.id}
+                            className="rounded-[8px] border border-[#E2E8F0] bg-white p-2 text-[11px] shadow-xs"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 font-bold text-[#1E293B] truncate">
+                                {item.productName}
+                              </div>
+                              <div className="shrink-0 font-mono font-extrabold text-[#0F172A]">
+                                {formatNpr(item.appliedUnitPrice)}
+                              </div>
+                            </div>
+                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                              <span>
+                                Qty: {item.qty} · Inv #{item.invoiceNo}
+                              </span>
+                              <span>
+                                {new Date(item.invoiceDate).toLocaleDateString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10px] text-slate-500 italic">
+                      Historical prices are reference context only and do not modify current billing rates.
+                    </div>
+                  </div>
+                )}
 
                 {/* Bill Summary */}
                 <div

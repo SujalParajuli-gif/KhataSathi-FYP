@@ -1390,6 +1390,34 @@ export async function updateCustomerApi(id: string, data: { name?: string; phone
 }
 
 // deactivating a customer (soft delete)
+
+export type CustomerProductPurchaseHistoryItem = {
+    id: string;
+    invoiceId: string;
+    invoiceNo: string;
+    invoiceDate: string;
+    productId: string;
+    productName: string;
+    productSku: string | null;
+    qty: number;
+    appliedUnitPrice: number;
+};
+
+export async function getCustomerProductHistoryApi(
+    customerId: string,
+    productIds: string[],
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get<{ history: CustomerProductPurchaseHistoryItem[] }>(
+        `/api/customers/${encodeURIComponent(customerId)}/product-history`,
+        {
+            params: { productIds: productIds.join(",") },
+            signal: options?.signal,
+        },
+    );
+    return res.data;
+}
+
 export async function deactivateCustomerApi(id: string) {
     const res = await api.patch(`/api/customers/${id}/deactivate`);
     return res.data;

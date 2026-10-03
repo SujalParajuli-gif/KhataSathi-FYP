@@ -9,6 +9,7 @@ import {
   deleteDiscount,
   getDiscountDeleteSafety,
   getOne,
+  getProductPurchaseHistory,
   list,
   listDiscountRequests,
   rejectDiscountRequest,
@@ -30,6 +31,7 @@ router.patch("/discount-requests/:id/approve", requireRole("ADMIN", "MANAGER"), 
 router.patch("/discount-requests/:id/reject", requireRole("ADMIN", "MANAGER"), rejectDiscountRequest);
 router.get("/:id/discounts/:discountType/delete-safety", requireRole("ADMIN", "MANAGER"), getDiscountDeleteSafety);
 router.delete("/:id/discounts/:discountType", requireRole("ADMIN", "MANAGER"), deleteDiscount);
+router.get("/:customerId/product-history", getProductPurchaseHistory);
 router.get("/:id", getOne); // fetching a single customer by ID
 router.post("/", requireRole("ADMIN", "MANAGER"), create); // admin and managers can create new customers
 router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can update customer info

@@ -644,3 +644,99 @@ export async function deactivateCustomer(id: string, actorId?: string) {
     return customer;
   });
 }
+
+export type CustomerProductPurchaseHistoryItem = {
+  id: string;
+  invoiceId: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  productId: string;
+  productName: string;
+  productSku: string | null;
+  qty: number;
+  appliedUnitPrice: number;
+};
+
+export async function getCustomerProductPurchaseHistory(
+  customerId: string,
+  productIds: string[],
+): Promise<CustomerProductPurchaseHistoryItem[]> {
+  const customer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true },
+  });
+
+  if (!customer) {
+    throw new Error("Customer not found.");
+  }
+
+  if (!productIds.length) {
+    return [];
+  }
+
+  const perProductItems = await Promise.all(
+    productIds.map((productId) =>
+      prisma.invoiceItem.findMany({
+        where: {
+          productId,
+          invoice: {
+            customerId,
+            status: "FINALIZED",
+            cancelledAt: null,
+            deletedAt: null,
+            paymentStatus: { not: "CANCELLED" },
+            creditNotesAsOriginal: {
+              none: {
+                replacementInvoiceId: { not: null },
+              },
+            },
+          },
+        },
+        select: {
+          id: true,
+          productId: true,
+          qty: true,
+          appliedUnitPrice: true,
+          productNameSnapshot: true,
+          productSkuSnapshot: true,
+          product: {
+            select: {
+              name: true,
+              sku: true,
+            },
+          },
+          invoice: {
+            select: {
+              id: true,
+              invoiceNo: true,
+              finalizedAt: true,
+              createdAt: true,
+            },
+          },
+        },
+        orderBy: [
+          { invoice: { finalizedAt: "desc" } },
+          { invoice: { createdAt: "desc" } },
+          { id: "desc" },
+        ],
+        take: 5,
+      }),
+    ),
+  );
+
+  return perProductItems.flat().map((item) => {
+    const invoiceDate = item.invoice.finalizedAt || item.invoice.createdAt;
+    return {
+      id: item.id,
+      invoiceId: item.invoice.id,
+      invoiceNo: item.invoice.invoiceNo,
+      invoiceDate: invoiceDate.toISOString(),
+      productId: item.productId,
+      productName:
+        item.productNameSnapshot || item.product?.name || "Unknown Product",
+      productSku: item.productSkuSnapshot || item.product?.sku || null,
+      qty: item.qty,
+      appliedUnitPrice: item.appliedUnitPrice,
+    };
+  });
+}

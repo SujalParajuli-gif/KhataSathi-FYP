@@ -28,7 +28,7 @@ test("cashier can quick-create a customer, recover from failure, and select the 
       quickCreatePayload = route.request().postDataJSON();
       if (quickCreateCalls === 1) return respond({ error: "Phone number already exists" }, 409);
       await new Promise<void>((resolve) => { releaseQuickCreate = resolve; });
-      const input = quickCreatePayload;
+      const input = (quickCreatePayload || {}) as Record<string, any>;
       return respond({
         id: "customer-new", name: input.name, phone: input.phone || null,
         email: input.email || null, panNo: input.panNo || null,

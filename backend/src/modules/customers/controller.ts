@@ -464,3 +464,58 @@ export async function deactivate(req: Request, res: Response) {
     res.status(500).json({ error: "Internal server error" });
   }
 }
+
+function parseProductIds(queryParam: unknown): string[] {
+  let rawList: string[] = [];
+  if (Array.isArray(queryParam)) {
+    rawList = queryParam.flatMap((p) => String(p || "").split(","));
+  } else if (typeof queryParam === "string") {
+    rawList = queryParam.split(",");
+  }
+  const unique = Array.from(
+    new Set(rawList.map((id) => id.trim()).filter((id) => id.length > 0)),
+  );
+  return unique;
+}
+
+export async function getProductPurchaseHistory(req: Request, res: Response) {
+  try {
+    const customerId = String(req.params.customerId || req.params.id || "").trim();
+    if (!customerId) {
+      res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+
+    const queryInput = req.query.productIds !== undefined ? req.query.productIds : req.query.products;
+    if (queryInput === undefined || queryInput === null || queryInput === "") {
+      res.status(400).json({ error: "At least one product ID is required." });
+      return;
+    }
+
+    const productIds = parseProductIds(queryInput);
+    if (productIds.length === 0) {
+      res.status(400).json({ error: "At least one valid product ID is required." });
+      return;
+    }
+
+    if (productIds.length > 20) {
+      res.status(400).json({
+        error: "Cannot query history for more than 20 products at a time.",
+      });
+      return;
+    }
+
+    const history = await custService.getCustomerProductPurchaseHistory(
+      customerId,
+      productIds,
+    );
+    res.json({ history });
+  } catch (err: any) {
+    if (String(err?.message || "").includes("Customer not found")) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    console.error("Get customer product history error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
