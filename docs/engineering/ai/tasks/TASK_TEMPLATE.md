@@ -41,7 +41,7 @@ List architecture/safety rules that must remain true.
 
 List exact or expected focused checks.
 
-Mandatory completion check (AGENTS.md section 12): run `pnpm --dir backend run dev` and `pnpm --dir frontend run dev` on the final application content. Inspect startup/runtime logs; require backend `/api/health` HTTP 200 with database/storage healthy and frontend HTTP 200. Check affected browser/API paths where relevant. Record revision/diff, safe database target, ports, warnings/errors, cleanup and unavailable checks. Use a disposable database unless configured-local startup is explicitly authorized; migration execution needs separate authorization. Failed/unavailable checks must be reported, never presented as verified runtime health.
+Mandatory completion check: follow AGENTS.md section 12 for both dev servers, health/HTTP and runtime logs on final application changes. Report configured-local errors and pending migrations separately from disposable results; do not apply configured migrations without approval.
 
 ## Explicit non-goals
 

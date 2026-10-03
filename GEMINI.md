@@ -36,7 +36,7 @@ Before reporting completion:
 
 1. Review the complete diff.
 2. Verify every acceptance criterion.
-3. Run the required focused checks and the mandatory frontend/backend development startup verification in AGENTS.md section 12 against the final application changes. Record connected health/HTTP responses and inspect runtime logs; explicitly report unavailable checks or runtime blockers.
+3. Run required checks and AGENTS.md section 12 startup verification; report actual local errors and pending migrations even when disposable checks pass.
 4. Record exact commands and actual results.
 5. Inspect migration SQL when the task includes a migration.
 6. Confirm unrelated files were not changed.
