@@ -34,7 +34,7 @@ Recover workflow state strictly in this order without querying or trusting chat 
 6. Latest task implementation report under `/docs/engineering/ai/reports/`
 7. Latest task review under `/docs/engineering/ai/reviews/`
 8. Git branch, status (`git status --short`), and staged/unstaged diffs
-9. Affected code, tests, and relevant sections of Master Plan v1.1
+9. Affected code, tests, and relevant sections of Master Plan v1.2
 
 If the repository state materially conflicts with the active task or frozen architecture, STOP and declare:
 
@@ -149,7 +149,7 @@ Evaluate the recovered repository facts against these mutually exclusive states 
     - *Action:* STOP and report exact violations. Do NOT commit. Do NOT force-add. Preserve unrelated user work.
 
 12. **`PLAN_REPO_DRIFT`**
-    - *Condition:* Material disagreement between task contract, frozen Master Plan v1.1, and actual repository code.
+    - *Condition:* Material disagreement between task contract, frozen Master Plan v1.2, and actual repository code.
     - *Action:* STOP immediately and report drift. Await user authorization for plan/architecture alignment.
 
 13. **`USER_BUSINESS_DECISION_REQUIRED`**
@@ -247,4 +247,4 @@ These standard shortcut tokens invoke specific role behaviors from repository st
 - **Quota Expiry or Model Switch:** When switching agents or accounts, the new agent runs `ks-next`, re-reading repository state from files without asking the user to summarize previous chat.
 - **Blocked Work:** If a task is blocked by external dependencies, record blockers in task file and checkpoint, set task status to `BLOCKED`, and select the next unblocked task.
 - **Disposable Migration Testing:** Migration tasks (`HIGH` risk) must be verified against a local disposable database container. Never run test migrations against production or configured non-test databases.
-- **Independent Architecture Review:** Read-only inspection against Master Plan v1.1. Any discovered discrepancy is classified into `BACKLOG.md` or flagged as `PLAN/REPO DRIFT`.
+- **Independent Architecture Review:** Read-only inspection against Master Plan v1.2. Any discovered discrepancy is classified into `BACKLOG.md` or flagged as `PLAN/REPO DRIFT`.

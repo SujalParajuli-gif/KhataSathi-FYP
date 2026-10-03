@@ -14,7 +14,7 @@ The Implementation Planner bridges the gap between high-level task specification
 ## 1. Planner Boundaries & Non-Goals
 
 The Implementation Planner MUST:
-- Read active task contract, relevant sections of Master Plan v1.1, and actual repository code.
+- Read active task contract, relevant sections of Master Plan v1.2, and actual repository code.
 - Analyze existing working components and explicitly mark them `REUSE AS-IS`.
 - Define the exact step-by-step technical implementation sequence.
 - Write a concrete, bounded plan artifact under `docs/engineering/ai/plans/TASK-XXX-plan.md`.
@@ -26,7 +26,7 @@ The Implementation Planner MUST NOT:
 - Execute migrations or touch databases.
 - Commit, push, merge, deploy, or modify production.
 
-If the task contract materially conflicts with Master Plan v1.1 or repository code, STOP and declare:
+If the task contract materially conflicts with Master Plan v1.2 or repository code, STOP and declare:
 
 **PLAN/REPO DRIFT**
 
@@ -59,7 +59,7 @@ Every plan artifact created by the Implementation Planner must contain the follo
 - Master Plan References: Section X.X
 
 ## 2. Invariants & Architectural Alignment
-- List frozen invariants from Master Plan v1.1 governing this subsystem.
+- List frozen invariants from Master Plan v1.2 governing this subsystem.
 - Confirm schema, financial, auth, and state boundaries.
 
 ## 3. Existing Code Analysis & Reusability
