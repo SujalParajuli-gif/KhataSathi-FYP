@@ -430,7 +430,7 @@ The implementation agent should:
 
 11. Avoid unrelated refactors/speculative abstractions.
 
-12. Run required checks.
+12. Run required checks, including the mandatory development startup verification in section 12 on the final application changes before reporting completion.
 
 13. Review the complete task diff.
 
@@ -510,7 +510,9 @@ A third review cycle requires a genuinely new HIGH-risk issue, architecture-chan
 
 ### Development startup verification
 
-At the user's request, every senior review/approval must also verify startup with `pnpm --dir backend dev` and `pnpm --dir frontend dev`, inspect startup/runtime errors, and check backend health and the frontend HTTP response. Record the checked revision, database target category, and any unavailable or unsafe checks. A build, mocked browser suite, or listening process alone does not prove connected development startup works.
+Every task completion (including implementation, SENIOR_AUTOPILOT, and senior review/approval) MUST verify the final application changes by running `pnpm --dir backend run dev` and `pnpm --dir frontend run dev`. Inspect both startup/runtime logs, verify `/api/health` returns HTTP 200 with database/storage healthy, and verify the frontend returns HTTP 200. Exercise directly affected browser/API paths where the task changes runtime behavior; distinguish mocked checks from connected checks. A build, mocked browser suite, or listening process alone does not prove connected development startup works.
+
+Record the exact commands, branch/HEAD and any uncommitted application diff, database target category, ports, health/HTTP results, observed errors/warnings, cleanup, and unavailable checks in the implementation/review report. Checks must cover the latest application content; repeat them after relevant application/configuration/schema changes. Documentation-only changes may cite the same startup evidence when application content and runtime configuration are unchanged. Never claim healthy configured-local startup from disposable-database evidence. If a required check fails or cannot safely run, report the runtime blocker or unavailable check explicitly and do not claim verified runtime completion.
 
 Backend startup can run scheduled cleanup and recovery writes. Verify the database target before launching it; use a disposable test database unless the user explicitly authorizes the configured local database. Do not start against production, apply migrations automatically, or stop a user's existing dev processes without authorization. Temporary smoke-check processes should use available alternate ports where needed and be stopped after verification. Record missing migrations as a runtime blocker rather than claiming safe local startup.
 
@@ -718,7 +720,9 @@ A task is finished when:
 
 - no BLOCKER remains,
 
-- required review/closeout is complete.
+- required review/closeout is complete,
+
+- mandatory frontend/backend development startup verification (section 12) covers the final application content, with any unavailable checks and environment blockers explicitly recorded; never report runtime health as verified when those checks failed or were unavailable.
 
 **“Another AI can think of another improvement” is not a valid reason to keep a task open.**
 
