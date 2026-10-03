@@ -31,5 +31,6 @@ test("billing checkout has no separate post-checkout completion call", async () 
   const route = await readFile(new URL("../app/routes/_app.billing.tsx", import.meta.url), "utf8");
   assert.doesNotMatch(route, /completeDraftRequestApi/);
   assert.match(route, /resolvePendingCheckoutSnapshot\(/);
-  assert.match(route, /if \(result\?\.esewaPaymentIntent\)[\s\S]*?clearStoredBillingCart\(\)[\s\S]*?setActiveDraftRequestId\(null\)/);
+  assert.match(route, /if \(result\?\.esewaPaymentIntent\)[\s\S]*?resetBill\(\)[\s\S]*?submitEsewaForm/);
+  assert.doesNotMatch(route, /removeItem\(PENDING_DRAFT_COMPLETION_STORAGE_KEY\)/);
 });

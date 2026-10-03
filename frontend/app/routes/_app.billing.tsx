@@ -506,8 +506,6 @@ type PendingCheckoutSnapshot = {
 };
 
 const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
-const PENDING_DRAFT_COMPLETION_STORAGE_KEY =
-  "khatasathi_pending_draft_completion";
 const DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY =
   "khatasathi_billing_draft_request_notice_ack";
 
@@ -1369,11 +1367,8 @@ export default function BillingPage() {
     };
   }, [isCashier, loadIncomingRequests]);
 
-  useEffect(() => {
-    if (typeof window !== "undefined") {
-      window.localStorage.removeItem(PENDING_DRAFT_COMPLETION_STORAGE_KEY);
-    }
-  }, []);
+  // Keep legacy pending-completion evidence for manual reconciliation. It cannot
+  // prove checkout origin and must never trigger an automatic association.
 
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
@@ -3639,9 +3634,7 @@ export default function BillingPage() {
 
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
-        setPendingCheckout(null);
-        clearStoredBillingCart();
-        setActiveDraftRequestId(null);
+        resetBill();
         submitEsewaForm(result.esewaPaymentIntent);
         return;
       }

@@ -100,6 +100,11 @@ export async function checkout(req: Request, res: Response) {
   } catch (err: any) {
     if (sendStockConflict(res, err)) return;
 
+    if ([403, 404, 409].includes(err.statusCode)) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
+
     if (err.message.includes("Checkout operation")) {
       res.status(409).json({
         error: err.message,

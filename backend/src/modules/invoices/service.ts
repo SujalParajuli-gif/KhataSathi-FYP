@@ -837,10 +837,13 @@ export function buildCheckoutPayloadHash(
   input: CheckoutInput,
   items: ReturnType<typeof normalizeCheckoutItems>,
   payments: ReturnType<typeof normalizeCheckoutPayments>,
+  includeEmptyDraftRequest = false,
 ) {
+  const draftRequestId = String(input.draftRequestId || "").trim() || null;
   const fingerprintPayload = {
     draftInvoiceId: String(input.draftInvoiceId || "").trim() || null,
-    draftRequestId: String(input.draftRequestId || "").trim() || null,
+    // Preserve ordinary operation hashes written before request-linked checkout existed.
+    ...(draftRequestId || includeEmptyDraftRequest ? { draftRequestId } : {}),
     customerId: String(input.customerId || "").trim() || null,
     discountAmount:
       input.discountAmount === undefined ? null : roundCurrency(input.discountAmount),
@@ -875,6 +878,7 @@ async function replayCheckoutOperation(
   cashierId: string,
   operationKey: string,
   payloadHash: string,
+  compatiblePayloadHash?: string,
 ) {
   const operation = await prisma.checkoutOperation.findUnique({
     where: { operationKey },
@@ -883,7 +887,7 @@ async function replayCheckoutOperation(
   if (operation.actorId !== cashierId) {
     throw new Error("Checkout operation key belongs to another user.");
   }
-  if (operation.payloadHash !== payloadHash) {
+  if (operation.payloadHash !== payloadHash && operation.payloadHash !== compatiblePayloadHash) {
     throw new Error("Checkout operation key was already used with different bill contents.");
   }
   if (!operation.completedAt || !operation.invoiceId || !operation.responseJson) {
@@ -1863,7 +1867,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
         linkedDraftRequest = await tx.billingDraftRequest.findUnique({
           where: { id: draftRequestId },
         });
-        if (!linkedDraftRequest) throw new Error("Draft request not found.");
+        if (!linkedDraftRequest) throw Object.assign(new Error("Draft request not found."), { statusCode: 404 });
         const actor = await tx.user.findUnique({
           where: { id: cashierId },
           select: { id: true, role: true },
@@ -1874,10 +1878,10 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
           linkedDraftRequest.status !== "ACCEPTED" &&
           linkedDraftRequest.status !== "PARTIALLY_ACCEPTED"
         ) {
-          throw new Error("Only accepted draft requests can be completed.");
+          throw Object.assign(new Error("Only accepted draft requests can be completed."), { statusCode: 409 });
         }
         if (linkedDraftRequest.completedInvoiceId) {
-          throw new Error("This draft request is already linked to a completed invoice.");
+          throw Object.assign(new Error("This draft request is already linked to a completed invoice."), { statusCode: 409 });
         }
       }
       const customerId = input.customerId ? String(input.customerId) : null;
@@ -2121,7 +2125,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
         },
       });
       if (claimed.count !== 1) {
-        throw new Error("This draft request changed during checkout. Please retry.");
+        throw Object.assign(new Error("This draft request changed during checkout. Please retry."), { statusCode: 409 });
       }
       await tx.auditLog.create({
         data: {
@@ -2182,7 +2186,12 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
     });
   } catch (error) {
     if (!isCheckoutOperationKeyConflict(error)) throw error;
-    return replayCheckoutOperation(cashierId, operationKey, payloadHash);
+    // TASK-1A-003 briefly wrote ordinary hashes with an explicit null request.
+    // Only absent-request retries may accept that alternate encoding.
+    const compatiblePayloadHash = String(input.draftRequestId || "").trim()
+      ? undefined
+      : buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments, true);
+    return replayCheckoutOperation(cashierId, operationKey, payloadHash, compatiblePayloadHash);
   }
 }
 

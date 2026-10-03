@@ -1,5 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import prisma from "../db/prisma";
 import {
   addItem,
@@ -88,6 +89,17 @@ test("checkout requires a bounded operation key", () => {
     }).success,
     true,
   );
+});
+
+test("ordinary checkout fingerprint retains the exact pre-request JSON encoding", () => {
+  const items = [{ productId: "product", qty: 1 }];
+  const legacyPayload = {
+    draftInvoiceId: null, customerId: null, discountAmount: null, notes: null,
+    items: [{ productId: "product", qty: 1, overrideUnitPrice: null, overrideReason: null }],
+    payments: [],
+  };
+  const legacyHash = createHash("sha256").update(JSON.stringify(legacyPayload)).digest("hex");
+  assert.equal(buildCheckoutPayloadHash({ operationKey: "checkout-operation-123", items }, items, []), legacyHash);
 });
 
 test("checkout fingerprint detects bill changes without persisting PINs", () => {

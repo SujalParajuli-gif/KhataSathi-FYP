@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import prisma from "../db/prisma";
-import { checkoutInvoice } from "../modules/invoices/service";
+import { checkoutInvoice, buildCheckoutPayloadHash } from "../modules/invoices/service";
 import { invalidateBusinessSettingsCache } from "../modules/settings/service";
 
 type State = {
@@ -186,6 +186,28 @@ function harness(options: {
 }
 
 const key = "snapshot-checkout-key-001";
+test("ordinary checkout replays both pre-request and intermediate null-request operation hashes", async () => {
+  const mock = harness();
+  try {
+    const request = input();
+    const first = await checkoutInvoice("cashier", request);
+    const before = structuredClone(mock.state);
+    // The current canonical ordinary hash is the exact pre-request encoding.
+    const legacy = mock.state.operations[key].payloadHash;
+    const intermediate = buildCheckoutPayloadHash(request, request.items, [], true);
+    assert.notEqual(legacy, intermediate);
+    for (const hash of [legacy, intermediate]) {
+      mock.state.operations[key].payloadHash = hash;
+      const replay = await checkoutInvoice("cashier", request);
+      assert.deepEqual(JSON.parse(JSON.stringify(replay)), JSON.parse(JSON.stringify(first)));
+      assert.equal(mock.state.stock.length, before.stock.length);
+      assert.equal(Object.keys(mock.state.invoices).length, 1);
+      await assert.rejects(checkoutInvoice("cashier", { ...request, draftRequestId: "request1" }), /different bill contents/);
+      await assert.rejects(checkoutInvoice("other", request), /another user/);
+    }
+  } finally { mock.restore(); }
+});
+
 function input(parked = false, payment = false): any {
   return { operationKey: key, draftInvoiceId: parked ? "parked" : undefined,
     customerId: "customer", items: [{ productId: "p1", qty: 1 }, { productId: "p2", qty: 1 }],
