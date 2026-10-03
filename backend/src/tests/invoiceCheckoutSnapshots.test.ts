@@ -12,6 +12,7 @@ type State = {
   payments: any[];
   stock: any[];
   audits: any[];
+  requests: Record<string, any>;
 };
 
 function harness(options: {
@@ -19,6 +20,7 @@ function harness(options: {
   nullPan?: boolean;
   failAt?: "snapshot" | "payment" | "audit" | "operation";
   invalid?: "name" | "sku";
+  request?: { status?: string; assignedCashierId?: string | null };
 } = {}) {
   let state: State = {
     invoices: options.parked ? {
@@ -32,6 +34,13 @@ function harness(options: {
       p2: { id: "p2", name: "Current two", sku: "SKU-2", stock: 20, reservedStock: 0, isActive: true, retailPrice: 20, wholesalePrice: 20, wholesaleEligible: false },
     },
     operations: {}, payments: [], stock: [], audits: [],
+    requests: options.request ? {
+      request1: {
+        id: "request1", requestNo: "REQ-1", status: options.request.status || "ACCEPTED",
+        assignedCashierId: options.request.assignedCashierId ?? "cashier",
+        completedInvoiceId: null,
+      },
+    } : {},
   };
   const originalTransaction = prisma.$transaction;
   const originalOperationFind = prisma.checkoutOperation.findUnique;
@@ -128,6 +137,16 @@ function harness(options: {
       },
       customer: { findUnique: async () => ({ id: "customer", isActive: true, loyaltyPercent: 0, wholesalePercent: 0 }) },
       user: { findUnique: async () => ({ id: "cashier", name: "Cashier", role: "CASHIER" }) },
+      billingDraftRequest: {
+        findUnique: async ({ where }: any) => staged.requests[where.id] ?? null,
+        updateMany: async ({ where, data }: any) => {
+          const request = staged.requests[where.id];
+          if (!request || request.completedInvoiceId !== where.completedInvoiceId ||
+            !where.status.in.includes(request.status)) return { count: 0 };
+          Object.assign(request, data);
+          return { count: 1 };
+        },
+      },
       stockTransaction: { create: async ({ data }: any) => staged.stock.push(data) },
       payment: { create: async ({ data }: any) => {
         if (options.failAt === "payment") throw new Error("payment write failed");
@@ -254,6 +273,60 @@ test("completed cash checkout replay does not repeat payment", async () => {
     assert.equal(mock.state.payments.length, 1);
     assert.equal(mock.state.stock.length, 2);
     assert.equal(mock.itemWrites, 2);
+  } finally { mock.restore(); }
+});
+
+test("request-linked checkout atomically completes and audits the exact invoice; replay does not repost", async () => {
+  const mock = harness({ request: {} });
+  try {
+    const request = { ...input(), draftRequestId: "request1" };
+    const first = await checkoutInvoice("cashier", request);
+    assert.ok(first.invoice);
+    assert.equal(mock.state.requests.request1.status, "COMPLETED");
+    assert.equal(mock.state.requests.request1.completedInvoiceId, first.invoice.id);
+    assert.equal(mock.state.audits.filter((audit) => audit.action === "DRAFT_REQUEST_COMPLETED").length, 1);
+    const invoiceCount = Object.keys(mock.state.invoices).length;
+    const replay = await checkoutInvoice("cashier", request);
+    assert.deepEqual(JSON.parse(JSON.stringify(replay)), JSON.parse(JSON.stringify(first)));
+    assert.equal(Object.keys(mock.state.invoices).length, invoiceCount);
+    assert.equal(mock.state.audits.filter((audit) => audit.action === "DRAFT_REQUEST_COMPLETED").length, 1);
+    await assert.rejects(
+      checkoutInvoice("cashier", { ...request, draftRequestId: undefined }),
+      /different bill contents/,
+    );
+  } finally { mock.restore(); }
+});
+
+test("request-linked checkout rejects wrong cashier assignment and non-accepted state without effects", async () => {
+  for (const requestOptions of [
+    { assignedCashierId: "other-cashier" },
+    { status: "PENDING" },
+  ]) {
+    const mock = harness({ request: requestOptions });
+    try {
+      await assert.rejects(
+        checkoutInvoice("cashier", { ...input(), draftRequestId: "request1" }),
+      );
+      assert.deepEqual(mock.state.invoices, {});
+      assert.deepEqual(mock.state.operations, {});
+      assert.equal(mock.state.requests.request1.completedInvoiceId, null);
+      assert.equal(mock.state.stock.length, 0);
+    } finally { mock.restore(); }
+  }
+});
+
+test("request-link audit failure rolls back checkout and completion", async () => {
+  const mock = harness({ request: {}, failAt: "audit" });
+  try {
+    await assert.rejects(
+      checkoutInvoice("cashier", { ...input(), draftRequestId: "request1" }),
+      /audit write failed/,
+    );
+    assert.deepEqual(mock.state.invoices, {});
+    assert.deepEqual(mock.state.operations, {});
+    assert.equal(mock.state.requests.request1.status, "ACCEPTED");
+    assert.equal(mock.state.requests.request1.completedInvoiceId, null);
+    assert.equal(mock.state.stock.length, 0);
   } finally { mock.restore(); }
 });
 

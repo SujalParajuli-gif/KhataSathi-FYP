@@ -101,6 +101,13 @@ export async function lockCashierForUpdate(
   await tx.$queryRaw`SELECT id FROM User WHERE id = ${cashierId} FOR UPDATE`;
 }
 
+export async function lockBillingDraftRequestForUpdate(
+  tx: LockingTransaction,
+  requestId: string,
+) {
+  await tx.$queryRaw`SELECT id FROM BillingDraftRequest WHERE id = ${requestId} FOR UPDATE`;
+}
+
 export async function lockCashDrawerForUpdate(
   tx: LockingTransaction,
   drawerId: string,

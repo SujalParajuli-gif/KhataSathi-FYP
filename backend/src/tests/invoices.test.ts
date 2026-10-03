@@ -132,6 +132,19 @@ test("checkout fingerprint detects bill changes without persisting PINs", () => 
 
   assert.equal(first, sameBillDifferentPin);
   assert.notEqual(first, changedBill);
+  assert.notEqual(
+    first,
+    buildCheckoutPayloadHash(
+      {
+        operationKey: "checkout-operation-123",
+        draftRequestId: "request-1",
+        items,
+        payments,
+      },
+      items,
+      payments,
+    ),
+  );
   assert.doesNotMatch(first, /1111|9999/);
 });
 

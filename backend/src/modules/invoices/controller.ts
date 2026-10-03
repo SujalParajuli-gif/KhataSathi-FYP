@@ -86,6 +86,7 @@ export async function checkout(req: Request, res: Response) {
     const result = await invoiceService.checkoutInvoice(req.user!.id, {
       operationKey: body.operationKey,
       draftInvoiceId: body.draftInvoiceId,
+      draftRequestId: body.draftRequestId,
       customerId: body.customerId,
       items: body.items,
       discountAmount: body.discountAmount,

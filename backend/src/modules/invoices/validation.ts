@@ -42,6 +42,7 @@ export const checkoutBodySchema = z
   .object({
     operationKey: checkoutOperationKeySchema,
     draftInvoiceId: optionalIdSchema,
+    draftRequestId: optionalIdSchema,
     customerId: optionalIdSchema,
     discountAmount: nonNegativeMoneySchema.optional(),
     overridePin: optionalPinSchema,

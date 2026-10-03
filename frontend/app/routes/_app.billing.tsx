@@ -30,7 +30,6 @@ import {
   parkInvoiceDraftApi,
   resumeParkedDraftApi,
   acceptDraftRequestApi,
-  completeDraftRequestApi,
   getDraftRequestApi,
   listDraftRequestsApi,
   markDraftRequestViewedApi,
@@ -47,6 +46,7 @@ import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import { resolvePendingCheckoutSnapshot } from "~/lib/billingCheckout";
 
 const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog every 2 minutes to prevent stale stock and prices while keeping request volume low
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
@@ -639,22 +639,6 @@ function writeStoredBillingCart(
 function clearStoredBillingCart() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
-}
-
-function savePendingDraftCompletion(
-  draftRequestId: string,
-  invoiceId: string,
-) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(
-    PENDING_DRAFT_COMPLETION_STORAGE_KEY,
-    JSON.stringify({ draftRequestId, invoiceId }),
-  );
-}
-
-function clearPendingDraftCompletion() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(PENDING_DRAFT_COMPLETION_STORAGE_KEY);
 }
 
 function isDraftRequestNoticeAcknowledged(
@@ -1386,35 +1370,10 @@ export default function BillingPage() {
   }, [isCashier, loadIncomingRequests]);
 
   useEffect(() => {
-    if (!isCashier || typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(
-      PENDING_DRAFT_COMPLETION_STORAGE_KEY,
-    );
-    if (!raw) return;
-    try {
-      const pending = JSON.parse(raw) as {
-        draftRequestId?: string;
-        invoiceId?: string;
-      };
-      if (!pending.draftRequestId || !pending.invoiceId) {
-        clearPendingDraftCompletion();
-        return;
-      }
-      void completeDraftRequestApi(
-        pending.draftRequestId,
-        pending.invoiceId,
-      )
-        .then(() => {
-          clearPendingDraftCompletion();
-          void loadIncomingRequests();
-        })
-        .catch(() => {
-          // Keep the recovery record. A later Billing visit will retry it.
-        });
-    } catch {
-      clearPendingDraftCompletion();
+    if (typeof window !== "undefined") {
+      window.localStorage.removeItem(PENDING_DRAFT_COMPLETION_STORAGE_KEY);
     }
-  }, [isCashier, loadIncomingRequests]);
+  }, []);
 
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
@@ -3643,11 +3602,12 @@ export default function BillingPage() {
         })),
         payments: checkoutPayments,
       };
-      const checkoutSnapshot = pendingCheckout || {
-        operationKey: createCheckoutOperationKey(),
-        payload: currentPayload,
+      const checkoutSnapshot = resolvePendingCheckoutSnapshot(
+        pendingCheckout,
+        createCheckoutOperationKey(),
+        currentPayload,
         activeDraftRequestId,
-      };
+      );
 
       if (!pendingCheckout) {
         setPendingCheckout(checkoutSnapshot);
@@ -3677,31 +3637,11 @@ export default function BillingPage() {
 
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
-        if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
-          savePendingDraftCompletion(checkoutSnapshot.activeDraftRequestId, invoiceId);
-        }
+        setPendingCheckout(null);
+        clearStoredBillingCart();
+        setActiveDraftRequestId(null);
         submitEsewaForm(result.esewaPaymentIntent);
         return;
-      }
-
-      if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
-        try {
-          await completeDraftRequestApi(
-            checkoutSnapshot.activeDraftRequestId,
-            invoiceId,
-          );
-          clearPendingDraftCompletion();
-          await loadIncomingRequests();
-        } catch {
-          savePendingDraftCompletion(
-            checkoutSnapshot.activeDraftRequestId,
-            invoiceId,
-          );
-          showToast(
-            "warning",
-            "The invoice was finalized, but request status synchronization is pending and will retry automatically.",
-          );
-        }
       }
 
       // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure

@@ -1434,6 +1434,7 @@ export async function createInvoiceApi(customerId?: string) {
 export type CheckoutInvoiceInput = {
     operationKey: string;
     draftInvoiceId?: string;
+    draftRequestId?: string;
     customerId?: string;
     discountAmount?: number;
     overridePin?: string;
@@ -2223,14 +2224,6 @@ export async function rejectDraftRequestApi(id: string, note?: string | null) {
     const res = await api.patch<{ request: BillingDraftRequest }>(
         `/api/draft-requests/${id}/reject`,
         { note },
-    );
-    return res.data;
-}
-
-export async function completeDraftRequestApi(id: string, invoiceId: string) {
-    const res = await api.patch<{ request: BillingDraftRequest }>(
-        `/api/draft-requests/${id}/complete`,
-        { invoiceId },
     );
     return res.data;
 }

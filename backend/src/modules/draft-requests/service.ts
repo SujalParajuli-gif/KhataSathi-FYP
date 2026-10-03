@@ -1,6 +1,7 @@
 import { DraftRequestItemStatus, DraftRequestStatus } from "@prisma/client";
 import { toBusinessClock, toBusinessRangeEnd } from "../../lib/businessDate";
 import prisma from "../../db/prisma";
+import { lockBillingDraftRequestForUpdate } from "../../lib/transactionLocks";
 import { isPresenceActive } from "../users/service";
 import type {
   AcceptDraftRequestInput,
@@ -807,7 +808,7 @@ export async function resolveAcceptedDraftRequest(
   });
 }
 
-function assertCashierCanReview(actor: Actor, request: {
+export function assertCashierCanReview(actor: Actor, request: {
   assignedCashierId?: string | null;
 }) {
   if (actor.role === "ADMIN" || actor.role === "MANAGER") return;
@@ -1075,42 +1076,20 @@ export async function completeDraftRequest(
   invoiceId: string,
 ) {
   return prisma.$transaction(async (tx: any) => {
+    await lockBillingDraftRequestForUpdate(tx, id);
     const request = await tx.billingDraftRequest.findUnique({ where: { id } });
     if (!request) throw new Error("Draft request not found.");
     assertCashierCanReview(actor, request);
-    if (request.status !== "ACCEPTED" && request.status !== "PARTIALLY_ACCEPTED") {
-      throw new Error("Only accepted draft requests can be completed.");
+    if (
+      request.status !== "COMPLETED" ||
+      request.completedInvoiceId !== invoiceId
+    ) {
+      throw new Error("Draft request completion must be confirmed by its linked checkout invoice.");
     }
-
-    const invoice = await tx.invoice.findUnique({
-      where: { id: invoiceId },
-      select: { id: true, invoiceNo: true, status: true },
-    });
-    if (!invoice || invoice.status !== "FINALIZED") {
-      throw new Error("Completed draft requests must link to a finalized invoice.");
-    }
-
-    const completed = await tx.billingDraftRequest.update({
+    return withDeliveryState(await tx.billingDraftRequest.findUnique({
       where: { id },
-      data: {
-        status: "COMPLETED",
-        completedInvoiceId: invoice.id,
-        modifiedAt: new Date(),
-      },
       include: draftRequestInclude,
-    });
-
-    await tx.auditLog.create({
-      data: {
-        actorId: actor.id,
-        action: "DRAFT_REQUEST_COMPLETED",
-        entityType: "BillingDraftRequest",
-        entityId: id,
-        meta: { requestNo: completed.requestNo, invoiceId, invoiceNo: invoice.invoiceNo },
-      },
-    });
-
-    return withDeliveryState(completed);
+    }));
   });
 }
 

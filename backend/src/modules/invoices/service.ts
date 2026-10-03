@@ -12,6 +12,7 @@ import {
 import prisma from "../../db/prisma";
 import {
   lockCashierForUpdate,
+  lockBillingDraftRequestForUpdate,
   lockInvoiceItemForUpdate,
   lockInvoiceItemsForUpdate,
   lockInvoiceForUpdate,
@@ -23,6 +24,7 @@ import {
   getBusinessSettings,
   resolveWholesaleQtyThreshold,
 } from "../settings/service";
+import { assertCashierCanReview } from "../draft-requests/service";
 import { createEsewaPaymentIntentTx } from "../payments/service";
 import {
   buildInsufficientStockMessage,
@@ -821,6 +823,7 @@ type CheckoutPaymentInput = {
 type CheckoutInput = {
   operationKey: string;
   draftInvoiceId?: string | null;
+  draftRequestId?: string | null;
   customerId?: string | null;
   discountAmount?: number;
   overridePin?: string | null;
@@ -837,6 +840,7 @@ export function buildCheckoutPayloadHash(
 ) {
   const fingerprintPayload = {
     draftInvoiceId: String(input.draftInvoiceId || "").trim() || null,
+    draftRequestId: String(input.draftRequestId || "").trim() || null,
     customerId: String(input.customerId || "").trim() || null,
     discountAmount:
       input.discountAmount === undefined ? null : roundCurrency(input.discountAmount),
@@ -1852,6 +1856,30 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
         data: { operationKey, actorId: cashierId, payloadHash },
         select: { id: true },
       });
+      const draftRequestId = String(input.draftRequestId || "").trim();
+      let linkedDraftRequest: any = null;
+      if (draftRequestId) {
+        await lockBillingDraftRequestForUpdate(tx, draftRequestId);
+        linkedDraftRequest = await tx.billingDraftRequest.findUnique({
+          where: { id: draftRequestId },
+        });
+        if (!linkedDraftRequest) throw new Error("Draft request not found.");
+        const actor = await tx.user.findUnique({
+          where: { id: cashierId },
+          select: { id: true, role: true },
+        });
+        if (!actor) throw new Error("Checkout actor not found.");
+        assertCashierCanReview(actor, linkedDraftRequest);
+        if (
+          linkedDraftRequest.status !== "ACCEPTED" &&
+          linkedDraftRequest.status !== "PARTIALLY_ACCEPTED"
+        ) {
+          throw new Error("Only accepted draft requests can be completed.");
+        }
+        if (linkedDraftRequest.completedInvoiceId) {
+          throw new Error("This draft request is already linked to a completed invoice.");
+        }
+      }
       const customerId = input.customerId ? String(input.customerId) : null;
     const customer = customerId
       ? await tx.customer.findUnique({
@@ -2077,6 +2105,37 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
           include: { payments: true },
         });
       }
+    }
+
+    if (linkedDraftRequest) {
+      const claimed = await tx.billingDraftRequest.updateMany({
+        where: {
+          id: linkedDraftRequest.id,
+          status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
+          completedInvoiceId: null,
+        },
+        data: {
+          status: "COMPLETED",
+          completedInvoiceId: invoice.id,
+          modifiedAt: new Date(),
+        },
+      });
+      if (claimed.count !== 1) {
+        throw new Error("This draft request changed during checkout. Please retry.");
+      }
+      await tx.auditLog.create({
+        data: {
+          actorId: cashierId,
+          action: "DRAFT_REQUEST_COMPLETED",
+          entityType: "BillingDraftRequest",
+          entityId: linkedDraftRequest.id,
+          meta: {
+            requestNo: linkedDraftRequest.requestNo,
+            invoiceId: invoice.id,
+            invoiceNo: invoice.invoiceNo,
+          },
+        },
+      });
     }
 
     const savedInvoice = await tx.invoice.findUnique({
