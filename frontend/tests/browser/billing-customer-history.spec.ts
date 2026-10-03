@@ -2,6 +2,42 @@ import { expect, test } from "@playwright/test";
 
 const cashier = { id: "user-cashier", name: "Billing Cashier", role: "cashier" };
 
+test("history preview discloses its 20-product limit and scopes its empty-state claim", async ({ page }) => {
+  const products = Array.from({ length: 21 }, (_, index) => ({
+    id: `product-${index + 1}`, name: `Test product ${index + 1}`, sku: `SKU-${index + 1}`,
+    retailPrice: 25, wholesalePrice: 25, stock: 50, isActive: true, quantityStep: 1,
+  }));
+  let queriedIds: string[] = [];
+  await page.addInitScript(({ user, products }) => {
+    localStorage.setItem("khatasathi_auth_user", JSON.stringify(user));
+    localStorage.setItem("khatasathi_token", "test-session");
+    localStorage.setItem("khatasathi_billing_cart", JSON.stringify({
+      cart: products.map((product) => ({ productId: product.id, qty: 1 })),
+      selectedCustomerId: "customer", savedAt: new Date().toISOString(),
+    }));
+  }, { user: cashier, products });
+  await page.route((url) => url.pathname.startsWith("/api/"), async (route) => {
+    const url = new URL(route.request().url());
+    const respond = (body: unknown) => route.fulfill({ contentType: "application/json", body: JSON.stringify(body) });
+    if (url.pathname.endsWith("/auth/me")) return respond({ user: cashier });
+    if (url.pathname.endsWith("/capabilities")) return respond({ businessMode: "FULL_POS", catalogEnabled: true, inventoryEnabled: true, posEnabled: true, stockTracked: true, staffDraftRequestsEnabled: true });
+    if (url.pathname.endsWith("/product-history")) {
+      queriedIds = (url.searchParams.get("productIds") || "").split(",");
+      return respond({ history: [] });
+    }
+    if (url.pathname.endsWith("/customers")) return respond([{ id: "customer", name: "Test customer", isActive: true }]);
+    if (url.pathname.endsWith("/products") || url.pathname.endsWith("/products/lookup")) return respond({ products, total: products.length });
+    if (url.pathname.endsWith("/brands") || url.pathname.endsWith("/categories")) return respond([]);
+    return respond({});
+  });
+  await page.goto("/billing");
+  await expect(page.getByText("Showing history for the first 20 of 21 cart products.")).toBeVisible();
+  await expect(page.getByText("No previous purchases recorded for the 20 products checked.")).toBeVisible();
+  expect(queriedIds).toHaveLength(20);
+  await expect(page.getByText("No previous purchases recorded for items in this cart.")).not.toBeVisible();
+  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeEnabled();
+});
+
 test("billing displays bounded advisory customer purchase history for cart items without altering cart pricing", async ({ page }) => {
   const testCustomer = {
     id: "cust-1",
@@ -111,6 +147,7 @@ test("billing displays bounded advisory customer purchase history for cart items
             productId: "prod-1",
             productName: "Wai Wai Instant Noodles",
             productSku: "WAI-101",
+            displayProduct: { name: "Historical noodles", sku: "OLD-101", source: "LEGACY_LIVE_FALLBACK" },
             qty: 5,
             appliedUnitPrice: 20,
           },
@@ -153,6 +190,8 @@ test("billing displays bounded advisory customer purchase history for cart items
   await expect(page.getByText("Advisory")).toBeVisible();
   await expect(page.getByText("NPR 20")).toBeVisible(); // Historical applied unit price
   await expect(page.getByText("Qty: 5 · Inv #INV-2026-0042")).toBeVisible();
+  await expect(page.getByText("Historical noodles")).toBeVisible();
+  await expect(page.getByText("Legacy identity — current labels")).toBeVisible();
   await expect(
     page.getByText("Historical prices are reference context only and do not modify current billing rates."),
   ).toBeVisible();

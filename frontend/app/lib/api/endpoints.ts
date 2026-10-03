@@ -1399,6 +1399,11 @@ export type CustomerProductPurchaseHistoryItem = {
     productId: string;
     productName: string;
     productSku: string | null;
+    displayProduct?: {
+        name: string | null;
+        sku: string | null;
+        source: "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT";
+    };
     qty: number;
     appliedUnitPrice: number;
 };

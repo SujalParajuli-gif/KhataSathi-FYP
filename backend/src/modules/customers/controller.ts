@@ -466,11 +466,13 @@ export async function deactivate(req: Request, res: Response) {
 }
 
 function parseProductIds(queryParam: unknown): string[] {
-  let rawList: string[] = [];
-  if (Array.isArray(queryParam)) {
-    rawList = queryParam.flatMap((p) => String(p || "").split(","));
-  } else if (typeof queryParam === "string") {
-    rawList = queryParam.split(",");
+  const values = Array.isArray(queryParam) ? queryParam : [queryParam];
+  if (values.some((value) => typeof value !== "string")) {
+    throw new custService.CustomerValidationError("productIds", "Product IDs must be strings.");
+  }
+  const rawList = (values as string[]).flatMap((value) => value.split(","));
+  if (rawList.some((id) => id.trim().length > 191 || /[\s,]/.test(id.trim()))) {
+    throw new custService.CustomerValidationError("productIds", "Invalid product ID.");
   }
   const unique = Array.from(
     new Set(rawList.map((id) => id.trim()).filter((id) => id.length > 0)),
@@ -511,6 +513,10 @@ export async function getProductPurchaseHistory(req: Request, res: Response) {
     );
     res.json({ history });
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     if (String(err?.message || "").includes("Customer not found")) {
       res.status(404).json({ error: "Customer not found" });
       return;

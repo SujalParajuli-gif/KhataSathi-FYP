@@ -1,5 +1,6 @@
 import prisma from "../../db/prisma";
 import { getCashierPrivilege } from "../settings/service";
+import { resolveDisplayProduct, type DisplayProduct } from "../invoices/service";
 
 export class CustomerValidationError extends Error {
   field: string;
@@ -653,6 +654,7 @@ export type CustomerProductPurchaseHistoryItem = {
   productId: string;
   productName: string;
   productSku: string | null;
+  displayProduct: DisplayProduct;
   qty: number;
   appliedUnitPrice: number;
 };
@@ -699,6 +701,7 @@ export async function getCustomerProductPurchaseHistory(
           appliedUnitPrice: true,
           productNameSnapshot: true,
           productSkuSnapshot: true,
+          snapshotCapturedAt: true,
           product: {
             select: {
               name: true,
@@ -726,15 +729,16 @@ export async function getCustomerProductPurchaseHistory(
 
   return perProductItems.flat().map((item) => {
     const invoiceDate = item.invoice.finalizedAt || item.invoice.createdAt;
+    const displayProduct = resolveDisplayProduct(item, "FINALIZED");
     return {
       id: item.id,
       invoiceId: item.invoice.id,
       invoiceNo: item.invoice.invoiceNo,
       invoiceDate: invoiceDate.toISOString(),
       productId: item.productId,
-      productName:
-        item.productNameSnapshot || item.product?.name || "Unknown Product",
-      productSku: item.productSkuSnapshot || item.product?.sku || null,
+      productName: displayProduct.name ?? "Unknown item",
+      productSku: displayProduct.sku,
+      displayProduct,
       qty: item.qty,
       appliedUnitPrice: item.appliedUnitPrice,
     };

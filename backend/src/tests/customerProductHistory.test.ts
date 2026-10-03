@@ -147,6 +147,7 @@ test("getCustomerProductPurchaseHistory queries with correct scoping and filters
           appliedUnitPrice: 250,
           productNameSnapshot: "Snapshot Product Name",
           productSkuSnapshot: "SKU-SNAP-01",
+          snapshotCapturedAt: new Date("2026-09-15T10:00:00.000Z"),
           product: { name: "Live Catalog Name", sku: "SKU-LIVE-01" },
           invoice: {
             id: "inv_1",
@@ -173,6 +174,7 @@ test("getCustomerProductPurchaseHistory queries with correct scoping and filters
 
     // Verify security/privacy: costAtSale, payment info, override internal IDs are not selected
     assert.equal(capturedSelect.costAtSale, undefined);
+    assert.equal(capturedSelect.snapshotCapturedAt, true);
     assert.equal(capturedSelect.overrideById, undefined);
     assert.equal(capturedSelect.invoice.select.cashierId, undefined);
 
@@ -186,6 +188,7 @@ test("getCustomerProductPurchaseHistory queries with correct scoping and filters
       productId: "prod_1",
       productName: "Snapshot Product Name",
       productSku: "SKU-SNAP-01",
+      displayProduct: { name: "Snapshot Product Name", sku: "SKU-SNAP-01", source: "CAPTURED" },
       qty: 3,
       appliedUnitPrice: 250,
     });
@@ -223,6 +226,7 @@ test("getCustomerProductPurchaseHistory falls back to live product name if snaps
     assert.equal(history.length, 1);
     assert.equal(history[0].productName, "Catalog Fallback Name");
     assert.equal(history[0].productSku, "CAT-SKU-02");
+    assert.equal(history[0].displayProduct.source, "LEGACY_LIVE_FALLBACK");
     assert.equal(history[0].invoiceDate, "2026-09-20T12:00:00.000Z");
   } finally {
     prisma.customer.findUnique = originalFindUnique;

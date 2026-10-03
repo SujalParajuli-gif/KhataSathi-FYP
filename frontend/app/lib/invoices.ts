@@ -630,6 +630,19 @@ export function normalizeInvoice(raw: any): AppInvoice {
   };
 }
 
+// The price-history preview shares the invoice display and old-response policy.
+export function normalizePurchaseHistoryProduct(item: {
+  productId: string;
+  productName: string;
+  productSku: string | null;
+  displayProduct?: unknown;
+}) {
+  return normalizeInvoice({
+    status: "FINALIZED",
+    items: [{ ...item, name: item.productName, sku: item.productSku }],
+  }).items[0];
+}
+
 // opening the printable invoice view in a new browser tab
 export function openInvoicePrint(invoiceId: string) {
   if (typeof window === "undefined") return;

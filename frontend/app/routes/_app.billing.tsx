@@ -42,7 +42,7 @@ import {
 } from "~/lib/api/endpoints";
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
-import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
+import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
@@ -1795,6 +1795,7 @@ export default function BillingPage() {
     }
 
     const controller = new AbortController();
+    setCustomerHistory([]);
     setCustomerHistoryLoading(true);
     setCustomerHistoryError(null);
 
@@ -1804,6 +1805,7 @@ export default function BillingPage() {
       signal: controller.signal,
     })
       .then((data) => {
+        if (controller.signal.aborted) return;
         setCustomerHistory(data.history || []);
         setCustomerHistoryLoading(false);
         setCustomerHistoryError(null);
@@ -5078,6 +5080,12 @@ export default function BillingPage() {
                       </span>
                     </div>
 
+                    {cartProductIds.length > 20 ? (
+                      <div className="mb-2 text-[11px] font-semibold text-slate-600">
+                        Showing history for the first 20 of {cartProductIds.length} cart products.
+                      </div>
+                    ) : null}
+
                     {customerHistoryLoading ? (
                       <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
                         Loading purchase history…
@@ -5088,22 +5096,29 @@ export default function BillingPage() {
                       </div>
                     ) : customerHistory.length === 0 ? (
                       <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
-                        No previous purchases recorded for items in this cart.
+                        {cartProductIds.length > 20
+                          ? "No previous purchases recorded for the 20 products checked."
+                          : "No previous purchases recorded for items in this cart."}
                       </div>
                     ) : (
                       <div className="max-h-[160px] overflow-y-auto space-y-2 pr-1">
-                        {customerHistory.map((item) => (
+                        {customerHistory.map((item) => {
+                          const product = normalizePurchaseHistoryProduct(item);
+                          return (
                           <div
                             key={item.id}
                             className="rounded-[8px] border border-[#E2E8F0] bg-white p-2 text-[11px] shadow-xs"
                           >
                             <div className="flex items-start justify-between gap-2">
                               <div className="min-w-0 font-bold text-[#1E293B] truncate">
-                                {item.productName}
+                                {product.name}
                               </div>
                               <div className="shrink-0 font-mono font-extrabold text-[#0F172A]">
                                 {formatNpr(item.appliedUnitPrice)}
                               </div>
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-500">
+                              {getIdentitySourceLabel(product.identitySource)}
                             </div>
                             <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 font-medium">
                               <span>
@@ -5118,7 +5133,8 @@ export default function BillingPage() {
                               </span>
                             </div>
                           </div>
-                        ))}
+                          );
+                        })}
                       </div>
                     )}
                     <div className="mt-2 text-[10px] text-slate-500 italic">
