@@ -137,6 +137,7 @@ export async function updateBusinessDefaults(req: Request, res: Response) {
       panNo: req.body?.panNo,
       businessAddress: req.body?.businessAddress,
       businessPhone: req.body?.businessPhone,
+      taxCalculationMode: req.body?.taxCalculationMode,
     }, req.user!.id);
 
     res.json(settings);

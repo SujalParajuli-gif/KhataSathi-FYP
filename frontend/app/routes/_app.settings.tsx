@@ -48,6 +48,7 @@ import {
   updateOverridePinApi,
   updateBrandApi,
   type BusinessSettings,
+  type TaxCalculationMode,
   type BusinessMode,
   type BusinessModePreflight,
   type CashierPrivilegeRow,
@@ -61,6 +62,7 @@ import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import { getAuthUser } from "~/lib/auth";
 import {
   effectiveStaffDraftRequests,
   isBusinessAccessDraftDirty,
@@ -892,6 +894,7 @@ function clampPage(n: number, min: number, max: number) {
 // this handles updating business rules (defaults), managing brand lists, reviewing application audit logs, and running database backups
 export default function SettingsPage() {
   const capabilities = useBusinessCapabilities();
+  const isAdmin = getAuthUser()?.role === "admin";
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
@@ -1051,6 +1054,10 @@ export default function SettingsPage() {
     String(INITIAL_DEFAULTS.draftRequestExpiryMinutes),
   );
   const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
+  const [businessTaxMode, setBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
+  const [savedBusinessTaxMode, setSavedBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
+  const [businessTaxModeBusy, setBusinessTaxModeBusy] = useState(false);
+  const [businessTaxModeError, setBusinessTaxModeError] = useState("");
   const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false); // confirmation dialog before saving business defaults
   const [defaultsShowErrors, setDefaultsShowErrors] = useState(false);
   const [defaultsBusy, setDefaultsBusy] = useState(false);
@@ -1284,6 +1291,9 @@ export default function SettingsPage() {
           defaultsDraft.draftRequestExpiryMinutes,
         );
         setSavedDefaults(normalizedSettings);
+        const taxMode = settingsData.value?.taxCalculationMode ?? "UNKNOWN";
+        setBusinessTaxMode(taxMode);
+        setSavedBusinessTaxMode(taxMode);
         if (settingsData.value?.businessMode) {
           setModeDraft(settingsData.value.businessMode);
         }
@@ -2007,6 +2017,27 @@ export default function SettingsPage() {
       showToast("danger", message);
     } finally {
       setDefaultsBusy(false);
+    }
+  }
+
+  async function saveBusinessTaxMode() {
+    if (!isAdmin || !settingsTabLoadedAtRef.current.has("overview")) return;
+    if (businessTaxMode === savedBusinessTaxMode) return;
+    try {
+      setBusinessTaxModeBusy(true);
+      setBusinessTaxModeError("");
+      const updated = await updateBusinessSettingsApi({ taxCalculationMode: businessTaxMode });
+      const saved = updated.taxCalculationMode ?? "UNKNOWN";
+      setBusinessTaxMode(saved);
+      setSavedBusinessTaxMode(saved);
+      showToast("success", "Business tax status updated.");
+      await refreshSettingsData();
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.message || "Business tax status could not be saved.";
+      setBusinessTaxModeError(message);
+      showToast("danger", message);
+    } finally {
+      setBusinessTaxModeBusy(false);
     }
   }
 
@@ -2901,6 +2932,51 @@ export default function SettingsPage() {
                   </span>
                 </div>
               )}
+            </div>
+
+            <div className="rounded-[16px] border border-amber-200 bg-amber-50/60 p-5 shadow-2xs">
+              <div className="mb-3 flex items-center gap-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-white text-amber-700">
+                  <Icon name="receipt_long" sizePx={17} />
+                </div>
+                <h2 className="text-[16px] font-semibold text-[#11120D]">Business VAT status</h2>
+              </div>
+              <p className="mb-3 max-w-3xl text-[12.5px] leading-relaxed text-slate-700">
+                Record the verified seller status. Product prices are VAT-exclusive when registered. This setting does not calculate or add tax to sales yet.
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="flex-1 text-[12px] font-semibold text-slate-700" htmlFor="business-tax-mode">
+                  Tax configuration
+                  <select
+                    id="business-tax-mode"
+                    value={businessTaxMode}
+                    onChange={(event) => {
+                      setBusinessTaxMode(event.target.value as TaxCalculationMode);
+                      setBusinessTaxModeError("");
+                    }}
+                    disabled={!isAdmin || businessTaxModeBusy || !settingsTabLoadedAtRef.current.has("overview")}
+                    className="mt-1 block h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  >
+                    <option value="UNKNOWN">Not configured — keep tax status unknown</option>
+                    <option value="NO_VAT">Verified not VAT registered</option>
+                    <option value="VAT_EXCLUSIVE">VAT registered — prices exclude VAT</option>
+                  </select>
+                </label>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveBusinessTaxMode()}
+                    disabled={businessTaxModeBusy || businessTaxMode === savedBusinessTaxMode || !settingsTabLoadedAtRef.current.has("overview")}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Icon name="save" sizePx={16} />
+                    {businessTaxModeBusy ? "Saving…" : "Save tax status"}
+                  </button>
+                ) : (
+                  <span className="text-xs font-semibold text-slate-600">Only an administrator can change this setting.</span>
+                )}
+              </div>
+              {businessTaxModeError ? <p className="mt-2 text-sm font-semibold text-rose-700" role="alert">{businessTaxModeError}</p> : null}
             </div>
 
             <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">

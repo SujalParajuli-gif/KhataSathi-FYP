@@ -17,6 +17,7 @@ import {
   getByCode,
   create,
   update,
+  updateTaxCategory,
   deactivate,
   categories,
   importCsv,
@@ -147,6 +148,7 @@ router.get("/:id/delete-safety", requireRole("ADMIN", "MANAGER"), deleteSafety);
 router.post("/:id/discard-stock-and-delete", requireRole("ADMIN"), requireBusinessCapability("INVENTORY"), discardStockAndPermanentDelete); // admin-only cleanup for unreferenced products with non-zero stock
 router.delete("/:id", requireRole("ADMIN"), permanentDelete); // admin-only permanent delete for safe mistake records
 router.get("/:id", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getOne); // fetching a single product with its brand info
+router.patch("/:id/tax-category", requireRole("ADMIN"), updateTaxCategory);
 router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can edit product info
 router.patch("/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivate); // admin and managers can deactivate products
 

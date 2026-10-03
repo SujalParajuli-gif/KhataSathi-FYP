@@ -40,6 +40,7 @@ export type Product = {
   availabilityStatus: "CATALOG_LISTED" | "COMING_SOON";
   retailPrice: number | null;
   wholesalePrice: number | null;
+  taxCategory?: "UNSPECIFIED" | "STANDARD_VAT" | "VAT_EXEMPT";
   thresholdQty: number; // qty wholesale threshold: above this qty, wholesale pricing kicks in
   thresholdQtyMode: ThresholdMode;
 

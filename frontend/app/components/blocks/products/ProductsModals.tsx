@@ -17,6 +17,7 @@ import type {
   DocumentRecord,
   ImportedProductSummary,
   ProductDeleteSafety,
+  ProductTaxCategory,
   ProductImportBatch,
   ReviewedPdfImportRowPayload,
 } from "~/lib/api/endpoints";
@@ -965,6 +966,7 @@ export default function ProductsModals({
   onClearFormError,
   onConfirmDelete,
   isAdmin,
+  onUpdateProductTaxCategory,
   deleteSafety,
   deleteSafetyLoading,
   deleteBusy,
@@ -1059,6 +1061,7 @@ export default function ProductsModals({
   onClearFormError: (field: keyof ProductFormErrors) => void;
   onConfirmDelete: () => void;
   isAdmin: boolean;
+  onUpdateProductTaxCategory: (productId: string, category: ProductTaxCategory) => Promise<void>;
   deleteSafety: ProductDeleteSafety | null;
   deleteSafetyLoading: boolean;
   deleteBusy: boolean;
@@ -1123,6 +1126,22 @@ export default function ProductsModals({
   onMinimizeImport?: () => void;
   onOpenImportModal?: () => void;
 }) {
+  const [taxCategoryDraft, setTaxCategoryDraft] = React.useState<ProductTaxCategory>("UNSPECIFIED");
+  const [taxCategoryBusy, setTaxCategoryBusy] = React.useState(false);
+  React.useEffect(() => {
+    setTaxCategoryDraft(activeProduct?.taxCategory ?? "UNSPECIFIED");
+  }, [activeProduct?.id, activeProduct?.taxCategory]);
+
+  async function saveTaxCategory() {
+    if (!activeProduct || !isAdmin || taxCategoryBusy) return;
+    setTaxCategoryBusy(true);
+    try {
+      await onUpdateProductTaxCategory(activeProduct.id, taxCategoryDraft);
+    } finally {
+      setTaxCategoryBusy(false);
+    }
+  }
+
   const inputBase =
     "h-[38px] w-full rounded-[12px] border bg-white px-[10px] text-[13px] font-semibold text-[#000000] outline-none";
   const inputClass = (error?: string) =>
@@ -4553,6 +4572,39 @@ export default function ProductsModals({
                   </section>
                 ))}
             </div>
+
+            <section className="mb-4 rounded-[14px] border border-amber-200 bg-amber-50/60 p-3.5">
+              <div className="text-sm font-extrabold text-slate-900">Tax classification</div>
+              <p className="mt-1 text-xs leading-relaxed text-slate-700">
+                Unspecified means this product has not been reviewed. Do not infer it from the product name or general category.
+              </p>
+              <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
+                <label htmlFor="product-tax-category" className="flex-1 text-xs font-bold text-slate-700">
+                  Product tax category
+                  <select
+                    id="product-tax-category"
+                    value={taxCategoryDraft}
+                    onChange={(event) => setTaxCategoryDraft(event.target.value as ProductTaxCategory)}
+                    disabled={!isAdmin || taxCategoryBusy}
+                    className="mt-1 block h-10 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm font-semibold text-slate-900 disabled:bg-slate-100"
+                  >
+                    <option value="UNSPECIFIED">Unspecified — needs review</option>
+                    <option value="STANDARD_VAT">Standard VAT (13%)</option>
+                    <option value="VAT_EXEMPT">VAT-exempt</option>
+                  </select>
+                </label>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveTaxCategory()}
+                    disabled={taxCategoryBusy || taxCategoryDraft === (activeProduct.taxCategory ?? "UNSPECIFIED")}
+                    className="h-10 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    {taxCategoryBusy ? "Saving…" : "Save classification"}
+                  </button>
+                ) : <span className="text-xs font-semibold text-slate-600">Only an administrator can change this classification.</span>}
+              </div>
+            </section>
 
             <div className="hidden bg-white md:block md:max-h-[85vh] md:overflow-y-auto">
               <div className="flex flex-col gap-4 md:flex-row">

@@ -14,7 +14,7 @@ Before editing:
 2. Read `/docs/engineering/IMPLEMENTATION_CHECKPOINT.md`.
 3. Read the assigned task under `/docs/engineering/ai/tasks/`.
 4. If the task has `Planning Required: YES` or `Execution Mode: PLANNED_IMPLEMENTATION`, read the plan artifact under `/docs/engineering/ai/plans/TASK-XXX-plan.md`. If the plan is missing, STOP and report: missing required plan (`READY_FOR_PLANNING`). Do not invent a plan during implementation.
-5. Read only the relevant Master Plan v1.1 section(s) referenced by the task.
+5. Read only the relevant Master Plan v1.2 section(s) referenced by the task.
 6. Inspect the actual affected code and tests.
 7. Inspect current Git status/branch as required by AGENTS.md.
 

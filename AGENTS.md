@@ -20,7 +20,7 @@ Before changing KhataSathi, read only what is needed in this order:
 
 4. The implementation plan under `/docs/engineering/ai/plans/` (if planning was required)
 
-5. Only the relevant section(s) of `/docs/engineering/KHATASATHI_MASTER_IMPLEMENTATION_PLAN_v1.1.md`
+5. Only the relevant section(s) of `/docs/engineering/KHATASATHI_MASTER_IMPLEMENTATION_PLAN_v1.2.md`
 
 6. The affected code/tests
 
@@ -48,7 +48,7 @@ Use this project authority order, subject to governing system instructions:
 
 5. `/docs/engineering/IMPLEMENTATION_CHECKPOINT.md`
 
-6. Frozen Master Plan v1.1
+6. Frozen Master Plan v1.2
 
 7. Accepted task review
 
@@ -171,13 +171,13 @@ tasks, plans, reports, reviews, `/ThingsforAI/`, personal skills, transcripts,
 scratch prompts, caches, and generated logs. Do not broadly unignore
 `.agents/` or `docs/engineering/ai/`. Do not force-add ignored files.
 
-`/docs/engineering/KHATASATHI_MASTER_IMPLEMENTATION_PLAN_v1.1.md` is the
+`/docs/engineering/KHATASATHI_MASTER_IMPLEMENTATION_PLAN_v1.2.md` is the
 
 canonical architecture source for this AI engineering workflow. Canonical
 
 authority does not imply Git tracking: the plan may remain local and ignored.
 
-Agents must still follow its frozen v1.1 architecture and must never force-add it
+Agents must still follow its frozen v1.2 architecture and must never force-add it
 
 merely because it is canonical.
 
@@ -195,7 +195,7 @@ Use it only when:
 
 - a specific file is clearly relevant as an on-demand reference.
 
-Current code, AGENTS.md, active tasks, checkpoint, and Master Plan v1.1 take precedence.
+Current code, AGENTS.md, active tasks, checkpoint, and Master Plan v1.2 take precedence.
 
 ---
 

@@ -60,7 +60,27 @@ test("complete business defaults still receive safe creation defaults", () => {
     returnWindowDays: 7,
     parkedBillExpiryHours: 8,
     draftRequestExpiryMinutes: 30,
+    taxCalculationMode: "UNKNOWN",
   });
+});
+
+test("business tax mode accepts only supported values and defaults to UNKNOWN", () => {
+  assert.deepEqual(
+    normalizeBusinessSettingsPatch({ taxCalculationMode: "VAT_EXCLUSIVE" }),
+    { taxCalculationMode: "VAT_EXCLUSIVE" },
+  );
+  assert.deepEqual(
+    normalizeBusinessSettingsPatch({ taxCalculationMode: "NO_VAT" }),
+    { taxCalculationMode: "NO_VAT" },
+  );
+  assert.throws(
+    () => normalizeBusinessSettingsPatch({ taxCalculationMode: "VAT_INCLUSIVE" }),
+    (err: any) => err instanceof BusinessSettingsValidationError && err.field === "taxCalculationMode",
+  );
+  assert.throws(
+    () => normalizeBusinessSettingsPatch({ taxCalculationMode: null }),
+    (err: any) => err instanceof BusinessSettingsValidationError && err.field === "taxCalculationMode",
+  );
 });
 
 test("business defaults patch normalizes and trims all five identity fields", () => {
@@ -264,6 +284,7 @@ async function withPrismaMocks(
     panNo: null,
     businessAddress: null,
     businessPhone: null,
+    taxCalculationMode: "UNKNOWN",
     createdAt: new Date("2026-01-01"),
     updatedAt: new Date("2026-01-01"),
     ...initialRow,
@@ -403,6 +424,24 @@ test("updateBusinessSettings updates identity fields and preserves numeric defau
       assert.equal(cached.panNo, "009876543");
     },
   );
+});
+
+test("updateBusinessSettings audits an explicit tax mode and preserves it in the safe cache", async () => {
+  await withPrismaMocks({ taxCalculationMode: "UNKNOWN" }, async (ctx) => {
+    const updated = await updateBusinessSettings(
+      { taxCalculationMode: "VAT_EXCLUSIVE" },
+      "admin-user-1",
+    );
+
+    assert.equal(updated.taxCalculationMode, "VAT_EXCLUSIVE");
+    assert.equal(ctx.getRow().taxCalculationMode, "VAT_EXCLUSIVE");
+    assert.equal(ctx.getAuditLogs().length, 1);
+    assert.deepEqual(
+      ctx.getAuditLogs()[0].meta.changes.taxCalculationMode,
+      { before: "UNKNOWN", after: "VAT_EXCLUSIVE" },
+    );
+    assert.equal((await getBusinessSettings()).taxCalculationMode, "VAT_EXCLUSIVE");
+  });
 });
 
 test("updateBusinessSettings records only changed fields in auditLog without exposing overridePinHash", async () => {

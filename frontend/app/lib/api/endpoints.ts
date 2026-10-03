@@ -57,7 +57,11 @@ export type BusinessSettings = {
     panNo?: string | null;
     businessAddress?: string | null;
     businessPhone?: string | null;
+    taxCalculationMode?: TaxCalculationMode;
 };
+
+export type TaxCalculationMode = "UNKNOWN" | "NO_VAT" | "VAT_EXCLUSIVE";
+export type ProductTaxCategory = "UNSPECIFIED" | "STANDARD_VAT" | "VAT_EXEMPT";
 
 export type BusinessMode = "CATALOG_ONLY" | "INVENTORY_ONLY" | "FULL_POS";
 
@@ -506,6 +510,15 @@ export async function updateProductApi(id: string, data: any) {
     const res = await api.put(`/api/products/${id}`, data);
     invalidateProductReferenceCache();
     return res.data;
+}
+
+export async function updateProductTaxCategoryApi(
+    id: string,
+    taxCategory: ProductTaxCategory,
+) {
+    const res = await api.patch(`/api/products/${id}/tax-category`, { taxCategory });
+    invalidateProductReferenceCache();
+    return res.data as { id: string; taxCategory: ProductTaxCategory };
 }
 
 // soft-deleting a product by marking it as inactive

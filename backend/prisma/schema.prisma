@@ -32,6 +32,18 @@ enum ProductAvailabilityStatus {
   COMING_SOON
 }
 
+enum TaxCalculationMode {
+  UNKNOWN
+  NO_VAT
+  VAT_EXCLUSIVE
+}
+
+enum ProductTaxCategory {
+  UNSPECIFIED
+  STANDARD_VAT
+  VAT_EXEMPT
+}
+
 enum ProductImportComparisonStatus {
   READY_NEW
   EXACT_DUPLICATE
@@ -289,6 +301,7 @@ model Product {
   sourceCitation                   String?
   sellingPriceStatus               SellingPriceStatus @default(READY)
   availabilityStatus               ProductAvailabilityStatus @default(CATALOG_LISTED)
+  taxCategory                      ProductTaxCategory         @default(UNSPECIFIED)
   retailPrice                      Float?
   wholesalePrice                   Float?
   wholesaleQtyThreshold            Float    @default(1)
@@ -604,6 +617,7 @@ model BusinessSettings {
   panNo                        String?
   businessAddress              String?      @db.Text
   businessPhone                String?
+  taxCalculationMode           TaxCalculationMode @default(UNKNOWN)
   createdAt                    DateTime     @default(now())
   updatedAt                    DateTime     @updatedAt
 }

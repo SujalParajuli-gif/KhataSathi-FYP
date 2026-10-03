@@ -13,6 +13,7 @@ import {
   uploadProductImageApi,
   updateProductApi,
   type ProductDeleteSafety,
+  type ProductTaxCategory,
 } from "~/lib/api/endpoints";
 import type { Product, ProductsQuery, ProductStatus } from "./products.types";
 
@@ -46,6 +47,7 @@ type BackendProduct = {
   searchAliases?: Array<{ alias: string }>;
   sellingPriceStatus?: "PENDING" | "READY";
   availabilityStatus?: "CATALOG_LISTED" | "COMING_SOON";
+  taxCategory?: ProductTaxCategory;
   retailPrice: number | null;
   wholesalePrice: number | null;
   wholesaleQtyThreshold?: number;
@@ -117,6 +119,7 @@ function toFrontendProduct(product: BackendProduct): Product {
       product.wholesalePrice === null || product.wholesalePrice === undefined
         ? null
         : Number(product.wholesalePrice),
+    taxCategory: product.taxCategory ?? "UNSPECIFIED",
     thresholdQty: Number(product.wholesaleQtyThreshold ?? 1),
     thresholdQtyMode: product.usesDefaultWholesaleQtyThreshold
       ? "default"

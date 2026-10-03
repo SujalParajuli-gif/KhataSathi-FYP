@@ -38,10 +38,12 @@ import {
   receiveStockBatchApi,
   adjustStockApi,
   bulkUpdateProductPricesApi,
+  updateProductTaxCategoryApi,
   type BusinessSettings,
   type DocumentRecord,
   type ImportedProductSummary,
   type ProductImportBatch,
+  type ProductTaxCategory,
   type ProductImportTemplate,
   type ReviewedPdfImportRowPayload,
   type ProductSearchSelectionAction,
@@ -1243,6 +1245,19 @@ export default function ProductsPage() {
     const outcome = await refreshAfterSuccessfulMutation(() => loadProducts());
     if (outcome === "saved_refresh_failed") {
       toastMsg("info", "Saved; the product list could not refresh.");
+    }
+  }
+
+  async function handleProductTaxCategoryUpdate(productId: string, taxCategory: ProductTaxCategory) {
+    if (!isAdmin) return;
+    try {
+      await updateProductTaxCategoryApi(productId, taxCategory);
+      setProducts((current) => current.map((product) =>
+        product.id === productId ? { ...product, taxCategory } : product,
+      ));
+      toastMsg("success", "Product tax classification updated.");
+    } catch (error: any) {
+      toastMsg("danger", error?.response?.data?.error || error?.message || "Product tax classification could not be saved.");
     }
   }
 
@@ -4536,6 +4551,7 @@ export default function ProductsPage() {
         onClearFormError={(field) => setFormErrors((current) => ({ ...current, [field]: undefined }))}
         onConfirmDelete={confirmDeleteOne}
         isAdmin={isAdmin}
+        onUpdateProductTaxCategory={handleProductTaxCategoryUpdate}
         deleteSafety={deleteSafety}
         deleteSafetyLoading={deleteSafetyLoading}
         deleteBusy={deleteBusy}

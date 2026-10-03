@@ -29,9 +29,12 @@ export type BusinessSettingsSnapshot = {
   panNo: string | null;
   businessAddress: string | null;
   businessPhone: string | null;
+  taxCalculationMode: TaxCalculationMode;
   createdAt?: Date;
   updatedAt?: Date;
 };
+
+export type TaxCalculationMode = "UNKNOWN" | "NO_VAT" | "VAT_EXCLUSIVE";
 
 export type OverrideAction =
   | "PRICE_OVERRIDE"
@@ -79,6 +82,7 @@ const DEFAULT_BUSINESS_SETTINGS = {
   returnWindowDays: 7,
   parkedBillExpiryHours: 8,
   draftRequestExpiryMinutes: 30,
+  taxCalculationMode: "UNKNOWN" as const,
 } as const;
 
 export type BusinessDefaultsInput = {
@@ -94,6 +98,7 @@ export type BusinessDefaultsInput = {
   panNo?: string | null;
   businessAddress?: string | null;
   businessPhone?: string | null;
+  taxCalculationMode?: TaxCalculationMode;
 };
 
 export class BusinessSettingsValidationError extends Error {
@@ -286,6 +291,19 @@ export function normalizeBusinessSettingsPatch(
       "Business phone",
     );
   }
+  if (data.taxCalculationMode !== undefined) {
+    if (
+      data.taxCalculationMode !== "UNKNOWN" &&
+      data.taxCalculationMode !== "NO_VAT" &&
+      data.taxCalculationMode !== "VAT_EXCLUSIVE"
+    ) {
+      throw new BusinessSettingsValidationError(
+        "taxCalculationMode",
+        "Tax calculation mode must be UNKNOWN, NO_VAT, or VAT_EXCLUSIVE.",
+      );
+    }
+    normalized.taxCalculationMode = data.taxCalculationMode;
+  }
   return normalized;
 }
 
@@ -313,6 +331,7 @@ function toSafeBusinessSettings(
     panNo: safe.panNo ?? null,
     businessAddress: safe.businessAddress ?? null,
     businessPhone: safe.businessPhone ?? null,
+    taxCalculationMode: safe.taxCalculationMode ?? "UNKNOWN",
   };
 }
 

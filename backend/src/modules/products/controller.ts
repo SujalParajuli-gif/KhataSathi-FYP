@@ -428,6 +428,10 @@ export async function getByCode(req: Request, res: Response) {
 // creating a new product — all input values are validated through the parse helper functions
 export async function create(req: Request, res: Response) {
   try {
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "taxCategory")) {
+      res.status(400).json({ error: "Set product tax category through the ADMIN tax-category endpoint." });
+      return;
+    }
     const capabilities = await getBusinessCapabilities();
     const product = await productService.createProduct({
       name: parseRequiredText(req.body.name, "name"),
@@ -533,9 +537,17 @@ export async function create(req: Request, res: Response) {
 // updating an existing product — only the fields that are provided in the request body get changed
 export async function update(req: Request, res: Response) {
   try {
-    const capabilities = await getBusinessCapabilities();
     const productId = String(req.params.id);
     const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, "taxCategory")) {
+      res.status(req.user!.role === "ADMIN" ? 400 : 403).json({
+        error: req.user!.role === "ADMIN"
+          ? "Set product tax category through the ADMIN tax-category endpoint."
+          : "Only an administrator can change a product tax category.",
+      });
+      return;
+    }
+    const capabilities = await getBusinessCapabilities();
     const data: any = {};
 
     // building the update object — each field is only included if it was actually sent in the request
@@ -695,6 +707,32 @@ export async function update(req: Request, res: Response) {
       return;
     }
     console.error("Update product error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function updateTaxCategory(req: Request, res: Response) {
+  try {
+    const product = await productService.updateProductTaxCategory(
+      String(req.params.id),
+      req.body?.taxCategory,
+      { id: req.user!.id, role: req.user!.role },
+    );
+    res.json({ id: product.id, taxCategory: product.taxCategory });
+  } catch (err: any) {
+    if (err.code === "INVALID_TAX_CATEGORY") {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err.code === "FORBIDDEN") {
+      res.status(403).json({ error: err.message });
+      return;
+    }
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+    console.error("Update product tax category error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
