@@ -21,6 +21,7 @@ import {
   listProductsApi,
   checkoutInvoiceApi,
   listCustomersApi,
+  createQuickCustomerApi,
   authorizePriceOverrideApi,
   discardParkedDraftApi,
   listParkedDraftsApi,
@@ -395,6 +396,14 @@ type Customer = {
   isLoyalty: boolean;
   loyaltyPercent?: number;
   wholesalePercent?: number;
+};
+
+type QuickCustomerDraft = {
+  name: string;
+  phone: string;
+  email: string;
+  panNo: string;
+  address: string;
 };
 
 type Product = {
@@ -1149,6 +1158,13 @@ export default function BillingPage() {
     });
   }
   const [customers, setCustomers] = useState<Customer[]>([]); // full customer list available for billing selection
+  const [quickCustomerDraft, setQuickCustomerDraft] = useState<QuickCustomerDraft>(
+    { name: "", phone: "", email: "", panNo: "", address: "" },
+  );
+  const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
+  const [quickCustomerBusy, setQuickCustomerBusy] = useState(false);
+  const [quickCustomerError, setQuickCustomerError] = useState("");
+  const quickCustomerBusyRef = useRef(false);
   const [products, setProducts] = useState<Product[]>([]); // active product list loaded for cart and search
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
   const [submitting, setSubmitting] = useState(false); // blocks repeated invoice creation while checkout is running
@@ -1502,6 +1518,57 @@ export default function BillingPage() {
   const pendingCartFocusProductIdRef = useRef<string | null>(null);
   const scannerLookupBusyRef = useRef(false);
   const cartAlertMessage = billingError || cartIssueMessage;
+
+  async function handleQuickCustomerSubmit(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (quickCustomerBusyRef.current) return;
+    quickCustomerBusyRef.current = true;
+    setQuickCustomerBusy(true);
+    setQuickCustomerError("");
+    try {
+      const created = await createQuickCustomerApi({
+        name: quickCustomerDraft.name,
+        ...(quickCustomerDraft.phone.trim()
+          ? { phone: quickCustomerDraft.phone }
+          : {}),
+        ...(quickCustomerDraft.email.trim()
+          ? { email: quickCustomerDraft.email }
+          : {}),
+        ...(quickCustomerDraft.panNo.trim()
+          ? { panNo: quickCustomerDraft.panNo }
+          : {}),
+        ...(quickCustomerDraft.address.trim()
+          ? { address: quickCustomerDraft.address }
+          : {}),
+      });
+      const customer = mapRawCustomers([created])[0];
+      setCustomers((current) => [
+        ...current.filter((item) => item.id !== customer.id),
+        customer,
+      ]);
+      setSelectedCustomerId(customer.id);
+      setCustomerSearchOpen(false);
+      setCustomerQuery("");
+      setQuickCustomerOpen(false);
+      setQuickCustomerDraft({
+        name: "",
+        phone: "",
+        email: "",
+        panNo: "",
+        address: "",
+      });
+      showToast("success", "Customer added and selected.");
+    } catch (error: any) {
+      setQuickCustomerError(
+        error?.response?.data?.error || "Could not add customer. Your entries are still here; check them and try again.",
+      );
+    } finally {
+      quickCustomerBusyRef.current = false;
+      setQuickCustomerBusy(false);
+    }
+  }
 
   const visibleParkedDrafts = useMemo(() => {
     if (!activeDraftInvoiceId) return parkedDrafts;
@@ -4842,7 +4909,7 @@ export default function BillingPage() {
                   </div>
 
                   {isCustomerSearchOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
+                    <div className="absolute left-0 right-0 top-full z-30 mt-2 max-h-[min(70vh,520px)] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
                       <Input
                         value={customerQuery}
                         onChange={setCustomerQuery}
@@ -4902,6 +4969,90 @@ export default function BillingPage() {
                           </div>
                         )}
                       </div>
+                      {currentUser &&
+                      ["admin", "manager", "cashier"].includes(
+                        currentUser.role,
+                      ) ? (
+                        <div className="mt-3 border-t border-[#E5E7EB] pt-3">
+                          {!quickCustomerOpen ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuickCustomerError("");
+                                setQuickCustomerOpen(true);
+                              }}
+                              className="w-full rounded-[9px] border border-dashed border-[#9CA3AF] px-3 py-2 text-left text-[12px] font-bold text-[#374151] hover:bg-[#F8FAFC] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2563EB]"
+                            >
+                              + Add a customer
+                            </button>
+                          ) : (
+                            <form
+                              onSubmit={handleQuickCustomerSubmit}
+                              className="space-y-2"
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
+                              <div className="text-[12px] font-extrabold text-[#111827]">
+                                Add a customer
+                              </div>
+                              {([
+                                ["name", "Name", true],
+                                ["phone", "Phone (optional)", false],
+                                ["email", "Email (optional)", false],
+                                ["panNo", "PAN (optional)", false],
+                                ["address", "Address (optional)", false],
+                              ] as const).map(([field, label, required]) => (
+                                <label
+                                  key={field}
+                                  className="block text-[11px] font-semibold text-[#4B5563]"
+                                >
+                                  {label}
+                                  <input
+                                    autoFocus={field === "name"}
+                                    aria-label={label}
+                                    required={required}
+                                    value={quickCustomerDraft[field]}
+                                    onChange={(event) =>
+                                      setQuickCustomerDraft((draft) => ({
+                                        ...draft,
+                                        [field]: event.target.value,
+                                      }))
+                                    }
+                                    className="mt-1 block min-h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[13px] text-[#111827] outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#BFDBFE]"
+                                  />
+                                </label>
+                              ))}
+                              {quickCustomerError ? (
+                                <div
+                                  role="alert"
+                                  className="text-[12px] font-semibold text-rose-700"
+                                >
+                                  {quickCustomerError}
+                                </div>
+                              ) : null}
+                              <div className="flex gap-2 pt-1">
+                                <button
+                                  type="button"
+                                  disabled={quickCustomerBusy}
+                                  onClick={() => {
+                                    setQuickCustomerOpen(false);
+                                    setQuickCustomerError("");
+                                  }}
+                                  className="min-h-[36px] flex-1 rounded-[8px] border border-[#CFCFD3] px-3 text-[12px] font-bold text-[#374151] disabled:opacity-50"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="submit"
+                                  disabled={quickCustomerBusy}
+                                  className="min-h-[36px] flex-1 rounded-[8px] bg-[#1D4ED8] px-3 text-[12px] font-bold text-white hover:bg-[#1E40AF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D4ED8] disabled:cursor-wait disabled:opacity-50"
+                                >
+                                  {quickCustomerBusy ? "Adding…" : "Add customer"}
+                                </button>
+                              </div>
+                            </form>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 

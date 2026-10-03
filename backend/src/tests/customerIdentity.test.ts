@@ -17,6 +17,7 @@ import {
   create,
   update,
   createDiscountedByCashier,
+  createQuick,
 } from "../modules/customers/controller";
 import { denyStaff, requireRole } from "../middleware/rbac";
 
@@ -161,6 +162,11 @@ async function withCustomerDatabaseMocks(
   const mockTx = {
     customer: {
       create: async ({ data }: any) => {
+        if (data.phone && customers.some((customer) => customer.phone === data.phone)) {
+          const error: any = new Error("Unique constraint failed on phone");
+          error.code = "P2002";
+          throw error;
+        }
         const created = {
           id: `cust-${customers.length + 1}`,
           createdAt: new Date(),
@@ -248,6 +254,27 @@ test("createCustomer stores omitted panNo and address as null", async () => {
 
     assert.equal(created.panNo, null);
     assert.equal(created.address, null);
+  });
+});
+
+test("cashier nondiscount customer audit uses the ordinary customer-created action", async () => {
+  await withCustomerDatabaseMocks([], async (ctx) => {
+    const created = await createCustomer({
+      name: "Quick Customer",
+      createdById: "cashier-1",
+      createdByRole: "CASHIER",
+    });
+    assert.equal(created.loyaltyPercent, 0);
+    assert.equal(created.wholesalePercent, 0);
+    assert.equal(ctx.getAuditLogs()[0].action, "CUSTOMER_CREATED");
+
+    await createCustomer({
+      name: "Discounted Customer",
+      loyaltyPercent: 5,
+      createdById: "cashier-1",
+      createdByRole: "CASHIER",
+    });
+    assert.equal(ctx.getAuditLogs()[1].action, "CUSTOMER_DISCOUNT_CREATED_BY_CASHIER");
   });
 });
 
@@ -365,6 +392,52 @@ test("create controller sets panNo and address and ignores unknown request field
     // Ensure database record has creator from session, not body injection
     const stored = ctx.getCustomers()[0];
     assert.equal(stored.createdById, "admin-1");
+  });
+});
+
+test("quick create allows identity fields, forces zero discounts, and records ordinary audit", async () => {
+  await withCustomerDatabaseMocks([], async (ctx) => {
+    const req = makeMockRequest(
+      { id: "cashier-1", role: "CASHIER" },
+      { name: "  Quick Buyer  ", phone: "+9779811111111", email: "buyer@example.com", panNo: "001234567", address: " Kathmandu " },
+    );
+    const res = makeMockResponse();
+    await createQuick(req, res);
+
+    assert.equal(res.statusCodeValue, 201);
+    assert.equal(res.jsonBody.name, "Quick Buyer");
+    assert.equal(res.jsonBody.panNo, "001234567");
+    assert.equal(res.jsonBody.address, "Kathmandu");
+    assert.equal(res.jsonBody.loyaltyPercent, 0);
+    assert.equal(res.jsonBody.wholesalePercent, 0);
+    assert.equal(ctx.getCustomers()[0].createdById, "cashier-1");
+    assert.equal(ctx.getAuditLogs()[0].action, "CUSTOMER_CREATED");
+  });
+});
+
+test("quick create rejects discount and unknown fields without writing", async () => {
+  await withCustomerDatabaseMocks([], async (ctx) => {
+    for (const field of ["loyaltyPercent", "wholesalePercent", "discountType", "unknown"]) {
+      const res = makeMockResponse();
+      await createQuick(makeMockRequest({ id: "cashier-1", role: "CASHIER" }, { name: "Buyer", [field]: 90 }), res);
+      assert.equal(res.statusCodeValue, 400, field);
+    }
+    assert.equal(ctx.getCustomers().length, 0);
+  });
+});
+
+test("quick create rejects invalid identity and duplicate phone without creating a record", async () => {
+  await withCustomerDatabaseMocks([{ id: "existing", name: "Existing", phone: "+9779800000000" }], async (ctx) => {
+    const invalid = makeMockResponse();
+    await createQuick(makeMockRequest({ id: "manager-1", role: "MANAGER" }, { name: "Buyer", panNo: 123 }), invalid);
+    assert.equal(invalid.statusCodeValue, 400);
+    assert.equal(invalid.jsonBody.field, "panNo");
+    assert.equal(ctx.getCustomers().length, 1);
+
+    const duplicate = makeMockResponse();
+    await createQuick(makeMockRequest({ id: "cashier-1", role: "CASHIER" }, { name: "Buyer", phone: "+9779800000000" }), duplicate);
+    assert.equal(duplicate.statusCodeValue, 409);
+    assert.equal(ctx.getCustomers().length, 1);
   });
 });
 
@@ -509,6 +582,24 @@ test("customer routes enforce ADMIN and MANAGER role guards and deny CASHIER and
     staffNextCalled = true;
   }) as NextFunction);
 
+  assert.equal(staffNextCalled, false);
+  assert.equal(staffRes.statusCodeValue, 403);
+});
+
+test("quick-create role gate allows ADMIN, MANAGER, CASHIER and rejects STAFF", () => {
+  const quickCreateRoleGuard = requireRole("ADMIN", "MANAGER", "CASHIER");
+  for (const role of ["ADMIN", "MANAGER", "CASHIER"]) {
+    const req = makeMockRequest({ id: `${role.toLowerCase()}-1`, role });
+    const res = makeMockResponse();
+    let nextCalled = false;
+    quickCreateRoleGuard(req, res, (() => { nextCalled = true; }) as NextFunction);
+    assert.equal(nextCalled, true, `${role} should be allowed`);
+  }
+
+  const staffReq = makeMockRequest({ id: "staff-1", role: "STAFF" });
+  const staffRes = makeMockResponse();
+  let staffNextCalled = false;
+  denyStaff(staffReq, staffRes, (() => { staffNextCalled = true; }) as NextFunction);
   assert.equal(staffNextCalled, false);
   assert.equal(staffRes.statusCodeValue, 403);
 });

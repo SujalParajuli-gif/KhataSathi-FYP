@@ -210,7 +210,8 @@ export async function createCustomer(data: CustomerInput) {
         data: {
           actorId: data.createdById,
           action:
-            data.createdByRole === "CASHIER"
+            data.createdByRole === "CASHIER" &&
+            (customer.loyaltyPercent > 0 || customer.wholesalePercent > 0)
               ? "CUSTOMER_DISCOUNT_CREATED_BY_CASHIER"
               : "CUSTOMER_CREATED",
           entityType: "Customer",

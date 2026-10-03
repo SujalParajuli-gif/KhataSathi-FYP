@@ -1283,6 +1283,19 @@ export async function createCustomerApi(data: { name: string; phone?: string; em
     return res.data;
 }
 
+export type QuickCustomerInput = {
+    name: string;
+    phone?: string;
+    email?: string;
+    panNo?: string;
+    address?: string;
+};
+
+export async function createQuickCustomerApi(data: QuickCustomerInput) {
+    const res = await api.post("/api/customers/quick", data);
+    return res.data;
+}
+
 export async function createCashierDiscountedCustomerApi(data: {
     name: string;
     phone: string;

@@ -3,6 +3,7 @@ import {
   approveDiscountRequest,
   create,
   createDiscountedByCashier,
+  createQuick,
   createDiscountRequest,
   deactivate,
   deleteDiscount,
@@ -21,6 +22,7 @@ router.use(authGuard); // all customer routes require authentication
 
 router.get("/", list); // any authenticated user can view the customer list
 router.use(denyStaff);
+router.post("/quick", requireRole("ADMIN", "MANAGER", "CASHIER"), createQuick);
 router.post("/cashier-discounted", createDiscountedByCashier); // authorized cashiers can create discounted customers
 router.get("/discount-requests", listDiscountRequests); // admin sees all requests; cashiers see their own requests
 router.post("/discount-requests", createDiscountRequest); // cashiers can request admin approval for discounts

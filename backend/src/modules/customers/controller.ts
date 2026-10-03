@@ -131,6 +131,49 @@ export async function create(req: Request, res: Response) {
   }
 }
 
+const QUICK_CUSTOMER_FIELDS = new Set(["name", "phone", "email", "panNo", "address"]);
+
+export async function createQuick(req: Request, res: Response) {
+  try {
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const unsupportedField = Object.keys(body).find((field) => !QUICK_CUSTOMER_FIELDS.has(field));
+    if (unsupportedField) {
+      res.status(400).json({ error: `Field '${unsupportedField}' is not allowed for quick customer creation.` });
+      return;
+    }
+
+    const customer = await custService.createCustomer({
+      name: parseCustomerName(body.name),
+      phone: parseOptionalText(body.phone),
+      email: parseOptionalText(body.email),
+      panNo: custService.parseCustomerPan(body.panNo),
+      address: custService.parseCustomerAddress(body.address),
+      loyaltyPercent: 0,
+      wholesalePercent: 0,
+      createdById: req.user!.id,
+      createdByRole: req.user!.role as "ADMIN" | "MANAGER" | "CASHIER",
+    });
+    res.status(201).json(customer);
+  } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
+    if (String(err?.message || "").includes("Customer name")) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err.code === "P2002") {
+      res.status(409).json({ error: "Phone number already exists" });
+      return;
+    }
+    console.error("Quick create customer error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
 export async function createDiscountedByCashier(req: Request, res: Response) {
   try {
     if (req.user!.role !== "CASHIER") {
