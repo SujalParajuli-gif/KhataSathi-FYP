@@ -10,6 +10,7 @@ import {
   DocumentValidationError,
 } from "./validation";
 import { StorageUnavailableError } from "../../lib/storageReadiness";
+import { SaleEvidenceProtectedError } from "./protection";
 
 // uploading one or more document files with metadata
 export async function uploadDocuments(req: Request, res: Response) {
@@ -63,6 +64,11 @@ export async function uploadDocuments(req: Request, res: Response) {
 
     if (err instanceof StorageUnavailableError) {
       res.status(503).json({ code: err.code, error: err.message });
+      return;
+    }
+
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
       return;
     }
 
@@ -175,6 +181,10 @@ export async function deleteDocumentHandler(req: Request, res: Response) {
     const deleted = await documentService.deleteDocument(String(req.params.id), req.user!.id, req.user!.role);
     res.json({ message: "Document moved to Bin", document: deleted });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;
@@ -208,6 +218,10 @@ export async function updateDocumentVisibilityHandler(req: Request, res: Respons
         : "Document already has this visibility",
     });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;
@@ -241,6 +255,10 @@ export async function updateDocumentMetadataHandler(req: Request, res: Response)
         : "Document details already match",
     });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;

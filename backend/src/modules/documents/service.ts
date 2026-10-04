@@ -22,6 +22,7 @@ import {
   documentStorageRoot,
   documentTempDir,
 } from "../../lib/storageReadiness";
+import { assertNotSaleEvidenceDocument } from "./protection";
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
@@ -349,6 +350,7 @@ export async function createDocuments(
   metadata: CreateDocumentInput,
   userId: string,
 ): Promise<any[]> {
+  assertNotSaleEvidenceDocument(metadata.documentType);
   assertStorageReady();
 
   // Validate every file before processing any records
@@ -561,6 +563,7 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
   const doc = await prisma.document.findFirst({ where: { id, deletedAt: null } });
   if (!doc) throw new Error("Document not found");
   if (!canRoleViewDocument(doc.visibility, viewerRole)) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(doc);
 
   const purgeAfter = new Date();
   purgeAfter.setDate(purgeAfter.getDate() + 30);
@@ -629,6 +632,7 @@ export async function updateDocumentVisibility(
     where: { id, deletedAt: null },
   });
   if (!existing) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(existing);
   if (existing.visibility === visibility) {
     return {
       document: toPublicDocument(existing, { includeProcessing: true }),
@@ -697,6 +701,10 @@ export async function updateDocumentMetadata(
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
   if (!existing) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(existing);
+  if (input.documentType) {
+    assertNotSaleEvidenceDocument(input.documentType);
+  }
 
   const supplierName = cleanNullableText(input.supplierName);
   const title = input.title?.trim();
@@ -796,6 +804,7 @@ export async function assertDocumentsCanLinkToEntity(input: {
   linkedEntityType: string;
   viewerRole?: string | null;
 }) {
+  assertNotSaleEvidenceDocument(input.documentType);
   const uniqueIds = Array.from(new Set(input.documentIds.map((id) => id.trim()).filter(Boolean)));
   if (uniqueIds.length === 0) return [];
 
@@ -814,6 +823,7 @@ export async function assertDocumentsCanLinkToEntity(input: {
     if (!canRoleViewDocument(document.visibility, input.viewerRole)) {
       throw new Error("One or more selected documents are not visible to your role.");
     }
+    assertNotSaleEvidenceDocument(document);
     if (document.documentType !== input.documentType) {
       throw new Error(`Only ${input.documentType.replace(/_/g, " ").toLowerCase()} documents can be linked here.`);
     }
@@ -885,6 +895,13 @@ export async function linkDocumentsToEntity(input: {
 }
 
 export async function restoreDocument(id: string) {
+  const existing = await prisma.document.findUnique({
+    where: { id },
+    select: { id: true, documentType: true },
+  });
+  if (existing) {
+    assertNotSaleEvidenceDocument(existing);
+  }
   return prisma.document.update({
     where: { id },
     data: {
@@ -899,6 +916,7 @@ export async function restoreDocument(id: string) {
 export async function permanentlyDeleteDocument(id: string) {
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) return null;
+  assertNotSaleEvidenceDocument(doc);
 
   await removeFileFromDisk(doc.storedPath, doc.storedFileName);
   if (doc.thumbnailFileName) {

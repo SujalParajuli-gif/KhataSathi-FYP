@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as binService from "./service";
+import { SaleEvidenceProtectedError } from "../documents/protection";
 
 export async function list(req: Request, res: Response) {
   try {
@@ -20,6 +21,10 @@ export async function restore(req: Request, res: Response) {
     const result = await binService.restoreBinRecord(String(req.params.id), req.user!.id);
     res.json(result);
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found") || err.message?.includes("not supported")) {
       res.status(404).json({ error: err.message });
       return;
@@ -34,6 +39,10 @@ export async function purge(req: Request, res: Response) {
     const result = await binService.permanentlyDeleteBinRecord(String(req.params.id), req.user!.id);
     res.json(result);
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found") || err.message?.includes("not supported")) {
       res.status(404).json({ error: err.message });
       return;
