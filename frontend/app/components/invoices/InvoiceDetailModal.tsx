@@ -25,6 +25,8 @@ type Props = {
   onVoidPayment?: (paymentId: string) => void;
   // the payment currently being voided — shows a loading state on that specific button
   voidingPaymentId?: string | null;
+  loading?: boolean;
+  error?: string | null;
 };
 
 // the main invoice detail modal — handles showing everything about a specific invoice
@@ -36,6 +38,8 @@ export default function InvoiceDetailModal({
   extraActions,
   onVoidPayment,
   voidingPaymentId,
+  loading,
+  error,
 }: Props) {
   useBodyScrollLock(open);
 
@@ -51,7 +55,87 @@ export default function InvoiceDetailModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
-  if (!open || !invoice || typeof document === "undefined") return null;
+  if (!open || typeof document === "undefined") return null;
+
+  if (loading && !invoice) {
+    return createPortal(
+      <div className="app-modal-layer fixed inset-0">
+        <button
+          type="button"
+          className="absolute inset-0 bg-[rgba(0,0,0,0.3)] backdrop-blur-sm"
+          onClick={onClose}
+          aria-label="Close"
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Loading invoice details"
+          className="absolute left-1/2 top-1/2 flex w-[440px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] p-6 shadow-xl text-center"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#EFF6FF] text-[#2F67D8]">
+            <Icon name="refresh" className="animate-spin text-2xl" />
+          </div>
+          <div className="mt-4 text-[16px] font-extrabold text-[#000000]">
+            Loading invoice details…
+          </div>
+          <div className="mt-1 text-[12px] text-[#8C8889]">
+            Fetching the invoice record from the server.
+          </div>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-[40px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-bold text-[#000000] hover:bg-[#F3F4F6]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  if (error && !invoice) {
+    return createPortal(
+      <div className="app-modal-layer fixed inset-0">
+        <button
+          type="button"
+          className="absolute inset-0 bg-[rgba(0,0,0,0.3)] backdrop-blur-sm"
+          onClick={onClose}
+          aria-label="Close"
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Invoice load error"
+          className="absolute left-1/2 top-1/2 flex w-[440px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] p-6 shadow-xl text-center"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-rose-50 text-rose-600">
+            <Icon name="error_outline" className="text-2xl" />
+          </div>
+          <div className="mt-4 text-[16px] font-extrabold text-[#000000]">
+            Unable to load invoice
+          </div>
+          <div className="mt-1 text-[12px] text-rose-700">
+            {error}
+          </div>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-[40px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-bold text-[#000000] hover:bg-[#F3F4F6]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  if (!invoice) return null;
 
   const totalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);
 

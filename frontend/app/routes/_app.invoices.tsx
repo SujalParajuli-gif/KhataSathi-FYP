@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { createPortal } from "react-dom";
 import {
   InvoiceStatusChip,
@@ -2474,6 +2475,11 @@ export default function CashierInvoicesPage() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlInvoiceId = searchParams.get("invoiceId")?.trim() || null;
+  const activeDetailRequestRef = useRef<object | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null); // invoice shown in the read-only detail modal
   const [editInvoice, setEditInvoice] = useState<AppInvoice | null>(null); // invoice currently being edited in the payment modal
   const [modifyInvoice, setModifyInvoice] = useState<AppInvoice | null>(null);
@@ -2903,27 +2909,83 @@ export default function CashierInvoicesPage() {
     setMobileFiltersOpen(false);
   }
 
-  // fetching the full invoice details when the user clicks to view it
+  // fetching the full invoice details when the user clicks to view it or arrives with an invoiceId search param
   async function openInvoice(id: string) {
-    // we show the cached preview version first so the modal opens instantly
-    const cached = invoices.find((invoice) => invoice.id === id) || null;
-    setSelectedInvoiceId(id);
-    setDetailInvoice(cached);
+    const cleanId = id.trim();
+    if (!cleanId) return;
+
+    const request = {};
+    activeDetailRequestRef.current = request;
+    setSelectedInvoiceId(cleanId);
+    setDetailError(null);
+
+    // Wait for the protected detail read; a list row is not a successful detail response.
+    setDetailInvoice(null);
+    setDetailLoading(true);
 
     // then we fetch the detailed version from the backend inside a try block
     try {
-      const detailed = await hydrateInvoice(id);
-      setDetailInvoice(detailed);
-    } catch {
-      setDetailInvoice(cached);
+      const detailed = await hydrateInvoice(cleanId);
+      if (activeDetailRequestRef.current === request) {
+        setDetailInvoice(detailed);
+        setDetailLoading(false);
+        setDetailError(null);
+      }
+    } catch (err: any) {
+      if (activeDetailRequestRef.current === request) {
+        setDetailLoading(false);
+        setDetailInvoice(null);
+        const message =
+          err?.response?.data?.error ||
+          err?.message ||
+          "Invoice not found or could not be loaded.";
+        setDetailError(typeof message === "string" ? message : "Invoice could not be loaded.");
+      }
     }
   }
 
   function closeInvoice() {
+    activeDetailRequestRef.current = null;
     setSelectedInvoiceId(null);
     setDetailInvoice(null);
+    setDetailLoading(false);
+    setDetailError(null);
     setPendingVoidPaymentId(null);
+
+    if (searchParams.get("invoiceId")) {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.delete("invoiceId");
+          return next;
+        },
+        { replace: true, preventScrollReset: true },
+      );
+    }
   }
+
+  const lastOpenedUrlInvoiceIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (urlInvoiceId) {
+      lastOpenedUrlInvoiceIdRef.current = urlInvoiceId;
+      void openInvoice(urlInvoiceId);
+    } else {
+      if (lastOpenedUrlInvoiceIdRef.current) {
+        activeDetailRequestRef.current = null;
+        setSelectedInvoiceId(null);
+        setDetailInvoice(null);
+        setDetailLoading(false);
+        setDetailError(null);
+        setPendingVoidPaymentId(null);
+      }
+      lastOpenedUrlInvoiceIdRef.current = null;
+    }
+  }, [urlInvoiceId]);
+
+  useEffect(() => () => {
+    activeDetailRequestRef.current = null;
+  }, []);
 
   // this opens the edit modal with the invoice's due amount prefilled so cashiers can settle it faster
   function openEditInvoice(invoice: AppInvoice) {
@@ -4547,6 +4609,8 @@ export default function CashierInvoicesPage() {
       <InvoiceDetailModal
         open={!!selectedInvoiceId}
         invoice={detailInvoice}
+        loading={detailLoading}
+        error={detailError}
         onClose={closeInvoice}
         onVoidPayment={isAdminView || canCashierVoidPayment ? handleVoidPayment : undefined}
         voidingPaymentId={voidingPaymentId}

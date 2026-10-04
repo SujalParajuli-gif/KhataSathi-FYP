@@ -5,6 +5,7 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { Link } from "react-router";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import { useToast } from "~/components/ui/Toast";
@@ -5468,6 +5469,15 @@ export default function BillingPage() {
                       <div className="max-h-[160px] overflow-y-auto space-y-2 pr-1">
                         {customerHistory.map((item) => {
                           const product = normalizePurchaseHistoryProduct(item);
+                          const trimmedInvoiceId = typeof item.invoiceId === "string" ? item.invoiceId.trim() : "";
+                          let invoiceHref: string | null = null;
+                          if (trimmedInvoiceId && !/[\u0000-\u001f\u007f]/.test(trimmedInvoiceId)) {
+                            try {
+                              invoiceHref = `/invoices?invoiceId=${encodeURIComponent(trimmedInvoiceId)}`;
+                            } catch {
+                              // A malformed Unicode ID cannot be encoded as a URL value.
+                            }
+                          }
                           return (
                           <div
                             key={item.id}
@@ -5486,7 +5496,18 @@ export default function BillingPage() {
                             </div>
                             <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 font-medium">
                               <span>
-                                Qty: {item.qty} · Inv #{item.invoiceNo}
+                                Qty: {item.qty} ·{" "}
+                                {invoiceHref ? (
+                                  <Link
+                                    to={invoiceHref}
+                                    className="font-semibold text-blue-700 underline hover:text-blue-900"
+                                    aria-label={`View invoice ${item.invoiceNo || trimmedInvoiceId}`}
+                                  >
+                                    Inv #{item.invoiceNo || trimmedInvoiceId}
+                                  </Link>
+                                ) : (
+                                  <>Inv #{item.invoiceNo || "—"}</>
+                                )}
                               </span>
                               <span>
                                 {new Date(item.invoiceDate).toLocaleDateString(undefined, {

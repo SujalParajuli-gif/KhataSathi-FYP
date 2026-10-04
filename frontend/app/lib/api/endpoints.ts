@@ -1598,7 +1598,7 @@ export async function listInvoicesApi(
 
 // fetching a single invoice with all its items and payment details
 export async function getInvoiceApi(id: string) {
-    const res = await api.get(`/api/invoices/${id}`);
+    const res = await api.get(`/api/invoices/${encodeURIComponent(id)}`);
     return res.data;
 }
 
