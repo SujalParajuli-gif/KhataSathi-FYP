@@ -153,6 +153,32 @@ enum DocumentType {
   PAYMENT_PROOF
   DISCOUNT_PROOF
   GENERAL
+  SALE_BILL
+}
+
+enum BillingChannel {
+  MANUAL_EXTERNAL
+  IRD_ELECTRONIC
+}
+
+enum ExternalDocumentType {
+  PAN_INVOICE
+  VAT_TAX_INVOICE
+  ABBREVIATED_TAX_INVOICE
+  OTHER_MANUAL_SALES_DOCUMENT
+}
+
+enum BillRecordStatus {
+  PENDING
+  RECORDED
+  VERIFIED
+  MISSING
+}
+
+enum SaleRecoveryStatus {
+  UNRESOLVED
+  ATTACHED
+  ARCHIVED
 }
 
 enum DocumentVisibility {
@@ -521,6 +547,11 @@ model Invoice {
   customerPanSnapshot        String?
   customerAddressSnapshot    String?              @db.Text
   customerSnapshotCapturedAt DateTime?
+  billingChannel             BillingChannel?
+  externalDocumentType       ExternalDocumentType?
+  externalBillNo             String?              @db.VarChar(100)
+  externalBillDate           DateTime?            @db.Date
+  billRecordStatus           BillRecordStatus?
   createdAt                  DateTime             @default(now())
   finalizedAt            DateTime?
   cancelledAt            DateTime?
@@ -618,6 +649,7 @@ model BusinessSettings {
   businessAddress              String?      @db.Text
   businessPhone                String?
   taxCalculationMode           TaxCalculationMode @default(UNKNOWN)
+  defaultBillingChannel        BillingChannel?
   createdAt                    DateTime     @default(now())
   updatedAt                    DateTime     @updatedAt
 }
@@ -1082,6 +1114,9 @@ model Document {
   deletedById  String?
   deleteReason String?   @db.Text
   purgeAfter   DateTime?
+  saleRecoveryStatus           SaleRecoveryStatus?
+  recoveryCheckoutOperationKey String?             @unique @db.VarChar(120)
+  recoveryCheckoutPayloadHash  String?             @db.Char(64)
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 

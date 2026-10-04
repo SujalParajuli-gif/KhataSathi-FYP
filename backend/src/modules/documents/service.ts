@@ -29,6 +29,110 @@ type DocumentWithUploader = Prisma.DocumentGetPayload<{
   include: { uploadedBy: { select: { id: true; name: true } } };
 }>;
 
+export interface PublicDocument {
+  id: string;
+  documentType: DocumentType;
+  title: string | null;
+  fileName: string;
+  storedFileName: string;
+  storedPath: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string | null;
+  thumbnailFileName: string | null;
+  thumbnailSize: number | null;
+  supplierName: string | null;
+  billNumber: string | null;
+  billDate: Date | null;
+  billAmount: number | null;
+  remarks: string | null;
+  linkedEntityType: string | null;
+  linkedEntityId: string | null;
+  visibility: DocumentVisibility;
+  uploadedById: string;
+  createdAt: Date;
+  deletedAt: Date | null;
+  deletedById: string | null;
+  deleteReason: string | null;
+  purgeAfter: Date | null;
+  uploadedBy?: { id: string; name: string };
+  processingStatus?: DocumentProcessingStatus;
+  processingLabel?: string;
+}
+
+export function toPublicDocument<
+  T extends {
+    id: string;
+    documentType: DocumentType;
+    title?: string | null;
+    fileName: string;
+    storedFileName: string;
+    storedPath: string;
+    mimeType: string;
+    fileSize: number;
+    checksum?: string | null;
+    thumbnailFileName?: string | null;
+    thumbnailSize?: number | null;
+    supplierName?: string | null;
+    billNumber?: string | null;
+    billDate?: Date | null;
+    billAmount?: number | null;
+    remarks?: string | null;
+    linkedEntityType?: string | null;
+    linkedEntityId?: string | null;
+    visibility: DocumentVisibility;
+    uploadedById: string;
+    createdAt: Date;
+    deletedAt?: Date | null;
+    deletedById?: string | null;
+    deleteReason?: string | null;
+    purgeAfter?: Date | null;
+    uploadedBy?: { id: string; name: string } | null;
+  }
+>(doc: T, options?: { includeProcessing?: boolean }): PublicDocument {
+  const projected: PublicDocument = {
+    id: doc.id,
+    documentType: doc.documentType,
+    title: doc.title ?? null,
+    fileName: doc.fileName,
+    storedFileName: doc.storedFileName,
+    storedPath: doc.storedPath,
+    mimeType: doc.mimeType,
+    fileSize: doc.fileSize,
+    checksum: doc.checksum ?? null,
+    thumbnailFileName: doc.thumbnailFileName ?? null,
+    thumbnailSize: doc.thumbnailSize ?? null,
+    supplierName: doc.supplierName ?? null,
+    billNumber: doc.billNumber ?? null,
+    billDate: doc.billDate ?? null,
+    billAmount: doc.billAmount ?? null,
+    remarks: doc.remarks ?? null,
+    linkedEntityType: doc.linkedEntityType ?? null,
+    linkedEntityId: doc.linkedEntityId ?? null,
+    visibility: doc.visibility,
+    uploadedById: doc.uploadedById,
+    createdAt: doc.createdAt,
+    deletedAt: doc.deletedAt ?? null,
+    deletedById: doc.deletedById ?? null,
+    deleteReason: doc.deleteReason ?? null,
+    purgeAfter: doc.purgeAfter ?? null,
+  };
+
+  if ("uploadedBy" in doc && doc.uploadedBy) {
+    projected.uploadedBy = {
+      id: doc.uploadedBy.id,
+      name: doc.uploadedBy.name,
+    };
+  }
+
+  if (options?.includeProcessing) {
+    projected.processingStatus = getDocumentProcessingStatus(doc as any);
+    projected.processingLabel = getDocumentProcessingLabel(doc as any);
+  }
+
+  return projected;
+}
+
 function getDocumentProcessingStatus(doc: {
   linkedEntityType: string | null;
   linkedEntityId: string | null;
@@ -330,11 +434,7 @@ export async function createDocuments(
         include: { uploadedBy: { select: { id: true, name: true } } },
       });
 
-      results.push({
-        ...updated,
-        processingStatus: getDocumentProcessingStatus(updated),
-        processingLabel: getDocumentProcessingLabel(updated),
-      });
+      results.push(toPublicDocument(updated, { includeProcessing: true }));
     } catch (error) {
       // if file move fails, clean up the orphaned DB record
       await prisma.document.delete({ where: { id: doc.id } }).catch(() => {});
@@ -382,11 +482,7 @@ export async function getDocumentById(id: string, viewerRole?: string | null) {
   });
   if (!doc) return null;
   if (!canRoleViewDocument(doc.visibility, viewerRole)) return null;
-  return {
-    ...doc,
-    processingStatus: getDocumentProcessingStatus(doc),
-    processingLabel: getDocumentProcessingLabel(doc),
-  };
+  return toPublicDocument(doc, { includeProcessing: true });
 }
 
 // listing documents with filters and pagination
@@ -439,11 +535,7 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
   ]);
 
   return {
-    documents: documents.map((doc) => ({
-      ...doc,
-      processingStatus: getDocumentProcessingStatus(doc),
-      processingLabel: getDocumentProcessingLabel(doc),
-    })),
+    documents: documents.map((doc) => toPublicDocument(doc, { includeProcessing: true })),
     total,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -525,7 +617,7 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
     logger.error("Document delete audit log error", err);
   });
 
-  return doc;
+  return toPublicDocument(doc);
 }
 
 export async function updateDocumentVisibility(
@@ -539,7 +631,7 @@ export async function updateDocumentVisibility(
   if (!existing) throw new Error("Document not found");
   if (existing.visibility === visibility) {
     return {
-      document: existing,
+      document: toPublicDocument(existing, { includeProcessing: true }),
       changed: false,
     };
   }
@@ -567,11 +659,7 @@ export async function updateDocumentVisibility(
   });
 
   return {
-    document: {
-      ...document,
-      processingStatus: getDocumentProcessingStatus(document),
-      processingLabel: getDocumentProcessingLabel(document),
-    },
+    document: toPublicDocument(document, { includeProcessing: true }),
     changed: true,
   };
 }
@@ -651,11 +739,7 @@ export async function updateDocumentMetadata(
 
   if (changedFields.length === 0) {
     return {
-      document: {
-        ...existing,
-        processingStatus: getDocumentProcessingStatus(existing),
-        processingLabel: getDocumentProcessingLabel(existing),
-      },
+      document: toPublicDocument(existing, { includeProcessing: true }),
       changed: false,
       changedFields,
     };
@@ -700,11 +784,7 @@ export async function updateDocumentMetadata(
   });
 
   return {
-    document: {
-      ...document,
-      processingStatus: getDocumentProcessingStatus(document),
-      processingLabel: getDocumentProcessingLabel(document),
-    },
+    document: toPublicDocument(document, { includeProcessing: true }),
     changed: true,
     changedFields,
   };
@@ -801,11 +881,7 @@ export async function linkDocumentsToEntity(input: {
     return updated;
   });
 
-  return updatedDocuments.map((document) => ({
-    ...document,
-    processingStatus: getDocumentProcessingStatus(document),
-    processingLabel: getDocumentProcessingLabel(document),
-  }));
+  return updatedDocuments.map((document) => toPublicDocument(document, { includeProcessing: true }));
 }
 
 export async function restoreDocument(id: string) {
