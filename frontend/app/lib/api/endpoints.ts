@@ -1463,6 +1463,14 @@ export type CheckoutInvoiceInput = {
         reference?: string;
         tenderedAmount?: number;
     }>;
+    confirmation?: {
+        items: Array<{
+            productId: string;
+            qty: number;
+            appliedUnitPrice: number;
+        }>;
+        payableTotal: number;
+    } | null;
 };
 
 export async function checkoutInvoiceApi(data: CheckoutInvoiceInput) {

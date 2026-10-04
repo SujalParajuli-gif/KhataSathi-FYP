@@ -189,29 +189,45 @@ const key = "snapshot-checkout-key-001";
 test("ordinary checkout replays both pre-request and intermediate null-request operation hashes", async () => {
   const mock = harness();
   try {
-    const request = input();
+    const request = input(false, false, true);
+    const legacyRequest = input(false, false, false);
     const first = await checkoutInvoice("cashier", request);
     const before = structuredClone(mock.state);
-    // The current canonical ordinary hash is the exact pre-request encoding.
-    const legacy = mock.state.operations[key].payloadHash;
-    const intermediate = buildCheckoutPayloadHash(request, request.items, [], true);
+    // The legacy ordinary hash was written before confirmation existed.
+    const legacy = buildCheckoutPayloadHash(legacyRequest, legacyRequest.items, []);
+    const intermediate = buildCheckoutPayloadHash(legacyRequest, legacyRequest.items, [], true);
     assert.notEqual(legacy, intermediate);
     for (const hash of [legacy, intermediate]) {
       mock.state.operations[key].payloadHash = hash;
-      const replay = await checkoutInvoice("cashier", request);
+      const replay = await checkoutInvoice("cashier", legacyRequest);
       assert.deepEqual(JSON.parse(JSON.stringify(replay)), JSON.parse(JSON.stringify(first)));
       assert.equal(mock.state.stock.length, before.stock.length);
       assert.equal(Object.keys(mock.state.invoices).length, 1);
-      await assert.rejects(checkoutInvoice("cashier", { ...request, draftRequestId: "request1" }), /different bill contents/);
-      await assert.rejects(checkoutInvoice("other", request), /another user/);
+      await assert.rejects(checkoutInvoice("cashier", { ...legacyRequest, draftRequestId: "request1" }), /different bill contents/);
+      await assert.rejects(checkoutInvoice("other", legacyRequest), /another user/);
     }
   } finally { mock.restore(); }
 });
 
-function input(parked = false, payment = false): any {
-  return { operationKey: key, draftInvoiceId: parked ? "parked" : undefined,
-    customerId: "customer", items: [{ productId: "p1", qty: 1 }, { productId: "p2", qty: 1 }],
-    payments: payment ? [{ method: "CASH", amount: 30 }] : [] };
+function input(parked = false, payment = false, confirmation = true): any {
+  return {
+    operationKey: key,
+    draftInvoiceId: parked ? "parked" : undefined,
+    customerId: "customer",
+    items: [{ productId: "p1", qty: 1 }, { productId: "p2", qty: 1 }],
+    payments: payment ? [{ method: "CASH", amount: 30 }] : [],
+    ...(confirmation
+      ? {
+          confirmation: {
+            items: [
+              { productId: "p1", qty: 1, appliedUnitPrice: 10 },
+              { productId: "p2", qty: 1, appliedUnitPrice: 20 },
+            ],
+            payableTotal: 30,
+          },
+        }
+      : {}),
+  };
 }
 
 test("ordinary checkout captures all final lines and selected customer; replay does not repost", async () => {

@@ -46,7 +46,13 @@ import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePri
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
-import { resolvePendingCheckoutSnapshot } from "~/lib/billingCheckout";
+import {
+  resolvePendingCheckoutSnapshot,
+  deriveCandidateCheckoutState,
+  computeReviewFingerprint,
+  isQuantityStepCompliant,
+  type ReviewedCheckoutCandidate,
+} from "~/lib/billingCheckout";
 
 const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog every 2 minutes to prevent stale stock and prices while keeping request volume low
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
@@ -1411,7 +1417,30 @@ export default function BillingPage() {
       }
     }
     void load();
-    return () => controller.abort();
+
+    function refreshCustomersOnFocus() {
+      if (document.visibilityState === "visible") {
+        void listCustomersApi(true)
+          .then((custData) => {
+            if (custData) {
+              const raw = Array.isArray(custData)
+                ? custData
+                : custData.customers || [];
+              setCustomers(mapRawCustomers(raw));
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
+    window.addEventListener("focus", refreshCustomersOnFocus);
+    document.addEventListener("visibilitychange", refreshCustomersOnFocus);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refreshCustomersOnFocus);
+      document.removeEventListener("visibilitychange", refreshCustomersOnFocus);
+    };
   }, [mapRawCustomers, normalizeParkedDraft, rateLimitRecoveryKey]);
 
   const [skuInput, setSkuInput] = useState(""); // scanner/manual barcode input
@@ -1443,6 +1472,10 @@ export default function BillingPage() {
   const [customerHistoryError, setCustomerHistoryError] = useState<string | null>(null);
   const [pendingCheckout, setPendingCheckout] =
     useState<PendingCheckoutSnapshot | null>(null);
+  const pendingCheckoutRef = useRef<PendingCheckoutSnapshot | null>(null);
+  pendingCheckoutRef.current = pendingCheckout;
+  const [reviewedCandidate, setReviewedCandidate] =
+    useState<ReviewedCheckoutCandidate | null>(null);
   const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
     string | null
   >(null);
@@ -1855,46 +1888,6 @@ export default function BillingPage() {
     };
   }, [cartProductIds, fetchProductsByIds, mapRawProducts, mergeProducts]);
 
-  // once the latest product catalog is available, we reconcile the restored cart against active products and current stock
-  useEffect(() => {
-    if (products.length === 0 || cart.length === 0) return;
-
-    const normalizedCart = cart
-      .map((line) => {
-        const product = productsById.get(line.productId);
-        if (
-          !product ||
-          !product.active ||
-          product.stock <= 0 ||
-          product.stock < getProductMinQty(product)
-        ) {
-          return null;
-        }
-
-        const qty = normalizeProductCartQty(product, line.qty);
-        return {
-          ...line,
-          productId: line.productId,
-          qty,
-        };
-      })
-      .filter(Boolean) as CartLine[];
-
-    const cartChanged =
-      normalizedCart.length !== cart.length ||
-      normalizedCart.some(
-        (line, index) =>
-          line.productId !== cart[index]?.productId ||
-          line.qty !== cart[index]?.qty ||
-          line.overrideUnitPrice !== cart[index]?.overrideUnitPrice ||
-          line.overrideReason !== cart[index]?.overrideReason,
-      );
-
-    if (cartChanged) {
-      setCart(normalizedCart);
-    }
-  }, [cart, products, productsById]);
-
   // Persisting the cart on every cart change makes route changes safe while still clearing storage when the cart is emptied
   useEffect(() => {
     if (selectedCartRowIndex >= cart.length) {
@@ -1926,51 +1919,127 @@ export default function BillingPage() {
     selectedCustomerId,
   ]);
 
+  const reviewFingerprint = useMemo(() => {
+    return computeReviewFingerprint({
+      cart,
+      productsById,
+      selectedCustomerId,
+      selectedCustomer,
+      discountPercent: subtotalDiscountMeta.percent,
+      paymentMethod,
+      paymentStatus,
+      paidAmount,
+      cashTendered,
+      fonepayReference,
+      splitPayments,
+      activeDraftInvoiceId,
+      activeDraftRequestId,
+      invoiceNote,
+    });
+  }, [
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  ]);
+
+  useEffect(() => {
+    if (
+      reviewedCandidate &&
+      reviewedCandidate.fingerprint &&
+      reviewedCandidate.fingerprint !== reviewFingerprint
+    ) {
+      setReviewedCandidate(null);
+      if (pendingBillingConfirm === "checkout" && !pendingCheckout) {
+        setPendingBillingConfirm(null);
+      }
+    }
+  }, [reviewFingerprint, reviewedCandidate, pendingBillingConfirm, pendingCheckout]);
+
   // joining cart lines with product data here is what gives us unit price, pricing mode, and line totals for each row
   const cartRows = useMemo(() => {
-    return cart
-      .map((line) => {
-        const p = productsById.get(line.productId);
-        if (!p) return null;
-        const useWholesalePrice = shouldUseQuantityWholesalePrice(
-          selectedCustomer,
-          p,
-          line.qty,
-        );
-        const baseUnitPrice = useWholesalePrice
-          ? p.wholesalePrice
-          : p.retailPrice;
-        const overrideUnitPrice =
-          line.overrideUnitPrice !== undefined &&
-          Number.isFinite(line.overrideUnitPrice) &&
-          line.overrideUnitPrice > 0
-            ? line.overrideUnitPrice
-            : undefined;
-        const unit = overrideUnitPrice ?? baseUnitPrice;
+    return cart.map((line) => {
+      const p = productsById.get(line.productId);
+      if (!p) {
         return {
           ...line,
-          product: p,
-          unitPrice: unit,
-          baseUnitPrice,
-          overrideUnitPrice,
+          product: {
+            id: line.productId,
+            name: "Product unavailable",
+            sku: "",
+            barcode: "",
+            stock: 0,
+            reservedStock: 0,
+            retailPrice: 0,
+            wholesalePrice: 0,
+            wholesaleEligible: false,
+            unit: "PIECE" as const,
+            active: false,
+            quantityStep: 1,
+          } as unknown as Product,
+          isUnresolved: true,
+          unresolvedReason: "UNAVAILABLE" as const,
+          unitPrice: line.overrideUnitPrice ?? 0,
+          baseUnitPrice: 0,
+          overrideUnitPrice: line.overrideUnitPrice,
           overrideReason: line.overrideReason,
           overrideAuthorizationToken: line.overrideAuthorizationToken,
-          priceType: useWholesalePrice ? "Wholesale" : "Retail",
-          lineTotal: unit * line.qty,
+          priceType: "Retail" as const,
+          lineTotal: (line.overrideUnitPrice ?? 0) * line.qty,
         };
-      })
-      .filter(Boolean) as Array<{
-      productId: string;
-      qty: number;
-      product: Product;
-      unitPrice: number;
-      baseUnitPrice: number;
-      overrideUnitPrice?: number;
-      overrideReason?: string;
-      overrideAuthorizationToken?: string;
-      priceType: "Wholesale" | "Retail";
-      lineTotal: number;
-    }>;
+      }
+      const useWholesalePrice = shouldUseQuantityWholesalePrice(
+        selectedCustomer,
+        p,
+        line.qty,
+      );
+      const baseUnitPrice = useWholesalePrice
+        ? p.wholesalePrice
+        : p.retailPrice;
+      const overrideUnitPrice =
+        line.overrideUnitPrice !== undefined &&
+        Number.isFinite(line.overrideUnitPrice) &&
+        line.overrideUnitPrice > 0
+          ? line.overrideUnitPrice
+          : undefined;
+      const unit = overrideUnitPrice ?? baseUnitPrice;
+
+      const isInactive = !p.active;
+      const isInsufficientStock = line.qty > p.stock;
+      const isInvalidStep = !isQuantityStepCompliant(line.qty, p.quantityStep);
+      const isUnresolved = isInactive || isInsufficientStock || isInvalidStep;
+      const unresolvedReason = isInactive
+        ? ("INACTIVE" as const)
+        : isInsufficientStock
+          ? ("INSUFFICIENT_STOCK" as const)
+          : isInvalidStep
+            ? ("INVALID_STEP" as const)
+            : null;
+
+      return {
+        ...line,
+        product: p,
+        isUnresolved,
+        unresolvedReason,
+        unitPrice: unit,
+        baseUnitPrice,
+        overrideUnitPrice,
+        overrideReason: line.overrideReason,
+        overrideAuthorizationToken: line.overrideAuthorizationToken,
+        priceType: useWholesalePrice ? ("Wholesale" as const) : ("Retail" as const),
+        lineTotal: unit * line.qty,
+      };
+    });
   }, [cart, productsById, selectedCustomer]);
 
   const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0); // total before any customer-level subtotal discount is applied
@@ -2203,7 +2272,26 @@ export default function BillingPage() {
           ? "warning"
           : "info";
 
-  const canConfirm = cartRows.length > 0 && !submitting && !stockRefreshBusy; // final guard for whether checkout can run right now
+  const hasUnresolvedCartLines = useMemo(() => {
+    return cartRows.some(
+      (row) =>
+        Boolean((row as any).isUnresolved) ||
+        !row.product ||
+        !row.product.active ||
+        row.product.stock <= 0 ||
+        row.qty > row.product.stock ||
+        !isQuantityStepCompliant(row.qty, row.product.quantityStep),
+    );
+  }, [cartRows]);
+
+  const canConfirm = pendingCheckout
+    ? !submitting
+    : cartRows.length > 0 &&
+      !hasUnresolvedCartLines &&
+      !submitting &&
+      !stockRefreshBusy &&
+      !parkedBusy &&
+      !draftRequestBusy; // final guard for whether checkout can run right now
   const hasBillDraft =
     cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
 
@@ -2221,6 +2309,12 @@ export default function BillingPage() {
     unitPrice: number;
     overrideReason?: string;
   }) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before modifying price overrides.",
+      );
+      return;
+    }
     if (!canUsePriceOverride) {
       showToast(
         "danger",
@@ -2253,6 +2347,12 @@ export default function BillingPage() {
   }
 
   async function applyPriceOverride() {
+    if (pendingCheckout) {
+      setPriceOverrideError(
+        "A submitted checkout is pending recovery. Complete retry before modifying price overrides.",
+      );
+      return;
+    }
     if (!priceOverrideTargetId) return;
 
     const price = Math.round(Number(priceOverrideDraftPrice) * 100) / 100;
@@ -2327,6 +2427,12 @@ export default function BillingPage() {
   }
 
   function clearPriceOverride(productId: string) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before modifying price overrides.",
+      );
+      return;
+    }
     setCart((current) =>
       current.map((line) => {
         if (line.productId !== productId) return line;
@@ -2458,6 +2564,12 @@ export default function BillingPage() {
 
   // this adds one product into the cart while checking stock, active status, and current quantity first
   function addToCart(productId: string, qty = 1, explicitProduct?: Product) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before adding items.",
+      );
+      return;
+    }
     const product = explicitProduct || productsById.get(productId);
     // this handles when the product is inactive or missing from the lookup table
     if (!product || !product.active) {
@@ -2517,6 +2629,12 @@ export default function BillingPage() {
   // this changes the quantity of an item already in the cart
   // and validates that we don't exceed the available stock
   function changeQty(productId: string, val: number) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing quantity.",
+      );
+      return;
+    }
     const product = productsById.get(productId);
     const maxQty = Math.max(getProductMinQty(product), product?.stock || 1);
     if (product && val > product.stock) {
@@ -2551,6 +2669,12 @@ export default function BillingPage() {
   }
 
   function removeLine(productId: string) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before removing items.",
+      );
+      return;
+    }
     setCart((prev) => prev.filter((x) => x.productId !== productId));
     clearCartIssue();
     if (priceOverrideTargetId === productId) closePriceOverride();
@@ -2560,6 +2684,12 @@ export default function BillingPage() {
   }
 
   function applyStockConflictSuggestion(conflict: StockConflict) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing items.",
+      );
+      return;
+    }
     if (conflict.availableStock <= 0) {
       removeLine(conflict.productId);
       return;
@@ -2591,6 +2721,12 @@ export default function BillingPage() {
   }
 
   function applyAllStockConflictSuggestions() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing items.",
+      );
+      return;
+    }
     const conflictsByProductId = new Map(
       stockConflicts.map((conflict) => [conflict.productId, conflict]),
     );
@@ -2713,10 +2849,14 @@ export default function BillingPage() {
 
   // we use this to clear all current cart data when a transaction finishes or is cancelled manually
   // the stored cart is cleared here too so the next visit starts fresh on purpose
-  function resetBill() {
-    clearStoredBillingCart();
+  function resetBill(options?: { forceClearPending?: boolean }) {
+    if (pendingCheckoutRef.current && !options?.forceClearPending) {
+      writeStoredBillingCart([], null, null, null, pendingCheckoutRef.current);
+    } else {
+      clearStoredBillingCart();
+      setPendingCheckout(null);
+    }
     setCart([]);
-    setPendingCheckout(null);
     setActiveDraftInvoiceId(null);
     setActiveDraftRequestId(null);
     setSelectedCustomerId(null);
@@ -2745,11 +2885,18 @@ export default function BillingPage() {
   }
 
   function requestResetBill() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before clearing.",
+      );
+      return;
+    }
     if (!hasBillDraft) return;
     setPendingBillingConfirm("clear-cart");
   }
 
   function confirmResetBill() {
+    if (pendingCheckoutRef.current || pendingCheckout) return;
     if (activeDraftRequestId) {
       const linkedRequest = incomingRequests.find(
         (request) => request.id === activeDraftRequestId,
@@ -2764,10 +2911,16 @@ export default function BillingPage() {
       setAcceptedResolutionError("");
       return;
     }
-    resetBill();
+    resetBill({ forceClearPending: true });
   }
 
   function requestParkBill() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before parking.",
+      );
+      return;
+    }
     if (cart.length === 0) {
       setBillingError("Add at least one item before parking this bill.");
       return;
@@ -2908,6 +3061,12 @@ export default function BillingPage() {
   async function resolveAcceptedRequest(
     action: "RETURN_TO_QUEUE" | "CANCEL",
   ) {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before resolving staff requests.",
+      );
+      return;
+    }
     if (!acceptedResolution || draftRequestBusy) return;
     const reason = acceptedResolutionReason.trim();
     if (reason.length < 3) {
@@ -2926,6 +3085,9 @@ export default function BillingPage() {
         acceptedResolution.requestId,
         { action, reason },
       );
+      if (pendingCheckoutRef.current) {
+        return;
+      }
       if (
         acceptedResolution.clearCartAfter ||
         activeDraftRequestId === acceptedResolution.requestId
@@ -2956,6 +3118,13 @@ export default function BillingPage() {
   }
 
   async function reviewAndLoadIncomingRequest() {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      showToast(
+        "warning",
+        "A submitted checkout is pending recovery. Complete retry before switching requests.",
+      );
+      return;
+    }
     if (!selectedIncomingRequest || draftRequestBusy) return;
     if (activeDraftRequestId) {
       showToast(
@@ -3028,9 +3197,26 @@ export default function BillingPage() {
         if (!parked) return;
       }
 
+      if (pendingCheckoutRef.current) {
+        showToast(
+          "warning",
+          "A submitted checkout is pending recovery. Complete retry before switching requests.",
+        );
+        return;
+      }
+
       const accepted = isAlreadyAccepted
         ? request
         : (await acceptDraftRequestApi(request.id, reviewItems)).request;
+
+      if (pendingCheckoutRef.current) {
+        showToast(
+          "warning",
+          "A submitted checkout is pending recovery. Complete retry before switching requests.",
+        );
+        return;
+      }
+
       const acceptedLines = (accepted.items || [])
         .filter((item) => item.reviewStatus !== "REJECTED")
         .map((item) => ({
@@ -3105,6 +3291,15 @@ export default function BillingPage() {
   }
 
   async function loadResumedParkedDraft(resumed: ParkedDraft) {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      setParkedError(
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.",
+      );
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.",
+      );
+      return;
+    }
     const nextCart = (resumed.items || [])
       .map((item) => ({
         productId: item.productId,
@@ -3137,6 +3332,13 @@ export default function BillingPage() {
   }
 
   async function parkCurrentBill(kind: "manual" | "auto" = "manual") {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      const message =
+        "A submitted checkout is pending recovery. Complete retry before parking.";
+      setParkedError(message);
+      setBillingError(message);
+      return null;
+    }
     if (cart.length === 0) {
       setParkedError("Add at least one item before parking this bill.");
       return null;
@@ -3164,6 +3366,9 @@ export default function BillingPage() {
           qty: line.qty,
         })),
       });
+      if (pendingCheckoutRef.current) {
+        return normalizeParkedDraft(parked);
+      }
       resetBill();
       await loadParkedDrafts();
       showToast(
@@ -3196,6 +3401,13 @@ export default function BillingPage() {
 
   async function resumeParkedBill(draft: ParkedDraft) {
     if (parkedBusy) return;
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      const message =
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+      setParkedError(message);
+      setBillingError(message);
+      return;
+    }
 
     setParkedBusy(true);
     setParkedError("");
@@ -3207,9 +3419,24 @@ export default function BillingPage() {
         if (!parked) return;
       }
 
+      if (pendingCheckoutRef.current) {
+        const message =
+          "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+        setParkedError(message);
+        setBillingError(message);
+        return;
+      }
+
       const resumed = normalizeParkedDraft(
         await resumeParkedDraftApi(draft.id),
       );
+      if (pendingCheckoutRef.current) {
+        const message =
+          "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+        setParkedError(message);
+        setBillingError(message);
+        return;
+      }
       if ((resumed.staleWarnings || []).length > 0) {
         setPendingStaleResume(resumed);
         setShowParkedBills(false);
@@ -3273,9 +3500,21 @@ export default function BillingPage() {
   }
 
   function openPaymentFlow(nextMethod?: PaymentMethod) {
+    if (pendingCheckout) {
+      setPendingBillingConfirm("checkout");
+      return;
+    }
     // this handles when someone tries to open payment without any cart lines
     if (cartRows.length === 0) {
       setBillingError("Add at least one product before opening payment.");
+      return;
+    }
+    if (!canConfirm) {
+      if (hasUnresolvedCartLines) {
+        showCartIssue(
+          "Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.",
+        );
+      }
       return;
     }
     // when a shortcut button passes a payment method, we switch the modal into that method before opening it
@@ -3517,7 +3756,12 @@ export default function BillingPage() {
       setPendingBillingConfirm("checkout");
       return;
     }
-    if (!canConfirm) return;
+    if (!canConfirm) {
+      if (hasUnresolvedCartLines) {
+        setPaymentError("Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.");
+      }
+      return;
+    }
     if (!validatePaymentBeforeConfirm()) return;
 
     setStockConflicts([]);
@@ -3530,6 +3774,52 @@ export default function BillingPage() {
         return;
       }
 
+      const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
+      const result = deriveCandidateCheckoutState({
+        cart,
+        latestProductsById,
+        selectedCustomer,
+        subtotalDiscountPercent: subtotalDiscountMeta.percent,
+        paymentMethod,
+        paymentStatus,
+        paidAmountStr: paidAmount,
+        cashTenderedStr: cashTendered,
+        fonepayReference,
+        splitPayments,
+        splitCashAmountStr: splitCashAmount,
+        activeDraftInvoiceId,
+        activeDraftRequestId,
+        selectedCustomerId,
+        invoiceNote,
+        shouldUseQuantityWholesalePrice,
+      });
+
+      if (!result.success) {
+        setPaymentError(result.error);
+        return;
+      }
+
+      const candidateFingerprint = computeReviewFingerprint({
+        cart,
+        productsById: latestProductsById,
+        selectedCustomerId,
+        selectedCustomer,
+        discountPercent: subtotalDiscountMeta.percent,
+        paymentMethod,
+        paymentStatus,
+        paidAmount,
+        cashTendered,
+        fonepayReference,
+        splitPayments,
+        activeDraftInvoiceId,
+        activeDraftRequestId,
+        invoiceNote,
+      });
+
+      setReviewedCandidate({
+        ...result.candidate,
+        fingerprint: candidateFingerprint,
+      });
       setPendingBillingConfirm("checkout");
     } catch {
       setPaymentError(
@@ -3544,66 +3834,39 @@ export default function BillingPage() {
     // stopping here prevents double submits and blocks invalid partial payment states
     if (!pendingCheckout && !canConfirm) return;
     if (!pendingCheckout && !validatePaymentBeforeConfirm()) return;
+    if (!pendingCheckout && !reviewedCandidate) return;
     setPendingBillingConfirm(null);
     setSubmitting(true);
 
     try {
-      const checkoutPayments =
-        paymentMethod === "Split"
-          ? normalizedSplitPayments.map((payment) => ({
-              method: payment.method,
-              amount: payment.amountNum,
-              reference:
-                payment.method === "FONEPAY"
-                  ? payment.reference?.trim()
-                  : undefined,
-              tenderedAmount:
-                payment.method === "CASH" ? payment.tenderedNum : undefined,
-            }))
-          : paymentStatus !== "Unpaid" && effectivePaidAmount > 0
-            ? [
-                {
-                  method: (
-                    paymentMethod === "eSewa"
-                      ? "ESEWA"
-                      : paymentMethod === "Fonepay"
-                        ? "FONEPAY"
-                        : "CASH"
-                  ) as
-                    | "CASH"
-                    | "FONEPAY"
-                    | "ESEWA",
-                  amount: effectivePaidAmount,
-                  reference:
-                    paymentMethod === "Fonepay"
-                      ? fonepayReference.trim()
-                      : undefined,
-                  tenderedAmount:
-                    paymentMethod === "Cash" && paymentStatus === "Paid"
-                      ? cashTenderedNum
-                      : undefined,
-                },
-              ]
-            : [];
+      const checkoutPayload: PendingCheckoutPayload = pendingCheckout
+        ? pendingCheckout.payload
+        : {
+            draftInvoiceId: reviewedCandidate!.draftInvoiceId,
+            customerId: reviewedCandidate!.customerId,
+            draftRequestId: reviewedCandidate!.draftRequestId,
+            notes: reviewedCandidate!.notes,
+            items: reviewedCandidate!.items.map((line) => ({
+              productId: line.productId,
+              qty: line.qty,
+              overrideUnitPrice: line.overrideUnitPrice,
+              overrideReason: line.overrideReason,
+              overrideAuthorizationToken: line.overrideAuthorizationToken,
+            })),
+            payments: reviewedCandidate!.payments,
+            confirmation: reviewedCandidate!.confirmation,
+          };
 
-      const currentPayload: PendingCheckoutPayload = {
-        draftInvoiceId: activeDraftInvoiceId || undefined,
-        customerId: selectedCustomerId || undefined,
-        notes: invoiceNote.trim() || undefined,
-        items: cartRows.map((line) => ({
-          productId: line.productId,
-          qty: line.qty,
-          overrideUnitPrice: line.overrideUnitPrice,
-          overrideReason: line.overrideReason,
-          overrideAuthorizationToken: line.overrideAuthorizationToken,
-        })),
-        payments: checkoutPayments,
-      };
+      const candidateDraftRequestId =
+        reviewedCandidate !== null && reviewedCandidate !== undefined
+          ? (reviewedCandidate.draftRequestId || null)
+          : activeDraftRequestId;
+
       const checkoutSnapshot = resolvePendingCheckoutSnapshot(
         pendingCheckout,
         createCheckoutOperationKey(),
-        currentPayload,
-        activeDraftRequestId,
+        checkoutPayload,
+        candidateDraftRequestId,
       );
 
       if (!pendingCheckout) {
@@ -3634,6 +3897,7 @@ export default function BillingPage() {
 
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
+        setPendingCheckout(null);
         resetBill();
         submitEsewaForm(result.esewaPaymentIntent);
         return;
@@ -3642,6 +3906,8 @@ export default function BillingPage() {
       // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure
       setShowPaymentModal(false);
       setPriceOverrideDraftPin("");
+      setReviewedCandidate(null);
+      setPendingCheckout(null);
       resetBill();
       setShowSuccess(true);
       try {
@@ -3655,8 +3921,31 @@ export default function BillingPage() {
     } catch (err: any) {
       console.error("Billing confirm error:", err);
       const responseData = err?.response?.data;
-      if (responseData?.code === "STOCK_CONFLICT") {
+      const responseCode = responseData?.code;
+
+      if (responseCode === "CHECKOUT_REVIEW_REQUIRED") {
         setPendingCheckout(null);
+        setReviewedCandidate(null);
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          null,
+        );
+        setBillingError(
+          responseData?.error ||
+            "Items, prices, or payable total changed since review. Please review the updated bill and confirm again.",
+        );
+        try {
+          await refreshProductsForCheckout();
+        } catch {}
+        return;
+      }
+
+      if (responseCode === "STOCK_CONFLICT") {
+        setPendingCheckout(null);
+        setReviewedCandidate(null);
         writeStoredBillingCart(
           cart,
           activeDraftInvoiceId,
@@ -3676,10 +3965,6 @@ export default function BillingPage() {
         }
       }
 
-      const responseStatus = Number(err?.response?.status || 0);
-      if (responseStatus >= 400 && responseStatus < 500) {
-        setPendingCheckout(null);
-      }
       setBillingError(
         responseData?.error ||
           "Checkout outcome is unknown. Your bill is saved; retry to recover the same invoice.",
@@ -3765,6 +4050,58 @@ export default function BillingPage() {
       };
     }
 
+    if (pendingCheckout) {
+      const p = pendingCheckout.payload as any;
+      const pItems = Array.isArray(p.items) ? p.items : [];
+      const pPayable =
+        p.confirmation?.payableTotal ??
+        (typeof p.payableTotal === "number" ? p.payableTotal : undefined);
+      return {
+        title: "Retry submitted checkout?",
+        message:
+          "This bill was previously submitted and its outcome was interrupted. Confirming will recover the existing invoice without creating duplicate transactions.",
+        confirmLabel: "Retry Submission",
+        tone: "primary" as const,
+        icon: "sync",
+        onConfirm: confirmCheckout,
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Items</span>
+              <span className="font-extrabold text-slate-900">
+                {pItems.length} line(s), {formatQty(pItems.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0))} total qty
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Payable total</span>
+              <span className="font-extrabold text-slate-900">
+                {pPayable !== undefined
+                  ? formatNpr(pPayable)
+                  : "Not recorded (legacy submission)"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Operation Key</span>
+              <span className="font-mono text-[11px] font-extrabold text-slate-600 truncate max-w-[180px]">
+                {pendingCheckout.operationKey}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    const disp = reviewedCandidate?.display;
+    const dispCustomer = disp?.customerName ?? (selectedCustomer ? selectedCustomer.name : "Walk-in Customer");
+    const dispTotal = disp?.payableTotal ?? payableTotal;
+    const dispCollect = disp?.effectivePaidAmount ?? (paymentMethod === "Split" ? splitCashNum : effectivePaidAmount);
+    const dispMethod = disp?.paymentMethod ?? (paymentStatus === "Unpaid" ? "None" : paymentMethod);
+    const dispEsewa = disp?.splitEsewaAmount ?? splitEsewaAmount;
+    const dispFonepay = disp?.splitFonepayAmount ?? splitFonepayAmount;
+    const dispFonepayRef = disp?.fonepayReference ?? (fonepayReference.trim() || undefined);
+    const dispChange = disp?.changeDue ?? changeDue;
+    const dispBalance = disp?.balanceDue ?? balanceDue;
+
     return {
       title:
         paymentMethod === "Split"
@@ -3795,7 +4132,7 @@ export default function BillingPage() {
               ? "Confirm Fonepay"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa"
-              : `Confirm ${formatNpr(effectivePaidAmount)}`,
+              : `Confirm ${formatNpr(dispCollect)}`,
       tone: "primary" as const,
       icon:
         paymentMethod === "Split"
@@ -3813,65 +4150,63 @@ export default function BillingPage() {
           <div className="flex items-center justify-between gap-3">
             <span>Customer</span>
             <span className="font-extrabold text-slate-900">
-              {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+              {dispCustomer}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Invoice total</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(payableTotal)}
+              {formatNpr(dispTotal)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Collect now</span>
             <span className="font-extrabold text-slate-900">
-              {paymentMethod === "Split"
-                ? formatNpr(splitCashNum)
-                : formatNpr(effectivePaidAmount)}
+              {formatNpr(dispCollect)}
             </span>
           </div>
           {paymentMethod === "Split" ? (
             <div className="flex items-center justify-between gap-3">
               <span>eSewa amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(splitEsewaAmount)}
+                {formatNpr(dispEsewa)}
               </span>
             </div>
           ) : null}
-          {paymentMethod === "Split" && splitFonepayAmount > 0 ? (
+          {paymentMethod === "Split" && dispFonepay > 0 ? (
             <div className="flex items-center justify-between gap-3">
               <span>Fonepay amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(splitFonepayAmount)}
+                {formatNpr(dispFonepay)}
               </span>
             </div>
           ) : null}
-          {paymentMethod === "Fonepay" && fonepayReference.trim() ? (
+          {paymentMethod === "Fonepay" && dispFonepayRef ? (
             <div className="flex items-center justify-between gap-3">
               <span>Reference</span>
               <span className="max-w-[220px] truncate font-extrabold text-slate-900">
-                {fonepayReference.trim()}
+                {dispFonepayRef}
               </span>
             </div>
           ) : null}
-          {changeDue > 0 ? (
+          {dispChange > 0 ? (
             <div className="flex items-center justify-between gap-3">
               <span>Change due</span>
               <span className="font-extrabold text-emerald-700">
-                {formatNpr(changeDue)}
+                {formatNpr(dispChange)}
               </span>
             </div>
           ) : null}
           <div className="flex items-center justify-between gap-3">
             <span>Due after bill</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(balanceDue)}
+              {formatNpr(dispBalance)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Method</span>
             <span className="font-extrabold text-slate-900">
-              {paymentStatus === "Unpaid" ? "None" : paymentMethod}
+              {dispMethod}
             </span>
           </div>
         </div>
@@ -3886,6 +4221,7 @@ export default function BillingPage() {
     paymentMethod,
     paymentStatus,
     pendingBillingConfirm,
+    reviewedCandidate,
     selectedCustomer,
     splitCashNum,
     splitEsewaAmount,
@@ -4617,11 +4953,11 @@ export default function BillingPage() {
                         </div>
 
                         <div className="min-w-0">
-                          <div className={billingView.rowMain}>
+                          <div className={cn(billingView.rowMain, row.isUnresolved && "text-rose-700")}>
                             {row.product.name}
                           </div>
                           <div className={billingView.rowSub}>
-                            SKU: {row.product.sku}{" "}
+                            SKU: {row.product.sku || "N/A"}{" "}
                             <span className="mx-1 text-[#8C8889]">/</span>{" "}
                             Brand: {row.product.brand || "N/A"}
                           </div>
@@ -4630,30 +4966,63 @@ export default function BillingPage() {
                               Reason: {row.overrideReason}
                             </div>
                           )}
+                          {row.unresolvedReason === "UNAVAILABLE" && (
+                            <div className="truncate text-[10px] font-bold text-rose-600 mt-0.5">
+                              Item missing from catalog
+                            </div>
+                          )}
                         </div>
 
                         <div className="text-right text-[13px]">
-                          <span
-                            className={`font-mono font-extrabold ${low ? "text-[#EA580C]" : "text-[#11120d]"}`}
-                          >
-                            {formatQtyWithUnit(
-                              row.product.stock,
-                              row.product.saleUnit,
-                            )}
-                          </span>
-                          {low && (
-                            <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
-                              Low Stock
-                            </div>
+                          {row.unresolvedReason === "UNAVAILABLE" ? (
+                            <span className="font-mono font-bold text-rose-600">—</span>
+                          ) : (
+                            <>
+                              <span
+                                className={`font-mono font-extrabold ${row.qty > row.product.stock ? "text-rose-600" : low ? "text-[#EA580C]" : "text-[#11120d]"}`}
+                              >
+                                {formatQtyWithUnit(
+                                  row.product.stock,
+                                  row.product.saleUnit,
+                                )}
+                              </span>
+                              {row.qty > row.product.stock ? (
+                                <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
+                                  Short {formatQty(row.qty - row.product.stock)}
+                                </div>
+                              ) : low ? (
+                                <div className="text-[10px] font-bold text-amber-500 uppercase mt-0.5">
+                                  Low Stock
+                                </div>
+                              ) : null}
+                            </>
                           )}
                         </div>
 
                         <div className="text-right flex flex-col items-end">
                           <div className="font-mono text-[14px] font-extrabold text-[#11120d]">
-                            {formatNpr(row.unitPrice)}
+                            {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
+                              ? "—"
+                              : formatNpr(row.unitPrice)}
                           </div>
                           <div className="flex gap-1 mt-1">
-                            {row.overrideUnitPrice !== undefined ? (
+                            {row.unresolvedReason === "UNAVAILABLE" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Unavailable
+                              </span>
+                            ) : row.unresolvedReason === "INACTIVE" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Inactive
+                              </span>
+                            ) : row.unresolvedReason === "INSUFFICIENT_STOCK" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Stock Short
+                              </span>
+                            ) : row.unresolvedReason === "INVALID_STEP" ? (
+                              <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
+                                Step {row.product.quantityStep}
+                              </span>
+                            ) : row.overrideUnitPrice !== undefined ? (
                               <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
                                 Override
                               </span>
@@ -4733,7 +5102,9 @@ export default function BillingPage() {
                         </div>
 
                         <div className="text-right font-mono text-[14px] font-extrabold text-[#11120d]">
-                          {formatNpr(row.lineTotal)}
+                          {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
+                            ? "—"
+                            : formatNpr(row.lineTotal)}
                         </div>
 
                         <div
@@ -5309,17 +5680,19 @@ export default function BillingPage() {
                   disabled={!canConfirm}
                   onClick={() => openPaymentFlow()}
                   title={
-                    canConfirm
-                      ? "Open payment"
-                      : "Add at least one item to bill before payment"
+                    pendingCheckout
+                      ? "Retry or recover submitted checkout"
+                      : canConfirm
+                        ? "Open payment"
+                        : "Add at least one item to bill before payment"
                   }
                   className={cn(
                     "flex w-full items-center justify-center gap-2 rounded-[14px] bg-[#11120d] font-extrabold text-white transition hover:bg-[#000000] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
                     billingView.payButton,
                   )}
                 >
-                  <Icon name="payment" className="text-[20px]" /> PAY NOW (Shift
-                  + Enter)
+                  <Icon name={pendingCheckout ? "sync" : "payment"} className="text-[20px]" />{" "}
+                  {pendingCheckout ? "RECOVER CHECKOUT (Shift + Enter)" : "PAY NOW (Shift + Enter)"}
                 </button>
 
                 <div className="grid grid-cols-2 gap-3">

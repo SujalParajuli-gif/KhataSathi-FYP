@@ -38,6 +38,37 @@ export const checkoutPaymentSchema = z
   })
   .strict();
 
+export const checkoutConfirmationItemSchema = z
+  .object({
+    productId: safeText("Product ID", 120).min(1, "Product ID is required"),
+    qty: positiveQtySchema,
+    appliedUnitPrice: nonNegativeMoneySchema,
+  })
+  .strict();
+
+export const checkoutConfirmationSchema = z
+  .object({
+    items: z
+      .array(checkoutConfirmationItemSchema)
+      .min(1, "Confirmation requires at least one item")
+      .refine(
+        (items) => {
+          const seen = new Set<string>();
+          for (const item of items) {
+            if (seen.has(item.productId)) return false;
+            seen.add(item.productId);
+          }
+          return true;
+        },
+        { message: "Confirmation items cannot contain duplicate product IDs" },
+      ),
+    payableTotal: z
+      .number()
+      .int("Confirmation payable total must be an integer (whole NPR)")
+      .nonnegative("Confirmation payable total cannot be negative"),
+  })
+  .strict();
+
 export const checkoutBodySchema = z
   .object({
     operationKey: checkoutOperationKeySchema,
@@ -52,6 +83,7 @@ export const checkoutBodySchema = z
       .min(1, "Checkout requires at least one item"),
     payment: checkoutPaymentSchema.optional().nullable(),
     payments: z.array(checkoutPaymentSchema).max(10, "Too many payment rows").optional().nullable(),
+    confirmation: checkoutConfirmationSchema.optional().nullable(),
   })
   .strict();
 

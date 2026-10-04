@@ -35,6 +35,36 @@ import {
 
 export { StockConflictError } from "./stockConflicts";
 
+export class CheckoutReviewConflictError extends Error {
+  readonly code = "CHECKOUT_REVIEW_REQUIRED";
+  readonly reason: "PRICE_OR_TOTAL_CHANGED" | "MISSING_CONFIRMATION";
+  readonly details?: {
+    confirmedPayableTotal?: number;
+    currentPayableTotal?: number;
+    itemDiscrepancies?: Array<{
+      productId: string;
+      productName: string;
+      confirmedUnitPrice?: number;
+      currentUnitPrice?: number;
+      confirmedQty?: number;
+      currentQty?: number;
+    }>;
+  };
+
+  constructor(
+    message: string,
+    options?: {
+      reason?: "PRICE_OR_TOTAL_CHANGED" | "MISSING_CONFIRMATION";
+      details?: CheckoutReviewConflictError["details"];
+    },
+  ) {
+    super(message);
+    this.name = "CheckoutReviewConflictError";
+    this.reason = options?.reason || "PRICE_OR_TOTAL_CHANGED";
+    this.details = options?.details;
+  }
+}
+
 const MAX_CREATE_DRAFT_RETRIES = 5; // retry limit for when the auto-generated invoice number collides with an existing one
 const ACTIVE_RETURN_STATUSES = ["PENDING", "APPROVED"] as const;
 const PRICE_OVERRIDE_AUTH_TTL_MS = 5 * 60 * 1000;
@@ -820,7 +850,18 @@ type CheckoutPaymentInput = {
   tenderedAmount?: number;
 };
 
-type CheckoutInput = {
+export type CheckoutConfirmationItemInput = {
+  productId: string;
+  qty: number;
+  appliedUnitPrice: number;
+};
+
+export type CheckoutConfirmationInput = {
+  items: CheckoutConfirmationItemInput[];
+  payableTotal: number;
+};
+
+export type CheckoutInput = {
   operationKey: string;
   draftInvoiceId?: string | null;
   draftRequestId?: string | null;
@@ -831,15 +872,73 @@ type CheckoutInput = {
   items: CheckoutItemInput[];
   payment?: CheckoutPaymentInput | null;
   payments?: CheckoutPaymentInput[] | null;
+  confirmation?: CheckoutConfirmationInput | null;
 };
+
+export function normalizeCheckoutConfirmation(
+  confirmation?: CheckoutConfirmationInput | null,
+): { items: CheckoutConfirmationItemInput[]; payableTotal: number } | null {
+  if (!confirmation) return null;
+  if (!Array.isArray(confirmation.items) || confirmation.items.length === 0) {
+    throw new Error("Confirmation items cannot be empty");
+  }
+  const payableTotal = Number(confirmation.payableTotal);
+  if (!Number.isFinite(payableTotal) || payableTotal < 0 || !Number.isInteger(payableTotal)) {
+    throw new Error("Confirmation payable total must be a valid whole NPR integer");
+  }
+
+  const seenProductIds = new Set<string>();
+  const normalizedItems: CheckoutConfirmationItemInput[] = [];
+
+  for (const item of confirmation.items) {
+    const productId = String(item.productId || "").trim();
+    if (!productId) {
+      throw new Error("Confirmation item productId is required");
+    }
+    if (seenProductIds.has(productId)) {
+      throw new Error(`Duplicate confirmation product ID: ${productId}`);
+    }
+    seenProductIds.add(productId);
+
+    const qty = Number(item.qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error("Confirmation item quantity must be greater than zero");
+    }
+
+    const appliedUnitPrice = roundCurrency(Number(item.appliedUnitPrice));
+    if (!Number.isFinite(appliedUnitPrice) || appliedUnitPrice < 0) {
+      throw new Error("Confirmation item appliedUnitPrice must be a valid non-negative number");
+    }
+
+    normalizedItems.push({
+      productId,
+      qty,
+      appliedUnitPrice,
+    });
+  }
+
+  // canonicalize order by productId for deterministic fingerprinting and matching
+  normalizedItems.sort((a, b) => a.productId.localeCompare(b.productId));
+
+  return {
+    items: normalizedItems,
+    payableTotal,
+  };
+}
 
 export function buildCheckoutPayloadHash(
   input: CheckoutInput,
   items: ReturnType<typeof normalizeCheckoutItems>,
   payments: ReturnType<typeof normalizeCheckoutPayments>,
   includeEmptyDraftRequest = false,
+  normalizedConfirmation?: ReturnType<typeof normalizeCheckoutConfirmation>,
 ) {
   const draftRequestId = String(input.draftRequestId || "").trim() || null;
+  const conf =
+    normalizedConfirmation !== undefined
+      ? normalizedConfirmation
+      : normalizeCheckoutConfirmation(input.confirmation);
+
   const fingerprintPayload = {
     draftInvoiceId: String(input.draftInvoiceId || "").trim() || null,
     // Preserve ordinary operation hashes written before request-linked checkout existed.
@@ -860,6 +959,7 @@ export function buildCheckoutPayloadHash(
       reference: payment.reference || null,
       tenderedAmount: payment.tenderedAmount ?? null,
     })),
+    ...(conf ? { confirmation: conf } : {}),
   };
   return createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex");
 }
@@ -1410,6 +1510,7 @@ async function finalizeCheckoutInvoiceTx(
   snapshotMode: "CAPTURE_CURRENT" | "DEFER_TO_CORRECTION",
   discountAmount?: number,
   overridePin?: string | null,
+  expectedPayableTotal?: number | null,
 ) {
   const invoice = await tx.invoice.findUnique({
     where: { id: invoiceId },
@@ -1451,6 +1552,23 @@ async function finalizeCheckoutInvoiceTx(
   const appliedDiscountPercent =
     subTotal > 0 ? roundCurrency((normalizedDiscount / subTotal) * 100) : 0;
   const netTotal = roundPayableTotal(subTotal - normalizedDiscount);
+
+  if (expectedPayableTotal !== undefined && expectedPayableTotal !== null) {
+    const normalizedExpected = roundPayableTotal(expectedPayableTotal);
+    if (normalizedExpected !== netTotal) {
+      throw new CheckoutReviewConflictError(
+        `Invoice payable total (Rs. ${netTotal}) has changed from the reviewed total (Rs. ${normalizedExpected}). Please review and confirm the updated bill.`,
+        {
+          reason: "PRICE_OR_TOTAL_CHANGED",
+          details: {
+            confirmedPayableTotal: normalizedExpected,
+            currentPayableTotal: netTotal,
+          },
+        },
+      );
+    }
+  }
+
   const isManualDiscountOverride =
     Math.abs(normalizedDiscount - computedDiscount) > 0.001;
 
@@ -1847,11 +1965,18 @@ async function prepareCheckoutInvoiceTx(
 export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   const checkoutItems = normalizeCheckoutItems(input.items);
   const checkoutPayments = normalizeCheckoutPayments(input);
+  const normalizedConfirmation = normalizeCheckoutConfirmation(input.confirmation);
   const operationKey = String(input.operationKey || "").trim();
   if (!/^[A-Za-z0-9_-]{16,120}$/.test(operationKey)) {
     throw new Error("A valid checkout operation key is required.");
   }
-  const payloadHash = buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments);
+  const payloadHash = buildCheckoutPayloadHash(
+    input,
+    checkoutItems,
+    checkoutPayments,
+    false,
+    normalizedConfirmation,
+  );
   const settings = await getBusinessSettings();
 
   try {
@@ -1860,6 +1985,14 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
         data: { operationKey, actorId: cashierId, payloadHash },
         select: { id: true },
       });
+
+      if (!normalizedConfirmation) {
+        throw new CheckoutReviewConflictError(
+          "Checkout review confirmation is required for fresh checkout.",
+          { reason: "MISSING_CONFIRMATION" },
+        );
+      }
+
       const draftRequestId = String(input.draftRequestId || "").trim();
       let linkedDraftRequest: any = null;
       if (draftRequestId) {
@@ -1983,6 +2116,73 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
       };
     });
 
+    const confItemsByProduct = new Map(
+      normalizedConfirmation.items.map((item) => [item.productId, item]),
+    );
+    const discrepancies: Array<{
+      productId: string;
+      productName: string;
+      confirmedUnitPrice?: number;
+      currentUnitPrice?: number;
+      confirmedQty?: number;
+      currentQty?: number;
+    }> = [];
+
+    for (const line of checkoutItems) {
+      const confItem = confItemsByProduct.get(line.productId);
+      const product = checkoutProductsById.get(line.productId);
+      const pricedLine = pricedCheckoutLines.find(
+        (item) => item.productId === line.productId,
+      )!;
+      if (!confItem) {
+        discrepancies.push({
+          productId: line.productId,
+          productName: product?.name || line.productId,
+          currentUnitPrice: pricedLine.appliedUnitPrice,
+          currentQty: line.qty,
+        });
+      } else {
+        const priceDiff = Math.abs(
+          confItem.appliedUnitPrice - pricedLine.appliedUnitPrice,
+        );
+        const qtyDiff = Math.abs(confItem.qty - line.qty);
+        if (priceDiff > 0.001 || qtyDiff > 0.0001) {
+          discrepancies.push({
+            productId: line.productId,
+            productName: product?.name || line.productId,
+            confirmedUnitPrice: confItem.appliedUnitPrice,
+            currentUnitPrice: pricedLine.appliedUnitPrice,
+            confirmedQty: confItem.qty,
+            currentQty: line.qty,
+          });
+        }
+      }
+    }
+
+    for (const confItem of normalizedConfirmation.items) {
+      if (!checkoutItems.some((line) => line.productId === confItem.productId)) {
+        discrepancies.push({
+          productId: confItem.productId,
+          productName: confItem.productId,
+          confirmedUnitPrice: confItem.appliedUnitPrice,
+          confirmedQty: confItem.qty,
+        });
+      }
+    }
+
+    if (discrepancies.length > 0) {
+      throw new CheckoutReviewConflictError(
+        "Checkout items or prices have changed since review. Please review and confirm the updated bill.",
+        {
+          reason: "PRICE_OR_TOTAL_CHANGED",
+          details: {
+            itemDiscrepancies: discrepancies,
+            confirmedPayableTotal: normalizedConfirmation.payableTotal,
+          },
+        },
+      );
+    }
+
     for (const overrideLine of priceOverrideLines) {
       await consumePriceOverrideAuthorizationTx(tx, {
         cashierId,
@@ -2031,6 +2231,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
       "CAPTURE_CURRENT",
       input.discountAmount,
       input.overridePin,
+      normalizedConfirmation.payableTotal,
     );
 
     if (priceOverrideLines.length > 0) {
@@ -2190,7 +2391,7 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
     // Only absent-request retries may accept that alternate encoding.
     const compatiblePayloadHash = String(input.draftRequestId || "").trim()
       ? undefined
-      : buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments, true);
+      : buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments, true, normalizedConfirmation);
     return replayCheckoutOperation(cashierId, operationKey, payloadHash, compatiblePayloadHash);
   }
 }

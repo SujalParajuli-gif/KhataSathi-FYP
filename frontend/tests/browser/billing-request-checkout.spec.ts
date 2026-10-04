@@ -28,7 +28,7 @@ test("request checkout survives a lost response/reload and clears the posted car
     if (path.endsWith("/auth/me")) return respond({ user });
     if (path.endsWith("/capabilities")) return respond({ businessMode: "FULL_POS", catalogEnabled: true, inventoryEnabled: true, posEnabled: true, stockTracked: true, staffDraftRequestsEnabled: true });
     if (path.endsWith("/customers") || path.endsWith("/brands") || path.endsWith("/categories")) return respond([]);
-    if (path.endsWith("/products") || path.endsWith("/products/lookup")) return respond({ products: [product], total: 1 });
+    if (path.endsWith("/products") || path.endsWith("/products/lookup") || path.endsWith("/products/by-ids")) return respond({ products: [product], total: 1 });
     if (path.endsWith("/invoices/checkout")) {
       attempts.push(route.request().postDataJSON());
       if (attempts.length === 1) return route.abort("failed");
@@ -39,10 +39,15 @@ test("request checkout survives a lost response/reload and clears the posted car
   });
 
   async function submitPending() {
-    await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeEnabled();
-    await page.getByRole("button", { name: /PAY NOW/ }).click();
-    await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
-    await page.getByRole("button", { name: /^Confirm NPR/ }).click();
+    await expect(page.getByRole("button", { name: /PAY NOW|RECOVER CHECKOUT/ })).toBeEnabled();
+    await page.getByRole("button", { name: /PAY NOW|RECOVER CHECKOUT/ }).click();
+    const retryOrConfirmBtn = page.getByRole("button", { name: /Retry Submission|^Confirm/i });
+    if (await retryOrConfirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
+      await retryOrConfirmBtn.click();
+    } else {
+      await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
+      await page.getByRole("button", { name: /^Confirm/i }).click();
+    }
   }
   await page.goto("/billing");
   await submitPending();

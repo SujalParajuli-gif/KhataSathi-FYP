@@ -1,7 +1,11 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import prisma from "../db/prisma";
-import { checkoutInvoice, buildCheckoutPayloadHash } from "../modules/invoices/service";
+import {
+  checkoutInvoice,
+  buildCheckoutPayloadHash,
+  CheckoutReviewConflictError,
+} from "../modules/invoices/service";
 import { completeDraftRequest } from "../modules/draft-requests/service";
 import { getCustomerProductPurchaseHistory } from "../modules/customers/service";
 import { invalidateBusinessSettingsCache } from "../modules/settings/service";
@@ -21,7 +25,16 @@ test("MySQL: request checkout race, replay, rollback and historical query invari
     const brand = await prisma.brand.create({ data: { name: "Test brand" } });
     const product = await prisma.product.create({ data: { name: "Sale name", sku: "TEST-SKU", brandId: brand.id, retailPrice: 25, wholesalePrice: 25, stock: 100, wholesaleEligible: false } });
     const request = await prisma.billingDraftRequest.create({ data: { requestNo: "TEST-REQUEST", status: "ACCEPTED", createdById: cashier.id, customerId: customer.id } });
-    const payload = { draftRequestId: request.id, customerId: customer.id, items: [{ productId: product.id, qty: 1 }], payments: [{ method: "CASH" as const, amount: 25, tenderedAmount: 25 }] };
+    const payload = {
+      draftRequestId: request.id,
+      customerId: customer.id,
+      items: [{ productId: product.id, qty: 1 }],
+      payments: [{ method: "CASH" as const, amount: 25, tenderedAmount: 25 }],
+      confirmation: {
+        items: [{ productId: product.id, qty: 1, appliedUnitPrice: 25 }],
+        payableTotal: 25,
+      },
+    };
     const attempts = [
       { actor: cashier.id, operationKey: "mysql-request-operation-001" },
       { actor: other.id, operationKey: "mysql-request-operation-002" },
@@ -55,6 +68,65 @@ test("MySQL: request checkout race, replay, rollback and historical query invari
     assert.equal((await prisma.billingDraftRequest.findUnique({ where: { id: rollbackRequest.id } })).completedInvoiceId, null);
     assert.equal((await prisma.product.findUnique({ where: { id: product.id } })).stock, 99);
     await assert.rejects(completeDraftRequest(rollbackRequest.id, { id: cashier.id, role: "CASHIER" }, invoiceId), /linked checkout invoice/);
+
+    // Fresh checkout without confirmation must be rejected with zero DB effects
+    await assert.rejects(
+      checkoutInvoice(cashier.id, {
+        operationKey: "mysql-missing-conf-op-001",
+        items: [{ productId: product.id, qty: 1 }],
+        payments: [{ method: "CASH", amount: 25 }],
+      }),
+      (err: any) =>
+        err instanceof CheckoutReviewConflictError &&
+        err.code === "CHECKOUT_REVIEW_REQUIRED" &&
+        err.reason === "MISSING_CONFIRMATION",
+    );
+    assert.deepEqual(
+      { invoices: await prisma.invoice.count(), payments: await prisma.payment.count(), stocks: await prisma.stockTransaction.count(), audits: await prisma.auditLog.count(), operations: await prisma.checkoutOperation.count() },
+      before,
+    );
+
+    // Fresh checkout with price mismatch confirmation must be rejected with zero DB effects
+    await assert.rejects(
+      checkoutInvoice(cashier.id, {
+        operationKey: "mysql-mismatched-price-op-001",
+        items: [{ productId: product.id, qty: 1 }],
+        payments: [{ method: "CASH", amount: 20 }],
+        confirmation: {
+          items: [{ productId: product.id, qty: 1, appliedUnitPrice: 20 }],
+          payableTotal: 20,
+        },
+      }),
+      (err: any) =>
+        err instanceof CheckoutReviewConflictError &&
+        err.code === "CHECKOUT_REVIEW_REQUIRED" &&
+        err.reason === "PRICE_OR_TOTAL_CHANGED",
+    );
+    assert.deepEqual(
+      { invoices: await prisma.invoice.count(), payments: await prisma.payment.count(), stocks: await prisma.stockTransaction.count(), audits: await prisma.auditLog.count(), operations: await prisma.checkoutOperation.count() },
+      before,
+    );
+
+    // Fresh checkout with payable total mismatch confirmation must be rejected with zero DB effects
+    await assert.rejects(
+      checkoutInvoice(cashier.id, {
+        operationKey: "mysql-mismatched-payable-op-001",
+        items: [{ productId: product.id, qty: 1 }],
+        payments: [{ method: "CASH", amount: 25 }],
+        confirmation: {
+          items: [{ productId: product.id, qty: 1, appliedUnitPrice: 25 }],
+          payableTotal: 20,
+        },
+      }),
+      (err: any) =>
+        err instanceof CheckoutReviewConflictError &&
+        err.code === "CHECKOUT_REVIEW_REQUIRED" &&
+        err.reason === "PRICE_OR_TOTAL_CHANGED",
+    );
+    assert.deepEqual(
+      { invoices: await prisma.invoice.count(), payments: await prisma.payment.count(), stocks: await prisma.stockTransaction.count(), audits: await prisma.auditLog.count(), operations: await prisma.checkoutOperation.count() },
+      before,
+    );
     await prisma.product.update({ where: { id: product.id }, data: { name: "Changed current name", sku: "CHANGED-SKU" } });
     const history = await getCustomerProductPurchaseHistory(customer.id, [product.id]);
     assert.equal(history[0].displayProduct.name, "Sale name");
@@ -66,9 +138,23 @@ test("MySQL: request checkout race, replay, rollback and historical query invari
     await prisma.invoice.update({ where: { id: invoiceId }, data: { cancelledAt: new Date() } });
     assert.deepEqual(await getCustomerProductPurchaseHistory(customer.id, [product.id]), []);
     // Replay of ordinary operations created by either previous hash encoding stays safe.
-    const ordinary = { operationKey: "mysql-ordinary-operation-001", items: [{ productId: product.id, qty: 1 }], payments: [] };
+    const ordinary = {
+      operationKey: "mysql-ordinary-operation-001",
+      items: [{ productId: product.id, qty: 1 }],
+      payments: [],
+      confirmation: {
+        items: [{ productId: product.id, qty: 1, appliedUnitPrice: 25 }],
+        payableTotal: 25,
+      },
+    };
     const posted = await checkoutInvoice(cashier.id, ordinary);
-    const nullHash = buildCheckoutPayloadHash(ordinary, ordinary.items, [], true);
+    const nullHash = buildCheckoutPayloadHash(
+      ordinary,
+      ordinary.items,
+      [],
+      true,
+      ordinary.confirmation,
+    );
     await prisma.checkoutOperation.update({ where: { operationKey: ordinary.operationKey }, data: { payloadHash: nullHash } });
     const ordinaryReplay = await checkoutInvoice(cashier.id, ordinary);
     assert.equal(ordinaryReplay.invoice?.id, posted.invoice?.id);
