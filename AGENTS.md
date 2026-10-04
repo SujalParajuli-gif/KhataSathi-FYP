@@ -62,7 +62,11 @@ Rules:
 
 - Architectural changes require an explicitly authorized plan revision.
 
-- Planning does not authorize implementation.
+- Standing user authorization (2026-10-04): both senior and implementation agents may scope, plan, implement, verify, review, and close bounded work that conforms to the frozen Master Plan and its dependencies without asking again for implementation authorization. Record this standing authorization in new task contracts and the checkpoint. Ask for authorization only when proposed work is outside or changes the frozen plan; stop for unresolved business decisions or genuine plan/repository conflicts.
+
+- A stale task/checkpoint authorization field is not a new approval gate for work covered by this standing authorization; reconcile it before proceeding. Required task contracts, risk assessment, implementation plans, reviews, and safeguards still apply.
+
+- Planning alone does not authorize out-of-plan implementation.
 
 - Implementation does not authorize commit/push/merge/deploy/migration/production changes.
 

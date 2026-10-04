@@ -9,6 +9,8 @@ Use this skill to determine the exact next engineering action for any KhataSathi
 
 The repository is shared engineering memory; chat history is temporary context.
 
+Standing user authorization (2026-10-04) in AGENTS.md applies to both senior and implementation workflows: proceed with bounded work conforming to the frozen Master Plan and its dependencies without another implementation approval. Reconcile stale task/checkpoint authorization fields rather than declaring authorization drift. Ask for authorization only for work outside or changing the frozen plan; unresolved business decisions and genuine plan/repository conflicts still stop work. Required contracts, planning, review, hygiene, and separate migration/production/push/merge/deployment gates remain unchanged.
+
 ---
 
 ## 1. Effective Workflow Version Gating

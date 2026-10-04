@@ -20,6 +20,8 @@ Before editing:
 
 Implement the smallest solution satisfying the frozen task contract (and plan artifact when present).
 
+Standing user authorization (2026-10-04), shared with the senior workflow: proceed with bounded work within the frozen Master Plan and its dependencies without asking again for implementation authorization. Reconcile stale authorization fields under AGENTS.md. Ask only for work outside or changing the frozen plan; unresolved business decisions and genuine drift still require a stop. Required plans, reviews, and separate migration/production/push/merge/deployment gates remain in force.
+
 Do not:
 
 - reopen settled architecture merely because another design is possible,
