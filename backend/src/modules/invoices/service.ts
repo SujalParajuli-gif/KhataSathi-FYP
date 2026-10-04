@@ -3526,7 +3526,7 @@ export async function getInvoice(id: string) {
         },
       },
       returnRequests: {
-        where: { status: { in: ["PENDING", "APPROVED", "COMPLETED"] } },
+        where: { status: { in: ["PENDING", "APPROVED"] } },
         select: {
           id: true,
           status: true,

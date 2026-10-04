@@ -1,6 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { ReturnStatus } from "@prisma/client";
 import prisma from "../db/prisma";
 import {
   addItem,
@@ -229,6 +230,9 @@ test("getInvoice query uses explicit detailInvoiceItemSelect and excludes costAt
     const invoice = await getInvoice("inv-live-1");
     assert.ok(invoice);
     assert.deepEqual(capturedArgs?.include?.items?.select, detailInvoiceItemSelect);
+    const activeReturnStatuses = capturedArgs.include.returnRequests.where.status.in;
+    assert.deepEqual(activeReturnStatuses, [ReturnStatus.PENDING, ReturnStatus.APPROVED]);
+    assert.ok(activeReturnStatuses.every((status: string) => Object.values(ReturnStatus).includes(status as ReturnStatus)));
     assert.equal(invoice.items[0].id, "item-1");
     assert.equal("costAtSale" in invoice.items[0], false);
     assert.equal(invoice.items[0].displayProduct.name, "Mustard Oil 1L");
