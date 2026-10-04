@@ -24,6 +24,7 @@ import settingsRoutes from "./modules/settings/routes";
 import returnRoutes from "./modules/returns/routes";
 import cashDrawerRoutes from "./modules/cash-drawers/routes";
 import documentRoutes from "./modules/documents/routes";
+import salesEvidenceRoutes from "./modules/salesEvidence/routes";
 import binRoutes from "./modules/bin/routes";
 import draftRequestRoutes from "./modules/draft-requests/routes";
 import { cleanupStaleEsewaPayments } from "./modules/payments/service";
@@ -268,6 +269,7 @@ app.use("/api/settings", settingsRoutes);
 app.use("/api/returns", requireBusinessCapability("POS"), returnRoutes);
 app.use("/api/cash-drawers", requireBusinessCapability("POS"), cashDrawerRoutes);
 app.use("/api/documents", documentRoutes);
+app.use("/api/sales-evidence", salesEvidenceRoutes);
 app.use("/api/bin", binRoutes);
 app.use(
   "/api/draft-requests",

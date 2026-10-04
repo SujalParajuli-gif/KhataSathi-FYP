@@ -5,7 +5,7 @@ import crypto from "crypto";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import type { CreateDocumentInput, ListDocumentsInput, UpdateDocumentMetadataInput } from "./validation";
-import { detectDocumentFormat, DocumentValidationError, ALLOWED_MIME_TYPES } from "./validation";
+import { detectDocumentFormat, DocumentValidationError, ALLOWED_MIME_TYPES, MAX_FILE_SIZE } from "./validation";
 import type { DocumentType, DocumentVisibility, Prisma } from "@prisma/client";
 import {
   buildDocumentThumbnailFileName,
@@ -22,7 +22,9 @@ import {
   documentStorageRoot,
   documentTempDir,
 } from "../../lib/storageReadiness";
-import { assertNotSaleEvidenceDocument } from "./protection";
+import { assertNotSaleEvidenceDocument, isSaleEvidenceDocumentType } from "./protection";
+
+export { DocumentValidationError };
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
@@ -184,7 +186,7 @@ function canRoleViewDocument(
   return visibility === "ALL_AUTHENTICATED";
 }
 
-function defaultDocumentTitle(fileName: string) {
+export function defaultDocumentTitle(fileName: string) {
   const extension = path.extname(fileName);
   const baseName = extension ? fileName.slice(0, -extension.length) : fileName;
   return baseName.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled document";
@@ -343,6 +345,134 @@ export interface UploadedFileInfo {
   verifiedExtension?: string;
 }
 
+export interface PreparedDocumentFile {
+  id: string;
+  documentType: DocumentType;
+  fileName: string;
+  storedFileName: string;
+  storedPath: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string;
+  thumbnailFileName: string | null;
+  thumbnailSize: number | null;
+}
+
+export async function prepareDocumentFile(
+  file: UploadedFileInfo,
+  id: string,
+  documentType: DocumentType,
+): Promise<PreparedDocumentFile> {
+  assertStorageReady();
+
+  if (!file || !file.path) {
+    throw new DocumentValidationError("File is required");
+  }
+
+  let sourceStat;
+  try {
+    sourceStat = await fs.stat(file.path);
+  } catch {
+    throw new DocumentValidationError(`Cannot access uploaded file: ${file.originalname || "unknown"}`);
+  }
+
+  const actualSize = sourceStat.size;
+
+  if (actualSize <= 0) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File is empty: ${file.originalname}`);
+  }
+
+  if (actualSize > MAX_FILE_SIZE) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File exceeds maximum size: ${file.originalname}`);
+  }
+
+  if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type not allowed: ${file.originalname}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}`);
+  }
+
+  const format = await detectDocumentFormat(file.path);
+  if (!format) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type not allowed or content mismatch: ${file.originalname}`);
+  }
+
+  if (format.mimeType !== file.mimetype) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type content mismatch for ${file.originalname}: claimed ${file.mimetype} but found ${format.mimeType}`);
+  }
+
+  const verifiedExtension = format.extension;
+  const verifiedMimeType = format.mimeType;
+  const relativeFolderPath = buildRelativeFolderPath();
+  const storedFileName = buildStoredFileName(id, documentType, verifiedExtension);
+
+  let finalPath: string | null = null;
+  let thumbnailFileName: string | null = null;
+  let thumbnailSize: number | null = null;
+
+  try {
+    finalPath = await moveToFinalPath(file.path, relativeFolderPath, storedFileName);
+    const checksum = await computeChecksum(finalPath);
+
+    if (supportsDocumentThumbnail(verifiedMimeType)) {
+      const candidateFileName = buildDocumentThumbnailFileName(id);
+      const candidatePath = resolveDocumentStoragePath(
+        STORAGE_ROOT,
+        relativeFolderPath,
+        candidateFileName,
+      );
+      if (!candidatePath) {
+        throw new Error("Invalid document thumbnail path");
+      }
+      try {
+        thumbnailSize = await writeDocumentImageThumbnail(finalPath, candidatePath);
+        thumbnailFileName = candidateFileName;
+      } catch (error) {
+        await fs.unlink(candidatePath).catch(() => undefined);
+        logger.warn("Document uploaded without an image thumbnail", {
+          documentId: id,
+          mimeType: verifiedMimeType,
+          error,
+        });
+      }
+    }
+
+    return {
+      id,
+      documentType,
+      fileName: file.originalname,
+      storedFileName,
+      storedPath: relativeFolderPath,
+      mimeType: verifiedMimeType,
+      fileSize: actualSize,
+      checksum,
+      thumbnailFileName,
+      thumbnailSize,
+    };
+  } catch (error) {
+    await fs.unlink(file.path).catch(() => {});
+    if (finalPath) await fs.unlink(finalPath).catch(() => {});
+    if (thumbnailFileName) {
+      await removeFileFromDisk(relativeFolderPath, thumbnailFileName);
+    }
+    throw asStorageUnavailableError(error);
+  }
+}
+
+export async function removePreparedDocumentFiles(file: {
+  storedPath: string;
+  storedFileName: string;
+  thumbnailFileName?: string | null;
+}): Promise<void> {
+  await removeFileFromDisk(file.storedPath, file.storedFileName);
+  if (file.thumbnailFileName) {
+    await removeFileFromDisk(file.storedPath, file.thumbnailFileName);
+  }
+}
+
 // creating document records for one or more uploaded files
 // supports multiple files per upload (e.g. front and back of a bill)
 export async function createDocuments(
@@ -483,6 +613,7 @@ export async function getDocumentById(id: string, viewerRole?: string | null) {
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
   if (!doc) return null;
+  if (isSaleEvidenceDocumentType(doc.documentType)) return null;
   if (!canRoleViewDocument(doc.visibility, viewerRole)) return null;
   return toPublicDocument(doc, { includeProcessing: true });
 }
@@ -502,7 +633,14 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
       ],
     });
   }
-  if (filters.documentType) where.documentType = filters.documentType;
+  if (filters.documentType) {
+    where.documentType =
+      filters.documentType === ("SALE_BILL" as any)
+        ? { in: [] }
+        : filters.documentType;
+  } else {
+    where.documentType = { not: "SALE_BILL" };
+  }
   if (filters.visibility) where.visibility = filters.visibility;
   if (filters.supplierName) {
     where.supplierName = { contains: filters.supplierName };
