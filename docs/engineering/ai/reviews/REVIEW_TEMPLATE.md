@@ -4,6 +4,8 @@
 
 APPROVED / FIX REQUIRED / CANNOT VERIFY
 
+Record reviewed branch/revision/final content and bounded scope. Reuse sufficient final-content checks with attribution; rerun only changed, missing, failed or questionable evidence and blocker/direct-regression checks. Inspect fault/race branch coverage rather than trusting test names/counts. Do not reopen the complete review after a narrow correction.
+
 ## Mandatory development startup verification
 
 Follow AGENTS.md section 12: record revision/worktree/database, both dev commands, health/HTTP results, runtime errors, cleanup and limits. Explicitly report configured-local errors and missing migrations awaiting approval even if disposable checks pass.

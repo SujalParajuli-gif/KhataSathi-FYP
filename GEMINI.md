@@ -18,7 +18,9 @@ Before editing:
 6. Inspect the actual affected code and tests.
 7. Inspect current Git status/branch as required by AGENTS.md.
 
-Implement the smallest solution satisfying the frozen task contract (and plan artifact when present).
+Implement the complete user outcome in the bounded task contract (and plan artifact when present), including its API/UI/tests where scoped. Treat internal plan steps as one implementation, not new task handoffs. Follow AGENTS.md deliverable sizing; do not split by code layer or create extra planning tasks. If an existing required plan is complete, proceed without another planning invocation.
+
+Read linked authoritative details instead of copying them into every artifact. Record exact final-content evidence once and reference it in the report; the reviewer may reuse sufficient checks with attribution. Fault/reconciliation tests must prove the branch executed, concurrent tests must overlap requests, and rollback fixtures must use transaction-local staged state. Identify unavailable verification targets before coding and retain their explicit approval gates.
 
 Standing user authorization (2026-10-04), shared with the senior workflow: proceed with bounded work within the frozen Master Plan and its dependencies without asking again for implementation authorization. Reconcile stale authorization fields under AGENTS.md. Ask only for work outside or changing the frozen plan; unresolved business decisions and genuine drift still require a stop. Required plans, reviews, and separate migration/production/push/merge/deployment gates remain in force.
 

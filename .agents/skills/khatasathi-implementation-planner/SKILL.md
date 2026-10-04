@@ -44,76 +44,21 @@ Plans are local, ignored working artifacts (consistent with task contracts, repo
 
 ---
 
-## 3. Required Plan Artifact Sections
+## 3. Plan content proportional to the work
 
-Every plan artifact created by the Implementation Planner must contain the following structured sections:
+Apply frozen Master Plan28 and AGENTS7 before decomposition: plan one coherent client workflow with its necessary API/UI/tests and schema preparation. Record why any independent task is needed. A transaction/ownership/risk/dependency boundary or genuinely excessive scope justifies splitting; a code layer, document or migration execution approval gate alone does not. Do not reopen accepted work merely to rebundle it.
 
-```markdown
-# TASK-XXX Implementation Plan: <Task Title>
+A required plan has no fixed section count. A concise plan may use these five groups, combined or expanded as useful:
 
-## 1. Task Metadata
-- Task ID: TASK-XXX
-- Risk: LOW / MEDIUM / HIGH
-- Difficulty: 1–10
-- Execution Mode: PLANNED_IMPLEMENTATION
-- Master Plan References: Section X.X
+1. **Outcome, scope and gates:** task reference, delivery priority, accepted dependencies, actual branch/revision, unresolved decisions and verification-target approvals. Link the contract rather than repeating its metadata/non-goals. Do not guess deadline or client scope.
+2. **Owning code and implementation:** affected files/symbols, reusable pieces marked `REUSE AS-IS`, partial work on resume, exact sequence through all scoped layers. Internal steps do not become separate tasks.
+3. **Invariants and failure behavior:** applicable access/privacy, state transitions, transaction boundaries, audit, locking/conditional claims, retry/ambiguous-outcome semantics, storage retention and zero partial posting. Include precise schema/backfill/nullability/SQL shape when relevant. Mark irrelevant concerns briefly; do not fill headings with boilerplate.
+4. **Acceptance evidence:** map each criterion to exact meaningful commands/fixtures/runtime paths. Fault tests must prove the affected branch ran; race fixtures overlap competing decisions; rollback fixtures stage transaction-local document/audit state and commit/discard it. Identify existing evidence reusable for unchanged content and connected-versus-mocked limits. Identify unavailable targets before coding; preparation grants no migration/fixture permission.
+5. **Completion and handoff:** open blockers/stop conditions and concrete implementation entry point, required final startup/schema checks and one bounded review. Link existing checks/rules; report only changed decisions.
 
-## 2. Invariants & Architectural Alignment
-- List frozen invariants from Master Plan v1.2 governing this subsystem.
-- Confirm schema, financial, auth, and state boundaries.
+Expand HIGH-risk invariants/transactions/auth/retry/failures until implementation is unambiguous. Concision is not permission to omit them. HIGH-risk planning remains mandatory under AGENTS.md; an implementation-grade contract can supply linked content, but the required plan artifact must exist and be complete before coding.
 
-## 3. Existing Code Analysis & Reusability
-- Identify existing functions, types, routes, controllers, and services.
-- Explicitly mark correct existing components: `REUSE AS-IS`.
-- Identify partial work already completed in working tree if resuming.
-
-## 4. Exact File & Symbol Changes
-- Specific file paths to be created, modified, or deleted.
-- Exact functions, classes, interfaces, types, and schema fields to add or adjust.
-
-## 5. Step-by-Step Implementation Sequence
-1. Step 1: Types and domain models.
-2. Step 2: Service layer logic and validation.
-3. Step 3: Controller and route integration.
-4. Step 4: Focused test suite creation/extension.
-
-## 6. Data & Transaction Flow
-- Database transaction boundaries (`prisma.$transaction`).
-- Atomicity guarantees and rollback behavior on failure.
-- Audit log entry creation and timing.
-
-## 7. Authorization & Role Boundaries
-- Enforced route guards (`requireRole`, `denyStaff`).
-- Field-level masking or role-specific access rules.
-- Isolation from weaker privilege boundaries (e.g. cashier vs admin).
-
-## 8. Concurrency & Idempotency Rules
-- Unique constraints, locking, or idempotent retry behavior.
-- Storage capacity boundaries (e.g. Unicode code-point counts, UTF-8 byte limits).
-
-## 9. Migration & Schema Contract (if applicable)
-- Disposable database verification requirements.
-- Additive/nullable column rules; no destructive drop operations.
-
-## 10. Required Tests & Verification Commands
-- Exact test files and commands to execute:
-  - `pnpm --dir backend build`
-  - `node --test backend/dist/tests/<test-file>.test.js`
-  - `pnpm --dir backend test`
-  - `git diff --check`
-  - `python .agents/skills/repository-commit-hygiene/scripts/check_hygiene.py`
-
-## 11. Failure Modes & Edge Cases
-- Invalid inputs, boundary conditions, malformed types.
-- Partial failure semantics (ensure zero partial writes on error).
-
-## 12. Explicit Non-Goals & Stop Conditions
-- What adjacent or nearby code must NOT be touched.
-- Specific conditions requiring immediate halt and escalation.
-
-## 13. Definition of Done
-- Complete checklist of acceptance criteria that must be verified before handoff to senior review.
-```
+The senior may prepare/self-review this artifact in the current session using this skill. A separate planner agent or user invocation is unnecessary. Do not silently turn the planner role into an application writer. If the same authorized agent later changes roles, recover implementation instructions and verify the complete plan before source edits.
 
 ---
 
@@ -124,4 +69,4 @@ Once the plan artifact is written and self-reviewed:
 1. Update the task contract's `Implementation notes` indicating that planning is complete and referencing the plan artifact.
 2. Transition the task status to `PLAN_READY_FOR_IMPLEMENTATION`.
 3. Hand off to the Implementation Agent (`ks-impl` / `GEMINI.md`).
-4. The Implementation Agent must read the plan artifact, execute the exact steps specified, verify all acceptance criteria, and write the standard implementation report.
+4. The Implementation Agent reads the complete artifact and linked relevant authority, implements the whole scoped outcome, verifies its acceptance criteria, and writes a concise report referencing exact final-content evidence. Reviewer reuse follows AGENTS12; incomplete or questionable evidence is verified rather than assumed.

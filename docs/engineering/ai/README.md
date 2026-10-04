@@ -37,14 +37,14 @@ docs/engineering/ai/
 
 ## Source-of-truth roles
 
-### Master Plan v1.1
+### Master Plan v1.2 / frozen revision R1
 Defines architecture, invariants, phase boundaries, dependencies, gates, and accepted product behavior.
 
 ### Implementation checkpoint
 Defines concise global live state.
 
 ### Task file
-Defines one bounded implementation contract with Difficulty, Risk, Planning Required, Execution Mode, and Senior Review Required.
+Defines one coherent delivery outcome with Difficulty, Risk, Planning Required, Execution Mode, Senior Review Required, dependencies/approval gates and any split rationale. Follow Master Plan28 and AGENTS.md; layers within one outcome are internal steps, not automatic tasks.
 
 ### Implementation plan
 Defines technical execution sequence, invariants, reusable components, data/transaction flow, and tests for `PLANNED_IMPLEMENTATION` tasks.
@@ -92,7 +92,9 @@ after a task is accepted or global state changes.
 1. `READ_ONLY_DIRECT`: Senior architecture review, inspection, or readiness checks (`ks-deploy`). Zero code mutation.
 2. `SENIOR_AUTOPILOT`: Bounded LOW-risk tasks with no unresolved decisions, touching NO financial, tax, auth, migration, or production paths.
 3. `DIRECT_IMPLEMENTATION`: Well-specified tasks executed directly by implementation agent without separate planning step.
-4. `PLANNED_IMPLEMENTATION`: High-risk or complex tasks requiring an implementation plan before coding.
+4. `PLANNED_IMPLEMENTATION`: High-risk or complex tasks requiring an implementation plan before coding. The senior may produce the plan in the current session using the planner skill; no separate invocation or fixed section count is required.
+
+Choose a complete client workflow and its actual prerequisites before task decomposition. Preserve risk, operational approvals and one-writer rules. Reuse sufficient checks of identical final application content/target with attribution; repeat changed, missing, failed or questionable checks. Mandatory startup/schema checks remain in AGENTS12. A phase-exit verification may be included in the final delivery task instead of creating a documentation-only audit task.
 
 ## Review loop
 

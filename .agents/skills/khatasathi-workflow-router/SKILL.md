@@ -44,7 +44,15 @@ If the repository state materially conflicts with the active task or frozen arch
 
 ---
 
-## 3. The Four Execution Modes
+## 3. Delivery sizing and execution modes
+
+Before creating another task, apply AGENTS7 and frozen Master Plan28: select a complete client workflow and its actual prerequisites. Group API, UI, tests and schema preparation when they share a coherent test/review boundary. Record a concrete split rationale; an operation-specific migration/fixture approval gate does not by itself require splitting source work. Follow dependency gates rather than numeric phase order.
+
+Required plans can be written/self-reviewed by the senior in the same session using the planner skill, then handed off with the concrete artifact. Do not require another user shortcut just to advance an already authorized transition. Role handoffs do not authorize subagents or concurrent writers. `ks-senior` completes its senior transition and records a concrete next action; `ks-next` can perform ready planning in the same session, but must not silently implement HIGH/MEDIUM work as senior autopilot.
+
+Keep one contract, required plan, concise report and bounded review per deliverable. Link shared rules/evidence; avoid duplicating the architecture or adding documentation-only audit tasks when the current deliverable can include the integrated exit check.
+
+### The Four Execution Modes
 
 Every bounded task defines its execution mode and planning requirement:
 
@@ -56,7 +64,7 @@ Every bounded task defines its execution mode and planning requirement:
 | `PLANNED_IMPLEMENTATION` | All HIGH-risk tasks, or tasks involving schema/migrations, multi-step transaction flows, financial integrity, or complex refactors. | Implementation Planner first, then Implementation Agent | YES |
 
 ### Rules:
-- Risk alone does not replace planning classification; HIGH-risk tasks normally require planning unless an implementation-grade contract explicitly justifies why not.
+- HIGH-risk tasks require a complete plan before implementation under AGENTS.md. Use an existing implementation-grade contract as linked plan content; write only missing decisions instead of adding ceremonial sections or another user invocation.
 - Never downgrade a task's Risk or Difficulty merely to retain `SENIOR_AUTOPILOT`.
 - Do not route autopilot work to Gemini merely because a task exists.
 
@@ -66,43 +74,8 @@ Every bounded task defines its execution mode and planning requirement:
 
 Evaluate the recovered repository facts against these mutually exclusive states to choose the next action:
 
-```text
-[NO_ACTIVE_TASK]
-       │
-       ▼
-[READY_FOR_PLANNING]  ──(Planning Required == YES)──►  Invoke Planner (ks-plan)
-       │                                                         │
-       │ (Planning Required == NO)                               ▼
-       ▼                                               [PLAN_READY_FOR_IMPLEMENTATION]
-[DIRECT_IMPLEMENTATION]                                          │
-       │                                                         │
-       └─────────────────────────┬───────────────────────────────┘
-                                 ▼
-                    [IMPLEMENTATION_IN_PROGRESS] (ks-impl)
-                                 │
-                                 ▼
-                         [AWAITING_REVIEW] (ks-senior)
-                                 │
-                 ┌───────────────┴───────────────┐
-                 ▼                               ▼
-       [UNRESOLVED_BLOCKERS]             [APPROVED_AWAITING_CLOSEOUT]
-                 │                               │
-                 ▼                               ▼
- [FIX_AWAITING_TARGETED_VERIFICATION]       [ACCEPTED]
-                                                 │
-                                 ┌───────────────┴───────────────┐
-                                 ▼                               ▼
-                [ACCEPTED_NO_COMMIT_WORTHY_CHANGES]  [ACCEPTED_WITH_COMMIT_WORTHY_CHANGES]
-                                 │                               │
-                                 ▼                               ▼
-                            [NEXT TASK]               Invoke check_hygiene.py
-                                                                 │
-                                                 ┌───────────────┴───────────────┐
-                                                 ▼                               ▼
-                                         [PRECOMMIT_BLOCKED]              [AUTO-COMMIT]
-                                                 │                               │
-                                            STOP & REPORT                   [NEXT TASK]
-```
+Evaluate report/review and actual diff before trusting stale status labels: an implementation report awaiting review or documented blocker fixes takes precedence over an old READY/PLAN_READY label. Reconcile ordinary stale workflow metadata; genuine architecture/repository drift still stops work.
+
 
 ### State Definitions & Actions:
 
@@ -111,8 +84,8 @@ Evaluate the recovered repository facts against these mutually exclusive states 
    - *Action:* Senior identifies next eligible task from roadmap/backlog, drafts a bounded task contract under `docs/engineering/ai/tasks/`, updates checkpoint and registry to `READY`, then evaluates execution mode.
 
 2. **`READY_FOR_PLANNING`**
-   - *Condition:* Active task status is `READY` or `IN_PROGRESS`, `Planning Required: YES`, and no plan file exists under `docs/engineering/ai/plans/TASK-XXX-plan.md`.
-   - *Action:* Hand off to Implementation Planner (`ks-plan`) using the `khatasathi-implementation-planner` skill.
+   - *Condition:* Active task status is `READY` or `IN_PROGRESS`, `Planning Required: YES`, and the required plan is missing or incomplete under `docs/engineering/ai/plans/TASK-XXX-plan.md`.
+   - *Action:* Use the `khatasathi-implementation-planner` skill to create the required plan now when operating as senior/planner; otherwise hand off with the exact task and missing decisions. No extra user invocation is required for authorized planning.
 
 3. **`PLAN_READY_FOR_IMPLEMENTATION`**
    - *Condition:* Active task requires planning, plan file `docs/engineering/ai/plans/TASK-XXX-plan.md` exists and is complete, but implementation has not started or completed.
@@ -124,7 +97,7 @@ Evaluate the recovered repository facts against these mutually exclusive states 
 
 5. **`AWAITING_REVIEW`**
    - *Condition:* Implementation report is complete; no review file exists under `docs/engineering/ai/reviews/TASK-XXX-review.md`.
-   - *Action:* Senior reviewer performs ONE bounded review against task contract, frozen architecture, diff, and tests. Writes review file classifying findings into BLOCKER, NON-BLOCKING, OUT OF SCOPE, QUESTION.
+   - *Action:* Senior reviewer performs ONE bounded review against task contract, frozen architecture, diff, and tests. Reuse sufficient final-content/target evidence with attribution; rerun only relevant changed, missing, failed or doubtful checks under AGENTS12. Writes review file classifying findings into BLOCKER, NON-BLOCKING, OUT OF SCOPE, QUESTION.
 
 6. **`UNRESOLVED_BLOCKERS`**
    - *Condition:* Review file lists one or more concrete BLOCKER items (`B-1`, etc.).

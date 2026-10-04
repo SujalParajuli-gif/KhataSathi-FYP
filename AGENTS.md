@@ -277,7 +277,13 @@ Each task should contain:
 
 - Likely files/symbols as guidance only
 
-The task must be small enough for one implementation agent to complete and self-review without ambiguity.
+Size tasks around a complete, testable user outcome, following frozen Master Plan sections 28.2-28.5. One task may include schema preparation, backend, frontend, tests and documentation when they share one coherent implementation/review boundary. Prefer the smallest meaningful deliverable; do not create separate tasks for each layer or planning document.
+
+Record a concrete reason for each split: independent ownership, distinct transaction/integrity boundary, different authorization/risk, external dependency, or scope too large to implement and review reliably. A migration execution gate can pause the relevant operation inside a task; it does not automatically require a separate source task. Keep work bounded enough for one writer to implement and self-review, with explicit internal steps where useful.
+
+New task contracts record Delivery outcome, Delivery priority, Dependencies / approval gates, and Split rationale (or "cohesive deliverable; no split"). Deadline and client scope remain UNKNOWN until supplied; do not invent estimates. State an effort estimate only when useful, with assumptions; use it to re-scope optional work, never to waive acceptance or safety checks.
+
+For delivery planning, identify the next complete client workflow and its prerequisites before selecting a task. A roadmap phase is not an automatic serial dependency. Optional polish, speculative abstractions and unrelated backlog work do not displace the delivery-critical path. Do not reduce frozen product requirements or claim a partial phase is complete.
 
 The Difficulty and Workflow v2 metadata fields apply to new tasks. Already ACCEPTED legacy tasks that predate them remain valid without retroactive entries.
 
@@ -298,7 +304,9 @@ Before assigning or starting a new task, state:
 1. **`READ_ONLY_DIRECT`**: Senior read-only inspection, dry-runs, architecture evaluation, or deployment readiness checks (`ks-deploy`). Zero code mutation.
 2. **`SENIOR_AUTOPILOT`**: Bounded LOW-risk tasks where Planning Required = NO, touching no financial, tax, auth, migration, or production paths, and no unresolved user decisions exist. Never downgrade task risk to retain autopilot.
 3. **`DIRECT_IMPLEMENTATION`**: Well-specified tasks with complete implementation-grade contracts and Planning Required = NO. Handed directly to implementation agent (`GEMINI.md`).
-4. **`PLANNED_IMPLEMENTATION`**: Tasks where Planning Required = YES (all HIGH-risk tasks, schema/migrations, multi-step transaction flows). Hands off to Implementation Planner first to produce `docs/engineering/ai/plans/TASK-XXX-plan.md` before coding.
+4. **`PLANNED_IMPLEMENTATION`**: Tasks where Planning Required = YES (all HIGH-risk tasks, schema/migrations, multi-step transaction flows). Produce `docs/engineering/ai/plans/TASK-XXX-plan.md` before coding using the planner skill. The senior may write/self-review this artifact in the current session and then hand off implementation; a separate user invocation or agent is not required. Planning and implementation remain distinct responsibilities; a required missing/incomplete plan still stops implementation.
+
+Scale plan length to ambiguity and risk. Required plans must contain implementation-ready decisions, existing reusable code, state/transaction/access/retry/failure rules where applicable, acceptance evidence and exact checks. There is no required section count and no requirement to restate the task or frozen architecture. Link existing authoritative details and expand only unresolved decisions. HIGH-risk planning, failure-path checks and senior review remain mandatory under this workflow.
 
 For details on state transitions and routing, refer to `.agents/skills/khatasathi-workflow-router/SKILL.md`.
 
@@ -464,7 +472,11 @@ The implementation agent MUST NOT:
 
 ## 12. Senior review
 
-Perform **ONE bounded review** against:
+Perform **ONE bounded review** per coherent deliverable. Use implementation evidence tied to the actual final content; a reviewer need not rerun successful checks merely because the role changed. Rerun when relevant content/configuration/schema/target changed, evidence is missing or questionable, or a concrete failure needs reproduction. Do not call reused checks independently performed. One integrated phase-exit check covers cross-task invariants; it need not become another task when no changes are needed.
+
+Before implementation, the task/plan identifies verification targets, existing authorization, unresolved operational gates and test fixtures. This prevents discovering an unavailable required environment only at closeout; it grants no new database or fixture permission. Fault/race tests must actually enter the affected branch: assert transaction/reconciliation calls, overlap competing decisions, and stage commit/rollback state rather than hard-coding the expected result. Passing counts alone are insufficient evidence.
+
+Review against:
 
 - the active task contract,
 
@@ -514,7 +526,7 @@ A third review cycle requires a genuinely new HIGH-risk issue, architecture-chan
 
 ### Development startup verification
 
-Before task completion, run `pnpm --dir backend run dev` and `pnpm --dir frontend run dev` on the final application changes. Inspect both runtime logs, require backend `/api/health` HTTP 200 with database/storage OK and frontend HTTP 200, and check affected runtime paths. Repeat after relevant code, configuration or schema changes.
+Before task completion, run `pnpm --dir backend run dev` and `pnpm --dir frontend run dev` on the final application changes. Inspect both runtime logs, require backend `/api/health` HTTP 200 with database/storage OK and frontend HTTP 200, and check affected runtime paths. Repeat after relevant code, configuration or schema changes. Record final-content fingerprints or equivalent revision evidence and the runtime target so another reviewer can reuse a sufficient check of identical content/target. Restarting both servers solely for a role handoff is unnecessary; missing, stale, failed or doubtful evidence still requires verification. This does not waive either server's final startup check or the separate configured-schema check.
 
 Record the revision, actual worktree/database, commands, results and limits. Check the user's configured schema separately even when disposable tests pass. State every known local runtime error and missing migration plainly, including "local dev has errors because migration X awaits your approval" when applicable. Never describe the user's setup as healthy based only on a disposable check, build, or listening server.
 

@@ -18,6 +18,8 @@ COMPLETE / PARTIAL / BLOCKED
 |---|---|---|
 | | | |
 
+Reference existing sufficient evidence instead of duplicating logs. Distinguish performed, reused (source/revision/target), failed and unavailable checks. For fault/race evidence name the exercised path, overlap/commit/rollback assertions and connected-versus-mocked limits; passing test counts alone do not prove coverage.
+
 ## Mandatory development startup verification
 
 Follow AGENTS.md section 12: record revision/worktree/database, both dev commands, health/HTTP results, runtime errors, cleanup and limits. Explicitly report configured-local errors and missing migrations awaiting approval even if disposable checks pass.

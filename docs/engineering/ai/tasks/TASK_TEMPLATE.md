@@ -10,10 +10,16 @@ Phase:
 Master Plan section:
 Branch / worktree: <exact authorized work branch; enforced by router commit gate>
 Assigned role:
+Authorization: <existing source; identify separately gated operations>
+Delivery outcome: <observable complete user workflow>
+Delivery priority: <client-required / prerequisite / optional; rationale>
+Dependencies / approval gates: <accepted prerequisites and operation-specific gates>
+Split rationale: <concrete boundary, or cohesive deliverable; no split>
+Deadline / effort assumptions: <supplied date or UNKNOWN; estimates only with basis>
 
 ## Goal
 
-State one bounded outcome.
+State one coherent user outcome, including its necessary layers and tests. Split only for a concrete boundary under Master Plan28/AGENTS7.
 
 ## Repository evidence
 
@@ -39,7 +45,7 @@ List architecture/safety rules that must remain true.
 
 ## Required tests/checks
 
-List exact or expected focused checks.
+List exact focused checks and the acceptance criteria each proves; identify final-content evidence that can be reused. Establish runtime/database/fixture targets and their existing approvals before implementation. For fault/race cases, require actual branch entry, overlapping competitors and transaction-local commit/rollback assertions. Do not infer connected DB proof from mocks.
 
 Mandatory completion check: follow AGENTS.md section 12 for both dev servers, health/HTTP and runtime logs on final application changes. Report configured-local errors and pending migrations separately from disposable results; do not apply configured migrations without approval.
 
