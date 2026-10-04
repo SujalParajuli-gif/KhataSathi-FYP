@@ -4,6 +4,7 @@ import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { requireBusinessCapability } from "../settings/capabilities";
 import {
+  archiveSaleEvidenceHandler,
   getSaleEvidenceFileHandler,
   getSaleEvidenceHandler,
   getSaleEvidenceThumbnailHandler,
@@ -98,6 +99,7 @@ function safeSingleUpload(handler: RequestHandler): RequestHandler {
 }
 
 router.post("/", safeSingleUpload(upload.single("file")), uploadSaleEvidence);
+router.post("/:id/archive", archiveSaleEvidenceHandler);
 router.get("/", listSaleEvidenceHandler);
 router.get("/:id", getSaleEvidenceHandler);
 router.get("/:id/file", getSaleEvidenceFileHandler);

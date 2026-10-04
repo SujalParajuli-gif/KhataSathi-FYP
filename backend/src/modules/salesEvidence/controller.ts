@@ -1,17 +1,21 @@
 import { Request, Response } from "express";
 import fs from "fs/promises";
 import {
+  archiveSaleEvidence,
   createSaleEvidence,
   getSaleEvidenceById,
   getSaleEvidenceFile,
   getSaleEvidenceThumbnail,
   listSaleEvidence,
   SalesEvidenceAuthorizationError,
+  SalesEvidenceConflictError,
 } from "./service";
 import {
+  archiveSaleEvidenceSchema,
   createSaleEvidenceSchema,
   listSaleEvidenceSchema,
 } from "./validation";
+
 import {
   DocumentValidationError,
   type UploadedFileInfo,
@@ -219,6 +223,59 @@ export async function getSaleEvidenceThumbnailHandler(
       return;
     }
     logger.error("Get sales evidence thumbnail error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function archiveSaleEvidenceHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const parseResult = archiveSaleEvidenceSchema.safeParse(req.body);
+    if (!parseResult.success) {
+      res.status(400).json({
+        error: "Invalid archive request",
+        details: parseResult.error.issues.map((i) => i.message),
+      });
+      return;
+    }
+
+    const result = await archiveSaleEvidence(
+      String(req.params.id),
+      parseResult.data,
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+
+    if (!result) {
+      res.status(404).json({ error: "Sales evidence not found" });
+      return;
+    }
+
+    res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409) {
+      const payload: Record<string, unknown> = {
+        code: err.code || "CONFLICT",
+        error: err.message,
+      };
+      if (err.document) {
+        payload.document = err.document;
+      }
+      res.status(409).json(payload);
+      return;
+    }
+
+    logger.error("Archive sales evidence error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

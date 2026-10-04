@@ -27,3 +27,13 @@ export const listSaleEvidenceSchema = z
   .strict();
 
 export type ListSaleEvidenceInput = z.infer<typeof listSaleEvidenceSchema>;
+
+export const archiveSaleEvidenceSchema = z
+  .object({
+    reason: z.string().trim().min(2).max(2000),
+  })
+  .strict();
+
+export type ArchiveSaleEvidenceInput = z.infer<
+  typeof archiveSaleEvidenceSchema
+>;
