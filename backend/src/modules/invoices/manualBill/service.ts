@@ -250,14 +250,14 @@ function assertExpectedMatches(
 
 export async function findDuplicateReferencesTx(
   tx: Prisma.TransactionClient,
-  invoiceId: string,
+  invoiceId: string | null,
   externalDocumentType: ExternalDocumentType,
   externalBillNo: string,
   externalBillDate: Date,
 ): Promise<DuplicateReferenceWarning[]> {
   const duplicates = await tx.invoice.findMany({
     where: {
-      id: { not: invoiceId },
+      ...(invoiceId ? { id: { not: invoiceId } } : {}),
       externalDocumentType,
       externalBillNo,
       externalBillDate,

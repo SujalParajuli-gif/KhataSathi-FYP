@@ -6996,7 +6996,7 @@ export default function ProductsPage() {
                         <label className="flex items-center gap-1.5 text-[12px] font-semibold text-[#565449]">
                           <span>Rows:</span>
                           <div className="w-auto">
-                            <select
+                            <ProjectSelect aria-label="Rows per page"
                               value={bulkPriceStep2PageSize}
                               onChange={(e) => {
                                 setBulkPriceStep2PageSize(Number(e.target.value));
@@ -7008,7 +7008,7 @@ export default function ProductsPage() {
                               <option value={25}>25</option>
                               <option value={50}>50</option>
                               <option value={100}>100</option>
-                            </select>
+                            </ProjectSelect>
                           </div>
                         </label>
                       </div>

@@ -327,8 +327,15 @@ export async function listAuditLogs(filters: AuditFilters) {
     const { from, to, action, actorId, entityType, page = 1, pageSize = 50 } = filters;
 
     // building the where clause dynamically based on which filters are provided
-    const where: any = {};
-    if (action) where.action = { contains: action }; // partial match on action name
+    const where: any = {
+        action: { not: { startsWith: "SALE_RECOVERY_" } },
+    };
+    if (action) {
+        where.action = {
+            not: { startsWith: "SALE_RECOVERY_" },
+            contains: action,
+        };
+    }
     if (actorId) where.actorId = actorId;
     if (entityType) where.entityType = entityType;
     if (from || to) {
@@ -391,14 +398,21 @@ export async function listCategorizedHistory(filters: CategorizedHistoryFilters)
     const { category = "all", from, to, q, action, actorId, page = 1, pageSize = 30 } = filters;
 
     const where: any = {};
-    const andFilters: any[] = [];
+    const andFilters: any[] = [
+        { action: { not: { startsWith: "SALE_RECOVERY_" } } },
+    ];
     const categoryWhere = buildCategoryWhere(category);
     if (Object.keys(categoryWhere).length) {
         andFilters.push(categoryWhere);
     }
     const businessDateRange = buildBusinessDateRange({ from, to });
     if (businessDateRange) where.createdAt = businessDateRange;
-    if (action) where.action = { contains: action };
+    if (action) {
+        where.action = {
+            not: { startsWith: "SALE_RECOVERY_" },
+            contains: action,
+        };
+    }
     if (actorId) where.actorId = actorId;
     if (q) {
         andFilters.push({ OR: [

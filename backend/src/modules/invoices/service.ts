@@ -1051,7 +1051,7 @@ function normalizeOverrideUnitPrice(value: unknown) {
   return normalized;
 }
 
-function normalizeCheckoutItems(items: CheckoutItemInput[]) {
+export function normalizeCheckoutItems(items: CheckoutItemInput[]) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error("Checkout requires at least one item");
   }
@@ -1275,7 +1275,7 @@ function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
   };
 }
 
-function normalizeCheckoutPayments(input: CheckoutInput) {
+export function normalizeCheckoutPayments(input: CheckoutInput) {
   const rawPayments = Array.isArray(input.payments)
     ? input.payments
     : input.payment
@@ -1967,6 +1967,451 @@ async function prepareCheckoutInvoiceTx(
   });
 }
 
+export type NormalizedCheckoutContext = {
+  operationKey: string;
+  payloadHash: string;
+  input: CheckoutInput;
+  checkoutItems: ReturnType<typeof normalizeCheckoutItems>;
+  checkoutPayments: ReturnType<typeof normalizeCheckoutPayments>;
+  normalizedConfirmation: ReturnType<typeof normalizeCheckoutConfirmation>;
+};
+
+export type CheckoutInvoiceTxResult = {
+  operation: { id: string };
+  invoice: any;
+  esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
+  response: {
+    invoice: any;
+    esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
+  };
+};
+
+export async function checkoutInvoiceTx(
+  tx: any,
+  cashierId: string,
+  normalizedContext: NormalizedCheckoutContext,
+  settings: any,
+): Promise<CheckoutInvoiceTxResult> {
+  const {
+    operationKey,
+    payloadHash,
+    input,
+    checkoutItems,
+    checkoutPayments,
+    normalizedConfirmation,
+  } = normalizedContext;
+
+  const operation = await tx.checkoutOperation.create({
+    data: { operationKey, actorId: cashierId, payloadHash },
+    select: { id: true },
+  });
+
+  if (!normalizedConfirmation) {
+    throw new CheckoutReviewConflictError(
+      "Checkout review confirmation is required for fresh checkout.",
+      { reason: "MISSING_CONFIRMATION" },
+    );
+  }
+
+  const draftRequestId = String(input.draftRequestId || "").trim();
+  let linkedDraftRequest: any = null;
+  if (draftRequestId) {
+    await lockBillingDraftRequestForUpdate(tx, draftRequestId);
+    linkedDraftRequest = await tx.billingDraftRequest.findUnique({
+      where: { id: draftRequestId },
+    });
+    if (!linkedDraftRequest) throw Object.assign(new Error("Draft request not found."), { statusCode: 404 });
+    const actor = await tx.user.findUnique({
+      where: { id: cashierId },
+      select: { id: true, role: true },
+    });
+    if (!actor) throw new Error("Checkout actor not found.");
+    assertCashierCanReview(actor, linkedDraftRequest);
+    if (
+      linkedDraftRequest.status !== "ACCEPTED" &&
+      linkedDraftRequest.status !== "PARTIALLY_ACCEPTED"
+    ) {
+      throw Object.assign(new Error("Only accepted draft requests can be completed."), { statusCode: 409 });
+    }
+    if (linkedDraftRequest.completedInvoiceId) {
+      throw Object.assign(new Error("This draft request is already linked to a completed invoice."), { statusCode: 409 });
+    }
+  }
+  const customerId = input.customerId ? String(input.customerId) : null;
+  const customer = customerId
+    ? await tx.customer.findUnique({
+        where: { id: customerId },
+        select: {
+          id: true,
+          isActive: true,
+          loyaltyPercent: true,
+          wholesalePercent: true,
+        },
+      })
+    : null;
+
+  if (customerId && (!customer || !customer.isActive)) {
+    throw new Error("Customer not found");
+  }
+
+  const draftInvoiceId = String(input.draftInvoiceId || "").trim();
+  if (draftInvoiceId) {
+    await lockInvoiceForUpdate(tx, draftInvoiceId);
+  }
+  await lockProductsForUpdate(
+    tx,
+    checkoutItems.map((item) => item.productId),
+  );
+  const ownReservedItems = draftInvoiceId
+    ? await tx.invoiceItem.findMany({
+        where: { invoiceId: draftInvoiceId },
+        select: { productId: true, qty: true },
+      })
+    : [];
+  const checkoutProductsById = await validateCheckoutProductsTx(
+    tx,
+    checkoutItems,
+    buildReservedQtyByProduct(ownReservedItems),
+  );
+  const invoice = await prepareCheckoutInvoiceTx(
+    tx,
+    cashierId,
+    input,
+    customerId,
+  );
+
+  const priceOverrideLines: Array<{
+    productId: string;
+    productName: string;
+    sku?: string | null;
+    qty: number;
+    originalUnitPrice: number;
+    overrideUnitPrice: number;
+    overrideReason: string;
+    lineDifference: number;
+    overrideAuthorizationToken?: string | null;
+  }> = [];
+  const pricedCheckoutLines = checkoutItems.map((line) => {
+    const product = checkoutProductsById.get(line.productId);
+
+    const originalUnitPrice = roundCurrency(
+      shouldUseQuantityWholesalePrice(
+        customer,
+        line.qty,
+        resolveWholesaleQtyThreshold(product, settings),
+        product.wholesaleEligible,
+      )
+        ? product.wholesalePrice
+        : product.retailPrice,
+    );
+    const hasPriceOverride =
+      line.overrideUnitPrice !== undefined &&
+      Math.abs(line.overrideUnitPrice - originalUnitPrice) > 0.001;
+    const appliedUnitPrice = hasPriceOverride
+      ? Number(line.overrideUnitPrice)
+      : originalUnitPrice;
+
+    if (hasPriceOverride) {
+      priceOverrideLines.push({
+        productId: line.productId,
+        productName: product.name,
+        sku: product.sku || null,
+        qty: line.qty,
+        originalUnitPrice,
+        overrideUnitPrice: appliedUnitPrice,
+        overrideReason: line.overrideReason || "Price corrected at billing",
+        lineDifference: roundCurrency(
+          (appliedUnitPrice - originalUnitPrice) * line.qty,
+        ),
+        overrideAuthorizationToken: line.overrideAuthorizationToken,
+      });
+    }
+
+    return {
+      ...line,
+      product,
+      appliedUnitPrice,
+      originalUnitPrice,
+      hasPriceOverride,
+    };
+  });
+
+  const confItemsByProduct = new Map(
+    normalizedConfirmation.items.map((item) => [item.productId, item]),
+  );
+  const discrepancies: Array<{
+    productId: string;
+    productName: string;
+    confirmedUnitPrice?: number;
+    currentUnitPrice?: number;
+    confirmedQty?: number;
+    currentQty?: number;
+  }> = [];
+
+  for (const line of checkoutItems) {
+    const confItem = confItemsByProduct.get(line.productId);
+    const product = checkoutProductsById.get(line.productId);
+    const pricedLine = pricedCheckoutLines.find(
+      (item) => item.productId === line.productId,
+    )!;
+    if (!confItem) {
+      discrepancies.push({
+        productId: line.productId,
+        productName: product?.name || line.productId,
+        currentUnitPrice: pricedLine.appliedUnitPrice,
+        currentQty: line.qty,
+      });
+    } else {
+      const priceDiff = Math.abs(
+        confItem.appliedUnitPrice - pricedLine.appliedUnitPrice,
+      );
+      const qtyDiff = Math.abs(confItem.qty - line.qty);
+      if (priceDiff > 0.001 || qtyDiff > 0.0001) {
+        discrepancies.push({
+          productId: line.productId,
+          productName: product?.name || line.productId,
+          confirmedUnitPrice: confItem.appliedUnitPrice,
+          currentUnitPrice: pricedLine.appliedUnitPrice,
+          confirmedQty: confItem.qty,
+          currentQty: line.qty,
+        });
+      }
+    }
+  }
+
+  for (const confItem of normalizedConfirmation.items) {
+    if (!checkoutItems.some((line) => line.productId === confItem.productId)) {
+      discrepancies.push({
+        productId: confItem.productId,
+        productName: confItem.productId,
+        confirmedUnitPrice: confItem.appliedUnitPrice,
+        confirmedQty: confItem.qty,
+      });
+    }
+  }
+
+  if (discrepancies.length > 0) {
+    throw new CheckoutReviewConflictError(
+      "Checkout items or prices have changed since review. Please review and confirm the updated bill.",
+      {
+        reason: "PRICE_OR_TOTAL_CHANGED",
+        details: {
+          itemDiscrepancies: discrepancies,
+          confirmedPayableTotal: normalizedConfirmation.payableTotal,
+        },
+      },
+    );
+  }
+
+  for (const overrideLine of priceOverrideLines) {
+    await consumePriceOverrideAuthorizationTx(tx, {
+      cashierId,
+      invoiceId: invoice.id,
+      customerId,
+      productId: overrideLine.productId,
+      qty: overrideLine.qty,
+      originalUnitPrice: overrideLine.originalUnitPrice,
+      overrideUnitPrice: overrideLine.overrideUnitPrice,
+      overrideReason: overrideLine.overrideReason,
+      token: overrideLine.overrideAuthorizationToken,
+    });
+  }
+
+  for (const line of checkoutItems) {
+    const pricedLine = pricedCheckoutLines.find(
+      (item) => item.productId === line.productId,
+    )!;
+
+    await tx.invoiceItem.create({
+      data: {
+        invoiceId: invoice.id,
+        productId: line.productId,
+        qty: line.qty,
+        appliedUnitPrice: pricedLine.appliedUnitPrice,
+        originalUnitPrice: pricedLine.hasPriceOverride
+          ? pricedLine.originalUnitPrice
+          : null,
+        overrideUnitPrice: pricedLine.hasPriceOverride
+          ? pricedLine.appliedUnitPrice
+          : null,
+        overrideReason: pricedLine.hasPriceOverride
+          ? line.overrideReason || "Price corrected at billing"
+          : null,
+        overrideById: pricedLine.hasPriceOverride ? cashierId : null,
+        overrideAt: pricedLine.hasPriceOverride ? new Date() : null,
+        lineTotal: roundCurrency(pricedLine.appliedUnitPrice * line.qty),
+      },
+    });
+  }
+
+  const finalized = await finalizeCheckoutInvoiceTx(
+    tx,
+    invoice.id,
+    cashierId,
+    "CAPTURE_CURRENT",
+    input.discountAmount,
+    input.overridePin,
+    normalizedConfirmation.payableTotal,
+  );
+
+  if (priceOverrideLines.length > 0) {
+    const actor = await tx.user.findUnique({
+      where: { id: cashierId },
+      select: { id: true, name: true, role: true },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: cashierId,
+        action: "CASHIER_PRICE_OVERRIDE_APPLIED",
+        entityType: "Invoice",
+        entityId: invoice.id,
+        meta: {
+          invoiceNo: invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
+          overrideCount: priceOverrideLines.length,
+          totalDifference: roundCurrency(
+            priceOverrideLines.reduce(
+              (sum, item) => sum + item.lineDifference,
+              0,
+            ),
+          ),
+          items: priceOverrideLines,
+        },
+      },
+    });
+  }
+
+  let esewaPaymentIntent:
+    | Awaited<ReturnType<typeof createEsewaPaymentIntentTx>>
+    | null = null;
+
+  let invoiceForPayments = finalized;
+  for (const payment of checkoutPayments) {
+    if (payment.method === "CASH") {
+      await recordCheckoutCashPaymentTx(
+        tx,
+        invoiceForPayments,
+        payment.amount,
+        cashierId,
+        payment.reference,
+        payment.tenderedAmount,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    } else if (payment.method === "ESEWA") {
+      esewaPaymentIntent = await createEsewaPaymentIntentTx(
+        tx,
+        invoiceForPayments,
+        payment.amount,
+        cashierId,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    } else if (
+      payment.method === "FONEPAY" ||
+      payment.method === "BANK_TRANSFER"
+    ) {
+      await recordCheckoutManualDigitalPaymentTx(
+        tx,
+        invoiceForPayments,
+        payment.method,
+        payment.amount,
+        cashierId,
+        payment.reference,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    }
+  }
+
+  if (linkedDraftRequest) {
+    const claimed = await tx.billingDraftRequest.updateMany({
+      where: {
+        id: linkedDraftRequest.id,
+        status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
+        completedInvoiceId: null,
+      },
+      data: {
+        status: "COMPLETED",
+        completedInvoiceId: invoice.id,
+        modifiedAt: new Date(),
+      },
+    });
+    if (claimed.count !== 1) {
+      throw Object.assign(new Error("This draft request changed during checkout. Please retry."), { statusCode: 409 });
+    }
+    await tx.auditLog.create({
+      data: {
+        actorId: cashierId,
+        action: "DRAFT_REQUEST_COMPLETED",
+        entityType: "BillingDraftRequest",
+        entityId: linkedDraftRequest.id,
+        meta: {
+          requestNo: linkedDraftRequest.requestNo,
+          invoiceId: invoice.id,
+          invoiceNo: invoice.invoiceNo,
+        },
+      },
+    });
+  }
+
+  const savedInvoice = await tx.invoice.findUnique({
+    where: { id: invoice.id },
+    include: {
+      items: {
+        select: publicInvoiceItemSelect,
+      },
+      payments: {
+        include: { createdBy: { select: { id: true, name: true } } },
+        orderBy: { createdAt: "desc" },
+      },
+      cashier: { select: { id: true, name: true, email: true } },
+      customer: {
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          loyaltyPercent: true,
+          wholesalePercent: true,
+        },
+      },
+      cancelledBy: {
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
+      },
+    },
+  });
+
+  const response = { invoice: savedInvoice, esewaPaymentIntent };
+  await tx.checkoutOperation.update({
+    where: { id: operation.id },
+    data: {
+      invoiceId: invoice.id,
+      responseJson: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
+      completedAt: new Date(),
+    },
+  });
+
+  return {
+    operation,
+    invoice: savedInvoice,
+    esewaPaymentIntent,
+    response,
+  };
+}
+
 // atomic checkout for the POS billing screen: create invoice, add items, finalize stock, and record initial payment
 export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   const checkoutItems = normalizeCheckoutItems(input.items);
@@ -1975,6 +2420,9 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   const operationKey = String(input.operationKey || "").trim();
   if (!/^[A-Za-z0-9_-]{16,120}$/.test(operationKey)) {
     throw new Error("A valid checkout operation key is required.");
+  }
+  if (operationKey.startsWith("rec_")) {
+    throw new Error("Recovery operation keys cannot be used for ordinary checkout.");
   }
   const payloadHash = buildCheckoutPayloadHash(
     input,
@@ -1985,411 +2433,24 @@ export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   );
   const settings = await getBusinessSettings();
 
+  const normalizedContext: NormalizedCheckoutContext = {
+    operationKey,
+    payloadHash,
+    input,
+    checkoutItems,
+    checkoutPayments,
+    normalizedConfirmation,
+  };
+
   try {
     return await runFinancialTransaction(prisma, async (tx) => {
-      const operation = await tx.checkoutOperation.create({
-        data: { operationKey, actorId: cashierId, payloadHash },
-        select: { id: true },
-      });
-
-      if (!normalizedConfirmation) {
-        throw new CheckoutReviewConflictError(
-          "Checkout review confirmation is required for fresh checkout.",
-          { reason: "MISSING_CONFIRMATION" },
-        );
-      }
-
-      const draftRequestId = String(input.draftRequestId || "").trim();
-      let linkedDraftRequest: any = null;
-      if (draftRequestId) {
-        await lockBillingDraftRequestForUpdate(tx, draftRequestId);
-        linkedDraftRequest = await tx.billingDraftRequest.findUnique({
-          where: { id: draftRequestId },
-        });
-        if (!linkedDraftRequest) throw Object.assign(new Error("Draft request not found."), { statusCode: 404 });
-        const actor = await tx.user.findUnique({
-          where: { id: cashierId },
-          select: { id: true, role: true },
-        });
-        if (!actor) throw new Error("Checkout actor not found.");
-        assertCashierCanReview(actor, linkedDraftRequest);
-        if (
-          linkedDraftRequest.status !== "ACCEPTED" &&
-          linkedDraftRequest.status !== "PARTIALLY_ACCEPTED"
-        ) {
-          throw Object.assign(new Error("Only accepted draft requests can be completed."), { statusCode: 409 });
-        }
-        if (linkedDraftRequest.completedInvoiceId) {
-          throw Object.assign(new Error("This draft request is already linked to a completed invoice."), { statusCode: 409 });
-        }
-      }
-      const customerId = input.customerId ? String(input.customerId) : null;
-    const customer = customerId
-      ? await tx.customer.findUnique({
-          where: { id: customerId },
-          select: {
-            id: true,
-            isActive: true,
-            loyaltyPercent: true,
-            wholesalePercent: true,
-          },
-        })
-      : null;
-
-    if (customerId && (!customer || !customer.isActive)) {
-      throw new Error("Customer not found");
-    }
-
-    const draftInvoiceId = String(input.draftInvoiceId || "").trim();
-    if (draftInvoiceId) {
-      await lockInvoiceForUpdate(tx, draftInvoiceId);
-    }
-    await lockProductsForUpdate(
-      tx,
-      checkoutItems.map((item) => item.productId),
-    );
-    const ownReservedItems = draftInvoiceId
-      ? await tx.invoiceItem.findMany({
-          where: { invoiceId: draftInvoiceId },
-          select: { productId: true, qty: true },
-        })
-      : [];
-    const checkoutProductsById = await validateCheckoutProductsTx(
-      tx,
-      checkoutItems,
-      buildReservedQtyByProduct(ownReservedItems),
-    );
-    const invoice = await prepareCheckoutInvoiceTx(
-      tx,
-      cashierId,
-      input,
-      customerId,
-    );
-
-    const priceOverrideLines: Array<{
-      productId: string;
-      productName: string;
-      sku?: string | null;
-      qty: number;
-      originalUnitPrice: number;
-      overrideUnitPrice: number;
-      overrideReason: string;
-      lineDifference: number;
-      overrideAuthorizationToken?: string | null;
-    }> = [];
-    const pricedCheckoutLines = checkoutItems.map((line) => {
-      const product = checkoutProductsById.get(line.productId);
-
-      const originalUnitPrice = roundCurrency(
-        shouldUseQuantityWholesalePrice(
-          customer,
-          line.qty,
-          resolveWholesaleQtyThreshold(product, settings),
-          product.wholesaleEligible,
-        )
-          ? product.wholesalePrice
-          : product.retailPrice,
-      );
-      const hasPriceOverride =
-        line.overrideUnitPrice !== undefined &&
-        Math.abs(line.overrideUnitPrice - originalUnitPrice) > 0.001;
-      const appliedUnitPrice = hasPriceOverride
-        ? Number(line.overrideUnitPrice)
-        : originalUnitPrice;
-
-      if (hasPriceOverride) {
-        priceOverrideLines.push({
-          productId: line.productId,
-          productName: product.name,
-          sku: product.sku || null,
-          qty: line.qty,
-          originalUnitPrice,
-          overrideUnitPrice: appliedUnitPrice,
-          overrideReason: line.overrideReason || "Price corrected at billing",
-          lineDifference: roundCurrency(
-            (appliedUnitPrice - originalUnitPrice) * line.qty,
-          ),
-          overrideAuthorizationToken: line.overrideAuthorizationToken,
-        });
-      }
-
-      return {
-        ...line,
-        product,
-        appliedUnitPrice,
-        originalUnitPrice,
-        hasPriceOverride,
-      };
-    });
-
-    const confItemsByProduct = new Map(
-      normalizedConfirmation.items.map((item) => [item.productId, item]),
-    );
-    const discrepancies: Array<{
-      productId: string;
-      productName: string;
-      confirmedUnitPrice?: number;
-      currentUnitPrice?: number;
-      confirmedQty?: number;
-      currentQty?: number;
-    }> = [];
-
-    for (const line of checkoutItems) {
-      const confItem = confItemsByProduct.get(line.productId);
-      const product = checkoutProductsById.get(line.productId);
-      const pricedLine = pricedCheckoutLines.find(
-        (item) => item.productId === line.productId,
-      )!;
-      if (!confItem) {
-        discrepancies.push({
-          productId: line.productId,
-          productName: product?.name || line.productId,
-          currentUnitPrice: pricedLine.appliedUnitPrice,
-          currentQty: line.qty,
-        });
-      } else {
-        const priceDiff = Math.abs(
-          confItem.appliedUnitPrice - pricedLine.appliedUnitPrice,
-        );
-        const qtyDiff = Math.abs(confItem.qty - line.qty);
-        if (priceDiff > 0.001 || qtyDiff > 0.0001) {
-          discrepancies.push({
-            productId: line.productId,
-            productName: product?.name || line.productId,
-            confirmedUnitPrice: confItem.appliedUnitPrice,
-            currentUnitPrice: pricedLine.appliedUnitPrice,
-            confirmedQty: confItem.qty,
-            currentQty: line.qty,
-          });
-        }
-      }
-    }
-
-    for (const confItem of normalizedConfirmation.items) {
-      if (!checkoutItems.some((line) => line.productId === confItem.productId)) {
-        discrepancies.push({
-          productId: confItem.productId,
-          productName: confItem.productId,
-          confirmedUnitPrice: confItem.appliedUnitPrice,
-          confirmedQty: confItem.qty,
-        });
-      }
-    }
-
-    if (discrepancies.length > 0) {
-      throw new CheckoutReviewConflictError(
-        "Checkout items or prices have changed since review. Please review and confirm the updated bill.",
-        {
-          reason: "PRICE_OR_TOTAL_CHANGED",
-          details: {
-            itemDiscrepancies: discrepancies,
-            confirmedPayableTotal: normalizedConfirmation.payableTotal,
-          },
-        },
-      );
-    }
-
-    for (const overrideLine of priceOverrideLines) {
-      await consumePriceOverrideAuthorizationTx(tx, {
+      const result = await checkoutInvoiceTx(
+        tx,
         cashierId,
-        invoiceId: invoice.id,
-        customerId,
-        productId: overrideLine.productId,
-        qty: overrideLine.qty,
-        originalUnitPrice: overrideLine.originalUnitPrice,
-        overrideUnitPrice: overrideLine.overrideUnitPrice,
-        overrideReason: overrideLine.overrideReason,
-        token: overrideLine.overrideAuthorizationToken,
-      });
-    }
-
-    for (const line of checkoutItems) {
-      const pricedLine = pricedCheckoutLines.find(
-        (item) => item.productId === line.productId,
-      )!;
-
-      await tx.invoiceItem.create({
-        data: {
-          invoiceId: invoice.id,
-          productId: line.productId,
-          qty: line.qty,
-          appliedUnitPrice: pricedLine.appliedUnitPrice,
-          originalUnitPrice: pricedLine.hasPriceOverride
-            ? pricedLine.originalUnitPrice
-            : null,
-          overrideUnitPrice: pricedLine.hasPriceOverride
-            ? pricedLine.appliedUnitPrice
-            : null,
-          overrideReason: pricedLine.hasPriceOverride
-            ? line.overrideReason || "Price corrected at billing"
-            : null,
-          overrideById: pricedLine.hasPriceOverride ? cashierId : null,
-          overrideAt: pricedLine.hasPriceOverride ? new Date() : null,
-          lineTotal: roundCurrency(pricedLine.appliedUnitPrice * line.qty),
-        },
-      });
-    }
-
-    const finalized = await finalizeCheckoutInvoiceTx(
-      tx,
-      invoice.id,
-      cashierId,
-      "CAPTURE_CURRENT",
-      input.discountAmount,
-      input.overridePin,
-      normalizedConfirmation.payableTotal,
-    );
-
-    if (priceOverrideLines.length > 0) {
-      const actor = await tx.user.findUnique({
-        where: { id: cashierId },
-        select: { id: true, name: true, role: true },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorId: cashierId,
-          action: "CASHIER_PRICE_OVERRIDE_APPLIED",
-          entityType: "Invoice",
-          entityId: invoice.id,
-          meta: {
-            invoiceNo: invoice.invoiceNo,
-            actorName: actor?.name || null,
-            actorRole: actor?.role || null,
-            overrideCount: priceOverrideLines.length,
-            totalDifference: roundCurrency(
-              priceOverrideLines.reduce(
-                (sum, item) => sum + item.lineDifference,
-                0,
-              ),
-            ),
-            items: priceOverrideLines,
-          },
-        },
-      });
-    }
-
-    let esewaPaymentIntent:
-      | Awaited<ReturnType<typeof createEsewaPaymentIntentTx>>
-      | null = null;
-
-    let invoiceForPayments = finalized;
-    for (const payment of checkoutPayments) {
-      if (payment.method === "CASH") {
-        await recordCheckoutCashPaymentTx(
-          tx,
-          invoiceForPayments,
-          payment.amount,
-          cashierId,
-          payment.reference,
-          payment.tenderedAmount,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      } else if (payment.method === "ESEWA") {
-        esewaPaymentIntent = await createEsewaPaymentIntentTx(
-          tx,
-          invoiceForPayments,
-          payment.amount,
-          cashierId,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      } else if (
-        payment.method === "FONEPAY" ||
-        payment.method === "BANK_TRANSFER"
-      ) {
-        await recordCheckoutManualDigitalPaymentTx(
-          tx,
-          invoiceForPayments,
-          payment.method,
-          payment.amount,
-          cashierId,
-          payment.reference,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      }
-    }
-
-    if (linkedDraftRequest) {
-      const claimed = await tx.billingDraftRequest.updateMany({
-        where: {
-          id: linkedDraftRequest.id,
-          status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
-          completedInvoiceId: null,
-        },
-        data: {
-          status: "COMPLETED",
-          completedInvoiceId: invoice.id,
-          modifiedAt: new Date(),
-        },
-      });
-      if (claimed.count !== 1) {
-        throw Object.assign(new Error("This draft request changed during checkout. Please retry."), { statusCode: 409 });
-      }
-      await tx.auditLog.create({
-        data: {
-          actorId: cashierId,
-          action: "DRAFT_REQUEST_COMPLETED",
-          entityType: "BillingDraftRequest",
-          entityId: linkedDraftRequest.id,
-          meta: {
-            requestNo: linkedDraftRequest.requestNo,
-            invoiceId: invoice.id,
-            invoiceNo: invoice.invoiceNo,
-          },
-        },
-      });
-    }
-
-    const savedInvoice = await tx.invoice.findUnique({
-      where: { id: invoice.id },
-      include: {
-        items: {
-          select: publicInvoiceItemSelect,
-        },
-        payments: {
-          include: { createdBy: { select: { id: true, name: true } } },
-          orderBy: { createdAt: "desc" },
-        },
-        cashier: { select: { id: true, name: true, email: true } },
-        customer: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            email: true,
-            loyaltyPercent: true,
-            wholesalePercent: true,
-          },
-        },
-        cancelledBy: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
-      },
-    });
-
-    const response = { invoice: savedInvoice, esewaPaymentIntent };
-    await tx.checkoutOperation.update({
-      where: { id: operation.id },
-      data: {
-        invoiceId: invoice.id,
-        responseJson: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
-        completedAt: new Date(),
-      },
-    });
-    return response;
+        normalizedContext,
+        settings,
+      );
+      return result.response;
     });
   } catch (error) {
     if (!isCheckoutOperationKeyConflict(error)) throw error;

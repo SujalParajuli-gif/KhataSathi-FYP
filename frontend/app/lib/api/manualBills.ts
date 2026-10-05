@@ -333,3 +333,144 @@ export async function fetchSalesEvidenceBlob(
   });
   return res.data;
 }
+
+// Missing sale recovery endpoints and types
+export type PaymentAssessmentType =
+  | "NOT_COLLECTED"
+  | "CURRENT_DRAWER_CASH"
+  | "PRIOR_OR_OTHER_CASH"
+  | "PRIOR_DIGITAL"
+  | "UNKNOWN";
+
+export type PaymentAssessment =
+  | {
+      type: "NOT_COLLECTED";
+      explanation: string;
+    }
+  | {
+      type: "CURRENT_DRAWER_CASH";
+      drawerId: string;
+      collectedAt: string;
+      explanation: string;
+      alreadyAccounted: false;
+    }
+  | {
+      type: "PRIOR_OR_OTHER_CASH";
+      explanation: string;
+      collectedByActorId?: string;
+      collectedDrawerId?: string;
+      collectedAt?: string;
+      alreadyAccounted?: boolean;
+    }
+  | {
+      type: "PRIOR_DIGITAL";
+      explanation: string;
+      gatewayOrMethod?: string;
+      externalReference?: string;
+      transactionStatus?: string;
+    }
+  | {
+      type: "UNKNOWN";
+      explanation: string;
+    };
+
+export interface RecoveryCheckoutItem {
+  productId: string;
+  qty: number;
+  overrideUnitPrice?: number | null;
+  overrideReason?: string | null;
+  overrideAuthorizationToken?: string | null;
+}
+
+export interface RecoveryCheckoutPayment {
+  method: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
+  amount?: number;
+  reference?: string;
+  tenderedAmount?: number;
+}
+
+export interface RecoveryCheckoutConfirmation {
+  items: Array<{
+    productId: string;
+    qty: number;
+    appliedUnitPrice: number;
+  }>;
+  payableTotal: number;
+}
+
+export interface RecoveryCheckoutInput {
+  customerId?: string | null;
+  items: RecoveryCheckoutItem[];
+  discountAmount?: number;
+  overridePin?: string | null;
+  notes?: string | null;
+  payment?: RecoveryCheckoutPayment | null;
+  payments?: RecoveryCheckoutPayment[] | null;
+  confirmation?: RecoveryCheckoutConfirmation | null;
+}
+
+export interface SaleEvidenceRecoveryPayload {
+  reference: {
+    billNo: string;
+    externalDocumentType: ExternalDocumentType;
+    externalBillDate: string; // YYYY-MM-DD
+  };
+  reason: string;
+  duplicateOverrideReason?: string;
+  paymentAssessment: PaymentAssessment;
+  checkout: RecoveryCheckoutInput;
+}
+
+export interface ReviseSaleEvidenceRecoveryPayload {
+  expectedAttemptId: string;
+  reason: string;
+  recovery: SaleEvidenceRecoveryPayload;
+}
+
+export interface SaleEvidenceRecoveryOutcome {
+  status: "UNPREPARED" | "PREPARED" | "COMMITTED" | "ARCHIVED" | "UNCERTAIN";
+  document: SalesEvidenceRecord;
+  invoice: ManualBillRecord | null;
+  esewaPaymentIntent?: any | null;
+  latestAttempt?: {
+    id: string;
+    actorId: string;
+    createdAt: string;
+    reason?: string | null;
+  } | null;
+  retryEligible: boolean;
+  blockedReason?: string | null;
+  uncertainExplanation?: string | null;
+}
+
+export async function getSalesEvidenceRecoveryOutcome(
+  documentId: string,
+): Promise<SaleEvidenceRecoveryOutcome> {
+  const res = await api.get(`/api/sales-evidence/${documentId}/recovery`);
+  return res.data;
+}
+
+export async function postSalesEvidenceRecovery(
+  documentId: string,
+  data: SaleEvidenceRecoveryPayload,
+): Promise<{
+  document: SalesEvidenceRecord;
+  invoice: ManualBillRecord;
+  esewaPaymentIntent: any | null;
+  replayed: boolean;
+}> {
+  const res = await api.post(`/api/sales-evidence/${documentId}/recovery`, data);
+  return res.data;
+}
+
+export async function reviseSalesEvidenceRecovery(
+  documentId: string,
+  data: ReviseSaleEvidenceRecoveryPayload,
+): Promise<{
+  document: SalesEvidenceRecord;
+  attemptId: string;
+  status: "PREPARED";
+}> {
+  const res = await api.post(`/api/sales-evidence/${documentId}/recovery/revise`, data);
+  return res.data;
+}

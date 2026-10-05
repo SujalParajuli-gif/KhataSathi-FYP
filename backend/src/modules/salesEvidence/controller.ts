@@ -14,6 +14,12 @@ import {
   SalesEvidenceConflictError,
 } from "./service";
 import {
+  getSaleEvidenceRecoveryOutcome,
+  prepareAndPostSaleEvidenceRecovery,
+  reviseSaleEvidenceRecoveryAttempt,
+} from "./recovery";
+import { CheckoutReviewConflictError } from "../invoices/service";
+import {
   archiveSaleEvidenceSchema,
   createSaleEvidenceSchema,
   listSaleEvidenceSchema,
@@ -372,6 +378,172 @@ export async function attachSaleEvidenceHandler(req: Request, res: Response) {
     }
 
     logger.error("Attach sales evidence error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getSaleEvidenceRecoveryHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const result = await getSaleEvidenceRecoveryOutcome(
+      String(req.params.id),
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409 || err?.statusCode === 404) {
+      if (err.code === "NOT_FOUND" || err.statusCode === 404) {
+        res.status(404).json({
+          code: "NOT_FOUND",
+          error: err.message || "Sales evidence not found",
+        });
+        return;
+      }
+      res.status(409).json({
+        code: err.code || "CONFLICT",
+        error: err.message,
+      });
+      return;
+    }
+    logger.error("Get sales evidence recovery outcome error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function postSaleEvidenceRecoveryHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const result = await prepareAndPostSaleEvidenceRecovery(
+      String(req.params.id),
+      req.body,
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+    res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof ZodError) {
+      res.status(400).json({
+        code: "VALIDATION_ERROR",
+        error: "Invalid recovery input",
+        details: err.issues,
+      });
+      return;
+    }
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409 || err?.statusCode === 404) {
+      if (err.code === "NOT_FOUND" || err.statusCode === 404) {
+        res.status(404).json({
+          code: "NOT_FOUND",
+          error: err.message || "Sales evidence not found",
+        });
+        return;
+      }
+      const payload: Record<string, unknown> = {
+        code: err.code || "CONFLICT",
+        error: err.message,
+      };
+      if (err.document) {
+        payload.document = err.document;
+      }
+      res.status(409).json(payload);
+      return;
+    }
+    if (err instanceof CheckoutReviewConflictError) {
+      res.status(409).json({
+        code: err.code || "CHECKOUT_REVIEW_CONFLICT",
+        error: err.message,
+        reason: err.reason,
+        details: err.details,
+      });
+      return;
+    }
+    if (
+      err?.message &&
+      (err.message.includes("Insufficient stock") ||
+        err.message.includes("stock") ||
+        err.message.includes("Quantity") ||
+        err.message.includes("Price") ||
+        err.message.includes("Discount") ||
+        err.message.includes("Checkout") ||
+        err.message.includes("drawer") ||
+        err.message.includes("Customer"))
+    ) {
+      res.status(400).json({
+        code: "BAD_REQUEST",
+        error: err.message,
+      });
+      return;
+    }
+    logger.error("Post sales evidence recovery error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function reviseSaleEvidenceRecoveryHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const result = await reviseSaleEvidenceRecoveryAttempt(
+      String(req.params.id),
+      req.body,
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+    res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof ZodError) {
+      res.status(400).json({
+        code: "VALIDATION_ERROR",
+        error: "Invalid revise recovery input",
+        details: err.issues,
+      });
+      return;
+    }
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409 || err?.statusCode === 404) {
+      if (err.code === "NOT_FOUND" || err.statusCode === 404) {
+        res.status(404).json({
+          code: "NOT_FOUND",
+          error: err.message || "Sales evidence not found",
+        });
+        return;
+      }
+      const payload: Record<string, unknown> = {
+        code: err.code || "CONFLICT",
+        error: err.message,
+      };
+      if (err.document) {
+        payload.document = err.document;
+      }
+      res.status(409).json(payload);
+      return;
+    }
+    logger.error("Revise sales evidence recovery error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

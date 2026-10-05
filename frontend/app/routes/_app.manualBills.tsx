@@ -30,8 +30,8 @@ export default function ManualBillsRoute() {
   const { showToast } = useToast();
   const currentUser = getAuthUser();
   const [searchParams, setSearchParams] = useSearchParams();
-
-  const isReviewer = currentUser?.role === "admin" || currentUser?.role === "manager";
+  const role = currentUser?.role?.toLowerCase();
+  const isReviewer = role === "admin" || role === "manager";
   const activeTab = isReviewer && searchParams.get("tab") === "evidence" ? "evidence" : "queue";
   const [statusFilter, setStatusFilter] = useState<"ALL" | "PENDING" | "MISSING">(
     (searchParams.get("status") as "ALL" | "PENDING" | "MISSING") || "ALL",
@@ -146,21 +146,21 @@ export default function ManualBillsRoute() {
     switch (status) {
       case "VERIFIED":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-emerald-50 text-emerald-700 border border-emerald-200   ">
             <Icon name="check_circle" className="w-3 h-3 text-emerald-500" />
             Verified
           </span>
         );
       case "RECORDED":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200 dark:bg-blue-950/40 dark:text-blue-300 dark:border-blue-800">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-blue-50 text-blue-700 border border-blue-200   ">
             <Icon name="schedule" className="w-3 h-3 text-blue-500" />
             Recorded
           </span>
         );
       case "MISSING":
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200 dark:bg-rose-950/40 dark:text-rose-300 dark:border-rose-800">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-rose-50 text-rose-700 border border-rose-200   ">
             <Icon name="warning" className="w-3 h-3 text-rose-500" />
             Missing Paper Bill
           </span>
@@ -168,7 +168,7 @@ export default function ManualBillsRoute() {
       case "PENDING":
       default:
         return (
-          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200 dark:bg-amber-950/40 dark:text-amber-300 dark:border-amber-800">
+          <span className="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-xs font-semibold bg-amber-50 text-amber-700 border border-amber-200   ">
             <Icon name="description" className="w-3 h-3 text-amber-500" />
             Pending Recording
           </span>
@@ -185,14 +185,14 @@ export default function ManualBillsRoute() {
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
         <div>
           <div className="flex items-center gap-2">
-            <span className="p-2 rounded-xl bg-indigo-50 text-indigo-600 dark:bg-indigo-950/50 dark:text-indigo-400 border border-indigo-100 dark:border-indigo-900/50">
+            <span className="p-2 rounded-xl bg-control-hover text-action   border border-control-line ">
               <Icon name="receipt" className="w-6 h-6" />
             </span>
             <div>
-              <h1 className="text-2xl font-bold text-neutral-900 dark:text-neutral-100">
+              <h1 className="text-2xl font-bold text-action ">
                 Paper Bill Recording & Review
               </h1>
-              <p className="text-sm text-neutral-500 dark:text-neutral-400">
+              <p className="text-sm text-secondary ">
                 Record manual physical receipts, verify references, and attach scanned proof documents.
               </p>
             </div>
@@ -200,7 +200,7 @@ export default function ManualBillsRoute() {
         </div>
 
         {/* Tab switcher */}
-        <div className="flex items-center bg-neutral-100 dark:bg-neutral-800/80 p-1 rounded-xl border border-neutral-200 dark:border-neutral-700">
+        <div className="flex items-center bg-control-hover  p-1 rounded-xl border border-control-line ">
           <button
             type="button"
             onClick={() => {
@@ -209,8 +209,8 @@ export default function ManualBillsRoute() {
             className={cn(
               "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all",
               activeTab === "queue"
-                ? "bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-sm"
-                : "text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200",
+                ? "bg-white  text-action  shadow-sm"
+                : "text-secondary  hover:text-action ",
             )}
           >
             <Icon name="list_alt" className="w-4 h-4" />
@@ -224,8 +224,8 @@ export default function ManualBillsRoute() {
             className={cn(
               "flex items-center gap-2 px-3.5 py-1.5 rounded-lg text-sm font-medium transition-all",
               activeTab === "evidence"
-                ? "bg-white dark:bg-neutral-900 text-neutral-900 dark:text-neutral-100 shadow-sm"
-                : "text-neutral-600 dark:text-neutral-400 hover:text-neutral-900 dark:hover:text-neutral-200",
+                ? "bg-white  text-action  shadow-sm"
+                : "text-secondary  hover:text-action ",
             )}
           >
             <Icon name="attach_file" className="w-4 h-4" />
@@ -240,69 +240,69 @@ export default function ManualBillsRoute() {
         <div className="space-y-6">
           {/* Quick Metrics */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-4">
-            <div className="p-4 rounded-xl bg-amber-50/50 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/40">
+            <div className="p-4 rounded-xl bg-amber-50/50  border border-amber-200/60 ">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-amber-700 dark:text-amber-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-amber-700 ">
                   Pending Entry
                 </span>
                 <Icon name="description" className="w-4 h-4 text-amber-500" />
               </div>
-              <p className="mt-2 text-2xl font-bold text-amber-900 dark:text-amber-200">
+              <p className="mt-2 text-2xl font-bold text-amber-900 ">
                 {statusMetrics.pending}
               </p>
             </div>
 
-            <div className="p-4 rounded-xl bg-blue-50/50 dark:bg-blue-950/20 border border-blue-200/60 dark:border-blue-800/40">
+            <div className="p-4 rounded-xl bg-control-hover  border border-blue-200/60 ">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-blue-700 dark:text-blue-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-blue-700 ">
                   Recorded / Review
                 </span>
                 <Icon name="schedule" className="w-4 h-4 text-blue-500" />
               </div>
-              <p className="mt-2 text-2xl font-bold text-blue-900 dark:text-blue-200">
+              <p className="mt-2 text-2xl font-bold text-blue-900 ">
                 {statusMetrics.recorded}
               </p>
             </div>
 
-            <div className="p-4 rounded-xl bg-emerald-50/50 dark:bg-emerald-950/20 border border-emerald-200/60 dark:border-emerald-800/40">
+            <div className="p-4 rounded-xl bg-emerald-50/50  border border-emerald-200/60 ">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700 dark:text-emerald-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-emerald-700 ">
                   Verified
                 </span>
                 <Icon name="check_circle" className="w-4 h-4 text-emerald-500" />
               </div>
-              <p className="mt-2 text-2xl font-bold text-emerald-900 dark:text-emerald-200">
+              <p className="mt-2 text-2xl font-bold text-emerald-900 ">
                 {statusMetrics.verified}
               </p>
             </div>
 
-            <div className="p-4 rounded-xl bg-rose-50/50 dark:bg-rose-950/20 border border-rose-200/60 dark:border-rose-800/40">
+            <div className="p-4 rounded-xl bg-rose-50/50  border border-rose-200/60 ">
               <div className="flex items-center justify-between">
-                <span className="text-xs font-semibold uppercase tracking-wider text-rose-700 dark:text-rose-400">
+                <span className="text-xs font-semibold uppercase tracking-wider text-rose-700 ">
                   Missing Bills
                 </span>
                 <Icon name="warning" className="w-4 h-4 text-rose-500" />
               </div>
-              <p className="mt-2 text-2xl font-bold text-rose-900 dark:text-rose-200">
+              <p className="mt-2 text-2xl font-bold text-rose-900 ">
                 {statusMetrics.missing}
               </p>
             </div>
           </div>
 
           {/* Filters Bar */}
-          <div className="p-4 rounded-xl bg-white dark:bg-neutral-900 border border-neutral-200 dark:border-neutral-800 shadow-sm space-y-3">
+          <div className="p-4 rounded-xl bg-white  border border-control-line  shadow-sm space-y-3">
             <form onSubmit={handleSearchSubmit} className="flex flex-col md:flex-row items-stretch md:items-center gap-3">
               <div className="relative flex-1">
                 <Icon
                   name="search"
-                  className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-neutral-400"
+                  className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-placeholder"
                 />
                 <input
                   type="text"
                   placeholder="Search invoice #, paper bill #, customer..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-neutral-200 dark:border-neutral-700 bg-neutral-50 dark:bg-neutral-800 text-neutral-900 dark:text-neutral-100 placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-indigo-500"
+                  className="w-full pl-9 pr-4 py-2 text-sm rounded-lg border border-control-line  bg-control-hover  text-action  placeholder-neutral-400 focus:outline-none focus:ring-2 focus:ring-action"
                 />
               </div>
 
@@ -321,7 +321,7 @@ export default function ManualBillsRoute() {
 
                 <button
                   type="submit"
-                  className="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium transition-colors"
+                  className="px-4 py-2 rounded-lg bg-action hover:bg-black text-white text-sm font-medium transition-colors"
                 >
                   Filter
                 </button>
@@ -330,7 +330,7 @@ export default function ManualBillsRoute() {
                   <button
                     type="button"
                     onClick={handleResetFilters}
-                    className="p-2 rounded-lg text-neutral-500 hover:text-neutral-800 dark:hover:text-neutral-200 hover:bg-neutral-100 dark:hover:bg-neutral-800 transition-colors"
+                    className="p-2 rounded-lg text-secondary hover:text-action  hover:bg-control-hover  transition-colors"
                     title="Reset Filters"
                   >
                     <Icon name="restart_alt" className="w-4 h-4" />
@@ -341,10 +341,10 @@ export default function ManualBillsRoute() {
           </div>
 
           {/* Queue Table */}
-          <div className="rounded-xl border border-neutral-200 dark:border-neutral-800 bg-white dark:bg-neutral-900 shadow-sm overflow-hidden">
+          <div className="rounded-xl border border-control-line  bg-white  shadow-sm overflow-hidden">
             <div className="overflow-x-auto">
               <table className="w-full text-left text-sm">
-                <thead className="bg-neutral-50 dark:bg-neutral-800/50 text-neutral-600 dark:text-neutral-400 font-semibold border-b border-neutral-200 dark:border-neutral-800">
+                <thead className="bg-control-hover  text-secondary  font-semibold border-b border-control-line ">
                   <tr>
                     <th className="px-4 py-3">Invoice #</th>
                     <th className="px-4 py-3">Date</th>
@@ -356,22 +356,22 @@ export default function ManualBillsRoute() {
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-neutral-200 dark:divide-neutral-800 text-neutral-800 dark:text-neutral-200">
+                <tbody className="divide-y divide-neutral-200  text-action ">
                   {isLoading ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-12 text-neutral-500">
-                        <Icon name="refresh" className="w-6 h-6 animate-spin mx-auto text-indigo-500" />
+                      <td colSpan={8} className="text-center py-12 text-secondary">
+                        <Icon name="refresh" className="w-6 h-6 animate-spin mx-auto text-action" />
                         <span className="block mt-2 text-sm">Loading queue...</span>
                       </td>
                     </tr>
                   ) : items.length === 0 ? (
                     <tr>
-                      <td colSpan={8} className="text-center py-12 text-neutral-500">
-                        <Icon name="inbox" className="w-8 h-8 mx-auto text-neutral-400 mb-2" />
-                        <p className="font-medium text-neutral-700 dark:text-neutral-300">
+                      <td colSpan={8} className="text-center py-12 text-secondary">
+                        <Icon name="inbox" className="w-8 h-8 mx-auto text-placeholder mb-2" />
+                        <p className="font-medium text-secondary ">
                           No manual paper bills found
                         </p>
-                        <p className="text-xs text-neutral-400 mt-1">
+                        <p className="text-xs text-placeholder mt-1">
                           Try adjusting search filters.
                         </p>
                       </td>
@@ -380,21 +380,21 @@ export default function ManualBillsRoute() {
                     items.map((item) => (
                       <tr
                         key={item.id}
-                        className="hover:bg-neutral-50 dark:hover:bg-neutral-800/40 transition-colors"
+                        className="hover:bg-control-hover  transition-colors"
                       >
                         <td className="px-4 py-3 font-medium">
                           <button
                             type="button"
                             onClick={() => handleOpenInvoiceModal(item.id)}
-                            className="text-indigo-600 hover:text-indigo-800 dark:text-indigo-400 hover:underline flex items-center gap-1 font-mono text-xs"
+                            className="text-action hover:text-action  hover:underline flex items-center gap-1 font-mono text-xs"
                           >
                             {item.invoiceNo}
                             {loadingInvoiceId === item.id && (
-                              <Icon name="refresh" className="w-3 h-3 animate-spin text-indigo-500" />
+                              <Icon name="refresh" className="w-3 h-3 animate-spin text-action" />
                             )}
                           </button>
                         </td>
-                        <td className="px-4 py-3 text-neutral-500 text-xs">
+                        <td className="px-4 py-3 text-secondary text-xs">
                           {item.finalizedAt ? new Date(item.finalizedAt).toLocaleDateString() : "—"}
                         </td>
                         <td className="px-4 py-3">
@@ -407,11 +407,11 @@ export default function ManualBillsRoute() {
                         </td>
                         <td className="px-4 py-3">
                           {item.externalBillNo ? (
-                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-neutral-100 dark:bg-neutral-800 text-neutral-800 dark:text-neutral-200">
+                            <span className="font-mono text-xs font-semibold px-2 py-0.5 rounded bg-control-hover  text-action ">
                               {item.externalBillNo}
                             </span>
                           ) : (
-                            <span className="text-xs text-neutral-400 italic">Not recorded</span>
+                            <span className="text-xs text-placeholder italic">Not recorded</span>
                           )}
                         </td>
                         <td className="px-4 py-3">
@@ -419,12 +419,12 @@ export default function ManualBillsRoute() {
                         </td>
                         <td className="px-4 py-3">
                           {item.attachedProofCount > 0 ? (
-                            <span className="inline-flex items-center gap-1 text-xs text-emerald-600 dark:text-emerald-400 font-medium">
+                            <span className="inline-flex items-center gap-1 text-xs text-emerald-600  font-medium">
                               <Icon name="attach_file" className="w-3.5 h-3.5" />
                               {item.attachedProofCount} proof{item.attachedProofCount > 1 ? "s" : ""}
                             </span>
                           ) : (
-                            <span className="text-xs text-neutral-400">None</span>
+                            <span className="text-xs text-placeholder">None</span>
                           )}
                         </td>
                         <td className="px-4 py-3 text-right">
@@ -433,7 +433,7 @@ export default function ManualBillsRoute() {
                             <button
                               type="button"
                               onClick={() => handleOpenRecordingForm(item)}
-                              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-indigo-50 text-indigo-700 hover:bg-indigo-100 dark:bg-indigo-950/50 dark:text-indigo-300 dark:hover:bg-indigo-900/50 transition-colors"
+                              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-control-hover text-action hover:bg-control-hover    transition-colors"
                             >
                               {item.externalBillNo ? "Edit Ref" : "Record"}
                             </button>
@@ -442,7 +442,7 @@ export default function ManualBillsRoute() {
                             <button
                               type="button"
                               onClick={() => setSelectedInvoiceId(item.id)}
-                              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-neutral-100 text-neutral-700 hover:bg-neutral-200 dark:bg-neutral-800 dark:text-neutral-300 dark:hover:bg-neutral-700 transition-colors"
+                              className="px-2.5 py-1 text-xs font-medium rounded-lg bg-control-hover text-secondary hover:bg-neutral-200    transition-colors"
                             >
                               Review
                             </button>
@@ -457,7 +457,7 @@ export default function ManualBillsRoute() {
 
             {/* Pagination */}
             {totalPages > 1 && (
-              <div className="p-4 border-t border-neutral-200 dark:border-neutral-800">
+              <div className="p-4 border-t border-control-line ">
                 <PaginationBar
                   page={page}
                   totalPages={totalPages}

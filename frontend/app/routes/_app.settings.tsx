@@ -3002,7 +3002,7 @@ export default function SettingsPage() {
               <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
                 <label className="flex-1 text-[12px] font-semibold text-slate-700" htmlFor="business-tax-mode">
                   Tax configuration
-                  <select
+                  <ProjectSelect aria-label="Tax configuration"
                     id="business-tax-mode"
                     value={businessTaxMode}
                     onChange={(event) => {
@@ -3015,7 +3015,7 @@ export default function SettingsPage() {
                     <option value="UNKNOWN">Not configured — keep tax status unknown</option>
                     <option value="NO_VAT">Verified not VAT registered</option>
                     <option value="VAT_EXCLUSIVE">VAT registered — prices exclude VAT</option>
-                  </select>
+                  </ProjectSelect>
                 </label>
                 {isAdmin ? (
                   <button

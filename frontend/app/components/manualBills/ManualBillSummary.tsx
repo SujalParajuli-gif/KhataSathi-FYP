@@ -1,3 +1,4 @@
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import React, { useEffect, useRef, useState } from "react";
 import type { AttachedProofSummary, ManualBillRecord } from "~/lib/api/manualBills";
 import {
@@ -53,7 +54,7 @@ export function BillStatusBadge({ status }: { status: string | null }) {
     );
   }
   return (
-    <span className="inline-flex items-center rounded-full bg-gray-100 px-2.5 py-0.5 text-[11px] font-medium text-gray-600">
+    <span className="inline-flex items-center rounded-full bg-control-hover px-2.5 py-0.5 text-[11px] font-medium text-secondary">
       UNTRACKED
     </span>
   );
@@ -149,7 +150,7 @@ export default function ManualBillSummary({
 
   if (fetchingRecord) {
     return (
-      <div className="flex items-center justify-center p-6 text-sm text-gray-500">
+      <div className="flex items-center justify-center p-6 text-sm text-secondary">
         <GIcon name="refresh" className="animate-spin text-lg mr-2" />
         Loading paper bill details...
       </div>
@@ -167,7 +168,7 @@ export default function ManualBillSummary({
   const record = activeRecord;
   if (!record) {
     return (
-      <div className="p-4 text-center text-xs text-gray-400 italic">
+      <div className="p-4 text-center text-xs text-placeholder italic">
         No paper bill reference recorded.
       </div>
     );
@@ -278,11 +279,11 @@ export default function ManualBillSummary({
   return (
     <div className="space-y-4">
       {/* Top Banner / Summary */}
-      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-gray-100 pb-3">
+      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-control-line pb-3">
         <div className="flex items-center gap-2">
           <BillStatusBadge status={record.billRecordStatus} />
           {record.billingChannel === "MANUAL_EXTERNAL" && (
-            <span className="rounded bg-indigo-50 px-2 py-0.5 text-[10px] font-semibold text-indigo-700">
+            <span className="rounded bg-control-hover px-2 py-0.5 text-[10px] font-semibold text-action">
               MANUAL EXTERNAL CHANNEL
             </span>
           )}
@@ -293,7 +294,7 @@ export default function ManualBillSummary({
             <button
               type="button"
               onClick={() => setEditOpen(true)}
-              className="inline-flex items-center gap-1 rounded border border-gray-300 bg-white px-2.5 py-1 text-xs font-semibold text-gray-700 shadow-xs hover:bg-gray-50"
+              className="inline-flex items-center gap-1 rounded border border-control-line bg-white px-2.5 py-1 text-xs font-semibold text-secondary shadow-xs hover:bg-control-hover"
             >
               <GIcon name="edit" className="text-[13px]" />
               {record.externalBillNo ? "Edit / Re-record" : "Record Reference"}
@@ -303,7 +304,7 @@ export default function ManualBillSummary({
               <button
                 type="button"
                 onClick={() => setVerifyOpen(true)}
-                className="inline-flex items-center gap-1 rounded bg-emerald-600 px-2.5 py-1 text-xs font-semibold text-white shadow-xs hover:bg-emerald-700"
+                className="inline-flex items-center gap-1 rounded bg-action px-2.5 py-1 text-xs font-semibold text-white shadow-xs hover:bg-black"
               >
                 <GIcon name="verified" className="text-[13px]" />
                 Verify
@@ -379,51 +380,51 @@ export default function ManualBillSummary({
 
       {/* Details Grid */}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-3">
-        <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
-          <div className="text-[11px] font-medium text-gray-500">
+        <div className="rounded-lg border border-control-line bg-control-hover/50 p-2.5">
+          <div className="text-[11px] font-medium text-secondary">
             Paper Bill Number
           </div>
-          <div className="mt-0.5 font-mono text-sm font-bold text-gray-900">
+          <div className="mt-0.5 font-mono text-sm font-bold text-action">
             {record.externalBillNo || (
-              <span className="font-sans text-xs text-gray-400 italic">
+              <span className="font-sans text-xs text-placeholder italic">
                 Not recorded
               </span>
             )}
           </div>
         </div>
 
-        <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
-          <div className="text-[11px] font-medium text-gray-500">
+        <div className="rounded-lg border border-control-line bg-control-hover/50 p-2.5">
+          <div className="text-[11px] font-medium text-secondary">
             Document Type
           </div>
-          <div className="mt-0.5 text-xs font-semibold text-gray-800">
+          <div className="mt-0.5 text-xs font-semibold text-action">
             {record.externalDocumentType
               ? record.externalDocumentType.replace(/_/g, " ")
               : "—"}
           </div>
         </div>
 
-        <div className="rounded-lg border border-gray-100 bg-gray-50/50 p-2.5">
-          <div className="text-[11px] font-medium text-gray-500">
+        <div className="rounded-lg border border-control-line bg-control-hover/50 p-2.5">
+          <div className="text-[11px] font-medium text-secondary">
             Physical Bill Date
           </div>
-          <div className="mt-0.5 font-mono text-xs font-semibold text-gray-800">
+          <div className="mt-0.5 font-mono text-xs font-semibold text-action">
             {record.externalBillDate || "—"}
           </div>
         </div>
       </div>
 
       {/* Attached Proofs Summary */}
-      <div className="rounded-lg border border-gray-200 bg-white p-3">
-        <div className="flex items-center justify-between text-xs font-bold text-gray-700">
+      <div className="rounded-lg border border-control-line bg-white p-3">
+        <div className="flex items-center justify-between text-xs font-bold text-secondary">
           <span className="flex items-center gap-1.5">
-            <GIcon name="attach_file" className="text-gray-500" />
+            <GIcon name="attach_file" className="text-secondary" />
             Attached Proof Documents ({record.attachedProofs.length})
           </span>
         </div>
 
         {record.attachedProofs.length === 0 ? (
-          <p className="mt-2 text-xs text-gray-400 italic">
+          <p className="mt-2 text-xs text-placeholder italic">
             No scanned proof documents attached to this manual bill reference.
           </p>
         ) : (
@@ -431,15 +432,15 @@ export default function ManualBillSummary({
             {record.attachedProofs.map((proof) => (
               <div
                 key={proof.id}
-                className="flex items-center justify-between gap-2 rounded-lg border border-gray-100 bg-gray-50 p-2 text-xs"
+                className="flex items-center justify-between gap-2 rounded-lg border border-control-line bg-control-hover p-2 text-xs"
               >
                 <div className="flex items-center gap-2 overflow-hidden">
-                  <GIcon name="image" className="shrink-0 text-gray-400" />
+                  <GIcon name="image" className="shrink-0 text-placeholder" />
                   <div className="truncate">
-                    <div className="font-semibold text-gray-800 truncate">
+                    <div className="font-semibold text-action truncate">
                       {proof.title || proof.fileName}
                     </div>
-                    <div className="text-[10px] text-gray-400">
+                    <div className="text-[10px] text-placeholder">
                       {(proof.fileSize / 1024).toFixed(1)} KB •{" "}
                       {new Date(proof.createdAt).toLocaleDateString()}
                     </div>
@@ -450,7 +451,7 @@ export default function ManualBillSummary({
                   type="button"
                   onClick={() => handleOpenProof(proof)}
                   disabled={loadingProofId === proof.id}
-                  className="shrink-0 rounded bg-white px-2 py-1 text-[11px] font-bold text-gray-700 shadow-2xs hover:text-indigo-600 border border-gray-200"
+                  className="shrink-0 rounded bg-white px-2 py-1 text-[11px] font-bold text-secondary shadow-2xs hover:text-action border border-control-line"
                   title="View Document"
                 >
                   {loadingProofId === proof.id ? (
@@ -470,9 +471,9 @@ export default function ManualBillSummary({
 
       {/* Audit History */}
       {record.history.length > 0 && (
-        <div className="rounded-lg border border-gray-200 bg-white p-3">
-          <div className="text-xs font-bold text-gray-700 mb-2 flex items-center gap-1">
-            <GIcon name="history" className="text-gray-500 text-sm" />
+        <div className="rounded-lg border border-control-line bg-white p-3">
+          <div className="text-xs font-bold text-secondary mb-2 flex items-center gap-1">
+            <GIcon name="history" className="text-secondary text-sm" />
             Recording & Review History
           </div>
           <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
@@ -482,21 +483,21 @@ export default function ManualBillSummary({
                 className="flex items-start justify-between text-xs border-b border-gray-50 pb-1.5 last:border-0"
               >
                 <div>
-                  <span className="font-semibold text-gray-800">
+                  <span className="font-semibold text-action">
                     {entry.action.replace(/_/g, " ")}
                   </span>
                   {entry.actorName && (
-                    <span className="text-gray-500 text-[11px] ml-1">
+                    <span className="text-secondary text-[11px] ml-1">
                       by {entry.actorName} ({entry.actorRole || "Staff"})
                     </span>
                   )}
                   {Boolean(entry.meta?.reason) ? (
-                    <div className="text-gray-600 text-[11px] italic mt-0.5">
+                    <div className="text-secondary text-[11px] italic mt-0.5">
                       "{String(entry.meta?.reason)}"
                     </div>
                   ) : null}
                 </div>
-                <span className="text-[10px] text-gray-400 shrink-0 ml-2">
+                <span className="text-[10px] text-placeholder shrink-0 ml-2">
                   {new Date(entry.createdAt).toLocaleString()}
                 </span>
               </div>
@@ -533,16 +534,16 @@ export default function ManualBillSummary({
           title="Verify Manual Paper Bill Reference"
         >
           <form onSubmit={handleVerify} className="space-y-4">
-            <p className="text-xs text-gray-600">
+            <p className="text-xs text-secondary">
               Confirm that the physical paper bill reference{" "}
-              <span className="font-mono font-bold text-gray-900">
+              <span className="font-mono font-bold text-action">
                 {record.externalBillNo}
               </span>{" "}
               matches the paper leaf.
             </p>
 
             <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
+              <label className="block text-xs font-semibold text-secondary mb-1">
                 Verification Note *
               </label>
               <textarea
@@ -551,7 +552,7 @@ export default function ManualBillSummary({
                 placeholder="e.g. Physical counter stamp and signature verified"
                 rows={3}
                 required
-                className="w-full rounded-md border border-gray-300 p-2 text-xs focus:border-emerald-500 focus:outline-none"
+                className="w-full rounded-md border border-control-line p-2 text-xs focus:border-emerald-500 focus:outline-none"
               />
             </div>
 
@@ -560,14 +561,14 @@ export default function ManualBillSummary({
                 type="button"
                 onClick={() => setVerifyOpen(false)}
                 disabled={loading}
-                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                className="rounded border border-control-line px-3 py-1.5 text-xs font-semibold text-secondary hover:bg-control-hover"
               >
                 Cancel
               </button>
               <button
                 type="submit"
                 disabled={loading || !verifyReason.trim()}
-                className="rounded bg-emerald-600 px-3 py-1.5 text-xs font-semibold text-white hover:bg-emerald-700 disabled:opacity-50"
+                className="rounded bg-action px-3 py-1.5 text-xs font-semibold text-white hover:bg-black disabled:opacity-50"
               >
                 {loading ? "Verifying..." : "Confirm Verification"}
               </button>
@@ -584,12 +585,12 @@ export default function ManualBillSummary({
           title="Mark Physical Paper Bill Missing"
         >
           <form onSubmit={handleMarkMissing} className="space-y-4">
-            <p className="text-xs text-gray-600">
+            <p className="text-xs text-secondary">
               Mark this manual sale's paper receipt as missing. This clears any recorded paper bill number and flags the invoice for supervisor follow-up.
             </p>
 
             <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
+              <label className="block text-xs font-semibold text-secondary mb-1">
                 Reason for Missing Status *
               </label>
               <textarea
@@ -598,7 +599,7 @@ export default function ManualBillSummary({
                 placeholder="e.g. Paper receipt book lost by cashier"
                 rows={3}
                 required
-                className="w-full rounded-md border border-gray-300 p-2 text-xs focus:border-rose-500 focus:outline-none"
+                className="w-full rounded-md border border-control-line p-2 text-xs focus:border-rose-500 focus:outline-none"
               />
             </div>
 
@@ -607,7 +608,7 @@ export default function ManualBillSummary({
                 type="button"
                 onClick={() => setMissingOpen(false)}
                 disabled={loading}
-                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                className="rounded border border-control-line px-3 py-1.5 text-xs font-semibold text-secondary hover:bg-control-hover"
               >
                 Cancel
               </button>
@@ -631,30 +632,31 @@ export default function ManualBillSummary({
           title="Withdraw Paper Bill Reference"
         >
           <form onSubmit={handleWithdraw} className="space-y-4">
-            <p className="text-xs text-gray-600">
+            <p className="text-xs text-secondary">
               Withdraw the recorded paper reference{" "}
-              <span className="font-mono font-bold text-gray-900">
+              <span className="font-mono font-bold text-action">
                 {record.externalBillNo}
               </span>
               . Previous details will remain preserved in the audit log.
             </p>
 
             <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
+              <label className="block text-xs font-semibold text-secondary mb-1">
                 Target Status After Withdrawal
               </label>
-              <select
+              <ProjectSelect
+                    aria-label="Record status"
                 value={withdrawTarget}
                 onChange={(e) => setWithdrawTarget(e.target.value as any)}
-                className="w-full rounded-md border border-gray-300 p-2 text-xs focus:outline-none"
+                className="w-full rounded-md border border-control-line p-2 text-xs focus:outline-none"
               >
                 <option value="PENDING">PENDING (Await Re-recording)</option>
                 <option value="MISSING">MISSING (Physical Slip Lost)</option>
-              </select>
+              </ProjectSelect>
             </div>
 
             <div>
-              <label className="block text-xs font-semibold text-gray-700 mb-1">
+              <label className="block text-xs font-semibold text-secondary mb-1">
                 Withdrawal Reason *
               </label>
               <textarea
@@ -663,7 +665,7 @@ export default function ManualBillSummary({
                 placeholder="e.g. Typo in bill number, re-recording with correct book series"
                 rows={3}
                 required
-                className="w-full rounded-md border border-gray-300 p-2 text-xs focus:outline-none"
+                className="w-full rounded-md border border-control-line p-2 text-xs focus:outline-none"
               />
             </div>
 
@@ -672,7 +674,7 @@ export default function ManualBillSummary({
                 type="button"
                 onClick={() => setWithdrawOpen(false)}
                 disabled={loading}
-                className="rounded border border-gray-300 px-3 py-1.5 text-xs font-semibold text-gray-700 hover:bg-gray-50"
+                className="rounded border border-control-line px-3 py-1.5 text-xs font-semibold text-secondary hover:bg-control-hover"
               >
                 Cancel
               </button>
@@ -706,10 +708,10 @@ export default function ManualBillSummary({
               <iframe
                 src={previewProof.blobUrl}
                 title={previewProof.summary.title || previewProof.summary.fileName}
-                className="h-[70vh] w-full rounded-xl border border-gray-200"
+                className="h-[70vh] w-full rounded-xl border border-control-line"
               />
             )}
-            <div className="mt-4 flex justify-between w-full text-[12px] text-gray-500">
+            <div className="mt-4 flex justify-between w-full text-[12px] text-secondary">
               <span>Attached Proof • {(previewProof.summary.fileSize / 1024).toFixed(1)} KB</span>
               <a
                 href={previewProof.blobUrl}

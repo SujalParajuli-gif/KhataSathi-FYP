@@ -89,7 +89,7 @@ export default function AppShell({ children, statusBanner }: Props) {
   const [isCollapsed, setIsCollapsed] = useState(true);
   const [user, setUser] = useState(() => getAuthUser());
 
-  const role = user?.role ?? "staff";
+  const role = (user?.role?.toLowerCase() as any) ?? "staff";
   const isStaff = role === "staff";
   const usesCompactDesktopRail = role === "cashier" || role === "staff";
   const sidebarStorageKey = `${SIDEBAR_STATE_STORAGE_KEY}:${user?.id ?? role}`;

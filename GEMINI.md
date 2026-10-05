@@ -67,3 +67,9 @@ If the task/plan/current repository materially disagree, STOP and report:
 Do not guess through the conflict.
 
 If the user explicitly assigns a different role, such as architecture reviewer, researcher, QA agent, or independent red-team reviewer, follow that role for that task only while still obeying AGENTS.md.
+
+## KhataSathi UI continuity (2026-10-05)
+
+For every frontend implementation or repair, use the installed frontend-design and engineering skills; inspect existing app.css/shared primitives/nearby established screens and follow frozen Master Plan section 6.4. Reuse the project light theme, local IBM Plex Sans/Space Mono, shared select/date/modal components and local Material Symbols assets. Verify icon coverage and desktop/mobile/keyboard states. Do not invent a feature-specific palette, dark theme, component system or remote icon/font runtime.
+
+Resolve the installed skill entry points from the available skill catalog; on this setup they are normally `~/.agents/skills/frontend-design/SKILL.md` and `~/.agents/skills/engineering/SKILL.md`. Read those instructions before frontend edits rather than relying only on their names.

@@ -1,3 +1,4 @@
+import GIcon from "~/components/ui/Icon";
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import {
@@ -49,27 +50,6 @@ function isValidEmail(value: string) {
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
-}
-
-// this lightweight icon helper keeps the older profile UI using one consistent material icon wrapper
-function GIcon({
-  name,
-  sizePx = 20,
-  className = "",
-}: {
-  name: string;
-  sizePx?: number;
-  className?: string;
-}) {
-  return (
-    <span
-      className={`material-symbols-rounded select-none leading-none ${className}`}
-      style={{ fontSize: `${sizePx}px` }}
-      aria-hidden="true"
-    >
-      {name}
-    </span>
-  );
 }
 
 // this is the shared card wrapper used throughout the admin profile workspace

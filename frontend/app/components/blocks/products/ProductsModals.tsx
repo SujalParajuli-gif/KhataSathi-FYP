@@ -4581,7 +4581,7 @@ export default function ProductsModals({
               <div className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end">
                 <label htmlFor="product-tax-category" className="flex-1 text-xs font-bold text-slate-700">
                   Product tax category
-                  <select
+                  <ProjectSelect aria-label="Product tax category"
                     id="product-tax-category"
                     value={taxCategoryDraft}
                     onChange={(event) => setTaxCategoryDraft(event.target.value as ProductTaxCategory)}
@@ -4591,7 +4591,7 @@ export default function ProductsModals({
                     <option value="UNSPECIFIED">Unspecified — needs review</option>
                     <option value="STANDARD_VAT">Standard VAT (13%)</option>
                     <option value="VAT_EXEMPT">VAT-exempt</option>
-                  </select>
+                  </ProjectSelect>
                 </label>
                 {isAdmin ? (
                   <button

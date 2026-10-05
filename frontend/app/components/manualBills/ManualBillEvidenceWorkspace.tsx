@@ -1,3 +1,5 @@
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import React, { useEffect, useState } from "react";
 import type {
   ExternalDocumentType,
@@ -19,6 +21,7 @@ import {
 import GIcon from "~/components/ui/GIcon";
 import { ModalFrame as Modal } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
+import ManualBillRecoveryModal from "./ManualBillRecoveryModal";
 
 interface Props {
   onRefreshParent?: () => void;
@@ -79,6 +82,8 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
   const [attachConflict, setAttachConflict] = useState<{ document?: SalesEvidenceRecord } | null>(null);
   const [archiveConflict, setArchiveConflict] = useState<{ document?: SalesEvidenceRecord } | null>(null);
   const [refreshingDecision, setRefreshingDecision] = useState(false);
+  const [recoveryOpen, setRecoveryOpen] = useState(false);
+  const [recoveryDoc, setRecoveryDoc] = useState<SalesEvidenceRecord | null>(null);
 
   async function refreshDecision(kind: "attach" | "archive") {
     const source = kind === "attach" ? selectedDoc : archiveDoc;
@@ -366,11 +371,11 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
   return (
     <div className="space-y-4">
       {/* Informational Banner on Deferred Recovery */}
-      <div className="rounded-2xl border border-sky-200 bg-sky-50/70 p-4 text-[13px] text-sky-900 flex items-start gap-3">
-        <GIcon name="info" className="text-sky-600 text-[20px] shrink-0 mt-0.5" />
+      <div className="rounded-2xl border border-control-line bg-control-hover p-4 text-[13px] text-action flex items-start gap-3">
+        <GIcon name="info" className="text-secondary text-[20px] shrink-0 mt-0.5" />
         <div className="space-y-1">
           <p className="font-bold">Sales Evidence & Paper Bill Workflow</p>
-          <p className="text-[12px] text-sky-800 leading-relaxed">
+          <p className="text-[12px] text-secondary leading-relaxed">
             Attach uploaded paper receipts and manual bills to existing finalized POS invoices to complete audit verification.
             Physical receipts for which no operational POS checkout exists remain saved as <span className="font-semibold">UNRESOLVED</span> evidence and will be processed via the Phase 2 missing-sale recovery workflow.
           </p>
@@ -378,7 +383,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
       </div>
 
       {/* Action Header */}
-      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-[#DADDE3] bg-white p-4 shadow-sm">
+      <div className="flex flex-wrap items-center justify-between gap-3 rounded-2xl border border-control-line bg-white p-4 shadow-sm">
         <div className="flex items-center gap-2">
           <button
             type="button"
@@ -388,7 +393,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
             <GIcon name="upload_file" className="text-[18px]" />
             Upload Bill Proof
           </button>
-          <div className="text-[12px] text-[#737373]">
+          <div className="text-[12px] text-secondary">
             Supports JPG, PNG, WEBP, and PDF up to 10MB
           </div>
         </div>
@@ -407,7 +412,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                 className={`rounded-lg px-3 py-1 transition ${
                   statusFilter === s
                     ? "bg-white text-[#11120d] shadow-sm"
-                    : "text-[#737373] hover:text-black"
+                    : "text-secondary hover:text-black"
                 }`}
               >
                 {s}
@@ -421,11 +426,12 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               placeholder="Search filename / title..."
-              className="rounded-xl border border-[#DADDE3] bg-[#FAFAFA] py-1.5 pl-3 pr-8 text-[13px] text-black placeholder:text-[#8C8889] focus:bg-white focus:outline-none focus:ring-1 focus:ring-black"
+              className="rounded-xl border border-control-line bg-control-hover py-1.5 pl-3 pr-8 text-[13px] text-black placeholder:text-[#8C8889] focus:bg-white focus:outline-none focus:ring-1 focus:ring-black"
             />
             <button
               type="submit"
-              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-gray-500 hover:text-black"
+              aria-label="Search sales evidence"
+              className="absolute right-2.5 top-1/2 -translate-y-1/2 text-secondary hover:text-black"
             >
               <GIcon name="search" className="text-[16px]" />
             </button>
@@ -441,15 +447,15 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
 
       {/* Documents Grid / Table */}
       {loading ? (
-        <div className="flex h-48 items-center justify-center rounded-2xl border border-[#DADDE3] bg-white text-[13px] text-[#737373]">
+        <div className="flex h-48 items-center justify-center rounded-2xl border border-control-line bg-white text-[13px] text-secondary">
           <GIcon name="refresh" className="animate-spin text-[20px] mr-2" />
           Loading sales evidence documents…
         </div>
       ) : documents.length === 0 ? (
-        <div className="flex h-48 flex-col items-center justify-center rounded-2xl border border-[#DADDE3] bg-white text-center p-6">
-          <GIcon name="folder_open" className="text-[36px] text-gray-400 mb-2" />
+        <div className="flex h-48 flex-col items-center justify-center rounded-2xl border border-control-line bg-white text-center p-6">
+          <GIcon name="folder_open" className="text-[36px] text-placeholder mb-2" />
           <p className="text-[14px] font-bold text-[#11120d]">No sales evidence found</p>
-          <p className="text-[12px] text-[#737373] mt-1">
+          <p className="text-[12px] text-secondary mt-1">
             Upload physical paper bill photos or scans to begin reviewer verification.
           </p>
         </div>
@@ -464,7 +470,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
               return (
                 <div
                   key={doc.id}
-                  className="flex flex-col justify-between rounded-2xl border border-[#DADDE3] bg-white p-4 shadow-sm hover:border-[#CFCFD3] transition"
+                  className="flex flex-col justify-between rounded-2xl border border-control-line bg-white p-4 shadow-sm hover:border-[#CFCFD3] transition"
                 >
                   <div>
                     <div className="flex items-center justify-between gap-2 mb-2">
@@ -474,12 +480,12 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                             ? "bg-amber-100 text-amber-800"
                             : isAttached
                               ? "bg-emerald-100 text-emerald-800"
-                              : "bg-gray-100 text-gray-700"
+                              : "bg-control-hover text-secondary"
                         }`}
                       >
                         {doc.saleRecoveryStatus || "UNRESOLVED"}
                       </span>
-                      <span className="text-[11px] text-[#737373]">
+                      <span className="text-[11px] text-secondary">
                         {new Date(doc.createdAt).toLocaleDateString()}
                       </span>
                     </div>
@@ -489,7 +495,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                       type="button"
                       aria-label={`Preview ${doc.title || doc.fileName}`}
                       onClick={() => setPreviewDoc(doc)}
-                      className="group relative cursor-pointer overflow-hidden rounded-xl bg-gray-100 border border-gray-200 h-36 flex items-center justify-center mb-3"
+                      className="group relative cursor-pointer overflow-hidden rounded-xl bg-control-hover border border-control-line h-36 flex items-center justify-center mb-3"
                     >
                       {doc.thumbnailFileName ? (
                         <img
@@ -498,14 +504,14 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                           className="h-full w-full object-cover group-hover:scale-105 transition"
                         />
                       ) : (
-                        <div className="flex flex-col items-center text-gray-500">
+                        <div className="flex flex-col items-center text-secondary">
                           <GIcon name="description" className="text-[36px]" />
                           <span className="text-[11px] font-medium mt-1">
                             {doc.mimeType.includes("pdf") ? "PDF Document" : "File"}
                           </span>
                         </div>
                       )}
-                      <div className="absolute inset-0 bg-black/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white font-bold text-[12px] gap-1">
+                      <div className="absolute inset-0 bg-action/20 opacity-0 group-hover:opacity-100 transition flex items-center justify-center text-white font-bold text-[12px] gap-1">
                         <GIcon name="visibility" className="text-[18px]" />
                         Preview
                       </div>
@@ -514,23 +520,23 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                     <h3 className="font-bold text-[13px] text-[#11120d] truncate" title={doc.title || doc.fileName}>
                       {doc.title || doc.fileName}
                     </h3>
-                    <div className="text-[11px] text-[#737373] mt-0.5">
+                    <div className="text-[11px] text-secondary mt-0.5">
                       Uploaded by: {doc.uploadedBy?.name || "Reviewer"}
                     </div>
 
                     {doc.remarks && (
-                      <p className="mt-2 text-[12px] text-gray-600 bg-gray-50 rounded-lg p-2 italic line-clamp-2">
+                      <p className="mt-2 text-[12px] text-secondary bg-control-hover rounded-lg p-2 italic line-clamp-2">
                         {doc.remarks}
                       </p>
                     )}
                   </div>
 
                   {/* Actions */}
-                  <div className="mt-4 pt-3 border-t border-gray-100 flex items-center justify-end gap-2">
+                  <div className="mt-4 pt-3 border-t border-control-line flex flex-wrap items-center justify-end gap-2">
                     <button
                       type="button"
                       onClick={() => handleDownload(doc)}
-                      className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-bold text-gray-700 hover:bg-gray-100"
+                      className="inline-flex min-h-10 items-center gap-1 rounded-xl border border-control-line px-2.5 py-1 text-[11px] font-bold text-secondary hover:bg-control-hover"
                     >
                       <GIcon name="download" className="text-[14px]" />
                       Download
@@ -541,10 +547,21 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                         <button
                           type="button"
                           onClick={() => openAttachModal(doc)}
-                          className="inline-flex items-center gap-1 rounded-lg bg-emerald-700 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-emerald-800"
+                          className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-action px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
                         >
                           <GIcon name="link" className="text-[14px]" />
                           Attach
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setRecoveryDoc(doc);
+                            setRecoveryOpen(true);
+                          }}
+                          className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-action px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
+                        >
+                          <GIcon name="post_add" className="text-[14px]" />
+                          Create Missing Sale
                         </button>
                         <button
                           type="button"
@@ -555,7 +572,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                             setArchiveConflict(null);
                             setArchiveOpen(true);
                           }}
-                          className="inline-flex items-center gap-1 rounded-lg border border-gray-200 px-2.5 py-1 text-[11px] font-bold text-gray-600 hover:bg-gray-100"
+                          className="inline-flex min-h-10 items-center gap-1 rounded-xl border border-control-line px-2.5 py-1 text-[11px] font-bold text-secondary hover:bg-control-hover"
                         >
                           <GIcon name="archive" className="text-[14px]" />
                           Archive
@@ -639,7 +656,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                 type="button"
                 onClick={() => setUploadOpen(false)}
                 disabled={uploading}
-                className="rounded-xl border border-gray-300 px-4 py-2 text-[13px] font-bold text-gray-700 hover:bg-gray-100"
+                className="rounded-xl border border-control-line px-4 py-2 text-[13px] font-bold text-secondary hover:bg-control-hover"
               >
                 Cancel
               </button>
@@ -717,15 +734,15 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                 <button
                   type="submit"
                   disabled={candidateLoading}
-                  className="rounded-xl bg-gray-100 px-3 py-1.5 text-[13px] font-bold text-black hover:bg-gray-200"
+                  className="rounded-xl bg-control-hover px-3 py-1.5 text-[13px] font-bold text-black hover:bg-gray-200"
                 >
                   {candidateLoading ? "Searching…" : "Search"}
                 </button>
               </form>
 
-              <div className="max-h-40 overflow-y-auto space-y-1.5 border border-gray-200 rounded-xl p-2 bg-gray-50">
+              <div className="max-h-40 overflow-y-auto space-y-1.5 border border-control-line rounded-xl p-2 bg-control-hover">
                 {candidates.length === 0 ? (
-                  <div className="text-[12px] text-gray-500 text-center py-4">
+                  <div className="text-[12px] text-secondary text-center py-4">
                     {candidateLoading ? "Loading candidates…" : "No active finalized invoices matched."}
                   </div>
                 ) : (
@@ -744,13 +761,13 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                         }}
                         className={`cursor-pointer rounded-lg p-2 text-[12px] flex items-center justify-between transition ${
                           isSelected
-                            ? "bg-black text-white"
-                            : "bg-white text-black hover:bg-gray-100 border border-gray-200"
+                            ? "bg-action text-white"
+                            : "bg-white text-black hover:bg-control-hover border border-control-line"
                         }`}
                       >
                         <div>
                           <div className="font-mono font-bold">{cand.invoiceNo}</div>
-                          <div className={isSelected ? "text-gray-300" : "text-gray-500"}>
+                          <div className={isSelected ? "text-gray-300" : "text-secondary"}>
                             {cand.customerName || "Walk-in"} • Rs. {cand.netTotal} •{" "}
                             {cand.finalizedAt
                               ? new Date(cand.finalizedAt).toLocaleDateString()
@@ -762,7 +779,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                             className={`rounded px-1.5 py-0.5 text-[10px] font-bold ${
                               isSelected
                                 ? "bg-white/20 text-white"
-                                : "bg-gray-100 text-gray-700"
+                                : "bg-control-hover text-secondary"
                             }`}
                           >
                             {cand.billRecordStatus || "PENDING"}
@@ -777,7 +794,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
 
             {/* Step 2: Reference Form */}
             {selectedCandidate && (
-              <form onSubmit={handleAttachSubmit} className="space-y-3 border-t border-gray-200 pt-3">
+              <form onSubmit={handleAttachSubmit} className="space-y-3 border-t border-control-line pt-3">
                 <h4 className="text-[13px] font-bold text-[#11120d]">
                   2. Confirm Paper Bill Reference
                 </h4>
@@ -786,7 +803,8 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                   <label className="block text-[12px] font-bold text-[#11120d] mb-1">
                     Document Type *
                   </label>
-                  <select
+                  <ProjectSelect
+                    aria-label="Document type"
                     value={attachDocType}
                     onChange={(e) =>
                       setAttachDocType(e.target.value as ExternalDocumentType)
@@ -798,7 +816,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                         {l}
                       </option>
                     ))}
-                  </select>
+                  </ProjectSelect>
                 </div>
 
                 <div className="grid grid-cols-2 gap-2">
@@ -819,8 +837,8 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                     <label className="block text-[12px] font-bold text-[#11120d] mb-1">
                       Paper Bill Date *
                     </label>
-                    <input
-                      type="date"
+                    <ProjectDateInput
+                    aria-label="Paper bill date"
                       value={attachBillDate}
                       onChange={(e) => setAttachBillDate(e.target.value)}
                       required
@@ -847,14 +865,14 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                     type="button"
                     onClick={() => setAttachOpen(false)}
                     disabled={attaching}
-                    className="rounded-xl border border-gray-300 px-4 py-2 text-[13px] font-bold text-gray-700 hover:bg-gray-100"
+                    className="rounded-xl border border-control-line px-4 py-2 text-[13px] font-bold text-secondary hover:bg-control-hover"
                   >
                     Cancel
                   </button>
                   <button
                     type="submit"
                     disabled={attaching || !!attachConflict || refreshingDecision || !selectedCandidate || !attachBillNo.trim()}
-                    className="flex items-center gap-1.5 rounded-xl bg-emerald-700 px-4 py-2 text-[13px] font-bold text-white hover:bg-emerald-800 disabled:opacity-50"
+                    className="flex items-center gap-1.5 rounded-xl bg-action px-4 py-2 text-[13px] font-bold text-white hover:bg-black disabled:opacity-50"
                   >
                     {attaching ? "Attaching…" : "Confirm Attachment"}
                   </button>
@@ -900,7 +918,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                 type="button"
                 onClick={() => setArchiveOpen(false)}
                 disabled={archiving}
-                className="rounded-xl border border-gray-300 px-4 py-2 text-[13px] font-bold text-gray-700 hover:bg-gray-100"
+                className="rounded-xl border border-control-line px-4 py-2 text-[13px] font-bold text-secondary hover:bg-control-hover"
               >
                 Cancel
               </button>
@@ -925,7 +943,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
         >
           <div className="flex flex-col items-center justify-center p-2">
             {previewLoading ? (
-              <div className="flex h-64 w-full items-center justify-center text-gray-500 text-[13px]">
+              <div className="flex h-64 w-full items-center justify-center text-secondary text-[13px]">
                 <GIcon name="refresh" className="animate-spin text-[24px] mr-2" />
                 Loading preview…
               </div>
@@ -940,16 +958,16 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                 <iframe
                   src={previewUrl}
                   title={previewDoc.title || previewDoc.fileName}
-                  className="h-[70vh] w-full rounded-xl border border-gray-200"
+                  className="h-[70vh] w-full rounded-xl border border-control-line"
                 />
               )
             ) : (
-              <div className="flex h-64 w-full flex-col items-center justify-center text-gray-500 text-[13px]">
+              <div className="flex h-64 w-full flex-col items-center justify-center text-secondary text-[13px]">
                 <GIcon name="error" className="text-rose-500 text-[24px] mb-2" />
                 Preview unavailable
               </div>
             )}
-            <div className="mt-4 flex justify-between w-full text-[12px] text-gray-500">
+            <div className="mt-4 flex justify-between w-full text-[12px] text-secondary">
               <span>Status: {previewDoc.saleRecoveryStatus || "UNRESOLVED"}</span>
               <button
                 type="button"
@@ -962,6 +980,20 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
             </div>
           </div>
         </Modal>
+      )}
+      {recoveryOpen && (
+        <ManualBillRecoveryModal
+          open={recoveryOpen}
+          onClose={() => {
+            setRecoveryOpen(false);
+            setRecoveryDoc(null);
+          }}
+          document={recoveryDoc}
+          onSuccess={() => {
+            loadDocuments();
+            onRefreshParent?.();
+          }}
+        />
       )}
     </div>
   );

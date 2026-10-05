@@ -9,8 +9,11 @@ import {
   getSaleEvidenceCandidatesHandler,
   getSaleEvidenceFileHandler,
   getSaleEvidenceHandler,
+  getSaleEvidenceRecoveryHandler,
   getSaleEvidenceThumbnailHandler,
   listSaleEvidenceHandler,
+  postSaleEvidenceRecoveryHandler,
+  reviseSaleEvidenceRecoveryHandler,
   uploadSaleEvidence,
 } from "./controller";
 import { getTempUploadDir } from "../documents/service";
@@ -104,6 +107,9 @@ router.post("/", safeSingleUpload(upload.single("file")), uploadSaleEvidence);
 router.post("/:id/archive", archiveSaleEvidenceHandler);
 router.get("/:id/candidates", getSaleEvidenceCandidatesHandler);
 router.post("/:id/attach", attachSaleEvidenceHandler);
+router.get("/:id/recovery", getSaleEvidenceRecoveryHandler);
+router.post("/:id/recovery", postSaleEvidenceRecoveryHandler);
+router.post("/:id/recovery/revise", reviseSaleEvidenceRecoveryHandler);
 router.get("/", listSaleEvidenceHandler);
 router.get("/:id", getSaleEvidenceHandler);
 router.get("/:id/file", getSaleEvidenceFileHandler);

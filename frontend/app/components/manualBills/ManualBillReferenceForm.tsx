@@ -1,3 +1,5 @@
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import React, { useState } from "react";
 import type {
   ExpectedManualBillRecord,
@@ -224,7 +226,8 @@ export default function ManualBillReferenceForm({
         <label className="block text-[13px] font-bold text-[#11120d] mb-1">
           Paper Document Type *
         </label>
-        <select
+        <ProjectSelect
+                    aria-label="Document type"
           value={externalDocumentType}
           onChange={(e) =>
             setExternalDocumentType(e.target.value as ExternalDocumentType)
@@ -236,7 +239,7 @@ export default function ManualBillReferenceForm({
               {label}
             </option>
           ))}
-        </select>
+        </ProjectSelect>
       </div>
 
       <div>
@@ -258,8 +261,8 @@ export default function ManualBillReferenceForm({
         <label className="block text-[13px] font-bold text-[#11120d] mb-1">
           Paper Bill Date *
         </label>
-        <input
-          type="date"
+        <ProjectDateInput
+                    aria-label="Paper bill date"
           value={externalBillDate}
           onChange={(e) => setExternalBillDate(e.target.value)}
           required
