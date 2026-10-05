@@ -7,6 +7,7 @@ import {
 } from "~/components/invoices/InvoiceChips";
 import Icon from "~/components/ui/Icon";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
+import ManualBillSummary from "~/components/manualBills/ManualBillSummary";
 import type { AppInvoice } from "~/lib/invoices";
 import {
   formatNpr,
@@ -446,6 +447,24 @@ export default function InvoiceDetailModal({
                       </div>
                     </div>
                   ))}
+                </div>
+              </div>
+            ) : null}
+
+            {/* Manual paper bill recording / review section */}
+            {invoice.billingChannel !== "IRD_ELECTRONIC" ? (
+              <div className="overflow-hidden rounded-[16px] border border-[#DADDE3]">
+                <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[12px]">
+                  <div className="flex items-center gap-2 text-[12px] font-extrabold uppercase text-[#565449]">
+                    <Icon name="receipt" className="text-indigo-600" />
+                    Manual Paper Bill Reference
+                  </div>
+                  <span className="rounded-[999px] border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-extrabold text-indigo-700">
+                    Physical Receipt
+                  </span>
+                </div>
+                <div className="p-4">
+                  <ManualBillSummary invoiceId={invoice.id} />
                 </div>
               </div>
             ) : null}

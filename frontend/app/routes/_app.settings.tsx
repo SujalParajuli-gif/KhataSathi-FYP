@@ -1054,6 +1054,9 @@ export default function SettingsPage() {
     String(INITIAL_DEFAULTS.draftRequestExpiryMinutes),
   );
   const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
+  const [defaultBillingChannel, setDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
+  const [savedDefaultBillingChannel, setSavedDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
+  const [billingChannelBusy, setBillingChannelBusy] = useState(false);
   const [businessTaxMode, setBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
   const [savedBusinessTaxMode, setSavedBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
   const [businessTaxModeBusy, setBusinessTaxModeBusy] = useState(false);
@@ -1292,6 +1295,9 @@ export default function SettingsPage() {
         );
         setSavedDefaults(normalizedSettings);
         const taxMode = settingsData.value?.taxCalculationMode ?? "UNKNOWN";
+        const channel = settingsData.value?.defaultBillingChannel === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+        setDefaultBillingChannel(channel);
+        setSavedDefaultBillingChannel(channel);
         setBusinessTaxMode(taxMode);
         setSavedBusinessTaxMode(taxMode);
         if (settingsData.value?.businessMode) {
@@ -2020,6 +2026,22 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSaveBillingChannel(newChannel: "MANUAL_EXTERNAL" | null) {
+    try {
+      setBillingChannelBusy(true);
+      const updated = await updateBusinessSettingsApi({ defaultBillingChannel: newChannel });
+      const saved = updated.defaultBillingChannel === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+      setDefaultBillingChannel(saved);
+      setSavedDefaultBillingChannel(saved);
+      showToast("success", "Default billing channel updated.");
+      await refreshSettingsData();
+    } catch (error: any) {
+      showToast("danger", error?.response?.data?.error || error?.message || "Failed to update default billing channel.");
+    } finally {
+      setBillingChannelBusy(false);
+    }
+  }
+
   async function saveBusinessTaxMode() {
     if (!isAdmin || !settingsTabLoadedAtRef.current.has("overview")) return;
     if (businessTaxMode === savedBusinessTaxMode) return;
@@ -2726,6 +2748,39 @@ export default function SettingsPage() {
                 <p className="mt-2 text-[12px] font-medium leading-relaxed text-slate-500">
                   Allows floor staff to build and transmit selected items directly to cashier registers as pending draft bills.
                 </p>
+              </div>
+
+              {/* Default Billing Channel Section */}
+              <div className="mt-4 rounded-[14px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-[15px] font-bold text-slate-900">
+                        Default Billing Channel
+                      </h3>
+                      <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-700 border border-indigo-200">
+                        Sales Mode
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[12px] text-slate-500">
+                      Choose whether new sales default to standard register checkout or physical manual paper-bill recording.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <ProjectSelect
+                      value={defaultBillingChannel || "DEFAULT"}
+                      onChange={(e) => {
+                        const next = e.target.value === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+                        handleSaveBillingChannel(next);
+                      }}
+                      disabled={billingChannelBusy || !isAdmin}
+                    >
+                      <option value="DEFAULT">Standard POS Register</option>
+                      <option value="MANUAL_EXTERNAL">Manual External Paper Bill</option>
+                    </ProjectSelect>
+                  </div>
+                </div>
               </div>
 
               {/* Dynamic Staged Access Migration Panel */}

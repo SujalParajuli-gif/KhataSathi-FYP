@@ -1,4 +1,4 @@
-import type { Prisma, PrismaClient } from "@prisma/client";
+import type { BillingChannel, Prisma, PrismaClient } from "@prisma/client";
 import bcrypt from "bcryptjs";
 import prisma from "../../db/prisma";
 
@@ -30,11 +30,13 @@ export type BusinessSettingsSnapshot = {
   businessAddress: string | null;
   businessPhone: string | null;
   taxCalculationMode: TaxCalculationMode;
+  defaultBillingChannel: BillingChannel | null;
   createdAt?: Date;
   updatedAt?: Date;
 };
 
 export type TaxCalculationMode = "UNKNOWN" | "NO_VAT" | "VAT_EXCLUSIVE";
+export type { BillingChannel };
 
 export type OverrideAction =
   | "PRICE_OVERRIDE"
@@ -83,6 +85,7 @@ const DEFAULT_BUSINESS_SETTINGS = {
   parkedBillExpiryHours: 8,
   draftRequestExpiryMinutes: 30,
   taxCalculationMode: "UNKNOWN" as const,
+  defaultBillingChannel: null,
 } as const;
 
 export type BusinessDefaultsInput = {
@@ -99,6 +102,7 @@ export type BusinessDefaultsInput = {
   businessAddress?: string | null;
   businessPhone?: string | null;
   taxCalculationMode?: TaxCalculationMode;
+  defaultBillingChannel?: BillingChannel | null;
 };
 
 export class BusinessSettingsValidationError extends Error {
@@ -304,6 +308,23 @@ export function normalizeBusinessSettingsPatch(
     }
     normalized.taxCalculationMode = data.taxCalculationMode;
   }
+  if (data.defaultBillingChannel !== undefined) {
+    if (data.defaultBillingChannel === null || data.defaultBillingChannel === "") {
+      normalized.defaultBillingChannel = null;
+    } else if (data.defaultBillingChannel === "MANUAL_EXTERNAL") {
+      normalized.defaultBillingChannel = "MANUAL_EXTERNAL";
+    } else if (data.defaultBillingChannel === "IRD_ELECTRONIC") {
+      throw new BusinessSettingsValidationError(
+        "defaultBillingChannel",
+        "IRD electronic billing channel is unavailable.",
+      );
+    } else {
+      throw new BusinessSettingsValidationError(
+        "defaultBillingChannel",
+        "Default billing channel must be MANUAL_EXTERNAL or null.",
+      );
+    }
+  }
   return normalized;
 }
 
@@ -332,6 +353,7 @@ function toSafeBusinessSettings(
     businessAddress: safe.businessAddress ?? null,
     businessPhone: safe.businessPhone ?? null,
     taxCalculationMode: safe.taxCalculationMode ?? "UNKNOWN",
+    defaultBillingChannel: safe.defaultBillingChannel ?? null,
   };
 }
 

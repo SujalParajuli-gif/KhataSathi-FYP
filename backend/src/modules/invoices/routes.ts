@@ -21,10 +21,15 @@ import {
 import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
 
+import manualBillRoutes from "./manualBill/routes";
+
 const router = Router();
 
 router.use(authGuard); // all invoice routes require authentication
 router.use(denyStaff);
+
+// dedicated manual external paper bill routes (mounted before /:id)
+router.use("/manual-bills", manualBillRoutes);
 
 // viewing invoices is restricted to shop operators; staff use request/product lookup flows instead
 router.get("/", requireRole("ADMIN", "MANAGER", "CASHIER"), list); // listing invoices with optional filters (status, cashier, date range)

@@ -17,6 +17,15 @@ import {
 } from "../modules/settings/controller";
 import { denyStaff, requireRole } from "../middleware/rbac";
 
+test("manual billing default is explicit, nullable and rejects reserved/unknown channels", () => {
+  assert.deepEqual(normalizeBusinessSettingsPatch({}), {});
+  assert.deepEqual(normalizeBusinessSettingsPatch({ defaultBillingChannel: null }), { defaultBillingChannel: null });
+  assert.deepEqual(normalizeBusinessSettingsPatch({ defaultBillingChannel: "MANUAL_EXTERNAL" }), { defaultBillingChannel: "MANUAL_EXTERNAL" });
+  for (const channel of ["IRD_ELECTRONIC", "UNKNOWN", 123]) {
+    assert.throws(() => normalizeBusinessSettingsPatch({ defaultBillingChannel: channel } as any), BusinessSettingsValidationError);
+  }
+});
+
 test("business defaults patch preserves omitted values instead of recreating defaults", () => {
   assert.deepEqual(normalizeBusinessSettingsPatch({ returnWindowDays: 14 }), {
     returnWindowDays: 14,
@@ -61,6 +70,7 @@ test("complete business defaults still receive safe creation defaults", () => {
     parkedBillExpiryHours: 8,
     draftRequestExpiryMinutes: 30,
     taxCalculationMode: "UNKNOWN",
+    defaultBillingChannel: null,
   });
 });
 

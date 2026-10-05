@@ -37,3 +37,38 @@ export const archiveSaleEvidenceSchema = z
 export type ArchiveSaleEvidenceInput = z.infer<
   typeof archiveSaleEvidenceSchema
 >;
+
+export const candidatesQuerySchema = z
+  .object({
+    search: z.string().trim().max(100).optional(),
+    limit: z.coerce.number().int().min(1).max(20).default(10),
+  })
+  .strict();
+
+export type CandidatesQueryInput = z.infer<typeof candidatesQuerySchema>;
+
+import {
+  expectedManualBillRecordSchema,
+  manualBillReferenceSchema,
+} from "../invoices/manualBill/validation";
+
+export const attachSaleEvidenceSchema = z
+  .object({
+    invoiceId: z.string().trim().min(1, "Target invoice ID is required").max(191),
+    reference: manualBillReferenceSchema,
+    expectedInvoice: expectedManualBillRecordSchema,
+    reason: z
+      .string()
+      .trim()
+      .min(2, "Reason is required to attach sales evidence")
+      .max(2000, "Reason cannot exceed 2000 characters"),
+    duplicateOverrideReason: z
+      .string()
+      .trim()
+      .min(2, "Duplicate override reason must be at least 2 characters")
+      .max(2000, "Duplicate override reason cannot exceed 2000 characters")
+      .optional(),
+  })
+  .strict();
+
+export type AttachSaleEvidenceInput = z.infer<typeof attachSaleEvidenceSchema>;

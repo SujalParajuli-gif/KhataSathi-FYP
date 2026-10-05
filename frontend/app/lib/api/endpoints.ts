@@ -58,6 +58,7 @@ export type BusinessSettings = {
     businessAddress?: string | null;
     businessPhone?: string | null;
     taxCalculationMode?: TaxCalculationMode;
+    defaultBillingChannel?: "MANUAL_EXTERNAL" | "IRD_ELECTRONIC" | null;
 };
 
 export type TaxCalculationMode = "UNKNOWN" | "NO_VAT" | "VAT_EXCLUSIVE";

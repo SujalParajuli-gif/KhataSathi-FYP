@@ -99,6 +99,8 @@ export type AppInvoice = {
   cancelledAt?: string;
   cancelledByName?: string;
   cancelledByRole?: string;
+  billingChannel?: string | null;
+  manualBillRecord?: any;
 };
 
 export function cleanDisplayString(value: unknown): string | null {
@@ -627,6 +629,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
     cancelledAt: raw.cancelledAt || undefined,
     cancelledByName: raw.cancelledBy?.name || undefined,
     cancelledByRole: raw.cancelledBy?.role || undefined,
+    billingChannel: raw.billingChannel || undefined,
+    manualBillRecord: raw.manualBillRecord || undefined,
   };
 }
 

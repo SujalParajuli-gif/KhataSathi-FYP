@@ -570,6 +570,8 @@ model Invoice {
   checkoutOperation       CheckoutOperation?
 
   @@index([status, parkedAt])
+  @@index([status, billingChannel, billRecordStatus, cancelledAt, deletedAt, finalizedAt, id], map: "Invoice_manual_bill_queue_idx")
+  @@index([externalDocumentType, externalBillNo, externalBillDate], map: "Invoice_external_reference_idx")
 }
 
 model CheckoutOperation {
@@ -1121,6 +1123,7 @@ model Document {
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 
   @@index([documentType, createdAt])
+  @@index([documentType, saleRecoveryStatus, createdAt, id], map: "Document_sales_review_idx")
   @@index([linkedEntityType, linkedEntityId])
   @@index([visibility])
   @@index([title])

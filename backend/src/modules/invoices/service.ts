@@ -32,6 +32,10 @@ import {
   type StockConflict,
   StockConflictError,
 } from "./stockConflicts";
+import {
+  cancelManualBillObligationTx,
+  initializeManualBillMetadataTx,
+} from "./manualBill/service";
 
 export { StockConflictError } from "./stockConflicts";
 
@@ -1661,6 +1665,8 @@ async function finalizeCheckoutInvoiceTx(
     include: { payments: true },
   });
 
+  await initializeManualBillMetadataTx(tx, invoiceId);
+
   await tx.auditLog.create({
     data: {
       actorId: userId,
@@ -2526,6 +2532,8 @@ export async function modifyFinalizedInvoice(
         cancelledById: userId,
       },
     });
+
+    await cancelManualBillObligationTx(tx, original, userId, actor);
 
     const replacementProductsById = await validateCheckoutProductsTx(
       tx,
@@ -3887,6 +3895,8 @@ export async function finalizeInvoice(
       },
     });
 
+    await initializeManualBillMetadataTx(tx, invoiceId);
+
     // creating an audit log entry so the admin can see who finalized which invoice,
     // what the totals were, what discount was applied, and whether it was auto-marked as paid
     await tx.auditLog.create({
@@ -3998,6 +4008,8 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
         cancelledById: userId,
       },
     });
+
+    await cancelManualBillObligationTx(tx, invoice, userId, actor);
 
     // creating a detailed audit log entry with all the context about the cancellation
     await tx.auditLog.create({

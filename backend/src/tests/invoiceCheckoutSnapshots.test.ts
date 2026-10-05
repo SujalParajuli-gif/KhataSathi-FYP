@@ -84,6 +84,7 @@ function harness(options: {
       return result;
     };
     const tx: any = {
+      businessSettings: { findUnique: async () => ({ defaultBillingChannel: "MANUAL_EXTERNAL" }) },
       $queryRaw: async () => [],
       invoiceSequence: { upsert: async () => ({ lastNumber: ++nextInvoice }) },
       invoice: {
@@ -237,6 +238,8 @@ test("ordinary checkout captures all final lines and selected customer; replay d
     const first = await checkoutInvoice("cashier", request);
     const invoice = Object.values(mock.state.invoices)[0];
     const lines = Object.values(mock.state.items);
+    assert.equal(invoice.billingChannel, "MANUAL_EXTERNAL");
+    assert.equal(invoice.billRecordStatus, "PENDING");
     assert.equal(invoice.customerNameSnapshot, "Selected customer");
     assert.equal(invoice.customerPanSnapshot, "001234");
     assert.equal(invoice.customerAddressSnapshot, null);
@@ -251,7 +254,11 @@ test("ordinary checkout captures all final lines and selected customer; replay d
     assert.equal(JSON.stringify(mock.state.operations[key].responseJson).includes("costAtSale"), false);
     const stockCount = mock.state.stock.length;
     const writeCount = mock.itemWrites;
+    invoice.billRecordStatus = "RECORDED";
+    invoice.externalBillNo = "PAPER-AFTER-CHECKOUT";
     const replay = await checkoutInvoice("cashier", request);
+    assert.equal(mock.state.invoices[invoice.id].billRecordStatus, "RECORDED");
+    assert.equal(mock.state.invoices[invoice.id].externalBillNo, "PAPER-AFTER-CHECKOUT");
     assert.deepEqual(JSON.parse(JSON.stringify(replay)), JSON.parse(JSON.stringify(first)));
     assert.equal(mock.state.stock.length, stockCount);
     assert.equal(mock.itemWrites, writeCount);

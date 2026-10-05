@@ -67,6 +67,18 @@
                 ]
             },
             {
+                "key": "manual-bills",
+                "label": "Manual Bills",
+                "pageTitle": "Manual Bills",
+                "icon": "receipt",
+                "to": "/manual-bills",
+                "roles": [
+                    "admin",
+                    "manager",
+                    "cashier"
+                ]
+            },
+            {
                 "key": "documents",
                 "label": "Documents",
                 "pageTitle": "Document Storage",

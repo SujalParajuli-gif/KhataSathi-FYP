@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import prisma from "../db/prisma";
-import { modifyFinalizedInvoice, publicInvoiceItemSelect } from "../modules/invoices/service";
+import { cancelInvoice, modifyFinalizedInvoice, publicInvoiceItemSelect } from "../modules/invoices/service";
 import { invalidateBusinessSettingsCache } from "../modules/settings/service";
 
 interface InMemState {
@@ -47,6 +47,7 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
     let itemSeq = 500;
 
     return {
+      businessSettings: { findUnique: async () => ({ defaultBillingChannel: "MANUAL_EXTERNAL" }) },
       $queryRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
         const queryStr = String(_query);
         if (/FROM\s+InvoiceItem/i.test(queryStr)) {
@@ -967,3 +968,58 @@ test("AC-6: Correction audit lineage contains no PAN, address, or cost values", 
     harness.teardown();
   }
 });
+
+for (const status of ["PENDING", "MISSING", "RECORDED", "VERIFIED"] as const) {
+  test(`manual replacement retains original ${status} proof/reference and starts its own obligation`, async () => {
+    const base = buildBaseCorrectionState();
+    const original = base.invoices.get("inv-orig-1");
+    original.billingChannel = "MANUAL_EXTERNAL";
+    original.billRecordStatus = status;
+    original.externalBillNo = status === "RECORDED" || status === "VERIFIED" ? "ORIGINAL-PAPER" : null;
+    const mock = createTransactionalPrismaHarness(base);
+    mock.setup();
+    try {
+      const result = await modifyFinalizedInvoice(original.id, "user-cashier", {
+        reason: "Correct original sale", items: [{ productId: "prod-retained", qty: 1 }],
+      });
+      const state = mock.getState();
+      const retained = state.invoices.get(original.id);
+      const replacement = state.invoices.get(result.replacementInvoice!.id);
+      assert.equal(retained.billRecordStatus, status === "PENDING" || status === "MISSING" ? null : status);
+      assert.equal(retained.externalBillNo, original.externalBillNo);
+      assert.equal(replacement.billingChannel, "MANUAL_EXTERNAL");
+      assert.equal(replacement.billRecordStatus, "PENDING");
+      assert.ok(replacement.externalBillNo == null);
+      assert.equal(state.auditLogs.filter((a: any) => a.action === "MANUAL_BILL_OBLIGATION_CLEARED").length,
+        status === "PENDING" || status === "MISSING" ? 1 : 0);
+    } finally { mock.teardown(); }
+  });
+}
+
+for (const status of ["PENDING", "MISSING", "RECORDED", "VERIFIED"] as const) {
+  test(`cancelInvoice clears only ${status} obligation and keeps financial reversal unchanged`, async () => {
+    const base = buildBaseCorrectionState();
+    const original = base.invoices.get("inv-orig-1");
+    original.billingChannel = "MANUAL_EXTERNAL";
+    original.billRecordStatus = status;
+    original.externalBillNo = status === "RECORDED" || status === "VERIFIED" ? "RETAIN-PAPER" : null;
+    const before = structuredClone(base);
+    const mock = createTransactionalPrismaHarness(base); mock.setup();
+    try {
+      await cancelInvoice(original.id, "user-cashier");
+      const state = mock.getState(); const cancelled = state.invoices.get(original.id);
+      assert.equal(cancelled.paymentStatus, "CANCELLED");
+      assert.equal(cancelled.billRecordStatus, status === "PENDING" || status === "MISSING" ? null : status);
+      assert.equal(cancelled.externalBillNo, original.externalBillNo);
+      assert.equal(cancelled.netTotal, original.netTotal);
+      assert.deepEqual(state.payments, before.payments);
+      const items = [...before.invoiceItems.values()].filter((i: any) => i.invoiceId === original.id);
+      for (const item of items) {
+        assert.equal(state.products.get(item.productId).stock, before.products.get(item.productId).stock + item.qty);
+      }
+      assert.equal(state.stockTransactions.length - before.stockTransactions.length, items.length);
+      assert.equal(state.auditLogs.filter((a: any) => a.action === "MANUAL_BILL_OBLIGATION_CLEARED").length,
+        status === "PENDING" || status === "MISSING" ? 1 : 0);
+    } finally { mock.teardown(); }
+  });
+}

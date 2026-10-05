@@ -11,6 +11,7 @@ export default [
     route("product-lookup", "routes/_app.productLookup.tsx"),
     route("billing", "routes/_app.billing.tsx"), // the cashier's billing/POS page
     route("invoices", "routes/_app.invoices.tsx"),
+    route("manual-bills", "routes/_app.manualBills.tsx"),
     route("documents", "routes/_app.documents.tsx"),
     route("documents/:id/view", "routes/_app.documents.$id.view.tsx"),
     route("bin", "routes/_app.bin.tsx"),

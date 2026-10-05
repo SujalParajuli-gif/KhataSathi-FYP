@@ -35,6 +35,7 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
 
   function createTxClient(stagedState: InMemState, options?: { failOnItemUpdate?: boolean; failOnAuditLog?: boolean }) {
     return {
+      businessSettings: { findUnique: async () => ({ defaultBillingChannel: "MANUAL_EXTERNAL" }) },
       $queryRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
         // lockInvoiceItemsForUpdate returns array of { productId }
         const queryStr = String(_query);
@@ -312,6 +313,8 @@ test("AC-1: Registered customer finalization captures customer name, PAN, addres
     const state = harness.getState();
     const inv = state.invoices.get("inv-draft-reg");
     assert.equal(inv.status, "FINALIZED");
+    assert.equal(inv.billingChannel, "MANUAL_EXTERNAL");
+    assert.equal(inv.billRecordStatus, "PENDING");
     assert.equal(inv.customerNameSnapshot, "Sita Sharma");
     assert.equal(inv.customerPanSnapshot, "300123456");
     assert.equal(inv.customerAddressSnapshot, "Putalisadak, Kathmandu");

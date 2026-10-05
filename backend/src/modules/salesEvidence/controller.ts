@@ -1,9 +1,12 @@
 import { Request, Response } from "express";
 import fs from "fs/promises";
+import { ZodError } from "zod/v4";
 import {
   archiveSaleEvidence,
+  attachSaleEvidence,
   createSaleEvidence,
   getSaleEvidenceById,
+  getSaleEvidenceCandidates,
   getSaleEvidenceFile,
   getSaleEvidenceThumbnail,
   listSaleEvidence,
@@ -276,6 +279,99 @@ export async function archiveSaleEvidenceHandler(
     }
 
     logger.error("Archive sales evidence error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getSaleEvidenceCandidatesHandler(
+  req: Request,
+  res: Response,
+) {
+  try {
+    const result = await getSaleEvidenceCandidates(
+      String(req.params.id),
+      req.query as any,
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+    res.json(result);
+  } catch (err: any) {
+    if (err instanceof ZodError) {
+      res.status(400).json({ code: "VALIDATION_ERROR", error: "Invalid candidate query", details: err.issues });
+      return;
+    }
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409 || err?.statusCode === 404) {
+      if (err.code === "NOT_FOUND" || err.statusCode === 404) {
+        res.status(404).json({
+          code: "NOT_FOUND",
+          error: err.message || "Sales evidence not found",
+        });
+        return;
+      }
+
+      res.status(409).json({
+        code: err.code || "CONFLICT",
+        error: err.message,
+      });
+      return;
+    }
+
+    logger.error("Get sales evidence candidates error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function attachSaleEvidenceHandler(req: Request, res: Response) {
+  try {
+    const result = await attachSaleEvidence(
+      String(req.params.id),
+      req.body,
+      req.user!,
+      getCapabilitiesResolver(res),
+    );
+    res.status(200).json(result);
+  } catch (err: any) {
+    if (err instanceof ZodError) {
+      res.status(400).json({ code: "VALIDATION_ERROR", error: "Invalid attachment decision", details: err.issues });
+      return;
+    }
+    if (err instanceof SalesEvidenceAuthorizationError || err?.statusCode === 403) {
+      res.status(403).json({
+        code: err.code || "FORBIDDEN",
+        error: err.message,
+      });
+      return;
+    }
+
+    if (err instanceof SalesEvidenceConflictError || err?.statusCode === 409 || err?.statusCode === 404) {
+      if (err.code === "NOT_FOUND" || err.statusCode === 404) {
+        res.status(404).json({
+          code: "NOT_FOUND",
+          error: err.message || "Sales evidence not found",
+        });
+        return;
+      }
+
+      const payload: Record<string, unknown> = {
+        code: err.code || "CONFLICT",
+        error: err.message,
+      };
+      if (err.document) {
+        payload.document = err.document;
+      }
+      res.status(409).json(payload);
+      return;
+    }
+
+    logger.error("Attach sales evidence error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
