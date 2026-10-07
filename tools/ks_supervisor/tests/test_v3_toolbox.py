@@ -401,19 +401,20 @@ class V3ToolboxTests(BaseSupervisorTestCase):
         Provider, package execution and final commit facts are mocked; no live
         agent, product operation or final Git commit is performed.
         """
-        from tools.ks_supervisor.toolbox import begin_mission, bind_mission, finish_mission, role_instructions, mission_guard
+        from tools.ks_supervisor.toolbox import begin_mission, finish_mission, role_instructions, mission_guard, chat_entrypoint
         sequence = ["KS-START"]
-        self.write_checkpoint(current_task="")
+        # The user sends exactly ONE chat token; this driver is that same Codex
+        # session. No terminal launcher or user-invoked manual role is involved.
+        self.write_task(task_id=self.task_id, planning_required="YES", execution_mode="PLANNED_IMPLEMENTATION")
+        entry = chat_entrypoint(self.config, "ks-start")
+        self.assertEqual(entry["session"], "CURRENT_CODEX_SESSION")
+        self.assertFalse(entry["requires_powershell"])
+        self.assertFalse(entry["launch_codex"])
         mission = begin_mission(self.config)
         handle = mission["mission_id"]
         sequence.append("REANCHOR")
-        definition = role_instructions(self.config, "ks-next", action="TASK_DEFINITION", mission_id=handle)
-        self.assertIn("NO_ACTIVE_TASK", definition["instructions"])
-        self.write_task(task_id=self.task_id, planning_required="YES", execution_mode="PLANNED_IMPLEMENTATION")
-        self.write_checkpoint(current_task=self.task_id)
-        bind_mission(self.config, handle, self.task_id)
+        self.assertEqual(mission["task_id"], self.task_id)
         sequence.append("TASK")
-        record_cycle(self.config, self.task_id, "task_definition", "PASS", mission_id=handle)
         self.assertEqual(inspect_repository(self.config)["recommended_category"], "PLAN")
         self.assertIn("Implementation Planner", role_instructions(self.config, "ks-plan", self.task_id, mission_id=handle)["instructions"])
         sequence.append("KS-PLAN")
@@ -500,4 +501,4 @@ class V3ToolboxTests(BaseSupervisorTestCase):
             self.assertEqual(worker.call_count, 3)
             self.assertTrue(all(call.args[1] == self.task_id for call in worker.call_args_list))
         self.assertEqual(sequence, ["KS-START", "REANCHOR", "TASK", "KS-PLAN", "KS-IMPL", "CODEX VERIFY", "FIX", "KS-IMPL", "CODEX VERIFY", "KS-SENIOR", "FIX_REQUIRED", "KS-IMPL", "TARGETED VERIFY", "KS-SENIOR", "ACCEPT", "KS-NEXT", "CLOSEOUT", "HYGIENE", "COMMIT", "REANCHOR", "REPORT NEXT TASK", "STOP"])
-        print("Mock one-task lifecycle: " + " -> ".join(sequence))
+        print("Mock Codex chat lifecycle (one user token, no PowerShell/manual role invocation): " + " -> ".join(sequence))

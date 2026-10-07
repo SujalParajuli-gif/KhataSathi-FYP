@@ -247,6 +247,28 @@ class SupervisorRunner:
         """Read-only query of the current workflow and repository state."""
         return derive_workflow_state(self.config)
 
+    def _shell_permission_continuation(self, task_id: str) -> bool:
+        """Use only the latest same-task Antigravity implementation permission stop."""
+        try:
+            stop = json.loads((self.config.runtime_dir / "stop_report.json").read_text(encoding="utf-8"))
+            run = json.loads((self.config.runtime_dir / "last_agent_run.json").read_text(encoding="utf-8"))
+            actions = run.get("denied_actions", [])
+            return bool(
+                stop.get("state") == WorkflowState.AGENT_PERMISSION_REQUIRED.value
+                and stop.get("task_id") == run.get("task_id") == task_id
+                and run.get("provider") == "antigravity"
+                and run.get("role") == Role.IMPLEMENTATION.value
+                and run.get("action") == ACTION_IMPLEMENTATION
+                and run.get("success") is False
+                and (run.get("soft_permission_denial") or actions)
+                and datetime.fromisoformat(stop["timestamp"]) >= datetime.fromisoformat(run["timestamp"])
+                and isinstance(actions, list)
+                and any(isinstance(item, str) and re.search(r"\b(?:RunCommand|run_command|command)\b", item, re.I)
+                        for item in actions)
+            )
+        except (OSError, ValueError, KeyError, TypeError, AttributeError):
+            return False
+
     def write_stop_report(self, report: StopReport) -> None:
         """Write structured stop report JSON under .git/ks-runtime/."""
         self.config.runtime_dir.mkdir(parents=True, exist_ok=True)
@@ -1238,6 +1260,8 @@ class SupervisorRunner:
                     dirty_files=dirty_files,
                     verification_plan=verification_plan,
                     run_id=self.current_run_id,
+                    permission_stop_continuation=(state.state == WorkflowState.IMPLEMENTATION_IN_PROGRESS
+                                                  and self._shell_permission_continuation(task_id)),
                 )
 
                 hard_timeout = self.config.get_agent_hard_timeout(task.risk if task else None)

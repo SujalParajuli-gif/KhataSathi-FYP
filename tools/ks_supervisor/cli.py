@@ -237,6 +237,9 @@ def main(argv: Optional[list] = None) -> int:
 
     inspect_parser = subparsers.add_parser("inspect", help="V3 authoritative JSON facts; no agent or workflow writes")
     inspect_parser.add_argument("--json", action="store_true")
+    chat_parser = subparsers.add_parser("chat-entrypoint", help="Resolve exact AGENTS chat token in current Codex session; no role execution")
+    chat_parser.add_argument("token", choices=["ks-start", "ks-plan", "ks-impl", "ks-senior", "ks-next"])
+    chat_parser.add_argument("--json", action="store_true")
     worker_parser = subparsers.add_parser("delegate-gemini", help="One workspace-only Gemini worker; no orchestration")
     worker_parser.add_argument("--task", required=True)
     worker_parser.add_argument("--mode", choices=["implement", "fix"], default="implement")
@@ -288,12 +291,14 @@ def main(argv: Optional[list] = None) -> int:
 
     config = SupervisorConfig(repo_root=Path(args.repo).resolve())
 
-    if args.command in {"inspect", "delegate-gemini", "verify-source", "record-cycle", "mission", "role-instructions"}:
+    if args.command in {"inspect", "chat-entrypoint", "delegate-gemini", "verify-source", "record-cycle", "mission", "role-instructions"}:
         from tools.ks_supervisor.toolbox import (inspect_repository, delegate_gemini, verify_source, record_cycle,
-            DirectCodexVerificationRequired, begin_mission, bind_mission, finish_mission, role_instructions)
+            DirectCodexVerificationRequired, begin_mission, bind_mission, finish_mission, role_instructions, chat_entrypoint)
         try:
             if args.command == "inspect":
                 result = inspect_repository(config)
+            elif args.command == "chat-entrypoint":
+                result = chat_entrypoint(config, args.token)
             elif args.command == "delegate-gemini":
                 result = delegate_gemini(config, args.task, args.mode,
                                         config.repo_root / args.correction if args.correction else None, mission_id=args.mission)

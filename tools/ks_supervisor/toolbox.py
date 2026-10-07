@@ -34,6 +34,57 @@ class DirectCodexVerificationRequired(ValueError):
     """Toolbox subset does not cover this check; Codex can assess direct execution."""
 
 
+MISSION_DEFINITION = {"path": ".agents/skills/khatasathi-workflow-router/SKILL.md", "section": 9}
+CHAT_ROLES = {"ks-start": "MISSION_CONTROLLER", "ks-plan": "PLANNER", "ks-impl": "IMPLEMENTATION",
+              "ks-senior": "SENIOR_REVIEW", "ks-next": "CLOSEOUT_ADVANCE"}
+
+
+def chat_entrypoint(config, token):
+    """Resolve AGENTS20 conceptual tokens, never intercept IDE input or run roles.
+
+    AGENTS.md instructs the current Codex session to call this helper for exact
+    user tokens. Terminal forwards the same token, so both read one definition.
+    """
+    token = token.strip()
+    if token not in CHAT_ROLES:
+        raise ValueError("Not an exact repository chat shortcut")
+    info = inspect_repository(config)
+    result = {"token": token, "role": CHAT_ROLES[token], "session": "CURRENT_CODEX_SESSION",
+              "dispatch_authority": "AGENTS.md section 20", "inspection": info,
+              "launch_codex": False, "requires_powershell": False}
+    if token == "ks-start":
+        result["mission_definition"] = MISSION_DEFINITION.copy()
+        result["next"] = "EXECUTE_SHARED_MISSION_IN_CURRENT_SESSION"
+    if info["recommended_category"] == "HUMAN_INPUT_REQUIRED":
+        result["next"] = "HUMAN_INPUT_REQUIRED"
+        result["human_input"] = {"event": "[HUMAN INPUT REQUIRED]", "reason": info["reason"],
+                                 "requested_decision": "Resolve only the reported decision/authorization/target gate",
+                                 "evidence": {"task": info["active_task"], "state": info["derived_state"], "budget": info["budget"]},
+                                 "safe_resume": "Reply in this chat with the specific approval/decision; retain mission/evidence and re-inspect before resuming"}
+    elif token != "ks-start":
+        if info["accepted"] and token != "ks-next":
+            result["next"] = "ACCEPTED_TASK_IMMUTABLE"
+        else:
+            action = ""
+            if token == "ks-impl" and info["unresolved_blockers"]:
+                action = "FIX"
+            elif token == "ks-senior" and info["unresolved_blockers"]:
+                action = "TARGETED_VERIFICATION"
+            elif token == "ks-next":
+                if info["recommended_category"] in {"TASK_DEFINITION", "NEXT_TASK"}:
+                    action = "TASK_DEFINITION"
+                elif info["recommended_category"] == "CLOSEOUT":
+                    action = "CLOSEOUT"
+                else:
+                    action = None
+            if action is None:
+                result["next"] = "USE_EXISTING_ROUTER_STATE_TRANSITION"
+                result["router_definition"] = {"path": MISSION_DEFINITION["path"], "section": 4}
+            else:
+                result["role_instructions"] = role_instructions(config, token, info["active_task"] or "", action)
+    return result
+
+
 def _identity(value):
     return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 

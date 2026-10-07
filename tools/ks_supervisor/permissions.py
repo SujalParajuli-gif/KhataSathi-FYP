@@ -1,4 +1,4 @@
-"""Read existing Antigravity CLI grants; never write or extend provider permissions."""
+"""Read effective CLI grants; explicit setup can install bounded verification rules."""
 import hashlib
 import json
 from pathlib import Path
@@ -6,6 +6,36 @@ import re
 
 
 CLI_PROJECT = "default-cli-project"
+
+
+def configure_source_verification_permissions():
+    """Explicit operator setup only; never called by an agent invocation or run.
+
+    Replace command Allows, including older broad grants, rather than layering
+    safe rules over an unsafe policy. Preserve all non-command grants and
+    existing Deny/Ask rules. Test paths are enumerated in the source policy;
+    connected MySQL fixtures and startup commands are intentionally absent.
+    """
+    policy = json.loads(Path(__file__).with_name("source_verification_permissions.json").read_text(encoding="utf-8"))
+    global_settings = Path.home() / ".gemini/antigravity-cli/settings.json"
+    global_grants = json.loads(global_settings.read_text(encoding="utf-8")).get("permissions", {})
+    if any(r.startswith(("command(", "unsandboxed(")) for r in global_grants.get("allow", [])):
+        raise ValueError("Global command grants must be reviewed separately before project policy setup")
+    path = Path.home() / f".gemini/config/projects/{CLI_PROJECT}.json"
+    data = json.loads(path.read_text(encoding="utf-8"))
+    if data.get("id") != CLI_PROJECT:
+        raise ValueError("CLI project identity mismatch")
+    grants = data["permissionGrants"]["permissionGrants"]
+    for name in ("allow", "deny", "ask"):
+        rules = grants.get(name, [])
+        if not isinstance(rules, list) or not all(isinstance(r, str) for r in rules):
+            raise ValueError("Invalid permission rules")
+    grants["allow"] = [r for r in grants.get("allow", []) if not r.startswith(("command(", "unsandboxed("))] + policy["allow"]
+    grants["deny"] = list(dict.fromkeys(grants.get("deny", []) + policy["deny"]))
+    temporary = path.with_suffix(".tmp")
+    temporary.write_text(json.dumps(data, indent=2) + "\n", encoding="utf-8")
+    temporary.replace(path)
+    return path
 
 
 class CommandPermissions:

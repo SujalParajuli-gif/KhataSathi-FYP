@@ -208,10 +208,8 @@ class MissionTests(BaseSupervisorTestCase):
         entry = (root / "tools/ks-entrypoints.ps1").read_text()
         self.assertIn("Stop after review", senior)
         self.assertNotIn("sole v3 control plane", senior)
-        self.assertIn("exactly ONE task", start)
-        self.assertIn("STOP at the task boundary", start)
+        self.assertIn("$ksPrompt = 'ks-start'", start)
         self.assertIn("function ks-start", entry)
         self.assertIn("function ks-senior", entry)
         self.assertLess(len(start), 1400)
-        for role in ("ks-plan", "ks-impl", "ks-senior", "ks-next"):
-            self.assertIn(role, start)
+        self.assertNotIn("Orchestrate", start)

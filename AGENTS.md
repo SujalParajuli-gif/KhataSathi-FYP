@@ -747,6 +747,32 @@ A task is finished when:
 ## 20. Workflow shortcuts and autopilot guardrails
 
 ### Conceptual Shortcuts:
+
+### Exact Codex chat dispatch
+
+When the entire user message (apart from surrounding whitespace) is exactly a
+shortcut token below, treat it as an instruction to execute that repository role
+in the **current Codex IDE/chat session**. This is the same instruction-based
+mechanism for all repository chat shortcuts; it is not a native IDE slash-command
+or a request to run a PowerShell launcher.
+
+For `ks-start`, first read the workflow-router skill, then call
+`python -m tools.ks_supervisor chat-entrypoint ks-start --json` to re-anchor and
+resolve the authoritative mission definition: workflow-router section 9.
+Execute that definition here through its existing role/tool helpers. The user
+does not need to run Python, PowerShell or individual role commands. Do not
+invoke a terminal launcher or another Codex process from this chat path.
+For `ks-plan`, `ks-impl`, `ks-senior` and `ks-next`, the same `chat-entrypoint`
+surface resolves their existing role instructions; preserve the boundaries below.
+
+Genuine human gates are shown in this conversation with reason, exact requested
+decision/target/action, evidence and safe resume. The user replies here; retain
+the bound task, partial work and evidence/history, re-inspect authority and resume
+only the specifically authorized action. Approval never silently resets budgets,
+clears authentication/provenance failures, or authorizes unrelated operations.
+Quoted tokens, examples and tokens embedded in a larger request are not shortcut
+invocations. Existing user constraints always take precedence.
+
 - **`ks-senior`**: Canonical Senior review only. Inspect implementation/evidence, write the review, return ACCEPTED (canonical APPROVED with zero blockers) or FIX_REQUIRED, then stop. Do not plan, implement, closeout, commit or begin another task.
 - **`ks-start`**: Codex-owned one-task mission controller. Follow workflow-router section 9, reuse existing role builders in this session, bind exactly one task, and stop after acceptance/closeout/authorized commit and reporting the next candidate without starting it.
 - **`ks-plan`**: Invokes `khatasathi-implementation-planner` to create `docs/engineering/ai/plans/TASK-XXX-plan.md` for `PLANNED_IMPLEMENTATION` tasks.

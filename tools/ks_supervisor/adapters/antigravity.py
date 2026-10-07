@@ -448,6 +448,7 @@ class AntigravityAdapter(BaseAgentAdapter):
         completed_verifications: Optional[List[str]] = None,
         verification_plan: Optional[Dict[str, Any]] = None,
         run_id: str = "",
+        permission_stop_continuation: bool = False,
         workspace_only: bool = False,
     ) -> str:
         """Build instructions as a compact execution packet for Antigravity Gemini agent."""
@@ -543,6 +544,19 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         plan_line = f"- Implementation Plan: {plan_path}\n" if plan_path else ""
 
+        permission_continuation = permission_stop_continuation and role == Role.IMPLEMENTATION and not is_fix
+        permission_section = (
+            "### RunCommand Permission-Stop Continuation (CRITICAL)\n"
+            "- Do not use RunCommand or shell commands for repository navigation/discovery.\n"
+            "- Use built-in workspace tools: list_dir, grep_search, view_file.\n"
+            "- Preserve all existing partial implementation changes.\n"
+            "- Resume from the current repository state; do not restart or overwrite completed work.\n"
+            "- Do not reset, clean, revert, or duplicate completed implementation work.\n"
+            "- Use shell execution only when a genuinely required approved command must be executed and is permitted by the existing allowlist.\n"
+            "- Do not request broad command(*) permission.\n"
+            "- Do not weaken or bypass headless permission policy.\n"
+            "- Do not escalate model solely because of permission denial.\n\n"
+        ) if permission_continuation else ""
         continuation_section = ""
         if dirty_files:
             files_list = "\n".join(f"- `{f}`" for f in dirty_files[:25])
@@ -629,13 +643,14 @@ class AntigravityAdapter(BaseAgentAdapter):
             return (
                 f"### KhataSathi Execution Packet — Implementation\n"
                 f"Task ID: {task_id}{task_title}\n"
-                f"Workflow State: DIRECT_IMPLEMENTATION\n"
+                f"Workflow State: {'IMPLEMENTATION_IN_PROGRESS' if permission_continuation and dirty_files else 'DIRECT_IMPLEMENTATION'}\n"
                 f"Branch: {branch_name} | HEAD: {head_sha}\n\n"
                 f"### Canonical Workflow Artifacts\n"
                 f"- Task Contract: {task_path}\n"
                 f"- Implementation Report: {report_path} ({report_status})\n"
                 f"{plan_line}"
                 f"- Checkpoint: {checkpoint_path}\n\n"
+                f"{permission_section}"
                 f"{continuation_section}"
                 f"{verification_section}"
                 f"{evidence_section}"

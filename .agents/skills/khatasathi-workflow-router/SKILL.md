@@ -231,6 +231,17 @@ These standard shortcut tokens invoke specific role behaviors from repository st
 
 Codex owns WHEN existing roles run; the roles own HOW. Python supplies facts, invocation, evidence and safety, never a role-executing orchestration loop. One invocation binds exactly ONE task. Manual `ks-plan`, `ks-impl`, `ks-senior`, `ks-next` and legacy doctor/status/dry-run/manual run remain independent. Never invoke nested Codex or legacy `run --once --live` to simulate logical roles. Current explicit user restrictions always override lifecycle defaults; this tooling correction does not authorize live execution or commit.
 
+This section is the ONE authoritative mission definition. Exact `ks-start` in
+repository Codex chat is dispatched by AGENTS20, using the deterministic
+`chat-entrypoint` route descriptor, into this same session. The helper resolves
+instructions/facts; it is neither an IDE input listener nor a second controller.
+Read and execute this section, not a copied terminal prompt. Logical roles
+return control to ks-start; a reviewer-only stop ends that role, while manual
+ks-senior stops its own invocation.
+
+Emit concise `[ROLE] ks-plan/ks-impl/ks-senior/ks-next` events as each role begins,
+alongside the existing REANCHOR/DELEGATE/RETURN/VERIFY/REVIEW/mission events.
+
 ### Bind, reuse roles, complete one mission
 
 1. Recover state in section 2 order, inspect actual diff and call `python -m tools.ks_supervisor mission begin --json`. Emit `[KS-START]` / `[REANCHOR]` and retain its `mission_id` for EVERY automated tool call. Active partial work (including TASK-2A-002) is the mission; continue it intact. If a runtime interruption resumes the same invocation, reuse its handle/history, never reset budgets. Accepted tasks never reopen.
@@ -258,6 +269,8 @@ Emit `[HUMAN INPUT REQUIRED]` with Reason, Requested decision/authorization, Evi
 
 ### Entry points and final output
 
-Chat shortcut: `ks-start`. Terminal: `.\ks-start.cmd` or `.\tools\ks-start.ps1` launches exactly ONE interactive Codex session. Dot-source `.\tools\ks-entrypoints.ps1` once to expose bare `ks-start` and reviewer-only `ks-senior` in that PowerShell session. No global profile/PATH changes. Never invoke a launcher from inside an existing Codex mission.
+PRIMARY UX: open Codex IDE/chat in this repository and type exactly `ks-start`. AGENTS20 resolves router9 in the current session, with no PowerShell or user-run Python/role commands. Genuine authorization questions and replies stay in this conversation; preserve the mission handle and history, re-inspect, and continue only within the specific reply's authority.
+
+SECONDARY terminal fallback: `.\ks-start.cmd` or `.\tools\ks-start.ps1` forwards the exact same `ks-start` token to ONE new interactive Codex CLI process/session at this repository cwd. That new session reads AGENTS20 and resolves this same section; it does not share IDE conversation memory, so it recovers repository/runtime state. Workflow semantics are identical. Dot-source `.\tools\ks-entrypoints.ps1` once to expose bare `ks-start` and reviewer-only `ks-senior` in that PowerShell session. No global profile/PATH changes. Never invoke a launcher from inside an existing Codex mission.
 
 Success output includes `[MISSION COMPLETE]`, task/result ACCEPTED, verification summary with limits, Senior ACCEPTED/zero blockers, closeout COMPLETE, actual commit SHA/message (or justified NOT APPLICABLE), truthful working-tree state, next candidate ID/title and `KS-START STOPPED AT TASK BOUNDARY. Run ks-start to begin the next task.` No CLEAN claim when unrelated edits remain. No success claim on a gated/failed commit or incomplete required evidence.
