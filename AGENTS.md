@@ -540,7 +540,7 @@ Review reports belong under:
 
 ## 13. Automatic task closeout
 
-When a bounded senior review returns **APPROVED** with no BLOCKERS, the senior/integration workflow should close the task automatically unless explicitly told otherwise.
+When a bounded senior review returns **APPROVED** with no BLOCKERS, the integration workflow (`ks-next`, or `ks-start` invoking that role) should close the task automatically unless explicitly told otherwise. Manual `ks-senior` stops after writing its review and returning ACCEPTED/FIX_REQUIRED; it does not perform closeout or start another task.
 
 Closeout should:
 
@@ -747,7 +747,8 @@ A task is finished when:
 ## 20. Workflow shortcuts and autopilot guardrails
 
 ### Conceptual Shortcuts:
-- **`ks-senior`**: Recovers state from repository; conducts senior reviews, closeouts, and handles `READ_ONLY_DIRECT` / `SENIOR_AUTOPILOT`.
+- **`ks-senior`**: Canonical Senior review only. Inspect implementation/evidence, write the review, return ACCEPTED (canonical APPROVED with zero blockers) or FIX_REQUIRED, then stop. Do not plan, implement, closeout, commit or begin another task.
+- **`ks-start`**: Codex-owned one-task mission controller. Follow workflow-router section 9, reuse existing role builders in this session, bind exactly one task, and stop after acceptance/closeout/authorized commit and reporting the next candidate without starting it.
 - **`ks-plan`**: Invokes `khatasathi-implementation-planner` to create `docs/engineering/ai/plans/TASK-XXX-plan.md` for `PLANNED_IMPLEMENTATION` tasks.
 - **`ks-impl`**: Invokes `GEMINI.md` implementation agent with task contract and plan artifact.
 - **`ks-next`**: Invokes `khatasathi-workflow-router` to inspect repository state and trigger the next deterministic transition.
@@ -757,6 +758,8 @@ A task is finished when:
 - `SENIOR_AUTOPILOT` is strictly limited to bounded LOW-risk tasks where Planning Required = NO, with zero financial, tax, auth, migration, or production exposure.
 - **Three-task re-anchor rule:** After every 3 completed autopilot tasks, the senior workflow MUST re-anchor by re-reading `IMPLEMENTATION_CHECKPOINT.md`, `TASK_REGISTRY.md`, Git branch/status, and HEAD revision before continuing.
 - Autopilot must halt immediately on `PLAN/REPO DRIFT`, missing plans, hygiene failure, or unresolved user decisions.
+
+For the v3 `ks-start` one-task mission, a missing/incomplete plan invokes the planner role in the same session; MEDIUM/HIGH work stays assigned to the bounded Gemini worker after planning. Ordinary implementation/test/review failures invoke precise correction and verification, subject to section 9's budgets. Legacy/manual shortcuts remain available. Current user restrictions (including no commit/live invocation in a tooling patch) override lifecycle defaults. Application startup/schema/target and production gates remain unchanged.
 
 ## KhataSathi UI continuity (2026-10-05)
 

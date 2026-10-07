@@ -448,6 +448,7 @@ class AntigravityAdapter(BaseAgentAdapter):
         completed_verifications: Optional[List[str]] = None,
         verification_plan: Optional[Dict[str, Any]] = None,
         run_id: str = "",
+        workspace_only: bool = False,
     ) -> str:
         """Build instructions as a compact execution packet for Antigravity Gemini agent."""
         paths = canonical_paths or {}
@@ -463,6 +464,22 @@ class AntigravityAdapter(BaseAgentAdapter):
         task_title = f" — {task.title}" if task and getattr(task, "title", None) else ""
         branch_name = git_state.branch if git_state and getattr(git_state, "branch", None) else "active worktree"
         head_sha = git_state.head_sha[:8] if git_state and getattr(git_state, "head_sha", None) else "HEAD"
+
+        if workspace_only:
+            return (
+                f"KS_V3_WORKSPACE_WORKER task={task_id} mode={'fix' if is_fix else 'implement'}\n"
+                f"### KhataSathi Execution Packet — {'FIX_REQUIRED Remediation' if is_fix else 'Implementation'}\n"
+                f"Task Contract: {task_path}\nImplementation Plan: {plan_path}\n"
+                f"Implementation Report: {report_path} ({report_status})\nSenior Review: {review_path}\n"
+                f"Checkpoint: {checkpoint_path}\nBranch: {branch_name} | HEAD: {head_sha}\n"
+                "Follow the existing ks-impl role in GEMINI.md, the contract and completed plan; read only relevant frozen architecture.\n"
+                "Implement the smallest robust scoped change; in fix mode correct ONLY latest authoritative Senior blockers/source failures and direct regressions.\n"
+                "Continue existing partial implementation; never restart/reset/clean/revert. Preserve unrelated changes and authority/plan/review/checkpoint/registry files.\n"
+                "V3 overlay overrides legacy shell/check duties: use built-in workspace file/search/edit tools only. Do not use RunCommand, run_command or shell. Do not run tests, Prisma, Git, servers, migrations, deploy or connected DB operations; do not request command(*) permission.\n"
+                "Codex owns verification after return. Update the implementation report with exact corrections, files, limitations and suggested checks marked NOT RUN by this worker. Do not self-approve or closeout.\n"
+                "No verification command request/execution or REPORT_COMPLETION_VALIDATED marker is required for v3 return.\n"
+                + (f"Latest authoritative correction context:\n{review_blockers}\n" if is_fix else "")
+            )
 
         nav_instructions = (
             "### Navigation & Tool Rules (CRITICAL - DO NOT VIOLATE)\n"

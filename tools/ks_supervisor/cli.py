@@ -1,5 +1,6 @@
 """KhataSathi Workflow Supervisor - Command Line Interface."""
 import argparse
+import json
 from pathlib import Path
 import sys
 from typing import Optional
@@ -234,6 +235,44 @@ def main(argv: Optional[list] = None) -> int:
     # status
     subparsers.add_parser("status", help="Read-only status of repository, active task, and workflow state")
 
+    inspect_parser = subparsers.add_parser("inspect", help="V3 authoritative JSON facts; no agent or workflow writes")
+    inspect_parser.add_argument("--json", action="store_true")
+    worker_parser = subparsers.add_parser("delegate-gemini", help="One workspace-only Gemini worker; no orchestration")
+    worker_parser.add_argument("--task", required=True)
+    worker_parser.add_argument("--mode", choices=["implement", "fix"], default="implement")
+    worker_parser.add_argument("--correction", help="Repository-local current-content correction JSON from Codex")
+    worker_parser.add_argument("--json", action="store_true")
+    verify_parser = subparsers.add_parser("verify-source", help="Codex-selected reviewed source checks with content-bound evidence")
+    verify_parser.add_argument("--task", required=True)
+    verify_parser.add_argument("--command", dest="check_commands", action="append", required=True)
+    verify_parser.add_argument("--content-identity", required=True)
+    verify_parser.add_argument("--source-reviewed", action="store_true", help="Codex has inspected scripts/tests and confirmed no connected/external actions")
+    verify_parser.add_argument("--json", action="store_true")
+    cycle_parser = subparsers.add_parser("record-cycle", help="Record Codex logical role outcome and persistent safety budget")
+    cycle_parser.add_argument("--task", default="")
+    cycle_parser.add_argument("--phase", required=True)
+    cycle_parser.add_argument("--outcome", required=True)
+    cycle_parser.add_argument("--blocker", action="append", default=[])
+    cycle_parser.add_argument("--reason", default="")
+    cycle_parser.add_argument("--failure-signature", default="")
+    cycle_parser.add_argument("--json", action="store_true")
+    for tool_parser in (worker_parser, verify_parser, cycle_parser):
+        tool_parser.add_argument("--mission", help="ks-start immutable one-task mission handle; manual use may omit")
+    mission_parser = subparsers.add_parser("mission", help="One-task binding/completion facts, never executes roles")
+    mission_parser.add_argument("operation", choices=["begin", "bind", "finish"])
+    mission_parser.add_argument("--mission")
+    mission_parser.add_argument("--task", default="")
+    mission_parser.add_argument("--accepted-file", action="append", default=[])
+    mission_parser.add_argument("--next-task", default="")
+    mission_parser.add_argument("--next-title", default="")
+    mission_parser.add_argument("--json", action="store_true")
+    role_parser = subparsers.add_parser("role-instructions", help="Existing manual role builders, no agent execution")
+    role_parser.add_argument("role", choices=["ks-plan", "ks-impl", "ks-senior", "ks-next"])
+    role_parser.add_argument("--task", default="")
+    role_parser.add_argument("--action", default="")
+    role_parser.add_argument("--mission")
+    role_parser.add_argument("--json", action="store_true")
+
     # run
     run_parser = subparsers.add_parser("run", help="Execute supervisor workflow step(s)")
     run_parser.add_argument("--once", action="store_true", default=True, help="Execute at most ONE transition/role, then exit (default: True)")
@@ -248,6 +287,43 @@ def main(argv: Optional[list] = None) -> int:
         return 0
 
     config = SupervisorConfig(repo_root=Path(args.repo).resolve())
+
+    if args.command in {"inspect", "delegate-gemini", "verify-source", "record-cycle", "mission", "role-instructions"}:
+        from tools.ks_supervisor.toolbox import (inspect_repository, delegate_gemini, verify_source, record_cycle,
+            DirectCodexVerificationRequired, begin_mission, bind_mission, finish_mission, role_instructions)
+        try:
+            if args.command == "inspect":
+                result = inspect_repository(config)
+            elif args.command == "delegate-gemini":
+                result = delegate_gemini(config, args.task, args.mode,
+                                        config.repo_root / args.correction if args.correction else None, mission_id=args.mission)
+            elif args.command == "verify-source":
+                result = verify_source(config, args.task, args.check_commands,
+                                       args.content_identity, args.source_reviewed, mission_id=args.mission)
+            elif args.command == "role-instructions":
+                result = role_instructions(config, args.role, args.task, args.action, args.mission)
+            elif args.command == "mission":
+                if args.operation == "begin":
+                    result = begin_mission(config)
+                elif args.operation == "bind":
+                    result = bind_mission(config, args.mission or "", args.task)
+                else:
+                    result = finish_mission(config, args.mission or "", args.accepted_file, args.next_task, args.next_title)
+            else:
+                result = record_cycle(config, args.task, args.phase, args.outcome, args.blocker, args.reason, args.failure_signature, mission_id=args.mission)
+            print(json.dumps(result, indent=2, default=str))
+            budget = result.get("budget", result.get("cycle", {}).get("budget", {}))
+            return 1 if (result.get("outcome") in {"FAIL", "UNAVAILABLE", "AUTH_QUOTA", "HUMAN_GATE", "INFRASTRUCTURE_FAILURE", "NO_EFFECT"}
+                         or budget.get("status") == "HUMAN_INPUT_REQUIRED") else 0
+        except DirectCodexVerificationRequired as exc:
+            print(json.dumps({"status": "DIRECT_CODEX_VERIFICATION_REQUIRED", "reason": str(exc),
+                              "next": "RETURN_TO_CODEX", "acceptance_certified": False}))
+            return 2
+        except (ValueError, RuntimeError, OSError) as exc:
+            from tools.ks_supervisor.adapters.base import redact_secrets
+            print(json.dumps({"status": "HUMAN_INPUT_REQUIRED", "reason": redact_secrets(str(exc)),
+                              "safe_resume_action": "Resolve the reported authority/target/tooling gate; resume ks-start's bound mission without resetting work"}))
+            return 1
 
     if args.command == "doctor":
         return cmd_doctor(config)

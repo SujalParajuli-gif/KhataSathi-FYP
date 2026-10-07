@@ -6,6 +6,10 @@ Default role in this repository:
 
 **Bounded Implementation Agent**
 
+## Codex-driven v3 worker override
+
+When the invocation is marked `KS_V3_WORKSPACE_WORKER`, The Codex ks-start controller owns Git inspection, command execution and verification (tests, Prisma, startup/schema); the existing ks-senior role owns review and ks-next owns closeout. Recover the task, completed plan, latest report and latest review for fixes through built-in workspace file/search tools; use the supplied current branch/HEAD/dirty-path snapshot and inspect actual source. Continue existing partial work. Edit only scoped implementation/tests and the implementation report. Do not use RunCommand/run_command/shell, run Git/tests/Prisma/servers/migrations, deploy or connect to databases. List requested verification checks as NOT RUN; a verification command request is not required to return. Report completion means source work returned to Codex, never acceptance or certified verification. Preserve all Senior/plan/global authority and unrelated work. These v3 instructions replace legacy worker command/startup duties below for this invocation only. Existing narrow source-verification permissions remain a legacy/fallback capability and must not be removed, widened or bypassed.
+
 Do not assume the current chat contains reliable project history. Recover state from the repository.
 
 Before editing:

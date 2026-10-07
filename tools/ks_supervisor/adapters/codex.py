@@ -105,7 +105,7 @@ class CodexAdapter(BaseAgentAdapter):
         evidence_location: str = "",
     ) -> str:
         """Construct deterministic role instructions for Codex based on active action."""
-        if task and task.execution_mode == ExecutionMode.SENIOR_AUTOPILOT:
+        if task and task.execution_mode == ExecutionMode.SENIOR_AUTOPILOT and action_type not in {"REVIEW", "TARGETED_VERIFICATION"}:
             return (
                 f"You are operating as the KhataSathi Senior Autopilot for bounded LOW-risk task {task_id}.\n"
                 f"Follow /AGENTS.md Section 8 & 20 and the active task contract at docs/engineering/ai/tasks/{task_id}*.md.\n"
@@ -140,7 +140,8 @@ class CodexAdapter(BaseAgentAdapter):
                     f"Follow /AGENTS.md Section 12 (After blocker fixes).\n"
                     f"Verify ONLY previously listed blockers and direct regressions. Do NOT restart full review.\n"
                     f"Update review file at docs/engineering/ai/reviews/{task_id}-review.md.\n"
-                    f"If all blockers are resolved with zero remaining blockers, record decision as APPROVED."
+                    f"If all blockers are resolved with zero remaining blockers, record decision as APPROVED and return ACCEPTED.\n"
+                    f"Stop after review. Do not plan, implement, closeout, commit, or begin another task."
                     + senior_verification_prompt(verification_plan, run_id, evidence_location)
                 )
             elif action_type == "CLOSEOUT":
@@ -159,7 +160,8 @@ class CodexAdapter(BaseAgentAdapter):
                     f"1. Read task contract, implementation plan, implementation report, diff, and run required tests.\n"
                     f"2. Write review file at docs/engineering/ai/reviews/{task_id}-review.md.\n"
                     f"3. Classify all findings strictly into BLOCKER (B-1, etc.), NON-BLOCKING, OUT OF SCOPE, or QUESTION.\n"
-                    f"4. If APPROVED with zero blockers, execute closeout updates under AGENTS.md Section 13."
+                    f"4. Record canonical decision APPROVED with zero blockers and return ACCEPTED, otherwise FIX_REQUIRED.\n"
+                    f"Stop after review. Do not plan, implement, closeout, commit, or begin another task."
                 )
         else:
             return context or f"Execute KhataSathi senior action for task {task_id} according to /AGENTS.md."
