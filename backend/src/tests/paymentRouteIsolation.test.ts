@@ -21,6 +21,7 @@ test("payment capability guards are scoped to payment routes", () => {
       "/payments/esewa/failure/:paymentId",
       "/payments/esewa/initiate",
       "/payments/esewa/verify/:paymentId",
+      "/payments/gateways/display",
     ].sort(),
   );
 });

@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import { getPaymentGateway } from "./gateways";
+import { getEsewaConfig } from "./esewa";
 import {
   SUPPORTED_PAYMENT_METHODS,
   type SupportedPaymentMethod,
@@ -221,6 +222,48 @@ export async function voidPayment(req: Request, res: Response) {
       return;
     }
     console.error("Void payment error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getGatewayDisplay(_req: Request, res: Response) {
+  try {
+    const config = getEsewaConfig();
+    let environment: "SANDBOX" | "UNVERIFIED" = "UNVERIFIED";
+    let label = "eSewa (Unverified Config)";
+
+    try {
+      const formUrl = new URL(config.formUrl);
+      const statusUrl = new URL(config.statusCheckUrl);
+
+      const isKnownFormHost =
+        formUrl.protocol === "https:" &&
+        (formUrl.hostname === "rc-epay.esewa.com.np" ||
+          formUrl.hostname === "rc.esewa.com.np" ||
+          formUrl.hostname === "uat.esewa.com.np");
+
+      const isKnownStatusHost =
+        statusUrl.protocol === "https:" &&
+        (statusUrl.hostname === "uat.esewa.com.np" ||
+          statusUrl.hostname === "rc.esewa.com.np" ||
+          statusUrl.hostname === "rc-epay.esewa.com.np");
+
+      if (isKnownFormHost && isKnownStatusHost) {
+        environment = "SANDBOX";
+        label = "eSewa Sandbox / Test";
+      }
+    } catch {
+      // malformed URLs remain UNVERIFIED
+    }
+
+    res.json({
+      esewa: {
+        environment,
+        label,
+      },
+    });
+  } catch (err) {
+    console.error("Get gateway display error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

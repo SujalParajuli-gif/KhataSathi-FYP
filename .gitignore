@@ -133,3 +133,7 @@ frontend/build/server/
 /backend/src/scripts/importSupplierProducts.ts
 /backend/src/scripts/prepareApprovedNeutralRateCatalog.ts
 /backend/src/scripts/remediateArchivedUserPhones.ts
+
+# Python generated files
+__pycache__/
+*.py[cod]

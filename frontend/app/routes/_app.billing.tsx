@@ -5,9 +5,10 @@ import React, {
   useRef,
   useState,
 } from "react";
-import { Link } from "react-router";
+import { Link, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import { useToast } from "~/components/ui/Toast";
 import {
   ConfirmDialog,
@@ -19,11 +20,15 @@ import {
   getMyCashierPrivilegesApi,
   getProductByCodeApi,
   getProductsByIdsApi,
+  getInvoiceApi,
   listProductsApi,
   checkoutInvoiceApi,
   listCustomersApi,
+  lookupCustomersApi,
   getCustomerProductHistoryApi,
+  getPaymentGatewayDisplayApi,
   type CustomerProductPurchaseHistoryItem,
+  type GatewayDisplayResponse,
   createQuickCustomerApi,
   authorizePriceOverrideApi,
   discardParkedDraftApi,
@@ -41,6 +46,17 @@ import {
   type CheckoutInvoiceInput,
   type DraftRequestReviewItem,
 } from "~/lib/api/endpoints";
+import {
+  getManualBillRecord,
+  recordManualBillReference,
+  type ExpectedManualBillRecord,
+  type ExternalDocumentType,
+  type ManualBillRecord,
+} from "~/lib/api/manualBills";
+import BillingWorksheetModal from "~/components/billing/BillingWorksheetModal";
+import BillingCalculatorModal from "~/components/billing/BillingCalculatorModal";
+import BillingCustomerHistoryModal from "~/components/billing/BillingCustomerHistoryModal";
+import BillingCompactHistoryOverlay from "~/components/billing/BillingCompactHistoryOverlay";
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
 import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
@@ -402,6 +418,9 @@ type Customer = {
   name: string;
   phone: string;
   email?: string;
+  panNo?: string | null;
+  address?: string | null;
+  isActive?: boolean;
   isLoyalty: boolean;
   loyaltyPercent?: number;
   wholesalePercent?: number;
@@ -515,6 +534,226 @@ type PendingCheckoutSnapshot = {
 const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
 const DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY =
   "khatasathi_billing_draft_request_notice_ack";
+const BILLING_PAPER_FOLLOWUP_STORAGE_KEY = "khatasathi_billing_paper_followup_v1";
+const BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX = "khatasathi_billing_paper_followup_v2:";
+const BILLING_PENDING_PAPER_DRAFT_KEY = "khatasathi_billing_pending_paper_draft_v1";
+
+type StoredPaperFollowup = {
+  version: 1;
+  actorId: string;
+  invoiceId: string;
+  invoiceNo?: string;
+  draft: {
+    billNo: string;
+    externalDocumentType: ExternalDocumentType;
+    externalBillDate: string;
+  };
+  expected?: ExpectedManualBillRecord | null;
+  duplicateOverrideReason?: string;
+  error?: string;
+  savedAt: string;
+  expiresAt: string;
+};
+
+type StoredPendingPaperDraft = {
+  version: 1;
+  actorId: string;
+  operationKey: string;
+  draft: {
+    billNo: string;
+    externalDocumentType: ExternalDocumentType;
+    externalBillDate: string;
+    choice: "RECORD_AFTER_SAVE" | "LATER";
+  };
+  savedAt: string;
+  expiresAt: string;
+};
+
+function parseStoredPaperFollowup(raw: string | null, actorId: string): StoredPaperFollowup | null {
+  try {
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      typeof parsed.actorId !== "string" ||
+      !parsed.actorId.trim() ||
+      typeof parsed.invoiceId !== "string" ||
+      !parsed.invoiceId.trim() ||
+      typeof parsed.savedAt !== "string" ||
+      isNaN(Date.parse(parsed.savedAt)) ||
+      typeof parsed.expiresAt !== "string" ||
+      isNaN(Date.parse(parsed.expiresAt)) ||
+      !parsed.draft ||
+      typeof parsed.draft !== "object" ||
+      typeof parsed.draft.billNo !== "string" ||
+      !parsed.draft.billNo.trim() ||
+      !["PAN_INVOICE", "VAT_TAX_INVOICE", "ABBREVIATED_TAX_INVOICE", "OTHER_MANUAL_SALES_DOCUMENT"].includes(parsed.draft.externalDocumentType) ||
+      typeof parsed.draft.externalBillDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.draft.externalBillDate) ||
+      isNaN(Date.parse(parsed.draft.externalBillDate))
+    ) {
+      return null;
+    }
+    if (actorId && parsed.actorId !== actorId) {
+      return null;
+    }
+    return parsed as StoredPaperFollowup;
+  } catch {
+    return null;
+  }
+}
+
+function paperFollowupStorageKey(actorId: string, invoiceId: string) {
+  return `${BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX}${encodeURIComponent(actorId)}:${encodeURIComponent(invoiceId)}`;
+}
+
+function readStoredPaperFollowup(actorId: string, invoiceId?: string): StoredPaperFollowup | null {
+  if (typeof window === "undefined" || !actorId) return null;
+  try {
+    const storage = window.sessionStorage;
+    const legacy = parseStoredPaperFollowup(storage.getItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY), actorId);
+    if (invoiceId) {
+      const stored = parseStoredPaperFollowup(storage.getItem(paperFollowupStorageKey(actorId, invoiceId)), actorId);
+      return stored?.invoiceId === invoiceId ? stored : legacy?.invoiceId === invoiceId ? legacy : null;
+    }
+    const pending: StoredPaperFollowup[] = [];
+    const actorPrefix = `${BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX}${encodeURIComponent(actorId)}:`;
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (!key?.startsWith(actorPrefix)) continue;
+      const stored = parseStoredPaperFollowup(storage.getItem(key), actorId);
+      if (stored && key === paperFollowupStorageKey(actorId, stored.invoiceId)) pending.push(stored);
+    }
+    if (legacy && !pending.some((stored) => stored.invoiceId === legacy.invoiceId)) pending.push(legacy);
+    // Recover one at a time, oldest first. Other invoices remain independently durable.
+    return pending.sort((a, b) => a.savedAt.localeCompare(b.savedAt) || a.invoiceId.localeCompare(b.invoiceId))[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPaperFollowup(
+  data: Omit<StoredPaperFollowup, "savedAt" | "expiresAt" | "version">,
+): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const now = Date.now();
+    const expiresAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    const payload: StoredPaperFollowup = {
+      ...data,
+      version: 1,
+      savedAt: new Date(now).toISOString(),
+      expiresAt,
+    };
+    window.sessionStorage.setItem(
+      paperFollowupStorageKey(data.actorId, data.invoiceId),
+      JSON.stringify(payload),
+    );
+    // Upgrade this invoice's legacy slot only after its replacement is durable.
+    const legacy = parseStoredPaperFollowup(window.sessionStorage.getItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY), data.actorId);
+    if (legacy?.invoiceId === data.invoiceId) {
+      window.sessionStorage.removeItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStoredPaperFollowup(
+  invoiceId: string,
+  draft: StoredPaperFollowup["draft"],
+  reconciledIntent: StoredPaperFollowup | null,
+) {
+  if (typeof window === "undefined" || !reconciledIntent) return;
+  try {
+    const current = readStoredPaperFollowup(reconciledIntent.actorId, invoiceId);
+    if (JSON.stringify(current) !== JSON.stringify(reconciledIntent)) return;
+    if (
+      current?.invoiceId !== invoiceId ||
+      current.draft.billNo !== draft.billNo ||
+      current.draft.externalDocumentType !== draft.externalDocumentType ||
+      current.draft.externalBillDate !== draft.externalBillDate
+    ) return;
+    window.sessionStorage.removeItem(paperFollowupStorageKey(reconciledIntent.actorId, invoiceId));
+  } catch {}
+}
+
+function readStoredPendingPaperDraft(
+  operationKey: string,
+  actorId?: string,
+): StoredPendingPaperDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      typeof parsed.actorId !== "string" ||
+      !parsed.actorId.trim() ||
+      typeof parsed.operationKey !== "string" ||
+      parsed.operationKey !== operationKey ||
+      typeof parsed.savedAt !== "string" ||
+      isNaN(Date.parse(parsed.savedAt)) ||
+      typeof parsed.expiresAt !== "string" ||
+      isNaN(Date.parse(parsed.expiresAt)) ||
+      new Date(parsed.expiresAt).getTime() <= Date.now() ||
+      !parsed.draft ||
+      typeof parsed.draft !== "object" ||
+      typeof parsed.draft.billNo !== "string" ||
+      !parsed.draft.billNo.trim() ||
+      !["PAN_INVOICE", "VAT_TAX_INVOICE", "ABBREVIATED_TAX_INVOICE", "OTHER_MANUAL_SALES_DOCUMENT"].includes(parsed.draft.externalDocumentType) ||
+      typeof parsed.draft.externalBillDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.draft.externalBillDate) ||
+      isNaN(Date.parse(parsed.draft.externalBillDate)) ||
+      !["RECORD_AFTER_SAVE", "LATER"].includes(parsed.draft.choice)
+    ) {
+      return null;
+    }
+    if (actorId && parsed.actorId !== actorId) {
+      return null;
+    }
+    return parsed as StoredPendingPaperDraft;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPendingPaperDraft(
+  data: Omit<StoredPendingPaperDraft, "version" | "savedAt" | "expiresAt">,
+): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const now = Date.now();
+    const expiresAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    window.sessionStorage.setItem(
+      BILLING_PENDING_PAPER_DRAFT_KEY,
+      JSON.stringify({ ...data, version: 1, savedAt: new Date(now).toISOString(), expiresAt }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStoredPendingPaperDraft(operationKey?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!operationKey) {
+      window.sessionStorage.removeItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+      return;
+    }
+    const current = readStoredPendingPaperDraft(operationKey);
+    if (current && current.operationKey === operationKey) {
+      window.sessionStorage.removeItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+    }
+  } catch {}
+}
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -1148,14 +1387,72 @@ export default function BillingPage() {
       return BILLING_VIEW_SIZE_OPTIONS[nextIndex];
     });
   }
+  const [searchParams] = useSearchParams();
+  const [isWorksheetOpen, setIsWorksheetOpen] = useState(false);
+  const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isCompactHistoryOpen, setIsCompactHistoryOpen] = useState(false);
+  const [isDetailedHistoryOpen, setIsDetailedHistoryOpen] = useState(false);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [customerLookupResults, setCustomerLookupResults] = useState<Customer[]>([]);
+  const [customerLookupTotal, setCustomerLookupTotal] = useState(0);
+  const [customerLookupError, setCustomerLookupError] = useState<string | null>(null);
+  const [customerPanConflictWarning, setCustomerPanConflictWarning] = useState<string | null>(null);
+  const [customerPanConflictMatches, setCustomerPanConflictMatches] = useState<Customer[]>([]);
+  const [customerPanConflictPage, setCustomerPanConflictPage] = useState(1);
+  const [customerPanConflictTotal, setCustomerPanConflictTotal] = useState(0);
+  const [customerPanConflictServerTotal, setCustomerPanConflictServerTotal] = useState(0);
+  const [customerPanConflictError, setCustomerPanConflictError] = useState<string | null>(null);
+  const [customerPanConflictLoading, setCustomerPanConflictLoading] = useState(false);
+  const [gatewayDisplay, setGatewayDisplay] = useState<GatewayDisplayResponse | null>(null);
+  const [paperDraftBillNo, setPaperDraftBillNo] = useState("");
+  const [paperDraftDocumentType, setPaperDraftDocumentType] = useState<ExternalDocumentType>("PAN_INVOICE");
+  const [paperDraftBillDate, setPaperDraftBillDate] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [paperDraftChoice, setPaperDraftChoice] = useState<"RECORD_AFTER_SAVE" | "LATER">("RECORD_AFTER_SAVE");
+  const [fonepayConfirmed, setFonepayConfirmed] = useState(false);
+  const [storageLimitationWarning, setStorageLimitationWarning] = useState<string | null>(null);
+  const [savedSaleResult, setSavedSaleResult] = useState<{
+    invoiceId: string;
+    invoiceNo?: string;
+    total: number;
+    effectivePaidAmount: number;
+    balanceDue: number;
+    paymentMethod: PaymentMethod | string;
+    paymentStatus: PaymentStatus;
+    pendingGatewayAmount?: number;
+    paperRecorded?: boolean;
+    paperBillNo?: string;
+  } | null>(null);
+  const [paperFollowup, setPaperFollowup] = useState<{
+    status: "NONE" | "SUCCESS" | "FAILED_RETRYABLE" | "PENDING";
+    invoiceId?: string;
+    invoiceNo?: string;
+    error?: string;
+    draft?: {
+      billNo: string;
+      externalDocumentType: ExternalDocumentType;
+      externalBillDate: string;
+    };
+    expected?: ExpectedManualBillRecord | null;
+    conflictRecord?: ManualBillRecord | null;
+    duplicateRequired?: boolean;
+    duplicateOverrideReason?: string;
+  }>({ status: "NONE" });
+  const [paperFollowupBusy, setPaperFollowupBusy] = useState(false);
+  const [isBannerEditing, setIsBannerEditing] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]); // full customer list available for billing selection
   const [quickCustomerDraft, setQuickCustomerDraft] = useState<QuickCustomerDraft>(
     { name: "", phone: "", email: "", panNo: "", address: "" },
   );
   const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
+  const [quickCustomerPanAck, setQuickCustomerPanAck] = useState(false);
   const [quickCustomerBusy, setQuickCustomerBusy] = useState(false);
   const [quickCustomerError, setQuickCustomerError] = useState("");
   const quickCustomerBusyRef = useRef(false);
+  const checkoutInputRevisionRef = useRef(0);
+  const prevPanToCheckRef = useRef("");
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+  const compactHistoryTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [products, setProducts] = useState<Product[]>([]); // active product list loaded for cart and search
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
   const [submitting, setSubmitting] = useState(false); // blocks repeated invoice creation while checkout is running
@@ -1269,6 +1566,9 @@ export default function BillingPage() {
       name: c.name,
       phone: c.phone || "",
       email: c.email,
+      panNo: c.panNo || c.panNumber || null,
+      address: c.address || null,
+      isActive: c.isActive !== false,
       isLoyalty: (c.loyaltyPercent || 0) > 0,
       loyaltyPercent: c.loyaltyPercent,
       wholesalePercent: c.wholesalePercent,
@@ -1640,10 +1940,41 @@ export default function BillingPage() {
   );
 
   // finding the selected customer object once here keeps discount and label logic simple below
-  const selectedCustomer = useMemo(
-    () => customers.find((c) => c.id === selectedCustomerId) || null,
-    [selectedCustomerId, customers],
-  );
+  const selectedCustomer = useMemo(() => {
+    if (!selectedCustomerId) return null;
+    const inList = customers.find((c) => c.id === selectedCustomerId);
+    if (inList) return inList;
+    const inLookup = customerLookupResults.find((c) => c.id === selectedCustomerId);
+    return inLookup || null;
+  }, [selectedCustomerId, customers, customerLookupResults]);
+
+  function handleSelectCustomer(customer: Customer | null) {
+    if (!customer) {
+      setSelectedCustomerId(null);
+      setReviewedCandidate(null);
+      return;
+    }
+    setCustomers((prev) => {
+      const idx = prev.findIndex((c) => c.id === customer.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...customer };
+        return next;
+      }
+      return [customer, ...prev];
+    });
+    setSelectedCustomerId(customer.id);
+    setReviewedCandidate(null);
+  }
+
+  const handleCloseCompactHistory = useCallback(() => {
+    setIsCompactHistoryOpen(false);
+  }, []);
+
+  const handleOpenDetailedHistoryFromCompact = useCallback(() => {
+    setIsCompactHistoryOpen(false);
+    setIsDetailedHistoryOpen(true);
+  }, []);
 
   const customerMode = getCustomerDiscountMode(selectedCustomer); // quick label for whether this customer uses loyalty, wholesale, or no special rate
   const subtotalDiscountMeta = useMemo(
@@ -1651,13 +1982,348 @@ export default function BillingPage() {
     [selectedCustomer],
   );
 
+  useEffect(() => {
+    getPaymentGatewayDisplayApi()
+      .then((res) => {
+        if (res) setGatewayDisplay(res);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const resumeId = searchParams.get("resumePaperInvoiceId");
+    if (!currentUser?.id) return;
+    const stored = readStoredPaperFollowup(currentUser.id, resumeId || undefined);
+    const invoiceIdToCheck = resumeId || stored?.invoiceId;
+
+    if (!invoiceIdToCheck) {
+      setPaperFollowup({ status: "NONE" });
+      return;
+    }
+
+    const matchingStored =
+      resumeId && stored && stored.invoiceId === resumeId
+        ? stored
+        : !resumeId
+          ? stored
+          : null;
+
+    let cancelled = false;
+    Promise.allSettled([
+      getManualBillRecord(invoiceIdToCheck),
+      getInvoiceApi(invoiceIdToCheck),
+    ]).then(([recordResult, invoiceResult]) => {
+      if (cancelled) return;
+      if (getAuthUser()?.id !== currentUser.id) return;
+      // A newer stored intent must not be replaced by this reconciliation read.
+      if (matchingStored && JSON.stringify(readStoredPaperFollowup(currentUser.id, invoiceIdToCheck)) !== JSON.stringify(matchingStored)) return;
+      const existing =
+        recordResult.status === "fulfilled" ? recordResult.value : null;
+      const invoiceData =
+        invoiceResult.status === "fulfilled"
+          ? ((invoiceResult.value as any)?.invoice || invoiceResult.value)
+          : null;
+
+      const isRecorded =
+        existing &&
+        (existing.billRecordStatus === "RECORDED" ||
+          existing.billRecordStatus === "VERIFIED");
+
+      if (invoiceData && invoiceData.id) {
+        const paymentsList: any[] = Array.isArray(invoiceData.payments) ? invoiceData.payments : [];
+        const successfulPayments = paymentsList.filter(
+          (p: any) => p.status === "SUCCESS" || p.status === "COMPLETED" || (!p.status && p.method),
+        );
+        const pendingPayments = paymentsList.filter(
+          (p: any) => p.status === "PENDING" || p.status === "INITIATED" || p.status === "IN_PROGRESS",
+        );
+        const pendingGatewayAmount = pendingPayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount || 0),
+          0,
+        );
+
+        let derivedMethod = (invoiceData.paymentMethod as string) || "";
+        if (!derivedMethod && paymentsList.length > 0) {
+          const uniqueMethods = Array.from(new Set(paymentsList.map((p: any) => p.method).filter(Boolean)));
+          if (uniqueMethods.length === 1) {
+            derivedMethod = uniqueMethods[0];
+          } else if (uniqueMethods.length > 1) {
+            derivedMethod = `Split (${uniqueMethods.join(" + ")})`;
+          }
+        }
+        if (!derivedMethod) {
+          derivedMethod = "Cash";
+        }
+
+        const netTotal = Number(invoiceData.netTotal ?? invoiceData.total ?? 0);
+        const paidTotal = Number(
+          invoiceData.paidTotal ??
+          successfulPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0),
+        );
+        const balDue = Math.max(0, netTotal - paidTotal);
+
+        const derivedStatus: PaymentStatus =
+          (invoiceData.paymentStatus as PaymentStatus) ||
+          (paidTotal >= netTotal && netTotal > 0 ? "Paid" : paidTotal > 0 ? "Partial" : "Unpaid");
+
+        setLastCreatedInvoiceId(invoiceData.id);
+        setSavedSaleResult({
+          invoiceId: invoiceData.id,
+          invoiceNo: invoiceData.invoiceNo,
+          total: netTotal,
+          effectivePaidAmount: paidTotal,
+          balanceDue: balDue,
+          paymentMethod: derivedMethod,
+          paymentStatus: derivedStatus,
+          pendingGatewayAmount: pendingGatewayAmount > 0 ? pendingGatewayAmount : undefined,
+          paperRecorded: Boolean(isRecorded),
+          paperBillNo: existing?.externalBillNo || matchingStored?.draft?.billNo,
+        });
+        if (resumeId) {
+          setShowSuccess(true);
+        }
+      }
+
+      if (matchingStored) {
+        // A recorded tuple alone cannot acknowledge a lost reference response:
+        // replay the original expected intent through the audited endpoint.
+        setPaperFollowup({
+          status: matchingStored.error ? "FAILED_RETRYABLE" : "PENDING",
+          invoiceId: matchingStored.invoiceId,
+          invoiceNo: matchingStored.invoiceNo || invoiceData?.invoiceNo,
+          error: matchingStored.error,
+          draft: matchingStored.draft,
+          expected: matchingStored.expected,
+          duplicateOverrideReason: matchingStored.duplicateOverrideReason,
+        });
+      } else if (existing) {
+        if (isRecorded && existing.externalBillNo) {
+          setPaperFollowup({
+            status: "SUCCESS",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo: existing.invoiceNo || invoiceData?.invoiceNo,
+            draft: {
+              billNo: existing.externalBillNo,
+              externalDocumentType:
+                existing.externalDocumentType || "PAN_INVOICE",
+              externalBillDate: existing.externalBillDate
+                ? new Date(existing.externalBillDate).toLocaleDateString("en-CA")
+                : new Date().toLocaleDateString("en-CA"),
+            },
+          });
+        } else {
+          // No stored intent: establish a new follow-up from authoritative state.
+          const expected: ExpectedManualBillRecord = {
+            billingChannel: existing.billingChannel,
+            externalDocumentType: existing.externalDocumentType,
+            externalBillNo: existing.externalBillNo,
+            externalBillDate: existing.externalBillDate,
+            billRecordStatus: existing.billRecordStatus,
+          };
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo:
+              existing.invoiceNo ||
+              invoiceData?.invoiceNo,
+            draft: {
+              billNo: existing.externalBillNo || "",
+              externalDocumentType:
+                existing.externalDocumentType || "PAN_INVOICE",
+              externalBillDate: existing.externalBillDate
+                ? new Date(existing.externalBillDate).toLocaleDateString("en-CA")
+                : new Date().toLocaleDateString("en-CA"),
+            },
+            expected,
+          });
+        }
+      } else {
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo: invoiceData?.invoiceNo,
+            error: "Unable to reach server to fetch manual bill record.",
+            draft: {
+              billNo: "",
+              externalDocumentType: "PAN_INVOICE",
+              externalBillDate: new Date().toLocaleDateString("en-CA"),
+            },
+            expected: null,
+          });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, currentUser?.id]);
+
+  useEffect(() => {
+    const query = customerQuery.trim();
+    if (query.length < 2) {
+      setCustomerLookupResults([]);
+      setCustomerLookupTotal(0);
+      setCustomerLookupLoading(false);
+      setCustomerLookupError(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setCustomerLookupLoading(true);
+    setCustomerLookupError(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await lookupCustomersApi(
+          { q: query, pageSize: 12 },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const mapped = mapRawCustomers(res.items || []);
+        setCustomerLookupResults(mapped);
+        setCustomerLookupTotal(res.total || 0);
+        setCustomerLookupError(null);
+      } catch (err: any) {
+        if (!controller.signal.aborted) {
+          setCustomerLookupResults([]);
+          setCustomerLookupTotal(0);
+          setCustomerLookupError(
+            "Customer lookup service unavailable. Please check connection.",
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setCustomerLookupLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customerQuery, mapRawCustomers]);
+
+  // Comprehensive PAN Conflict Check for search query, quick-create, or selected customer
+  useEffect(() => {
+    const panToCheck = (
+      (quickCustomerOpen && quickCustomerDraft.panNo.trim())
+        ? quickCustomerDraft.panNo.trim()
+        : (isCustomerSearchOpen && /^\d{3,}$/.test(customerQuery.trim().replace(/\s+/g, "")))
+          ? customerQuery.trim().replace(/\s+/g, "")
+          : (selectedCustomer?.panNo?.trim() || "")
+    ).replace(/\s+/g, "");
+
+    if (!panToCheck || panToCheck.length < 3) {
+      prevPanToCheckRef.current = "";
+      setCustomerPanConflictWarning(null);
+      setCustomerPanConflictMatches([]);
+      setCustomerPanConflictTotal(0);
+      setCustomerPanConflictServerTotal(0);
+      setCustomerPanConflictError(null);
+      setCustomerPanConflictLoading(false);
+      return undefined;
+    }
+
+    const panTargetKey = `${quickCustomerOpen ? "quick" : isCustomerSearchOpen ? "search" : "selected"}:${selectedCustomerId || ""}:${panToCheck}`;
+    let pageToFetch = customerPanConflictPage;
+    if (prevPanToCheckRef.current !== panTargetKey) {
+      prevPanToCheckRef.current = panTargetKey;
+      pageToFetch = 1;
+      setCustomerPanConflictPage(1);
+    }
+
+    const controller = new AbortController();
+    setCustomerPanConflictLoading(true);
+    setCustomerPanConflictError(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const panRes = await lookupCustomersApi(
+          { q: panToCheck, match: "pan", page: pageToFetch, pageSize: 20 },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const rawItems = panRes.items || [];
+        const mappedMatches = mapRawCustomers(rawItems);
+        const isSelfMatch = !quickCustomerOpen && Boolean(
+          selectedCustomerId && (
+            rawItems.some((i) => i.id === selectedCustomerId) ||
+            (selectedCustomer && selectedCustomer.id === selectedCustomerId && selectedCustomer.panNo?.replace(/\s+/g, "") === panToCheck)
+          ),
+        );
+        const conflicts = quickCustomerOpen
+          ? mappedMatches
+          : mappedMatches.filter((item) => item.id !== selectedCustomerId);
+
+        const serverTotal = typeof panRes.total === "number" ? panRes.total : rawItems.length;
+        const reportedTotal = Math.max(0, serverTotal - (isSelfMatch ? 1 : 0));
+
+        setCustomerPanConflictMatches(conflicts);
+        setCustomerPanConflictTotal(reportedTotal);
+        setCustomerPanConflictServerTotal(serverTotal);
+        setCustomerPanConflictError(null);
+
+        if (conflicts.length > 0 || reportedTotal > 0) {
+          if (conflicts.length === 1 && reportedTotal === 1) {
+            const m = conflicts[0];
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" is registered to customer "${m.name}" (${m.phone || "No phone"})${!m.isActive ? " [INACTIVE]" : ""}.`,
+            );
+          } else if (conflicts.length > 0) {
+            const names = conflicts
+              .slice(0, 3)
+              .map(
+                (m) =>
+                  `"${m.name}" (${m.phone || "No phone"})${!m.isActive ? " [INACTIVE]" : ""}`,
+              )
+              .join(", ");
+            const extra = reportedTotal > 3 ? ` and ${reportedTotal - 3} more` : "";
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" matches ${reportedTotal} customer(s): ${names}${extra}.`,
+            );
+          } else {
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" matches ${reportedTotal} customer(s) across other pages.`,
+            );
+          }
+        } else {
+          setCustomerPanConflictWarning(null);
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setCustomerPanConflictWarning(
+            "Unable to verify PAN conflicts (lookup service unavailable).",
+          );
+          setCustomerPanConflictError(
+            "Unable to verify PAN conflicts (lookup service unavailable).",
+          );
+          setCustomerPanConflictMatches([]);
+          setCustomerPanConflictTotal(0);
+          setCustomerPanConflictServerTotal(0);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setCustomerPanConflictLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customerQuery, quickCustomerDraft.panNo, quickCustomerOpen, selectedCustomer?.panNo, selectedCustomerId, isCustomerSearchOpen, customerPanConflictPage, mapRawCustomers]);
+
   // filtering the customer list based on the search query
   // we wrap this in useMemo so it only recalculates when the query or customers change
   const customerListFiltered = useMemo(() => {
     const s = customerQuery.trim().toLowerCase();
     if (!s) return customers;
     return customers.filter((c) =>
-      (c.name + " " + c.phone).toLowerCase().includes(s),
+      (c.name + " " + c.phone + " " + (c.panNo || "")).toLowerCase().includes(s),
     );
   }, [customers, customerQuery]);
 
@@ -1668,11 +2334,25 @@ export default function BillingPage() {
     if (selectedCustomerId) {
       opts.push({ type: "CLEAR" });
     }
-    customerListFiltered.forEach((c) =>
-      opts.push({ type: "CUSTOMER", customer: c }),
-    );
+    const seen = new Set<string>();
+    customerListFiltered.forEach((c) => {
+      seen.add(c.id);
+      opts.push({ type: "CUSTOMER", customer: c });
+    });
+    customerLookupResults.forEach((c) => {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        opts.push({ type: "CUSTOMER", customer: c });
+      }
+    });
+    customerPanConflictMatches.forEach((c) => {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        opts.push({ type: "CUSTOMER", customer: c });
+      }
+    });
     return opts;
-  }, [selectedCustomerId, customerListFiltered]);
+  }, [selectedCustomerId, customerListFiltered, customerLookupResults, customerPanConflictMatches]);
 
   useEffect(() => {
     setCustomerSearchIndex(0);
@@ -1711,9 +2391,9 @@ export default function BillingPage() {
       const opt = customerOptions[customerSearchIndex];
       if (!opt) return;
       if (opt.type === "CLEAR") {
-        setSelectedCustomerId(null);
+        handleSelectCustomer(null);
       } else {
-        setSelectedCustomerId(opt.customer.id);
+        handleSelectCustomer(opt.customer);
       }
       setCustomerSearchOpen(false);
     }
@@ -1797,6 +2477,59 @@ export default function BillingPage() {
     [products],
   );
 
+  // Ref tracking live checkout inputs across renders
+  const liveCheckoutInputsRef = useRef({
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    discountPercent: subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  });
+  liveCheckoutInputsRef.current = {
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    discountPercent: subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  };
+
+  // Tracking live changes to cart, customer, pricing metadata, or payments for fresh checkout validation
+  useEffect(() => {
+    checkoutInputRevisionRef.current++;
+  }, [
+    cart,
+    selectedCustomerId,
+    selectedCustomer,
+    subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  ]);
+
   // restoring the saved cart once on mount keeps billing work intact even after route changes or refreshes
   useEffect(() => {
     const storedCart = readStoredBillingCart();
@@ -1806,9 +2539,21 @@ export default function BillingPage() {
       setActiveDraftRequestId(storedCart.activeDraftRequestId || null);
       setSelectedCustomerId(storedCart.selectedCustomerId || null);
       setPendingCheckout(storedCart.pendingCheckout || null);
+      if (storedCart.pendingCheckout?.operationKey) {
+        const storedDraft = readStoredPendingPaperDraft(
+          storedCart.pendingCheckout.operationKey,
+          currentUser?.id,
+        );
+        if (storedDraft) {
+          setPaperDraftBillNo(storedDraft.draft.billNo);
+          setPaperDraftDocumentType(storedDraft.draft.externalDocumentType);
+          setPaperDraftBillDate(storedDraft.draft.externalBillDate);
+          setPaperDraftChoice(storedDraft.draft.choice);
+        }
+      }
     }
     setCartPersistenceReady(true);
-  }, []);
+  }, [currentUser?.id]);
 
   const cartProductIds = useMemo(
     () => [...new Set(cart.map((line) => line.productId).filter(Boolean))],
@@ -2292,7 +3037,9 @@ export default function BillingPage() {
       !submitting &&
       !stockRefreshBusy &&
       !parkedBusy &&
-      !draftRequestBusy; // final guard for whether checkout can run right now
+      !draftRequestBusy &&
+      paperFollowup.status !== "FAILED_RETRYABLE" &&
+      paperFollowup.status !== "PENDING"; // final guard for whether checkout can run right now
   const hasBillDraft =
     cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
 
@@ -2850,7 +3597,7 @@ export default function BillingPage() {
 
   // we use this to clear all current cart data when a transaction finishes or is cancelled manually
   // the stored cart is cleared here too so the next visit starts fresh on purpose
-  function resetBill(options?: { forceClearPending?: boolean }) {
+  function resetBill(options?: { forceClearPending?: boolean; preserveStorageWarning?: boolean }) {
     if (pendingCheckoutRef.current && !options?.forceClearPending) {
       writeStoredBillingCart([], null, null, null, pendingCheckoutRef.current);
     } else {
@@ -2882,6 +3629,14 @@ export default function BillingPage() {
     setShowPaymentModal(false);
     setPendingBillingConfirm(null);
     setShowEsewaQr(true);
+    setPaperDraftBillNo("");
+    setPaperDraftDocumentType("PAN_INVOICE");
+    setPaperDraftBillDate(new Date().toLocaleDateString("en-CA"));
+    setPaperDraftChoice("RECORD_AFTER_SAVE");
+    setFonepayConfirmed(false);
+    if (!options?.preserveStorageWarning) {
+      setStorageLimitationWarning(null);
+    }
     skuRef.current?.focus();
   }
 
@@ -3603,6 +4358,11 @@ export default function BillingPage() {
         return false;
       }
 
+      if (normalizedSplitPayments.some((row) => row.method === "FONEPAY") && !fonepayConfirmed) {
+        setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
+        return false;
+      }
+
       return true;
     }
 
@@ -3621,6 +4381,10 @@ export default function BillingPage() {
     if (paymentMethod === "Fonepay" && paymentStatus !== "Unpaid") {
       if (!fonepayReference.trim()) {
         setPaymentError("Enter the Fonepay reference or remarks.");
+        return false;
+      }
+      if (!fonepayConfirmed) {
+        setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
         return false;
       }
     }
@@ -3760,22 +4524,41 @@ export default function BillingPage() {
     if (!canConfirm) {
       if (hasUnresolvedCartLines) {
         setPaymentError("Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.");
+      } else if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
+        setPaymentError(
+          "There is an outstanding paper bill reference for invoice " +
+            (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
+            ". Please retry or dismiss it before confirming checkout.",
+        );
       }
       return;
     }
     if (!validatePaymentBeforeConfirm()) return;
 
+    const liveFingerprintBeforeRefresh = computeReviewFingerprint(liveCheckoutInputsRef.current);
+
+    const startRevision = checkoutInputRevisionRef.current;
     setStockConflicts([]);
     setStockRefreshBusy(true);
     try {
       const latestProducts = await refreshProductsForCheckout();
+      const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
+
+      if (
+        checkoutInputRevisionRef.current !== startRevision ||
+        computeReviewFingerprint({ ...liveCheckoutInputsRef.current, productsById }) !== liveFingerprintBeforeRefresh
+      ) {
+        setPaymentError(
+          "Cart, customer, or payment details changed during catalog refresh. Please review and confirm again.",
+        );
+        return;
+      }
       const conflicts = buildStockConflictsFromCart(cart, latestProducts);
       if (conflicts.length > 0) {
         showStockConflicts(conflicts);
         return;
       }
 
-      const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
       const result = deriveCandidateCheckoutState({
         cart,
         latestProductsById,
@@ -3801,20 +4584,8 @@ export default function BillingPage() {
       }
 
       const candidateFingerprint = computeReviewFingerprint({
-        cart,
+        ...liveCheckoutInputsRef.current,
         productsById: latestProductsById,
-        selectedCustomerId,
-        selectedCustomer,
-        discountPercent: subtotalDiscountMeta.percent,
-        paymentMethod,
-        paymentStatus,
-        paidAmount,
-        cashTendered,
-        fonepayReference,
-        splitPayments,
-        activeDraftInvoiceId,
-        activeDraftRequestId,
-        invoiceNote,
       });
 
       setReviewedCandidate({
@@ -3836,6 +4607,32 @@ export default function BillingPage() {
     if (!pendingCheckout && !canConfirm) return;
     if (!pendingCheckout && !validatePaymentBeforeConfirm()) return;
     if (!pendingCheckout && !reviewedCandidate) return;
+
+    if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
+      setBillingError(
+        "There is an outstanding paper bill reference for invoice " +
+          (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
+          ". Please retry or dismiss it before confirming checkout.",
+      );
+      return;
+    }
+
+    if (!pendingCheckout) {
+      const currentLiveFingerprint = computeReviewFingerprint({
+        ...liveCheckoutInputsRef.current,
+        productsById: new Map(products.map((p) => [p.id, p])),
+      });
+
+      if (reviewedCandidate?.fingerprint !== currentLiveFingerprint) {
+        setBillingError(
+          "Cart, customer, or payment details changed since review. Please review and confirm again.",
+        );
+        setReviewedCandidate(null);
+        setPendingBillingConfirm(null);
+        return;
+      }
+    }
+
     setPendingBillingConfirm(null);
     setSubmitting(true);
 
@@ -3879,6 +4676,21 @@ export default function BillingPage() {
           activeDraftRequestId,
           checkoutSnapshot,
         );
+        if (paperDraftBillNo.trim()) {
+          const ok = writeStoredPendingPaperDraft({
+            actorId: currentUser?.id || "unknown",
+            operationKey: checkoutSnapshot.operationKey,
+            draft: {
+              billNo: paperDraftBillNo.trim(),
+              externalDocumentType: paperDraftDocumentType,
+              externalBillDate: paperDraftBillDate,
+              choice: paperDraftChoice,
+            },
+          });
+          if (!ok) {
+            setStorageLimitationWarning("Browser storage is full or restricted. Unsaved paper drafts may not survive page reload.");
+          }
+        }
       }
 
       // The key and exact non-secret payload survive a lost response and reload.
@@ -3888,6 +4700,7 @@ export default function BillingPage() {
       });
 
       const invoiceId = result?.invoice?.id;
+      const invoiceNo = result?.invoice?.invoiceNo;
       if (invoiceId) {
         setLastCreatedInvoiceId(invoiceId);
         window.sessionStorage.setItem(
@@ -3896,10 +4709,291 @@ export default function BillingPage() {
         );
       }
 
+      let paperRecordedSuccessfully = false;
+      const initialLiveUser = getAuthUser();
+      const initialActorId = initialLiveUser?.id || currentUser?.id || "unknown";
+      const pendingStoredPaper = readStoredPendingPaperDraft(checkoutSnapshot.operationKey, initialActorId);
+      const effectivePaperBillNo = paperDraftBillNo.trim() || pendingStoredPaper?.draft?.billNo?.trim() || "";
+      const effectivePaperDocType = paperDraftBillNo.trim() ? paperDraftDocumentType : (pendingStoredPaper?.draft?.externalDocumentType || paperDraftDocumentType);
+      const effectivePaperBillDate = paperDraftBillNo.trim() ? paperDraftBillDate : (pendingStoredPaper?.draft?.externalBillDate || paperDraftBillDate);
+      const effectivePaperChoice = paperDraftBillNo.trim() ? paperDraftChoice : (pendingStoredPaper?.draft?.choice || paperDraftChoice);
+      const hasPaperDraft = Boolean(effectivePaperBillNo);
+
+      if (hasPaperDraft && invoiceId) {
+        const paperDraftToRecord = {
+          billNo: effectivePaperBillNo,
+          externalDocumentType: effectivePaperDocType,
+          externalBillDate: effectivePaperBillDate,
+        };
+        const ok = writeStoredPaperFollowup({
+          actorId: initialActorId,
+          invoiceId,
+          invoiceNo,
+          draft: paperDraftToRecord,
+          expected: null,
+        });
+        if (!ok) {
+          setStorageLimitationWarning(
+            "Browser storage is full or restricted. Outstanding paper followup may not survive page reload.",
+          );
+        }
+        clearStoredPendingPaperDraft(checkoutSnapshot.operationKey);
+
+        setPaperFollowup({
+          status: "PENDING",
+          invoiceId,
+          invoiceNo,
+          draft: paperDraftToRecord,
+          expected: null,
+        });
+
+        if (effectivePaperChoice === "RECORD_AFTER_SAVE") {
+          let initialExpected: ExpectedManualBillRecord | null = null;
+          try {
+            const existing = await getManualBillRecord(invoiceId);
+            const liveUserAfterRead = getAuthUser();
+            if ((liveUserAfterRead?.id || "unknown") !== initialActorId) return;
+            const currentSlotAfterRead = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotAfterRead &&
+              (currentSlotAfterRead.invoiceId !== invoiceId ||
+                currentSlotAfterRead.actorId !== initialActorId ||
+                currentSlotAfterRead.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotAfterRead.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotAfterRead.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+
+            initialExpected = {
+              billingChannel: existing.billingChannel,
+              externalDocumentType: existing.externalDocumentType,
+              externalBillNo: existing.externalBillNo,
+              externalBillDate: existing.externalBillDate,
+              billRecordStatus: existing.billRecordStatus,
+            };
+          } catch {
+            const liveUserCatch = getAuthUser();
+            if ((liveUserCatch?.id || "unknown") !== initialActorId) return;
+            const currentSlotCatch = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotCatch &&
+              (currentSlotCatch.invoiceId !== invoiceId ||
+                currentSlotCatch.actorId !== initialActorId ||
+                currentSlotCatch.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotCatch.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotCatch.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+            setPaperFollowup((current) => {
+              if (
+                current.invoiceId &&
+                (current.invoiceId !== invoiceId ||
+                  (current.draft &&
+                    (current.draft.billNo !== paperDraftToRecord.billNo ||
+                      current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                      current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+              ) {
+                return current;
+              }
+              return {
+                status: "FAILED_RETRYABLE",
+                invoiceId,
+                invoiceNo,
+                error:
+                  "Unable to reach server to fetch current manual bill record before recording.",
+                draft: paperDraftToRecord,
+                expected: null,
+              };
+            });
+            const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              !rawStored ||
+              (rawStored.invoiceId === invoiceId &&
+                rawStored.actorId === initialActorId &&
+                rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate)
+            ) {
+              writeStoredPaperFollowup({
+                actorId: initialActorId,
+                invoiceId,
+                invoiceNo,
+                draft: paperDraftToRecord,
+                expected: null,
+                error:
+                  "Unable to reach server to fetch current manual bill record before recording.",
+              });
+            }
+            showToast(
+              "warning",
+              "Invoice finalized, but paper bill reference needs attention.",
+            );
+          }
+
+          if (initialExpected) {
+            const liveUserBeforeWrite = getAuthUser();
+            if ((liveUserBeforeWrite?.id || "unknown") !== initialActorId) return;
+            const currentSlotBeforeWrite = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotBeforeWrite &&
+              (currentSlotBeforeWrite.invoiceId !== invoiceId ||
+                currentSlotBeforeWrite.actorId !== initialActorId ||
+                currentSlotBeforeWrite.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotBeforeWrite.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotBeforeWrite.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+
+            writeStoredPaperFollowup({
+              actorId: initialActorId,
+              invoiceId,
+              invoiceNo,
+              draft: paperDraftToRecord,
+              expected: initialExpected,
+            });
+            const submittedIntent = readStoredPaperFollowup(initialActorId, invoiceId);
+
+            try {
+              await recordManualBillReference(invoiceId, {
+                reference: {
+                  billNo: paperDraftToRecord.billNo,
+                  externalDocumentType: paperDraftToRecord.externalDocumentType,
+                  externalBillDate: paperDraftToRecord.externalBillDate,
+                },
+                expected: initialExpected,
+              });
+
+              const liveUserAfterWrite = getAuthUser();
+              if ((liveUserAfterWrite?.id || "unknown") !== initialActorId) return;
+              if (JSON.stringify(readStoredPaperFollowup(initialActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+
+              paperRecordedSuccessfully = true;
+              setPaperFollowup((current) => {
+                if (
+                  current.invoiceId &&
+                  (current.invoiceId !== invoiceId ||
+                    (current.draft &&
+                      (current.draft.billNo !== paperDraftToRecord.billNo ||
+                        current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                        current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+                ) {
+                  return current;
+                }
+                return {
+                  status: "SUCCESS",
+                  invoiceId,
+                  invoiceNo,
+                  draft: paperDraftToRecord,
+                };
+              });
+              const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                rawStored &&
+                rawStored.invoiceId === invoiceId &&
+                rawStored.actorId === initialActorId &&
+                rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate
+              ) {
+                clearStoredPaperFollowup(invoiceId, paperDraftToRecord, submittedIntent);
+              }
+            } catch (followupErr: any) {
+              const liveUserCatch = getAuthUser();
+              if ((liveUserCatch?.id || "unknown") !== initialActorId) return;
+              if (JSON.stringify(readStoredPaperFollowup(initialActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+              const currentSlotCatch = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                currentSlotCatch &&
+                (currentSlotCatch.invoiceId !== invoiceId ||
+                  currentSlotCatch.actorId !== initialActorId ||
+                  currentSlotCatch.draft?.billNo !== paperDraftToRecord.billNo ||
+                  currentSlotCatch.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                  currentSlotCatch.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+              ) {
+                return;
+              }
+
+              const errCode = followupErr?.response?.data?.code;
+              const errorMsg =
+                followupErr?.response?.data?.error ||
+                "Paper bill reference could not be saved. You can retry below.";
+              const isReviewer =
+                liveUserCatch?.role === "admin" || liveUserCatch?.role === "manager";
+              const isDuplicate =
+                errCode === "DUPLICATE_REVIEW_REQUIRED" ||
+                errCode === "DUPLICATE_PAPER_BILL";
+              const isStale = errCode === "STALE_RECORD_CONFLICT";
+
+              setPaperFollowup((current) => {
+                if (
+                  current.invoiceId &&
+                  (current.invoiceId !== invoiceId ||
+                    (current.draft &&
+                      (current.draft.billNo !== paperDraftToRecord.billNo ||
+                        current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                        current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+                ) {
+                  return current;
+                }
+                return {
+                  status: "FAILED_RETRYABLE",
+                  invoiceId,
+                  invoiceNo,
+                  error:
+                    isDuplicate && !isReviewer
+                      ? "Duplicate paper bill number. Only managers or administrators can approve duplicate paper bills."
+                      : errorMsg,
+                  draft: paperDraftToRecord,
+                  expected: initialExpected,
+                  conflictRecord: isStale
+                    ? followupErr?.response?.data?.currentRecord || null
+                    : null,
+                  duplicateRequired: isDuplicate && isReviewer,
+                };
+              });
+              const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                !rawStored ||
+                (rawStored.invoiceId === invoiceId &&
+                  rawStored.actorId === initialActorId &&
+                  rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                  rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                  rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate)
+              ) {
+                writeStoredPaperFollowup({
+                  actorId: initialActorId,
+                  invoiceId,
+                  invoiceNo,
+                  draft: paperDraftToRecord,
+                  expected: initialExpected,
+                  error: errorMsg,
+                });
+              }
+              showToast(
+                "warning",
+                "Invoice finalized, but paper bill reference needs attention.",
+              );
+            }
+          }
+        } else if (effectivePaperChoice === "LATER") {
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId,
+            invoiceNo,
+            draft: paperDraftToRecord,
+          });
+        }
+      } else {
+        clearStoredPendingPaperDraft(checkoutSnapshot.operationKey);
+      }
+
       // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
       if (result?.esewaPaymentIntent) {
         setPendingCheckout(null);
-        resetBill();
+        resetBill({ preserveStorageWarning: true });
         submitEsewaForm(result.esewaPaymentIntent);
         return;
       }
@@ -3909,7 +5003,18 @@ export default function BillingPage() {
       setPriceOverrideDraftPin("");
       setReviewedCandidate(null);
       setPendingCheckout(null);
-      resetBill();
+      setSavedSaleResult({
+        invoiceId: invoiceId || "",
+        invoiceNo: invoiceNo || result?.invoice?.invoiceNo,
+        total: result?.invoice?.netTotal ?? payableTotal,
+        effectivePaidAmount: result?.invoice?.paidTotal ?? effectivePaidAmount,
+        balanceDue: (result?.invoice?.netTotal ?? payableTotal) - (result?.invoice?.paidTotal ?? effectivePaidAmount),
+        paymentMethod,
+        paymentStatus: result?.invoice?.paymentStatus ?? paymentStatus,
+        paperRecorded: paperRecordedSuccessfully,
+        paperBillNo: paperDraftBillNo.trim() || undefined,
+      });
+      resetBill({ preserveStorageWarning: true });
       setShowSuccess(true);
       try {
         await loadParkedDrafts();
@@ -3934,9 +5039,12 @@ export default function BillingPage() {
           activeDraftRequestId,
           null,
         );
+        const paperGuidance = paperDraftBillNo.trim()
+          ? ` Note: Paper bill "${paperDraftBillNo.trim()}" was prepared. Because bill totals changed, please void or revise the physical paper bill before finalizing.`
+          : "";
         setBillingError(
-          responseData?.error ||
-            "Items, prices, or payable total changed since review. Please review the updated bill and confirm again.",
+          (responseData?.error ||
+            "Items, prices, or payable total changed since review. Please review the updated bill and confirm again.") + paperGuidance,
         );
         try {
           await refreshProductsForCheckout();
@@ -3957,6 +5065,12 @@ export default function BillingPage() {
         const conflicts = normalizeApiStockConflicts(responseData.conflicts);
         if (conflicts.length > 0) {
           showStockConflicts(conflicts);
+          const paperGuidance = paperDraftBillNo.trim()
+            ? ` Note: Paper bill "${paperDraftBillNo.trim()}" was prepared. Because available stock changed, please void or revise the physical paper bill before finalizing.`
+            : "";
+          if (paperGuidance) {
+            setBillingError(paperGuidance);
+          }
           try {
             await refreshProductsForCheckout();
           } catch {
@@ -3973,6 +5087,224 @@ export default function BillingPage() {
     } finally {
       // re-enabling billing actions whether checkout succeeded or failed
       setSubmitting(false);
+    }
+  }
+
+  async function handleRetryPaperFollowup() {
+    if (
+      !paperFollowup.invoiceId ||
+      !paperFollowup.draft?.billNo ||
+      paperFollowupBusy
+    ) {
+      return;
+    }
+    setPaperFollowupBusy(true);
+    const invoiceId = paperFollowup.invoiceId;
+    const draft = paperFollowup.draft;
+    const initialLiveUser = getAuthUser();
+    const retryActorId = initialLiveUser?.id || currentUser?.id || "unknown";
+    const startingIntent = readStoredPaperFollowup(retryActorId, invoiceId);
+    const duplicateOverrideReason = paperFollowup.duplicateOverrideReason?.trim() || undefined;
+    let expectedToUse: ExpectedManualBillRecord | undefined | null = paperFollowup.expected;
+    let submittedIntent: StoredPaperFollowup | null = null;
+    try {
+      if (initialLiveUser?.id !== currentUser?.id) return;
+      if (startingIntent && (startingIntent.actorId !== retryActorId || startingIntent.invoiceId !== invoiceId)) return;
+      // Retain original expected intent across retries; only fetch if expected was not yet established
+      if (!expectedToUse) {
+        let existing: ManualBillRecord | null = null;
+        try {
+          existing = await getManualBillRecord(invoiceId);
+        } catch {
+          const liveUser = getAuthUser();
+          if ((liveUser?.id || "unknown") !== retryActorId) return;
+          setPaperFollowup((current) => {
+            if (current.invoiceId !== invoiceId) return current;
+            return {
+              ...current,
+              error: "Unable to reach server to read current manual bill record. Retry suspended.",
+            };
+          });
+          return;
+        }
+
+        const liveUserAfterRead = getAuthUser();
+        if ((liveUserAfterRead?.id || "unknown") !== retryActorId) return;
+        const currentSlotAfterRead = readStoredPaperFollowup(retryActorId, invoiceId);
+        if (
+          currentSlotAfterRead &&
+          (currentSlotAfterRead.invoiceId !== invoiceId ||
+            currentSlotAfterRead.actorId !== retryActorId ||
+            currentSlotAfterRead.draft?.billNo !== draft.billNo ||
+            currentSlotAfterRead.draft?.externalDocumentType !== draft.externalDocumentType ||
+            currentSlotAfterRead.draft?.externalBillDate !== draft.externalBillDate)
+        ) {
+          return;
+        }
+
+        if (!existing) {
+          const liveUserNoRecord = getAuthUser();
+          if ((liveUserNoRecord?.id || "unknown") !== retryActorId) return;
+          setPaperFollowup((current) => {
+            if (current.invoiceId !== invoiceId) return current;
+            return {
+              ...current,
+              error: "Unable to read manual bill record for this invoice.",
+            };
+          });
+          return;
+        }
+        expectedToUse = {
+          billingChannel: existing.billingChannel,
+          externalDocumentType: existing.externalDocumentType,
+          externalBillNo: existing.externalBillNo,
+          externalBillDate: existing.externalBillDate,
+          billRecordStatus: existing.billRecordStatus,
+        };
+      }
+
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(startingIntent)) return;
+      // Persist the exact retry payload before the request can commit or lose its response.
+      const stored = writeStoredPaperFollowup({
+        actorId: retryActorId,
+        invoiceId,
+        invoiceNo: paperFollowup.invoiceNo,
+        draft,
+        expected: expectedToUse,
+        duplicateOverrideReason,
+      });
+      if (!stored) {
+        setStorageLimitationWarning("Browser storage is full or restricted. Outstanding paper followup may not survive page reload.");
+      }
+      submittedIntent = readStoredPaperFollowup(retryActorId, invoiceId);
+
+      // Verify live actor and slot before issuing reference write
+      const liveUserBeforeWrite = getAuthUser();
+      if ((liveUserBeforeWrite?.id || "unknown") !== retryActorId) return;
+      const currentSlotBeforeWrite = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        currentSlotBeforeWrite &&
+        (currentSlotBeforeWrite.invoiceId !== invoiceId ||
+          currentSlotBeforeWrite.actorId !== retryActorId ||
+          currentSlotBeforeWrite.draft?.billNo !== draft.billNo ||
+          currentSlotBeforeWrite.draft?.externalDocumentType !== draft.externalDocumentType ||
+          currentSlotBeforeWrite.draft?.externalBillDate !== draft.externalBillDate)
+      ) {
+        return;
+      }
+
+      await recordManualBillReference(invoiceId, {
+        reference: {
+          billNo: draft.billNo,
+          externalDocumentType: draft.externalDocumentType,
+          externalBillDate: draft.externalBillDate,
+        },
+        expected: expectedToUse,
+        ...(duplicateOverrideReason
+          ? {
+              duplicateOverrideReason,
+            }
+          : {}),
+      });
+
+      const liveUserAfterWrite = getAuthUser();
+      if ((liveUserAfterWrite?.id || "unknown") !== retryActorId) return;
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+
+      setPaperFollowup((current) => {
+        if (
+          current.invoiceId !== invoiceId ||
+          current.draft?.billNo !== draft.billNo ||
+          current.draft?.externalDocumentType !== draft.externalDocumentType ||
+          current.draft?.externalBillDate !== draft.externalBillDate
+        ) {
+          return current;
+        }
+        return {
+          status: "SUCCESS",
+          invoiceId: current.invoiceId,
+          invoiceNo: current.invoiceNo,
+          draft: current.draft,
+        };
+      });
+      const rawStored = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        rawStored &&
+        rawStored.invoiceId === invoiceId &&
+        rawStored.actorId === retryActorId &&
+        rawStored.draft?.billNo === draft.billNo &&
+        rawStored.draft?.externalDocumentType === draft.externalDocumentType &&
+        rawStored.draft?.externalBillDate === draft.externalBillDate
+      ) {
+        clearStoredPaperFollowup(invoiceId, draft, submittedIntent);
+      }
+      setIsBannerEditing(false);
+      showToast("success", "Manual bill reference recorded successfully.");
+    } catch (err: any) {
+      const liveUserCatch = getAuthUser();
+      if ((liveUserCatch?.id || "unknown") !== retryActorId) return;
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+      const errCode = err?.response?.data?.code;
+      const errorMsg =
+        err?.response?.data?.error ||
+        "Retry failed. Check the details or permissions.";
+      const isReviewer =
+        liveUserCatch?.role === "admin" || liveUserCatch?.role === "manager";
+      const isDuplicate =
+        errCode === "DUPLICATE_REVIEW_REQUIRED" ||
+        errCode === "DUPLICATE_PAPER_BILL";
+      const isStale = errCode === "STALE_RECORD_CONFLICT";
+
+      setPaperFollowup((current) => {
+        if (
+          current.invoiceId !== invoiceId ||
+          current.draft?.billNo !== draft.billNo ||
+          current.draft?.externalDocumentType !== draft.externalDocumentType ||
+          current.draft?.externalBillDate !== draft.externalBillDate
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          status: "FAILED_RETRYABLE",
+          error:
+            isDuplicate && !isReviewer
+              ? "Duplicate paper bill number. Only managers or administrators can approve duplicate paper bills."
+              : errorMsg,
+          expected: expectedToUse,
+          conflictRecord: isStale
+            ? err?.response?.data?.currentRecord || null
+            : null,
+          duplicateRequired: isDuplicate && isReviewer,
+        };
+      });
+      const rawStored = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        !rawStored ||
+        (rawStored.invoiceId === invoiceId &&
+          rawStored.actorId === retryActorId &&
+          rawStored.draft?.billNo === draft.billNo &&
+          rawStored.draft?.externalDocumentType === draft.externalDocumentType &&
+          rawStored.draft?.externalBillDate === draft.externalBillDate)
+      ) {
+        const ok = writeStoredPaperFollowup({
+          actorId: retryActorId,
+          invoiceId,
+          invoiceNo: paperFollowup.invoiceNo,
+          draft,
+          expected: expectedToUse,
+          duplicateOverrideReason,
+          error: errorMsg,
+        });
+        if (!ok) {
+          setStorageLimitationWarning(
+            "Browser storage is full or restricted. Outstanding paper followup may not survive page reload.",
+          );
+        }
+      }
+      showToast("danger", errorMsg);
+    } finally {
+      setPaperFollowupBusy(false);
     }
   }
 
@@ -4239,6 +5571,19 @@ export default function BillingPage() {
     }
 
     function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
+
+      // Overlay keyboard isolation: When any modal or tool overlay is open, suppress global billing shortcuts
+      if (
+        isWorksheetOpen ||
+        isCalculatorOpen ||
+        isDetailedHistoryOpen ||
+        isCompactHistoryOpen ||
+        Boolean(typeof document !== "undefined" && document.querySelector('[data-modal-frame="true"]'))
+      ) {
+        return;
+      }
+
       const isFKey = /^F[2-9]$/.test(e.key);
       const isTyping = isTypingTarget(e.target);
 
@@ -4507,6 +5852,10 @@ export default function BillingPage() {
     selectedCartRowIndex,
     priceOverrideTargetId,
     payableTotal,
+    isWorksheetOpen,
+    isCalculatorOpen,
+    isDetailedHistoryOpen,
+    isCompactHistoryOpen,
   ]);
 
   if (loading) {
@@ -4731,6 +6080,37 @@ export default function BillingPage() {
                 <Icon name="add" className="text-[16px]" />
               </button>
             </div>
+            <button
+              type="button"
+              id="billing-calculator-trigger"
+              onClick={() => setIsCalculatorOpen(true)}
+              title="Open scratchpad calculator (Alt+C)"
+              className={billingView.topButton}
+            >
+              <Icon name="calculate" className="text-[16px]" />
+              Calculator
+            </button>
+            <button
+              type="button"
+              id="billing-worksheet-trigger"
+              onClick={() => setIsWorksheetOpen(true)}
+              disabled={cartRows.length === 0}
+              title={
+                cartRows.length > 0
+                  ? "View sales worksheet preview"
+                  : "Add items to cart to view worksheet"
+              }
+              className={cn(
+                billingView.topButton,
+                cartRows.length > 0
+                  ? "border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100"
+                  : "",
+              )}
+            >
+              <Icon name="receipt" className="text-[16px]" />
+              Worksheet
+              {cartRows.length > 0 ? ` (${cartRows.length})` : ""}
+            </button>
             <button
               type="button"
               onClick={() =>
@@ -5219,7 +6599,7 @@ export default function BillingPage() {
                       <div className="flex h-[40px] w-[40px] items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]">
                         <Icon name="person" className="text-[19px]" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
                           Customer
                         </div>
@@ -5228,6 +6608,35 @@ export default function BillingPage() {
                             ? selectedCustomer.name
                             : "Walk-in Customer"}
                         </div>
+                        {selectedCustomer ? (
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-[#565449]">
+                            {selectedCustomer.phone ? (
+                              <span>{selectedCustomer.phone}</span>
+                            ) : null}
+                            {selectedCustomer.panNo ? (
+                              <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[10px] font-mono font-extrabold text-slate-800">
+                                PAN: {selectedCustomer.panNo}
+                              </span>
+                            ) : (
+                              <span
+                                title="Cashier cannot edit customer PAN. Request manager update if needed."
+                                className="rounded bg-amber-50 px-1.5 py-0.2 text-[10px] font-extrabold text-amber-700"
+                              >
+                                No PAN (Manager Update)
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
+                        {selectedCustomer?.panNo && customerPanConflictMatches.length > 0 ? (
+                          <div className="mt-1 flex items-center justify-between rounded-[7px] border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-900">
+                            <span className="font-bold">
+                              PAN registered to {customerPanConflictMatches.length} other profile(s)
+                            </span>
+                            <span className="text-[9px] font-extrabold text-amber-700 underline">
+                              Review in search
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
                     </button>
                     <button
@@ -5254,17 +6663,125 @@ export default function BillingPage() {
                     </button>
                   </div>
 
+                  {selectedCustomer ? (
+                    <div className="mt-2 flex items-center gap-2 border-t border-[#F3F4F6] pt-2">
+                      <button
+                        ref={compactHistoryTriggerRef}
+                        type="button"
+                        onClick={() => setIsCompactHistoryOpen((prev) => !prev)}
+                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
+                        title="Toggle recent cart item history"
+                      >
+                        <Icon name="schedule" className="text-[14px]" />
+                        Recent Items
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsDetailedHistoryOpen(true)}
+                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
+                        title="Open full searchable purchase history"
+                      >
+                        <Icon name="history" className="text-[14px]" />
+                        Full History
+                      </button>
+                    </div>
+                  ) : null}
+
                   {isCustomerSearchOpen ? (
                     <div className="absolute left-0 right-0 top-full z-30 mt-2 max-h-[min(70vh,520px)] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
                       <Input
                         value={customerQuery}
-                        onChange={setCustomerQuery}
+                        onChange={(val) => {
+                          setCustomerQuery(val);
+                          setCustomerPanConflictPage(1);
+                        }}
                         onKeyDown={handleCustomerSearchKeyDown}
-                        placeholder="Find customer..."
+                        placeholder="Find by name, phone, or 9-digit PAN..."
                         autoFocus
                         leftIcon="search"
                         className="mb-2"
                       />
+
+                      {(customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) ? (
+                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900 space-y-1.5">
+                          <div className="flex items-center gap-1 font-bold">
+                            <Icon name="warning" className="text-[14px] text-amber-600" />
+                            <span>Registered PAN Matches ({customerPanConflictTotal || customerPanConflictMatches.length})</span>
+                          </div>
+                          {customerPanConflictWarning ? (
+                            <div className="text-[11px]">{customerPanConflictWarning}</div>
+                          ) : null}
+                          {customerPanConflictMatches.length > 0 ? (
+                            <div className="max-h-[120px] overflow-y-auto space-y-1 pt-1">
+                              {customerPanConflictMatches.map((m) => (
+                                <div key={m.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-[#11120D] truncate">
+                                      {m.name} {!m.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500">
+                                      {m.phone || "No phone"} {m.panNo ? `· PAN: ${m.panNo}` : ""}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleSelectCustomer(m);
+                                      setCustomerSearchOpen(false);
+                                    }}
+                                    className="shrink-0 rounded bg-amber-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-amber-700"
+                                  >
+                                    Select Profile
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-amber-800 italic pt-1">
+                              No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
+                            </div>
+                          )}
+                          {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
+                            <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
+                              <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  disabled={customerPanConflictPage <= 1}
+                                  onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
+                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                >
+                                  Prev
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
+                                  onClick={() => setCustomerPanConflictPage((p) => p + 1)}
+                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                >
+                                  Next
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : customerPanConflictWarning ? (
+                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                          <div className="flex items-center gap-1 font-bold">
+                            <Icon name="warning" className="text-[14px] text-amber-600" />
+                            <span>Registered PAN Notice</span>
+                          </div>
+                          <div className="mt-0.5">{customerPanConflictWarning}</div>
+                        </div>
+                      ) : null}
+
+                      {customerLookupLoading ? (
+                        <div className="flex items-center gap-2 px-2 py-1 text-[11px] font-bold text-[#565449]">
+                          <Icon name="sync" className="animate-spin text-[14px]" />
+                          <span>Searching server directory...</span>
+                        </div>
+                      ) : null}
+
                       <div className="max-h-[240px] overflow-y-auto space-y-1">
                         {customerOptions.map((opt, index) => {
                           const selected = index === customerSearchIndex;
@@ -5277,7 +6794,7 @@ export default function BillingPage() {
                                 }}
                                 type="button"
                                 onClick={() => {
-                                  setSelectedCustomerId(null);
+                                  handleSelectCustomer(null);
                                   setCustomerSearchOpen(false);
                                 }}
                                 className={`flex w-full items-center justify-between rounded-[8px] px-3 py-2 text-left text-[13px] font-semibold text-rose-600 transition ${selected ? "bg-rose-100" : "hover:bg-rose-50"}`}
@@ -5295,23 +6812,37 @@ export default function BillingPage() {
                               }}
                               type="button"
                               onClick={() => {
-                                setSelectedCustomerId(c.id);
+                                handleSelectCustomer(c);
                                 setCustomerSearchOpen(false);
                               }}
                               className={`flex w-full items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px] transition ${selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
                             >
-                              <span className="font-extrabold text-[#000000]">
-                                {c.name}
-                              </span>
-                              <span className="font-medium text-[#8C8889]">
-                                {c.phone}
-                              </span>
+                              <div className="min-w-0">
+                                <div className="font-extrabold text-[#000000]">
+                                  {c.name}
+                                </div>
+                                {c.address ? (
+                                  <div className="truncate text-[10px] text-[#8C8889]">
+                                    {c.address}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <div className="flex items-center gap-2 text-right">
+                                {c.panNo ? (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-extrabold text-slate-700">
+                                    PAN {c.panNo}
+                                  </span>
+                                ) : null}
+                                <span className="font-medium text-[#8C8889]">
+                                  {c.phone}
+                                </span>
+                              </div>
                             </button>
                           );
                         })}
-                        {customerOptions.length === 0 && (
+                        {customerOptions.length === 0 && !customerLookupLoading && (
                           <div className="text-center text-[12px] text-[#8C8889] py-2">
-                            No results
+                            No customers found
                           </div>
                         )}
                       </div>
@@ -5325,6 +6856,8 @@ export default function BillingPage() {
                               type="button"
                               onClick={() => {
                                 setQuickCustomerError("");
+                                setCustomerPanConflictPage(1);
+                                setQuickCustomerPanAck(false);
                                 setQuickCustomerOpen(true);
                               }}
                               className="w-full rounded-[9px] border border-dashed border-[#9CA3AF] px-3 py-2 text-left text-[12px] font-bold text-[#374151] hover:bg-[#F8FAFC] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2563EB]"
@@ -5357,16 +6890,109 @@ export default function BillingPage() {
                                     aria-label={label}
                                     required={required}
                                     value={quickCustomerDraft[field]}
-                                    onChange={(event) =>
+                                    onChange={(event) => {
+                                      const val = event.target.value;
                                       setQuickCustomerDraft((draft) => ({
                                         ...draft,
-                                        [field]: event.target.value,
-                                      }))
-                                    }
+                                        [field]: val,
+                                      }));
+                                      if (field === "panNo") {
+                                        setCustomerPanConflictPage(1);
+                                        setQuickCustomerPanAck(false);
+                                      }
+                                    }}
                                     className="mt-1 block min-h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[13px] text-[#111827] outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#BFDBFE]"
                                   />
                                 </label>
                               ))}
+                              {((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) && quickCustomerDraft.panNo.trim()) ? (
+                                <div className="rounded-[8px] border border-amber-300 bg-amber-50 p-2.5 text-[11px] text-amber-900 space-y-1.5">
+                                  <div className="flex items-center gap-1 font-bold">
+                                    <Icon name="warning" className="text-[14px] text-amber-600" />
+                                    <span>PAN already registered to existing profile(s):</span>
+                                  </div>
+                                  {customerPanConflictMatches.length > 0 ? (
+                                    <div className="max-h-[140px] overflow-y-auto space-y-1">
+                                      {customerPanConflictMatches.map((match) => (
+                                        <div key={match.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
+                                          <div className="min-w-0">
+                                            <div className="font-bold text-[#111827] truncate">
+                                              {match.name} {!match.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
+                                            </div>
+                                            <div className="text-[10px] text-slate-500">
+                                              {match.phone || "No phone"} {match.panNo ? `· PAN: ${match.panNo}` : ""}
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              handleSelectCustomer(match);
+                                              setQuickCustomerOpen(false);
+                                              setCustomerSearchOpen(false);
+                                              setQuickCustomerDraft({ name: "", phone: "", email: "", panNo: "", address: "" });
+                                              setQuickCustomerPanAck(false);
+                                            }}
+                                            className="shrink-0 rounded bg-amber-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-700"
+                                          >
+                                            Select Instead
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="text-[11px] text-amber-800 italic pt-1">
+                                      No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
+                                    </div>
+                                  )}
+                                  {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
+                                    <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
+                                      <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
+                                      <div className="flex gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={customerPanConflictPage <= 1}
+                                          onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
+                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                        >
+                                          Prev
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
+                                          onClick={() => setCustomerPanConflictPage((p) => p + 1)}
+                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                        >
+                                          Next
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-amber-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={quickCustomerPanAck}
+                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
+                                    />
+                                    <span>Proceed creating new customer profile with duplicate PAN</span>
+                                  </label>
+                                </div>
+                              ) : null}
+                              {customerPanConflictError && quickCustomerDraft.panNo.trim() ? (
+                                <div className="rounded-[8px] border border-rose-300 bg-rose-50 p-2.5 text-[11px] text-rose-900 space-y-1.5">
+                                  <div className="flex items-center gap-1 font-bold">
+                                    <Icon name="warning" className="text-[14px] text-rose-600" />
+                                    <span>{customerPanConflictError}</span>
+                                  </div>
+                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-rose-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={quickCustomerPanAck}
+                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
+                                    />
+                                    <span>Proceed creating customer profile without online PAN verification</span>
+                                  </label>
+                                </div>
+                              ) : null}
                               {quickCustomerError ? (
                                 <div
                                   role="alert"
@@ -5382,6 +7008,7 @@ export default function BillingPage() {
                                   onClick={() => {
                                     setQuickCustomerOpen(false);
                                     setQuickCustomerError("");
+                                    setQuickCustomerPanAck(false);
                                   }}
                                   className="min-h-[36px] flex-1 rounded-[8px] border border-[#CFCFD3] px-3 text-[12px] font-bold text-[#374151] disabled:opacity-50"
                                 >
@@ -5389,7 +7016,7 @@ export default function BillingPage() {
                                 </button>
                                 <button
                                   type="submit"
-                                  disabled={quickCustomerBusy}
+                                  disabled={quickCustomerBusy || (Boolean(quickCustomerDraft.panNo.trim()) && ((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0 || Boolean(customerPanConflictError)) && !quickCustomerPanAck))}
                                   className="min-h-[36px] flex-1 rounded-[8px] bg-[#1D4ED8] px-3 text-[12px] font-bold text-white hover:bg-[#1E40AF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D4ED8] disabled:cursor-wait disabled:opacity-50"
                                 >
                                   {quickCustomerBusy ? "Adding…" : "Add customer"}
@@ -5416,6 +7043,14 @@ export default function BillingPage() {
                         {customerMode === "ADMIN_WHOLESALE" && (
                           <span className="rounded-[8px] bg-sky-100 text-sky-800 px-2 py-1 text-[11px] font-extrabold">
                             Wholesale {selectedCustomer.wholesalePercent}%
+                          </span>
+                        )}
+                        {customerPanConflictMatches.length > 0 && selectedCustomer.panNo && (
+                          <span
+                            title={customerPanConflictWarning || "PAN registered to multiple customer profiles"}
+                            className="rounded-[8px] bg-amber-100 text-amber-900 px-2 py-1 text-[11px] font-extrabold"
+                          >
+                            ⚠️ PAN Shared
                           </span>
                         )}
                       </>
@@ -6075,19 +7710,33 @@ export default function BillingPage() {
               )}
 
               {paymentMethod === "Fonepay" && paymentStatus !== "Unpaid" ? (
-                <Input
-                  label="Fonepay reference / remarks"
-                  value={fonepayReference}
-                  onChange={(v) => {
-                    setFonepayReference(v.slice(0, 160));
-                    setPaymentError("");
-                    setBillingError("");
-                  }}
-                  placeholder="Transaction ID, payer phone, or cashier note"
-                  leftIcon="receipt_long"
-                  invalid={!!paymentError && !fonepayReference.trim()}
-                  helperText="Required for manual Fonepay collection and invoice history."
-                />
+                <div className="space-y-2">
+                  <Input
+                    label="Fonepay reference / remarks"
+                    value={fonepayReference}
+                    onChange={(v) => {
+                      setFonepayReference(v.slice(0, 160));
+                      setPaymentError("");
+                      setBillingError("");
+                    }}
+                    placeholder="Transaction ID, payer phone, or cashier note"
+                    leftIcon="receipt_long"
+                    invalid={!!paymentError && !fonepayReference.trim()}
+                    helperText="Required for manual Fonepay collection and invoice history."
+                  />
+                  <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={fonepayConfirmed}
+                      onChange={(e) => {
+                        setFonepayConfirmed(e.target.checked);
+                        setPaymentError("");
+                      }}
+                      className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
+                    />
+                    <span>I have verified the Fonepay merchant SMS / app payment confirmation</span>
+                  </label>
+                </div>
               ) : null}
 
               {paymentMethod === "Split" ? (
@@ -6199,6 +7848,20 @@ export default function BillingPage() {
                         );
                       })}
                     </div>
+                    {splitPayments.some((row) => row.method === "FONEPAY") ? (
+                      <label className="flex items-center gap-2 pt-2 text-[11px] font-bold text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={fonepayConfirmed}
+                          onChange={(e) => {
+                            setFonepayConfirmed(e.target.checked);
+                            setPaymentError("");
+                          }}
+                          className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
+                        />
+                        <span>I have verified the Fonepay merchant payment notification</span>
+                      </label>
+                    ) : null}
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -6364,6 +8027,129 @@ export default function BillingPage() {
                   className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-medium outline-none transition focus:border-[#11120d]"
                 />
               </div>
+
+              {(paymentMethod === "eSewa" ||
+                splitPayments.some((p) => p.method === "ESEWA")) &&
+              gatewayDisplay?.esewa ? (
+                <div className="rounded-[12px] border border-[#60bb46]/30 bg-[#f2faf0] p-3 text-[12px]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-extrabold text-[#11120d]">
+                      <img
+                        src="/assets/images/esewa/logo.png"
+                        alt="eSewa"
+                        className="h-4 w-4 rounded-full object-contain"
+                      />
+                      <span>eSewa Gateway</span>
+                    </div>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-black uppercase",
+                        gatewayDisplay.esewa.environment === "SANDBOX"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-emerald-100 text-emerald-800",
+                      )}
+                    >
+                      {gatewayDisplay.esewa.label}
+                    </span>
+                  </div>
+                  {gatewayDisplay.esewa.environment === "SANDBOX" ? (
+                    <div className="mt-1 text-[11px] font-medium text-slate-600">
+                      Demo test environment. Test credentials will be used; no
+                      real funds will be deducted.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8FAFC] p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 text-[13px] font-extrabold text-[#11120d]">
+                    <Icon
+                      name="history_edu"
+                      className="text-[17px] text-[#565449]"
+                    />
+                    <span>Paper Bill Reference (Optional)</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#8C8889]">
+                    Offline Record
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Paper Bill / Token No.
+                    </label>
+                    <input
+                      type="text"
+                      value={paperDraftBillNo}
+                      onChange={(e) => setPaperDraftBillNo(e.target.value)}
+                      placeholder="e.g. PB-2080-001"
+                      className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[12px] font-bold text-[#11120d] outline-none transition focus:border-[#11120d]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Document Type
+                    </label>
+                    <ProjectSelect
+                      value={paperDraftDocumentType}
+                      onChange={(e) =>
+                        setPaperDraftDocumentType(
+                          e.target.value as ExternalDocumentType,
+                        )
+                      }
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="PAN_INVOICE">PAN Invoice</option>
+                      <option value="VAT_TAX_INVOICE">VAT Tax Invoice</option>
+                      <option value="ABBREVIATED_TAX_INVOICE">Abbreviated Tax Invoice</option>
+                      <option value="OTHER_MANUAL_SALES_DOCUMENT">Other Manual Sales Document</option>
+                    </ProjectSelect>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Bill Date
+                    </label>
+                    <ProjectDateInput
+                      value={paperDraftBillDate}
+                      onChange={(e) => setPaperDraftBillDate(e.target.value)}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    />
+                  </div>
+                </div>
+                {paperDraftBillNo.trim() ? (
+                  <div className="mt-2 pt-2 border-t border-[#E5E7EB] flex flex-wrap items-center gap-4 text-[11px] font-bold text-[#565449]">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="paperDraftChoice"
+                        value="RECORD_AFTER_SAVE"
+                        checked={paperDraftChoice === "RECORD_AFTER_SAVE"}
+                        onChange={() =>
+                          setPaperDraftChoice("RECORD_AFTER_SAVE")
+                        }
+                      />
+                      <span>Record immediately on save</span>
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="paperDraftChoice"
+                        value="LATER"
+                        checked={paperDraftChoice === "LATER"}
+                        onChange={() => setPaperDraftChoice("LATER")}
+                      />
+                      <span>Save for later follow-up</span>
+                    </label>
+                  </div>
+                ) : null}
+                {storageLimitationWarning ? (
+                  <div className="mt-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                    <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+                    {storageLimitationWarning}
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             {/* Right: Settlement Summary */}
@@ -6412,12 +8198,14 @@ export default function BillingPage() {
                           {formatNpr(splitCashNum)}
                         </span>
                       </div>
-                      <div className="flex justify-between items-center text-[#2F67D8]">
-                        <span>eSewa amount</span>
-                        <span className="font-mono font-bold">
-                          {formatNpr(splitEsewaAmount)}
-                        </span>
-                      </div>
+                      {splitEsewaAmount > 0 ? (
+                        <div className="flex justify-between items-center text-[#2F67D8]">
+                          <span>eSewa (Pending Gateway)</span>
+                          <span className="font-mono font-bold">
+                            {formatNpr(splitEsewaAmount)}
+                          </span>
+                        </div>
+                      ) : null}
                       {splitFonepayAmount > 0 ? (
                         <div className="flex justify-between items-center text-[#2F67D8]">
                           <span>Fonepay amount</span>
@@ -6427,7 +8215,7 @@ export default function BillingPage() {
                         </div>
                       ) : null}
                       <div className="flex justify-between items-center text-[#000000]">
-                        <span>Total collected</span>
+                        <span>Total payment allocation</span>
                         <span className="font-mono font-extrabold">
                           {formatNpr(splitTotal)}
                         </span>
@@ -6443,6 +8231,13 @@ export default function BillingPage() {
                         </div>
                       ) : null}
                     </>
+                  ) : paymentMethod === "eSewa" ? (
+                    <div className="flex justify-between items-center text-[#2F67D8]">
+                      <span>eSewa Pending Allocation</span>
+                      <span className="font-mono font-bold">
+                        {formatNpr(effectivePaidAmount)}
+                      </span>
+                    </div>
                   ) : (
                     <div className="flex justify-between items-center text-[#2F67D8]">
                       <span>Collected</span>
@@ -7841,7 +9636,10 @@ export default function BillingPage() {
         open={showSuccess}
         title="Invoice created successfully"
         message="The invoice has been finalized and recorded in KhataSathi."
-        onClose={() => setShowSuccess(false)}
+        onClose={() => {
+          setShowSuccess(false);
+          setSavedSaleResult(null);
+        }}
         actionLabel="Continue Billing"
         secondaryAction={
           lastCreatedInvoiceId ? (
@@ -7858,10 +9656,329 @@ export default function BillingPage() {
               >
                 Receipt
               </DialogButton>
+              {savedSaleResult && !savedSaleResult.paperRecorded && !savedSaleResult.paperBillNo ? (
+                <DialogButton
+                  onClick={() => {
+                    setShowSuccess(false);
+                    setPaperFollowup({
+                      status: "PENDING",
+                      invoiceId: lastCreatedInvoiceId,
+                      invoiceNo: savedSaleResult.invoiceNo,
+                      draft: {
+                        billNo: "",
+                        externalDocumentType: "PAN_INVOICE",
+                        externalBillDate: new Date().toLocaleDateString("en-CA"),
+                      },
+                    });
+                  }}
+                  icon="history_edu"
+                >
+                  Record Paper Details
+                </DialogButton>
+              ) : null}
             </div>
           ) : null
         }
+      >
+        {savedSaleResult ? (
+          <div className="my-3 rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] p-3 text-[12px] space-y-1.5">
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Invoice No.</span>
+              <span className="font-mono font-bold text-[#11120D]">{savedSaleResult.invoiceNo || savedSaleResult.invoiceId}</span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Total Amount</span>
+              <span className="font-mono font-bold text-[#11120D]">{formatNpr(savedSaleResult.total)}</span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Collected / Paid</span>
+              <span className="font-mono font-bold text-emerald-700">{formatNpr(savedSaleResult.effectivePaidAmount)}</span>
+            </div>
+            {savedSaleResult.pendingGatewayAmount && savedSaleResult.pendingGatewayAmount > 0 ? (
+              <div className="flex justify-between items-center text-amber-800">
+                <span>Pending Verification (Gateway)</span>
+                <span className="font-mono font-bold">{formatNpr(savedSaleResult.pendingGatewayAmount)}</span>
+              </div>
+            ) : null}
+            {savedSaleResult.balanceDue > 0 ? (
+              <div className="flex justify-between items-center text-amber-800">
+                <span>Balance Due</span>
+                <span className="font-mono font-bold">{formatNpr(savedSaleResult.balanceDue)}</span>
+              </div>
+            ) : null}
+            <div className="flex justify-between items-center text-[#565449] pt-1 border-t border-[#E5E7EB]">
+              <span>Payment Status</span>
+              <span className="font-bold text-[#11120D] uppercase">
+                {savedSaleResult.paymentStatus} ({savedSaleResult.paymentMethod})
+                {savedSaleResult.pendingGatewayAmount && savedSaleResult.pendingGatewayAmount > 0
+                  ? " · PENDING GATEWAY VERIFICATION"
+                  : ""}
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Paper Reference</span>
+              <span className={cn("font-bold", savedSaleResult.paperRecorded ? "text-emerald-700" : "text-amber-700")}>
+                {savedSaleResult.paperRecorded
+                  ? `Recorded (${savedSaleResult.paperBillNo || "Yes"})`
+                  : "Pending Recording"}
+              </span>
+            </div>
+            {storageLimitationWarning ? (
+              <div className="mt-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+                {storageLimitationWarning}
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+      </SuccessDialog>
+
+      <BillingWorksheetModal
+        open={isWorksheetOpen}
+        onClose={() => setIsWorksheetOpen(false)}
+        onContinueToPayment={() => {
+          setIsWorksheetOpen(false);
+          openPaymentFlow();
+        }}
+        onOpenCustomerHistory={() => {
+          setIsWorksheetOpen(false);
+          setIsDetailedHistoryOpen(true);
+        }}
+        items={cartRows.map((r) => ({
+          productId: r.productId,
+          name: r.product.name,
+          sku: r.product.sku,
+          saleUnit: r.product.saleUnit,
+          qty: r.qty,
+          appliedUnitPrice: r.unitPrice,
+          lineTotal: r.lineTotal,
+          overrideUnitPrice: r.overrideUnitPrice,
+          overrideReason: r.overrideReason,
+        }))}
+        customer={selectedCustomer}
+        subTotal={subTotal}
+        discountPercent={subtotalDiscountMeta.percent}
+        discountAmount={subtotalDiscount}
+        payableTotal={payableTotal}
+        formatNpr={formatNpr}
+        formatQtyWithUnit={formatQtyWithUnit}
       />
+
+      <BillingCalculatorModal
+        open={isCalculatorOpen}
+        onClose={() => setIsCalculatorOpen(false)}
+      />
+
+      {selectedCustomer ? (
+        <BillingCustomerHistoryModal
+          open={isDetailedHistoryOpen}
+          onClose={() => setIsDetailedHistoryOpen(false)}
+          customerId={selectedCustomer.id}
+          customerName={selectedCustomer.name}
+        />
+      ) : null}
+
+      {selectedCustomer && isCompactHistoryOpen ? (
+        <BillingCompactHistoryOverlay
+          open={isCompactHistoryOpen}
+          onClose={handleCloseCompactHistory}
+          onOpenDetailedHistory={handleOpenDetailedHistoryFromCompact}
+          customerName={selectedCustomer.name}
+          historyItems={customerHistory}
+          loading={customerHistoryLoading}
+          error={customerHistoryError}
+          cartItemCount={cartRows.length}
+          anchorRef={compactHistoryTriggerRef}
+        />
+      ) : null}
+
+      {(paperFollowup.status === "FAILED_RETRYABLE" ||
+        paperFollowup.status === "PENDING") && (
+        <div className="fixed bottom-4 right-4 z-40 w-full max-w-lg rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-xl text-[13px] text-amber-900 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 font-bold">
+              <Icon name="warning" className="text-[18px] text-amber-600" />
+              <span>Pending Paper Bill Reference</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPaperFollowup({ status: "NONE" });
+              }}
+              className="text-amber-700 hover:text-amber-900"
+              aria-label="Dismiss paper reference banner"
+            >
+              <Icon name="close" className="text-[16px]" />
+            </button>
+          </div>
+
+          <p className="text-[12px] text-amber-800">
+            Invoice <strong>{paperFollowup.invoiceNo || paperFollowup.invoiceId}</strong> is
+            finalized in the database. Enter and record the manual paper bill details below.
+            {paperFollowup.error ? (
+              <span className="block mt-1 font-semibold text-rose-700">Error: {paperFollowup.error}</span>
+            ) : null}
+          </p>
+
+          {storageLimitationWarning ? (
+            <div className="rounded-[8px] border border-amber-300 bg-amber-100 p-2 text-[11px] font-semibold text-amber-900">
+              <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+              {storageLimitationWarning}
+            </div>
+          ) : null}
+
+          {paperFollowup.conflictRecord ? (
+            <div className="rounded-lg border border-rose-300 bg-rose-50 p-2.5 text-[11px] text-rose-900 space-y-1.5">
+              <div className="font-bold">Record Conflict: Another operator modified this record on the server.</div>
+              <div>
+                Current Status: <strong>{paperFollowup.conflictRecord.billRecordStatus}</strong> &bull; Bill No: <strong>{paperFollowup.conflictRecord.externalBillNo || "None"}</strong>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const conf = paperFollowup.conflictRecord!;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    expected: {
+                      billingChannel: conf.billingChannel,
+                      externalDocumentType: conf.externalDocumentType,
+                      externalBillNo: conf.externalBillNo,
+                      externalBillDate: conf.externalBillDate,
+                      billRecordStatus: conf.billRecordStatus,
+                    },
+                    conflictRecord: null,
+                    error: undefined,
+                  }));
+                }}
+                className="rounded bg-rose-700 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-800"
+              >
+                Acknowledge & Update Expected State
+              </button>
+            </div>
+          ) : null}
+
+          {/* Editable paper reference form */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-lg border border-amber-200 bg-white p-2.5">
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Bill Number
+              </label>
+              <input
+                type="text"
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.billNo || ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: val,
+                      externalDocumentType: prev.draft?.externalDocumentType || "PAN_INVOICE",
+                      externalBillDate: prev.draft?.externalBillDate || new Date().toLocaleDateString("en-CA"),
+                    },
+                  }));
+                }}
+                placeholder="e.g. PB-2080-001"
+                className="h-[32px] w-full rounded border border-[#CFCFD3] px-2 text-[12px] font-bold text-[#11120D] outline-none focus:border-[#11120D] disabled:opacity-60"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Document Type
+              </label>
+              <ProjectSelect
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.externalDocumentType || "PAN_INVOICE"}
+                onChange={(e) => {
+                  const val = e.target.value as ExternalDocumentType;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: prev.draft?.billNo || "",
+                      externalDocumentType: val,
+                      externalBillDate: prev.draft?.externalBillDate || new Date().toLocaleDateString("en-CA"),
+                    },
+                  }));
+                }}
+                className="h-[32px] w-full text-[11px] font-bold"
+              >
+                <option value="PAN_INVOICE">PAN Invoice</option>
+                <option value="VAT_TAX_INVOICE">VAT Tax Invoice</option>
+                <option value="ABBREVIATED_TAX_INVOICE">Abbreviated Tax Invoice</option>
+                <option value="OTHER_MANUAL_SALES_DOCUMENT">Other Manual Sales Document</option>
+              </ProjectSelect>
+            </div>
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Bill Date
+              </label>
+              <ProjectDateInput
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.externalBillDate || new Date().toLocaleDateString("en-CA")}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: prev.draft?.billNo || "",
+                      externalDocumentType: prev.draft?.externalDocumentType || "PAN_INVOICE",
+                      externalBillDate: val,
+                    },
+                  }));
+                }}
+                className="h-[32px] w-full text-[11px] font-bold"
+              >
+              </ProjectDateInput>
+            </div>
+          </div>
+
+          {paperFollowup.duplicateRequired ? (
+            <div className="space-y-1">
+              <label className="block text-[10px] font-extrabold uppercase text-amber-900">
+                Manager Duplicate Override Reason (Min 2 chars) <span className="text-rose-600">*</span>
+              </label>
+              <input
+                type="text"
+                disabled={paperFollowupBusy}
+                value={paperFollowup.duplicateOverrideReason || ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    duplicateOverrideReason: val,
+                  }));
+                }}
+                placeholder="Required reviewer authorization justification"
+                className="h-[32px] w-full rounded border border-amber-400 bg-white px-2.5 text-[12px] font-semibold outline-none focus:border-amber-700 disabled:opacity-60"
+              />
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={
+                paperFollowupBusy ||
+                !paperFollowup.draft?.billNo?.trim() ||
+                (paperFollowup.duplicateRequired && !(paperFollowup.duplicateOverrideReason?.trim().length && paperFollowup.duplicateOverrideReason.trim().length >= 2))
+              }
+              onClick={handleRetryPaperFollowup}
+              className="rounded-lg bg-amber-600 px-3.5 py-1.5 text-[12px] font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {paperFollowupBusy ? "Saving..." : "Save Paper Reference"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPaperFollowup({ status: "NONE" });
+              }}
+              className="rounded-lg border border-amber-300 bg-white px-3.5 py-1.5 text-[12px] font-bold text-amber-800 hover:bg-amber-50"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
     </>
   );
 }

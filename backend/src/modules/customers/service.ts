@@ -744,3 +744,219 @@ export async function getCustomerProductPurchaseHistory(
     };
   });
 }
+
+export type CustomerLookupItem = {
+  id: string;
+  name: string;
+  phone: string | null;
+  email: string | null;
+  panNo: string | null;
+  address: string | null;
+  isActive: boolean;
+  loyaltyPercent: number | null;
+  wholesalePercent: number | null;
+};
+
+export async function lookupCustomers(params: {
+  q: string;
+  match: "search" | "pan";
+  page: number;
+  pageSize: number;
+}): Promise<{
+  items: CustomerLookupItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const { q, match, page, pageSize } = params;
+  const skip = (page - 1) * pageSize;
+  const take = pageSize;
+
+  let where: any;
+  if (match === "pan") {
+    where = {
+      panNo: q,
+    };
+  } else {
+    where = {
+      isActive: true,
+      ...(q
+        ? {
+            OR: [
+              { name: { contains: q } },
+              { phone: { contains: q } },
+              { panNo: { contains: q } },
+            ],
+          }
+        : {}),
+    };
+  }
+
+  return prisma.$transaction(async (tx) => {
+    const total = await tx.customer.count({ where });
+    const items = await tx.customer.findMany({
+      where,
+      select: {
+        id: true,
+        name: true,
+        phone: true,
+        email: true,
+        panNo: true,
+        address: true,
+        isActive: true,
+        loyaltyPercent: true,
+        wholesalePercent: true,
+      },
+      orderBy: [{ name: "asc" }, { id: "asc" }],
+      skip,
+      take,
+    });
+
+    const totalPages = Math.ceil(total / pageSize);
+
+    return {
+      items,
+      total,
+      page,
+      pageSize,
+      totalPages,
+    };
+  });
+}
+
+export type CustomerPurchaseHistoryItem = {
+  id: string;
+  invoiceId: string;
+  invoiceNo: string;
+  invoiceDate: string;
+  productId: string;
+  productName: string;
+  productSku: string | null;
+  displayProduct: DisplayProduct;
+  qty: number;
+  appliedUnitPrice: number;
+};
+
+export async function getCustomerPurchaseHistory(params: {
+  customerId: string;
+  q: string;
+  page: number;
+  pageSize: number;
+}): Promise<{
+  items: CustomerPurchaseHistoryItem[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+}> {
+  const { customerId, q, page, pageSize } = params;
+
+  const customer = await prisma.customer.findUnique({
+    where: { id: customerId },
+    select: { id: true },
+  });
+
+  if (!customer) {
+    throw new Error("Customer not found.");
+  }
+
+  const invoiceWhere = {
+    customerId,
+    status: "FINALIZED" as const,
+    cancelledAt: null,
+    deletedAt: null,
+    paymentStatus: { not: "CANCELLED" as const },
+    creditNotesAsOriginal: {
+      none: {
+        replacementInvoiceId: { not: null },
+      },
+    },
+  };
+
+  const itemWhere: any = {
+    invoice: invoiceWhere,
+  };
+
+  if (q) {
+    itemWhere.OR = [
+      {
+        snapshotCapturedAt: { not: null },
+        productNameSnapshot: { contains: q },
+      },
+      {
+        snapshotCapturedAt: null,
+        product: {
+          name: { contains: q },
+        },
+      },
+    ];
+  }
+
+  const skip = (page - 1) * pageSize;
+  const take = pageSize;
+
+  return prisma.$transaction(async (tx) => {
+    const total = await tx.invoiceItem.count({ where: itemWhere });
+    const items = await tx.invoiceItem.findMany({
+      where: itemWhere,
+      select: {
+        id: true,
+        productId: true,
+        qty: true,
+        appliedUnitPrice: true,
+        productNameSnapshot: true,
+        productSkuSnapshot: true,
+        snapshotCapturedAt: true,
+        product: {
+          select: {
+            name: true,
+            sku: true,
+          },
+        },
+        invoice: {
+          select: {
+            id: true,
+            invoiceNo: true,
+            finalizedAt: true,
+            createdAt: true,
+          },
+        },
+      },
+      orderBy: [
+        { invoice: { finalizedAt: "desc" } },
+        { invoice: { createdAt: "desc" } },
+        { id: "desc" },
+      ],
+      skip,
+      take,
+    });
+
+    const totalPages = Math.ceil(total / pageSize);
+
+    const mappedItems: CustomerPurchaseHistoryItem[] = items.map((item) => {
+      const invoiceDate = item.invoice.finalizedAt || item.invoice.createdAt;
+      const displayProduct = resolveDisplayProduct(item, "FINALIZED");
+      return {
+        id: item.id,
+        invoiceId: item.invoice.id,
+        invoiceNo: item.invoice.invoiceNo,
+        invoiceDate: invoiceDate.toISOString(),
+        productId: item.productId,
+        productName: displayProduct.name ?? "Unknown item",
+        productSku: displayProduct.sku,
+        displayProduct,
+        qty: item.qty,
+        appliedUnitPrice: item.appliedUnitPrice,
+      };
+    });
+
+    return {
+      items: mappedItems,
+      total,
+      page,
+      pageSize,
+      totalPages,
+    };
+  });
+}

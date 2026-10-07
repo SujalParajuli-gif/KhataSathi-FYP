@@ -525,3 +525,135 @@ export async function getProductPurchaseHistory(req: Request, res: Response) {
     res.status(500).json({ error: "Internal server error" });
   }
 }
+
+export async function lookupCustomers(req: Request, res: Response) {
+  try {
+    if (req.query.q !== undefined && typeof req.query.q !== "string") {
+      res.status(400).json({ error: "Search query 'q' must be a string." });
+      return;
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q.length > 191) {
+      res.status(400).json({ error: "Search query cannot exceed 191 characters." });
+      return;
+    }
+
+    if (
+      req.query.match !== undefined &&
+      (typeof req.query.match !== "string" ||
+        (req.query.match !== "search" && req.query.match !== "pan"))
+    ) {
+      res.status(400).json({ error: "Match mode must be 'search' or 'pan'." });
+      return;
+    }
+    const match = (req.query.match as "search" | "pan") || "search";
+
+    if (match === "pan" && !q) {
+      res.status(400).json({ error: "Query 'q' is required when match is 'pan'." });
+      return;
+    }
+
+    let page = 1;
+    if (req.query.page !== undefined) {
+      if (typeof req.query.page !== "string" || !/^\d+$/.test(req.query.page.trim())) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      const parsedPage = Number(req.query.page.trim());
+      if (!Number.isInteger(parsedPage) || parsedPage < 1 || parsedPage > 1000) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      page = parsedPage;
+    }
+
+    let pageSize = 20;
+    if (req.query.pageSize !== undefined) {
+      if (typeof req.query.pageSize !== "string" || !/^\d+$/.test(req.query.pageSize.trim())) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 20." });
+        return;
+      }
+      const parsedSize = Number(req.query.pageSize.trim());
+      if (!Number.isInteger(parsedSize) || parsedSize < 1 || parsedSize > 20) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 20." });
+        return;
+      }
+      pageSize = parsedSize;
+    }
+
+    const result = await custService.lookupCustomers({
+      q,
+      match,
+      page,
+      pageSize,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("Lookup customers error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getCustomerPurchaseHistory(req: Request, res: Response) {
+  try {
+    const rawCustomerId = req.params.customerId ?? req.params.id;
+    if (typeof rawCustomerId !== "string" || !rawCustomerId.trim()) {
+      res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+    const customerId = rawCustomerId.trim();
+
+    if (req.query.q !== undefined && typeof req.query.q !== "string") {
+      res.status(400).json({ error: "Search query 'q' must be a string." });
+      return;
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q.length > 191) {
+      res.status(400).json({ error: "Search query cannot exceed 191 characters." });
+      return;
+    }
+
+    let page = 1;
+    if (req.query.page !== undefined) {
+      if (typeof req.query.page !== "string" || !/^\d+$/.test(req.query.page.trim())) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      const parsedPage = Number(req.query.page.trim());
+      if (!Number.isInteger(parsedPage) || parsedPage < 1 || parsedPage > 1000) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      page = parsedPage;
+    }
+
+    let pageSize = 20;
+    if (req.query.pageSize !== undefined) {
+      if (typeof req.query.pageSize !== "string" || !/^\d+$/.test(req.query.pageSize.trim())) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 50." });
+        return;
+      }
+      const parsedSize = Number(req.query.pageSize.trim());
+      if (!Number.isInteger(parsedSize) || parsedSize < 1 || parsedSize > 50) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 50." });
+        return;
+      }
+      pageSize = parsedSize;
+    }
+
+    const result = await custService.getCustomerPurchaseHistory({
+      customerId,
+      q,
+      page,
+      pageSize,
+    });
+    res.json(result);
+  } catch (err: any) {
+    if (String(err?.message || "").includes("Customer not found")) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    console.error("Get customer purchase history error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}

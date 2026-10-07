@@ -1278,6 +1278,37 @@ export async function listCustomersApi(
     return res.data;
 }
 
+export type CustomerLookupItem = {
+    id: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    panNo: string | null;
+    address: string | null;
+    isActive: boolean;
+    loyaltyPercent: number | null;
+    wholesalePercent: number | null;
+};
+
+export type CustomerLookupResponse = {
+    items: CustomerLookupItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+};
+
+export async function lookupCustomersApi(
+    params: { q?: string; match?: "search" | "pan"; page?: number; pageSize?: number },
+    options?: { signal?: AbortSignal },
+): Promise<CustomerLookupResponse> {
+    const res = await api.get<CustomerLookupResponse>("/api/customers/lookup", {
+        params,
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
 // creating a new customer with name and optional phone, email, and discount percentages
 export async function createCustomerApi(data: { name: string; phone?: string; email?: string; loyaltyPercent?: number; wholesalePercent?: number }) {
     const res = await api.post("/api/customers", data);
@@ -1418,6 +1449,29 @@ export async function getCustomerProductHistoryApi(
         `/api/customers/${encodeURIComponent(customerId)}/product-history`,
         {
             params: { productIds: productIds.join(",") },
+            signal: options?.signal,
+        },
+    );
+    return res.data;
+}
+
+export type CustomerPurchaseHistoryResponse = {
+    items: CustomerProductPurchaseHistoryItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+};
+
+export async function getCustomerPurchaseHistoryApi(
+    customerId: string,
+    params: { q?: string; page?: number; pageSize?: number },
+    options?: { signal?: AbortSignal },
+): Promise<CustomerPurchaseHistoryResponse> {
+    const res = await api.get<CustomerPurchaseHistoryResponse>(
+        `/api/customers/${encodeURIComponent(customerId)}/purchase-history`,
+        {
+            params,
             signal: options?.signal,
         },
     );
@@ -1634,6 +1688,23 @@ export async function cancelInvoiceApi(invoiceId: string) {
 }
 
 // --- Payment endpoints ---
+
+export type GatewayDisplayResponse = {
+    esewa: {
+        environment: "SANDBOX" | "UNVERIFIED";
+        label: string;
+    };
+};
+
+export async function getPaymentGatewayDisplayApi(
+    options?: { signal?: AbortSignal },
+): Promise<GatewayDisplayResponse> {
+    const res = await api.get<GatewayDisplayResponse>(
+        "/api/payments/gateways/display",
+        { signal: options?.signal },
+    );
+    return res.data;
+}
 
 // recording a payment against an invoice (cash, eSewa, etc.)
 export async function addPaymentApi(

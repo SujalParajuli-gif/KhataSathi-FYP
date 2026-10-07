@@ -48,6 +48,9 @@ export default function EsewaResultPage() {
             {success ? "Payment Verified" : "Payment Not Completed"}
           </h1>
           <p className="mt-3 text-[14px] text-slate-600">{message}</p>
+          <p className="mt-1 text-[11px] font-medium text-slate-500">
+            Payment truth is verified and reconciled server-side against KhataSathi records.
+          </p>
         </div>
 
         {/* showing the payment metadata in a compact summary block so the user can verify the transaction details */}
@@ -86,16 +89,23 @@ export default function EsewaResultPage() {
           </Link>
           {/* this handles when the user is still logged in and we can safely offer a direct follow-up route */}
           {loggedIn && invoiceId ? (
-            <Link
-              to="/history"
-              className="flex h-[46px] flex-1 items-center justify-center rounded-[14px] border-2 border-slate-200 bg-white text-[14px] font-extrabold text-slate-900 hover:bg-slate-50"
-            >
-              Open History
-            </Link>
+            <>
+              <Link
+                to={`/billing?resumePaperInvoiceId=${encodeURIComponent(invoiceId)}`}
+                className="flex h-[46px] flex-1 items-center justify-center rounded-[14px] border-2 border-slate-200 bg-white text-[14px] font-extrabold text-slate-900 hover:bg-slate-50"
+              >
+                Resume Paper Details
+              </Link>
+              <Link
+                to="/history"
+                className="flex h-[46px] flex-1 items-center justify-center rounded-[14px] border-2 border-slate-200 bg-white text-[14px] font-extrabold text-slate-900 hover:bg-slate-50"
+              >
+                Open History
+              </Link>
+            </>
           ) : null}
         </div>
       </div>
     </div>
   );
 }
-

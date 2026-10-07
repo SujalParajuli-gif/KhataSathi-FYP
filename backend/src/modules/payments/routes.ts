@@ -2,6 +2,7 @@ import { Router } from "express";
 import {
   addPayment,
   failEsewaPayment,
+  getGatewayDisplay,
   initiateEsewaPayment,
   listPayments,
   verifyEsewaPayment,
@@ -23,6 +24,15 @@ router.get("/payments/esewa/verify/:paymentId", requirePos, verifyEsewaPayment);
 router.post("/payments/esewa/verify/:paymentId", requirePos, verifyEsewaPayment);
 router.get("/payments/esewa/failure/:paymentId", requirePos, failEsewaPayment);
 router.post("/payments/esewa/failure/:paymentId", requirePos, failEsewaPayment);
+
+router.get(
+  "/payments/gateways/display",
+  requirePos,
+  authGuard,
+  denyStaff,
+  requireRole("CASHIER", "MANAGER", "ADMIN"),
+  getGatewayDisplay,
+);
 
 // initiating an eSewa payment — creates a pending payment record and returns the form data to redirect to eSewa
 router.post(
@@ -56,5 +66,4 @@ router.patch(
   requireRole("CASHIER", "MANAGER", "ADMIN"),
   voidPayment, // admin can void directly; cashier needs privilege + override PIN
 );
-
 export default router;

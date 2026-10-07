@@ -415,96 +415,104 @@ export default function ManualBillSummary({
       </div>
 
       {/* Attached Proofs Summary */}
-      <div className="rounded-lg border border-control-line bg-white p-3">
-        <div className="flex items-center justify-between text-xs font-bold text-secondary">
-          <span className="flex items-center gap-1.5">
-            <GIcon name="attach_file" className="text-secondary" />
-            Attached Proof Documents ({record.attachedProofs.length})
-          </span>
-        </div>
-
-        {record.attachedProofs.length === 0 ? (
-          <p className="mt-2 text-xs text-placeholder italic">
-            No scanned proof documents attached to this manual bill reference.
-          </p>
-        ) : (
-          <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
-            {record.attachedProofs.map((proof) => (
-              <div
-                key={proof.id}
-                className="flex items-center justify-between gap-2 rounded-lg border border-control-line bg-control-hover p-2 text-xs"
-              >
-                <div className="flex items-center gap-2 overflow-hidden">
-                  <GIcon name="image" className="shrink-0 text-placeholder" />
-                  <div className="truncate">
-                    <div className="font-semibold text-action truncate">
-                      {proof.title || proof.fileName}
-                    </div>
-                    <div className="text-[10px] text-placeholder">
-                      {(proof.fileSize / 1024).toFixed(1)} KB •{" "}
-                      {new Date(proof.createdAt).toLocaleDateString()}
-                    </div>
-                  </div>
-                </div>
-
-                <button
-                  type="button"
-                  onClick={() => handleOpenProof(proof)}
-                  disabled={loadingProofId === proof.id}
-                  className="shrink-0 rounded bg-white px-2 py-1 text-[11px] font-bold text-secondary shadow-2xs hover:text-action border border-control-line"
-                  title="View Document"
-                >
-                  {loadingProofId === proof.id ? (
-                    <GIcon name="refresh" className="animate-spin text-[13px]" />
-                  ) : (
-                    <span className="flex items-center gap-1">
-                      <GIcon name="visibility" className="text-[13px]" />
-                      View
-                    </span>
-                  )}
-                </button>
-              </div>
-            ))}
-          </div>
-        )}
-      </div>
-
-      {/* Audit History */}
-      {record.history.length > 0 && (
-        <div className="rounded-lg border border-control-line bg-white p-3">
-          <div className="text-xs font-bold text-secondary mb-2 flex items-center gap-1">
-            <GIcon name="history" className="text-secondary text-sm" />
-            Recording & Review History
-          </div>
-          <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-            {record.history.map((entry) => (
-              <div
-                key={entry.id}
-                className="flex items-start justify-between text-xs border-b border-gray-50 pb-1.5 last:border-0"
-              >
-                <div>
-                  <span className="font-semibold text-action">
-                    {entry.action.replace(/_/g, " ")}
-                  </span>
-                  {entry.actorName && (
-                    <span className="text-secondary text-[11px] ml-1">
-                      by {entry.actorName} ({entry.actorRole || "Staff"})
-                    </span>
-                  )}
-                  {Boolean(entry.meta?.reason) ? (
-                    <div className="text-secondary text-[11px] italic mt-0.5">
-                      "{String(entry.meta?.reason)}"
-                    </div>
-                  ) : null}
-                </div>
-                <span className="text-[10px] text-placeholder shrink-0 ml-2">
-                  {new Date(entry.createdAt).toLocaleString()}
+      {(() => {
+        const attachedProofs = Array.isArray(record.attachedProofs) ? record.attachedProofs : [];
+        const history = Array.isArray(record.history) ? record.history : [];
+        return (
+          <>
+            <div className="rounded-lg border border-control-line bg-white p-3">
+              <div className="flex items-center justify-between text-xs font-bold text-secondary">
+                <span className="flex items-center gap-1.5">
+                  <GIcon name="attach_file" className="text-secondary" />
+                  Attached Proof Documents ({attachedProofs.length})
                 </span>
               </div>
-            ))}
-          </div>
-        </div>
-      )}
+
+              {attachedProofs.length === 0 ? (
+                <p className="mt-2 text-xs text-placeholder italic">
+                  No scanned proof documents attached to this manual bill reference.
+                </p>
+              ) : (
+                <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {attachedProofs.map((proof) => (
+                    <div
+                      key={proof.id}
+                      className="flex items-center justify-between gap-2 rounded-lg border border-control-line bg-control-hover p-2 text-xs"
+                    >
+                      <div className="flex items-center gap-2 overflow-hidden">
+                        <GIcon name="image" className="shrink-0 text-placeholder" />
+                        <div className="truncate">
+                          <div className="font-semibold text-action truncate">
+                            {proof.title || proof.fileName}
+                          </div>
+                          <div className="text-[10px] text-placeholder">
+                            {(proof.fileSize / 1024).toFixed(1)} KB •{" "}
+                            {new Date(proof.createdAt).toLocaleDateString()}
+                          </div>
+                        </div>
+                      </div>
+
+                      <button
+                        type="button"
+                        onClick={() => handleOpenProof(proof)}
+                        disabled={loadingProofId === proof.id}
+                        className="shrink-0 rounded bg-white px-2 py-1 text-[11px] font-bold text-secondary shadow-2xs hover:text-action border border-control-line"
+                        title="View Document"
+                      >
+                        {loadingProofId === proof.id ? (
+                          <GIcon name="refresh" className="animate-spin text-[13px]" />
+                        ) : (
+                          <span className="flex items-center gap-1">
+                            <GIcon name="visibility" className="text-[13px]" />
+                            View
+                          </span>
+                        )}
+                      </button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+
+            {/* Audit History */}
+            {history.length > 0 && (
+              <div className="rounded-lg border border-control-line bg-white p-3">
+                <div className="text-xs font-bold text-secondary mb-2 flex items-center gap-1">
+                  <GIcon name="history" className="text-secondary text-sm" />
+                  Recording & Review History
+                </div>
+                <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
+                  {history.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="flex items-start justify-between text-xs border-b border-gray-50 pb-1.5 last:border-0"
+                    >
+                      <div>
+                        <span className="font-semibold text-action">
+                          {entry.action.replace(/_/g, " ")}
+                        </span>
+                        {entry.actorName && (
+                          <span className="text-secondary text-[11px] ml-1">
+                            by {entry.actorName} ({entry.actorRole || "Staff"})
+                          </span>
+                        )}
+                        {Boolean(entry.meta?.reason) ? (
+                          <div className="text-secondary text-[11px] italic mt-0.5">
+                            "{String(entry.meta?.reason)}"
+                          </div>
+                        ) : null}
+                      </div>
+                      <span className="text-[10px] text-placeholder shrink-0 ml-2">
+                        {new Date(entry.createdAt).toLocaleString()}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </>
+        );
+      })()}
 
       {/* Edit Reference Modal */}
       {editOpen && (
