@@ -107,11 +107,13 @@ def derive_workflow_state(
     return state
 
 
-def _raw_derive_workflow_state(config: SupervisorConfig, completion_candidate: Optional[dict] = None) -> DerivedState:
+def _raw_derive_workflow_state(config: SupervisorConfig, completion_candidate: Optional[dict] = None,
+                              checkpoint: Optional[CheckpointData] = None,
+                              git_state: Optional[GitState] = None) -> DerivedState:
     """Derive the authoritative workflow state deterministically from repository artifacts + Git."""
     checkpoint_path = config.checkpoint_path
-    checkpoint = parse_checkpoint(checkpoint_path)
-    git_state = get_git_state(config.repo_root)
+    checkpoint = checkpoint or parse_checkpoint(checkpoint_path)
+    git_state = git_state or get_git_state(config.repo_root)
 
     # 1. Effective Workflow Version Gate
     if not checkpoint.workflow_version_effective:
@@ -155,7 +157,7 @@ def _raw_derive_workflow_state(config: SupervisorConfig, completion_candidate: O
             checkpoint=checkpoint,
             git_state=git_state,
             reason="No active task specified in checkpoint",
-            next_action_description="Senior engineer identifies next task from roadmap/backlog and drafts task contract",
+            next_action_description="Senior engineer identifies next task from roadmap/backlog and drafts task contract: " + checkpoint.next_safe_action,
         )
 
     # 3. Resolve Task Contract

@@ -55,6 +55,7 @@ ACTION_PLANNING = "PLANNING"
 ACTION_REVIEW = "REVIEW"
 ACTION_TARGETED_VERIFICATION = "TARGETED_VERIFICATION"
 ACTION_CLOSEOUT = "CLOSEOUT"
+ACTION_TASK_DEFINITION = "TASK_DEFINITION"
 
 NO_OBSERVABLE_AGENT_EFFECT = "NO_OBSERVABLE_AGENT_EFFECT"
 NO_ACTION_SPECIFIC_EFFECT = "NO_ACTION_SPECIFIC_EFFECT"
@@ -197,6 +198,12 @@ def evaluate_postconditions(
         res.advanced = res.transition_valid
         if not res.transition_valid:
             res.reason = f"Unexpected post-review state {post_s.value}"
+    elif action == ACTION_TASK_DEFINITION:
+        res.action_effect = "checkpoint" in arts and "registry" in arts and task_changed
+        if app_changes:
+            res.violations.append("Task definition modified application files")
+        res.transition_valid = bool(post_state.active_task_id) and post_state.active_task_id != initial_state.active_task_id
+        res.advanced = res.transition_valid
     elif action == ACTION_CLOSEOUT:
         res.action_effect = closeout_changed
         accepted = {WorkflowState.ACCEPTED_WITH_COMMIT_WORTHY_CHANGES, WorkflowState.ACCEPTED_NO_COMMIT_WORTHY_CHANGES}
@@ -309,8 +316,11 @@ class SupervisorRunner:
         if code != 0:
             return False, f"PRECOMMIT_BLOCKED: git commit failed: {err}"
 
-        # 6. Record Metadata
-        return True, f"Committed accepted task {task.task_id} as {head_sha[:8]}"
+        # Reporting must inspect the actual post-commit HEAD, never retry the commit.
+        head_code, head_sha, head_err = run_git(self.config.repo_root, "rev-parse", "HEAD")
+        if head_code != 0 or not re.fullmatch(r"[0-9a-fA-F]{40,64}", head_sha.strip()):
+            return False, "POSTCOMMIT_HEAD_UNAVAILABLE: commit succeeded; do not retry commit. " + head_err
+        return True, f"Committed accepted task {task.task_id} as {head_sha.strip()[:8]}"
 
     def verify_post_agent_state(
         self,
@@ -490,6 +500,13 @@ class SupervisorRunner:
                               "correction_report_sha256": correction},
                 )
 
+        if action == ACTION_TASK_DEFINITION and pre_baseline and post_baseline:
+            changed_existing = [key for key, value in pre_baseline.artifact_hashes.items()
+                                if key.startswith("task:") and post_baseline.artifact_hashes.get(key) != value]
+            if changed_existing:
+                return StopReport(state=WorkflowState.NEXT_TASK_UNRESOLVED, task_id=task_id,
+                                  reason="NEXT_TASK_UNRESOLVED: task definition modified an existing task contract")
+
         write_actions = {
             ACTION_IMPLEMENTATION,
             ACTION_FIX,
@@ -498,6 +515,7 @@ class SupervisorRunner:
             ACTION_REVIEW,
             ACTION_TARGETED_VERIFICATION,
             ACTION_CLOSEOUT,
+            ACTION_TASK_DEFINITION,
         }
         if delta is not None:
             result.observable_repo_effect = delta.observable_effect
@@ -918,6 +936,19 @@ class SupervisorRunner:
         except (OSError, ValueError, IndexError, TypeError, AttributeError):
             return False
 
+    def has_current_reanchor_record(self) -> bool:
+        """Recognize this deterministic transition without manufacturing an agent run."""
+        record = getattr(self, "current_reanchor_record", None)
+        if not record or record.get("run_id") != self.current_run_id or self.last_action != "REANCHOR":
+            return False
+        try:
+            git = get_git_state(self.config.repo_root)
+            return (git.is_clean and record["head"] == git.head_sha and record["branch"] == git.branch
+                    and record["task_id"] == parse_checkpoint(self.config.checkpoint_path).current_task
+                    and record["checkpoint_sha256"] == hashlib.sha256(self.config.checkpoint_path.read_bytes()).hexdigest())
+        except (OSError, KeyError):
+            return False
+
     def run_step(self, dry_run: bool = False, execute_agents: bool = False,
                  on_invocation: Optional[Callable[[AgentInvocation], None]] = None) -> Tuple[DerivedState, Optional[StopReport]]:
         """Perform a single deterministic workflow step or handoff transition."""
@@ -927,6 +958,7 @@ class SupervisorRunner:
         self.last_action = None
         self.current_invocation = None
         self.current_verification_record = None
+        self.current_reanchor_record = None
         self.on_invocation = on_invocation
         self.report_validation_marker = ""
         with SupervisorLock(self.config) as lock:
@@ -939,6 +971,31 @@ class SupervisorRunner:
             # Re-derive state with accurate retry/fix counts for model selection
             state = derive_workflow_state(self.config, fix_cycle=fix_cycle, attempt_count=attempt_count)
             lock.update_heartbeat(task_id=state.active_task_id, role=state.assigned_role.value)
+
+            if state.state == WorkflowState.ACCEPTED_NO_COMMIT_WORTHY_CHANGES:
+                from tools.ks_supervisor.advancement import plan_reanchor, apply_reanchor
+                target = plan_reanchor(self.config, state)
+                if not target.is_hard_stop and not dry_run and execute_agents:
+                    try:
+                        apply_reanchor(self.config, target)
+                    except (OSError, ValueError) as error:
+                        target.is_hard_stop = True
+                        target.state = WorkflowState.NEXT_TASK_UNRESOLVED
+                        target.assigned_role = Role.NONE
+                        target.reason = f"NEXT_TASK_UNRESOLVED: could not activate selected action: {error}"
+                        target.stop_reason = target.reason
+                    else:
+                        next_state = derive_workflow_state(self.config)
+                        self.last_action = "REANCHOR"
+                        self.current_reanchor_record = {
+                            "run_id": self.current_run_id,
+                            "head": next_state.git_state.head_sha,
+                            "branch": next_state.git_state.branch,
+                            "task_id": next_state.active_task_id,
+                            "checkpoint_sha256": hashlib.sha256(self.config.checkpoint_path.read_bytes()).hexdigest(),
+                        }
+                        return next_state, None
+                state = target
 
             # Handle Hard Stops
             if state.is_hard_stop:
@@ -956,7 +1013,8 @@ class SupervisorRunner:
                     recommended_next_action="Review and resolve the blocker reported above",
                     resume_command="ks-supervisor run --once",
                 )
-                self.write_stop_report(stop_report)
+                if not dry_run:
+                    self.write_stop_report(stop_report)
                 return state, stop_report
 
             # Dry Run Mode: report action without executing agents or modifying Git
@@ -1037,6 +1095,14 @@ class SupervisorRunner:
             task_id = state.active_task_id
             task = state.task_contract
             selected_profile = state.model_selection.profile if state.model_selection else None
+
+            if state.state == WorkflowState.NO_ACTIVE_TASK:
+                return self._execute_agent_step(
+                    state=state, role=Role.SENIOR, action=ACTION_TASK_DEFINITION,
+                    invoke_fn=lambda run_id: self.codex_adapter.invoke(
+                        Role.SENIOR, "", action_type=ACTION_TASK_DEFINITION,
+                        profile=selected_profile, run_id=run_id),
+                )
             
             # A. Senior Autopilot Invocation (Codex)
             if state.assigned_role == Role.SENIOR and task and task.execution_mode == ExecutionMode.SENIOR_AUTOPILOT:

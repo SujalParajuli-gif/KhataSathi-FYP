@@ -139,7 +139,8 @@ def cmd_run(
                 dry_run=dry_run, execute_agents=(live and not dry_run),
                 on_invocation=display_invocation if live and not dry_run else None,
             )
-            deterministic_verified = runner.has_current_verification_record()
+            reanchor_verified = runner.has_current_reanchor_record()
+            deterministic_verified = runner.has_current_verification_record() or reanchor_verified
             if (live and not dry_run and not stop_report and not deterministic_verified
                     and (runner.last_action or state.assigned_role in {Role.SENIOR, Role.PLANNER, Role.IMPLEMENTATION})
                     and (not cli_invocation or cli_invocation != runner.current_invocation
@@ -158,7 +159,7 @@ def cmd_run(
                 print(f" Observable Effect: {deterministic_verified or bool(result and result.observable_repo_effect)}")
                 print(f" Postconditions Valid: {deterministic_verified or bool(result and result.postconditions_valid)}")
                 if deterministic_verified:
-                    print(" Action: TARGETED_VERIFICATION (Supervisor; zero agent calls)")
+                    print(f" Action: {'REANCHOR' if reanchor_verified else 'TARGETED_VERIFICATION'} (Supervisor; zero agent calls)")
                 if not stop_report:
                     print("\n NEXT TRANSITION")
             else:

@@ -124,6 +124,16 @@ class CodexAdapter(BaseAgentAdapter):
                 f"Do not implement code; only produce the bounded implementation plan artifact."
             )
         elif role == Role.SENIOR:
+            if action_type == "TASK_DEFINITION":
+                return (
+                    "Use the khatasathi-workflow-router NO_ACTIVE_TASK path under AGENTS.md.\n"
+                    "Re-read checkpoint NEXT_SAFE_ACTION, task registry, backlog and relevant frozen roadmap.\n"
+                    "Scope only the next authorized complete deliverable; create its bounded contract, "
+                    "register it READY and update checkpoint and progress dashboard.\n"
+                    "Preserve all ACCEPTED task statuses and history. Do not implement application code, "
+                    "reopen accepted work, commit, push, merge, deploy or execute migrations.\n"
+                    "If no safe task is determinable, report NEXT_TASK_UNRESOLVED with the specific missing authority."
+                )
             if action_type == "TARGETED_VERIFICATION":
                 return (
                     f"You are operating as the KhataSathi Senior Reviewer for targeted verification of task {task_id}.\n"

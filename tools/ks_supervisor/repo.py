@@ -435,8 +435,8 @@ def capture_repository_baseline(
         ("review", config.reviews_dir),
         ("plan", config.plans_dir),
     ):
-        if task_id and directory.exists():
-            for p in sorted(directory.glob(f"{task_id}*.md")):
+        if directory.exists() and (task_id or kind == "task"):
+            for p in sorted(directory.glob(f"{task_id}*.md" if task_id else "*.md")):
                 artifact_hashes[f"{kind}:{p.name}"] = compute_file_hash(p)
 
     artifact_hashes["checkpoint"] = compute_file_hash(config.checkpoint_path)

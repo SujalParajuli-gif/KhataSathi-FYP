@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 class WorkflowState(str, Enum):
     """Deterministic repository workflow states for Workflow v2."""
     NO_ACTIVE_TASK = "NO_ACTIVE_TASK"
+    NEXT_TASK_UNRESOLVED = "NEXT_TASK_UNRESOLVED"
     READY_FOR_PLANNING = "READY_FOR_PLANNING"
     PLAN_READY_FOR_IMPLEMENTATION = "PLAN_READY_FOR_IMPLEMENTATION"
     DIRECT_IMPLEMENTATION = "DIRECT_IMPLEMENTATION"
