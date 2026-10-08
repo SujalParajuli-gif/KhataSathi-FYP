@@ -687,8 +687,8 @@ export default function ManualBillRecoveryModal({
               Sale Already Recovered and Committed
             </div>
             <p className="text-[12px] text-emerald-800 leading-relaxed">
-              This physical evidence is attached to Invoice{" "}
-              <span className="font-bold">{outcome.invoice?.invoiceNo}</span>. No further recovery action is permitted.
+                Original recovered sale: <span className="font-bold">{outcome.invoice?.invoiceNo}</span>. No further recovery action is permitted.
+                {outcome.document.linkedEntityId !== outcome.invoice?.id && <span className="block break-all">The proof association was corrected to sale {outcome.document.linkedEntityId}; the original recovery posting remains unchanged.</span>}
             </p>
             {esewaIntent && (
               <div className="mt-2 rounded-lg bg-emerald-100/70 p-2.5 text-[12px] space-y-2">

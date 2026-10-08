@@ -340,8 +340,6 @@ export async function getManualBillRecord(
         : null,
     }));
 
-  const permittedProofIds = new Set(permittedProofs.map((p) => p.id));
-
   const auditLogs = await db.auditLog.findMany({
     where: {
       entityType: "Invoice",
@@ -355,6 +353,7 @@ export async function getManualBillRecord(
           "MANUAL_BILL_ATTACHED",
           "MANUAL_BILL_OBLIGATION_CLEARED",
           "SALES_EVIDENCE_ATTACHED",
+          "SALES_EVIDENCE_REASSOCIATED",
         ],
       },
     },
@@ -368,10 +367,12 @@ export async function getManualBillRecord(
   const history: ManualBillAuditEntry[] = [];
   for (const log of auditLogs) {
     const rawMeta = (log.meta as Record<string, unknown>) ?? {};
-    if (log.action === "MANUAL_BILL_ATTACHED" || log.action === "SALES_EVIDENCE_ATTACHED") {
+    if (log.action === "MANUAL_BILL_ATTACHED" || log.action === "SALES_EVIDENCE_ATTACHED" || log.action === "SALES_EVIDENCE_REASSOCIATED") {
       const docId = (rawMeta.documentId as string | undefined) || (log.entityType === "Document" ? log.entityId : undefined);
-      // B-6: If actor does not have visibility to this proof document, completely hide the event/metadata
-      if (!docId || !permittedProofIds.has(docId)) {
+      // Historical association events remain private according to the document's
+      // current visibility even after that proof has moved to a different sale.
+      const historicalDoc = docId ? await db.document.findFirst({ where: { id: docId, documentType: "SALE_BILL" } }) : null;
+      if (!historicalDoc || !isDocumentVisibleToActor(historicalDoc.visibility, actor)) {
         continue;
       }
       history.push({
@@ -387,6 +388,12 @@ export async function getManualBillRecord(
           documentTitle: rawMeta.documentTitle ?? null,
           reason: rawMeta.reason ?? null,
           duplicateOverrideReason: rawMeta.duplicateOverrideReason ?? null,
+          sourceInvoiceId: rawMeta.sourceInvoiceId ?? null,
+          targetInvoiceId: rawMeta.targetInvoiceId ?? null,
+          previous: log.action === "SALES_EVIDENCE_REASSOCIATED" ?
+            (rawMeta.sourceInvoiceId === invoice.id ? rawMeta.previousSource : rawMeta.previousTarget) : null,
+          current: log.action === "SALES_EVIDENCE_REASSOCIATED" ?
+            (rawMeta.sourceInvoiceId === invoice.id ? rawMeta.currentSource : rawMeta.currentTarget) : null,
         },
         createdAt: log.createdAt,
       });

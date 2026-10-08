@@ -73,6 +73,20 @@ export const attachSaleEvidenceSchema = z
 
 export type AttachSaleEvidenceInput = z.infer<typeof attachSaleEvidenceSchema>;
 
+export const reassociateSaleEvidenceSchema = attachSaleEvidenceSchema.extend({
+  expectedSourceInvoiceId: z.string().trim().min(1).max(191),
+  expectedSourceInvoice: expectedManualBillRecordSchema,
+}).strict().refine((input) => input.invoiceId !== input.expectedSourceInvoiceId, {
+  message: "Select a different target invoice", path: ["invoiceId"],
+});
+export type ReassociateSaleEvidenceInput = z.infer<typeof reassociateSaleEvidenceSchema>;
+
+export const voidSaleEvidenceSchema = z.object({
+  expectedStatus: z.enum(["UNRESOLVED", "ARCHIVED"]),
+  reason: z.string().trim().min(2).max(2000),
+}).strict();
+export type VoidSaleEvidenceInput = z.infer<typeof voidSaleEvidenceSchema>;
+
 const moneyNumber = z.number().finite();
 const positiveMoneyNumber = moneyNumber.positive();
 const nonNegativeMoneyNumber = moneyNumber.nonnegative();

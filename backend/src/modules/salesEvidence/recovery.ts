@@ -161,6 +161,7 @@ export async function verifyRecoveryCommittedProvenance(
     linkedEntityId?: string | null;
     recoveryCheckoutOperationKey?: string | null;
     recoveryCheckoutPayloadHash?: string | null;
+    visibility?: string;
   },
   options: {
     expectedKey?: string;
@@ -211,7 +212,7 @@ export async function verifyRecoveryCommittedProvenance(
 
   const opKey = doc.recoveryCheckoutOperationKey;
   const recFingerprint = doc.recoveryCheckoutPayloadHash;
-  const invoiceId = doc.linkedEntityId;
+  let invoiceId = doc.linkedEntityId;
 
   // 1. CheckoutOperation verification
   let completedOp: any = null;
@@ -229,7 +230,7 @@ export async function verifyRecoveryCommittedProvenance(
   if (
     !completedOp ||
     !completedOp.completedAt ||
-    completedOp.invoiceId !== invoiceId
+    !completedOp.invoiceId
   ) {
     return {
       valid: false,
@@ -237,6 +238,10 @@ export async function verifyRecoveryCommittedProvenance(
         "Checkout operation is missing, incomplete, or linked to a different invoice",
     };
   }
+
+  // The recovered sale remains the immutable financial posting identity even
+  // when a later audited proof correction changes the current association.
+  invoiceId = completedOp.invoiceId;
 
   if (options.requiredActorId && completedOp.actorId !== options.requiredActorId) {
     return {
@@ -385,6 +390,27 @@ export async function verifyRecoveryCommittedProvenance(
     };
   }
 
+  {
+    try {
+      const corrections = await client.auditLog.findMany({ where: { entityType: "Document", entityId: doc.id,
+        action: "SALES_EVIDENCE_REASSOCIATED", createdAt: { gte: attachAudit.createdAt } }, orderBy: [{ createdAt: "asc" }, { id: "asc" }] });
+      let association = invoiceId;
+      for (const correction of corrections) {
+        const meta = correction.meta as any;
+        const before = meta?.previousDocument, after = meta?.currentDocument;
+        const identitiesMatch = [before, after].every((item) => item?.id === doc.id && item.documentType === "SALE_BILL" &&
+          item.saleRecoveryStatus === "ATTACHED" && item.linkedEntityType === "Invoice" && item.visibility === doc.visibility &&
+          item.recoveryCheckoutOperationKey === opKey && item.recoveryCheckoutPayloadHash === recFingerprint);
+        if (!identitiesMatch || before.linkedEntityId !== association || meta.sourceInvoiceId !== association ||
+          !after.linkedEntityId || meta.targetInvoiceId !== after.linkedEntityId || after.linkedEntityId === association || !meta.reason ||
+          !["ADMIN", "MANAGER"].includes(meta.actorRole) || !correction.actorId || !meta.decisionHash) {
+          return { valid: false, explanation: "Proof correction audit chain is incomplete or inconsistent" };
+        }
+        association = after.linkedEntityId;
+      }
+      if (association !== doc.linkedEntityId) return { valid: false, explanation: "Current proof association lacks an audited correction chain" };
+    } catch { return { valid: false, explanation: "Proof correction history could not be verified" }; }
+  }
   return { valid: true, completedOp, prepAudit, postAudit, attachAudit };
 }
 
@@ -444,7 +470,7 @@ export async function getSaleEvidenceRecoveryOutcome(
 
     try {
       const invoiceRecord = await getManualBillRecord(
-        doc.linkedEntityId!,
+        provenance.completedOp.invoiceId,
         actor as any,
         prisma,
         capabilitiesResolver,
@@ -1136,7 +1162,7 @@ export async function prepareAndPostSaleEvidenceRecovery(
 
         if (provenance.valid) {
           const invoiceRecord = await getManualBillRecord(
-            doc.linkedEntityId!,
+            provenance.completedOp.invoiceId,
             actor as any,
             tx,
             capabilitiesResolver,
@@ -1463,7 +1489,7 @@ export async function prepareAndPostSaleEvidenceRecovery(
         });
         if (provenance.valid) {
           const invoiceRecord = await getManualBillRecord(
-            checkDoc.linkedEntityId!,
+            provenance.completedOp.invoiceId,
             actor as any,
             prisma,
             capabilitiesResolver,

@@ -926,6 +926,7 @@ test("B-6 Audit history privacy: Manager and Cashier querying invoice with ADMIN
     },
     document: {
       findMany: async () => [adminProofDoc],
+      findFirst: async ({ where }: any) => where.id === adminProofDoc.id ? adminProofDoc : null,
     },
     auditLog: {
       findMany: async () => auditEvents,

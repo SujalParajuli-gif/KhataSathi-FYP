@@ -34,24 +34,47 @@ test("categorized history combines search, action, actor, and Nepal business dat
   assert.deepEqual(capturedWhere.createdAt, buildBusinessDateRange({
     from: "2026-09-22", to: "2026-09-22",
   }));
-  assert.deepEqual(capturedWhere.action, {
-    not: { startsWith: "SALE_RECOVERY_" },
-    contains: "PRICE",
-  });
   assert.equal(capturedWhere.actorId, "staff-1");
-  assert.equal(capturedWhere.AND.length, 3);
+  assert.equal(capturedWhere.AND.length, 8);
   assert.deepEqual(capturedWhere.AND[0], {
     action: { not: { startsWith: "SALE_RECOVERY_" } },
   });
-  assert.deepEqual(capturedWhere.AND[2], { OR: [
-    { action: { contains: "Jar" } },
-    { entityType: { contains: "Jar" } },
-    { entityId: { contains: "Jar" } },
-    { actor: { name: { contains: "Jar" } } },
-  ] });
+  assert.deepEqual(capturedWhere.AND[3], {
+    action: { not: { startsWith: "PAYMENT_ACCOUNT_" } },
+  });
+  assert.deepEqual(capturedWhere.AND[1], { action: { not: { startsWith: "SALE_EVIDENCE_" } } });
+  assert.deepEqual(capturedWhere.AND[2], { action: { not: { startsWith: "SALES_EVIDENCE_" } } });
+  assert.deepEqual(capturedWhere.AND[4], { action: { not: { equals: "MANUAL_BILL_ATTACHED" } } });
+  assert.deepEqual(capturedWhere.AND[5], {
+    OR: [
+      {
+        action: {
+          in: [
+            "PRODUCT_PRICE_UPDATED",
+            "PRODUCT_PRICE_UPDATE_DIGEST",
+            "PRODUCT_BULK_PRICE_UPDATE",
+            "MANAGER_PRODUCT_BULK_PRICE_UPDATE",
+            "PRODUCT_DEACTIVATED",
+          ],
+        },
+      },
+      { entityType: { in: ["Product", "Brand"] } },
+    ],
+  });
+  assert.deepEqual(capturedWhere.AND[6], {
+    action: { contains: "PRICE" },
+  });
+  assert.deepEqual(capturedWhere.AND[7], {
+    OR: [
+      { action: { contains: "Jar" } },
+      { entityType: { contains: "Jar" } },
+      { entityId: { contains: "Jar" } },
+      { actor: { name: { contains: "Jar" } } },
+    ],
+  });
 });
 
-test("listAuditLogs excludes internal SALE_RECOVERY_ audit actions from general history", async (t) => {
+test("listAuditLogs excludes restricted proof and PAYMENT_ACCOUNT_ audit actions from general history", async (t) => {
   const originalFindMany = prisma.auditLog.findMany;
   const originalCount = prisma.auditLog.count;
   t.after(() => {
@@ -65,12 +88,18 @@ test("listAuditLogs excludes internal SALE_RECOVERY_ audit actions from general 
     return [];
   }) as any;
   prisma.auditLog.count = (async (args: any) => {
+    assert.deepEqual(args.where, capturedWhere);
     return 0;
   }) as any;
 
   await listAuditLogs({ entityType: "Document" });
 
-  assert.deepEqual(capturedWhere.action, {
-    not: { startsWith: "SALE_RECOVERY_" },
-  });
+  assert.equal(capturedWhere.entityType, "Document");
+  assert.deepEqual(capturedWhere.AND, [
+    { action: { not: { startsWith: "SALE_RECOVERY_" } } },
+    { action: { not: { startsWith: "SALE_EVIDENCE_" } } },
+    { action: { not: { startsWith: "SALES_EVIDENCE_" } } },
+    { action: { not: { startsWith: "PAYMENT_ACCOUNT_" } } },
+    { action: { not: { equals: "MANUAL_BILL_ATTACHED" } } },
+  ]);
 });

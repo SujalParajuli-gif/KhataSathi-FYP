@@ -143,6 +143,7 @@ export interface SalesEvidenceRecord {
   linkedEntityId: string | null;
   visibility: string;
   saleRecoveryStatus: SaleRecoveryStatus | null;
+  canVoidMistakenUpload?: boolean;
   uploadedById: string;
   uploadedBy?: { id: string; name: string };
   createdAt: string;
@@ -181,6 +182,20 @@ export interface AttachSaleEvidencePayload {
   expectedInvoice: ExpectedManualBillRecord;
   reason: string;
   duplicateOverrideReason?: string;
+}
+
+export async function reassociateSalesEvidence(id: string, data: AttachSaleEvidencePayload & {
+  expectedSourceInvoiceId: string; expectedSourceInvoice: ExpectedManualBillRecord;
+}) {
+  return (await api.post(`/api/sales-evidence/${id}/reassociate`, data)).data;
+}
+export async function voidSalesEvidence(id: string, data: { expectedStatus: "UNRESOLVED" | "ARCHIVED"; reason: string }) {
+  return (await api.post(`/api/sales-evidence/${id}/void`, data)).data;
+}
+export async function getSalesEvidenceHistory(id: string): Promise<{ document: {
+  id: string; saleRecoveryStatus: SaleRecoveryStatus; linkedEntityId: string | null; voidedAt: string | null; retained: boolean;
+}; history: ManualBillAuditEntry[] }> {
+  return (await api.get(`/api/sales-evidence/${id}/history`)).data;
 }
 
 // Queue

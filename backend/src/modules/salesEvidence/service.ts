@@ -54,6 +54,7 @@ export interface SalesEvidenceActor {
 
 export interface PublicSaleEvidence extends PublicDocument {
   saleRecoveryStatus: SaleRecoveryStatus | null;
+  canVoidMistakenUpload: boolean;
 }
 
 export interface ArchiveSaleEvidenceResult {
@@ -146,12 +147,17 @@ export async function assertSalesEvidenceReviewer(
 export function toPublicSaleEvidence<
   T extends Parameters<typeof toPublicDocument>[0] & {
     saleRecoveryStatus?: SaleRecoveryStatus | null;
+    recoveryCheckoutOperationKey?: string | null;
+    recoveryCheckoutPayloadHash?: string | null;
+    deletedAt?: Date | null;
   },
 >(doc: T): PublicSaleEvidence {
   const base = toPublicDocument(doc);
   return {
     ...base,
     saleRecoveryStatus: doc.saleRecoveryStatus ?? null,
+    canVoidMistakenUpload: !doc.deletedAt && ["UNRESOLVED", "ARCHIVED"].includes(doc.saleRecoveryStatus || "") &&
+      !doc.linkedEntityType && !doc.linkedEntityId && !doc.recoveryCheckoutOperationKey && !doc.recoveryCheckoutPayloadHash,
   };
 }
 
@@ -813,6 +819,10 @@ export async function getSaleEvidenceCandidates(
     deletedAt: null,
     paymentStatus: { not: "CANCELLED" },
     OR: [{ billingChannel: null }, { billingChannel: "MANUAL_EXTERNAL" }],
+    ...(document.saleRecoveryStatus === "ATTACHED" ? {
+      creditNotesAsOriginal: { none: {} }, creditNoteAsReplacement: { is: null },
+      ...(document.linkedEntityId ? { id: { not: document.linkedEntityId } } : {}),
+    } : {}),
   };
 
   if (query.search) {

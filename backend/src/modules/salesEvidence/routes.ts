@@ -15,6 +15,9 @@ import {
   postSaleEvidenceRecoveryHandler,
   reviseSaleEvidenceRecoveryHandler,
   uploadSaleEvidence,
+  reassociateSaleEvidenceHandler,
+  voidSaleEvidenceHandler,
+  getSaleEvidenceHistoryHandler,
 } from "./controller";
 import { getTempUploadDir } from "../documents/service";
 import {
@@ -107,6 +110,9 @@ router.post("/", safeSingleUpload(upload.single("file")), uploadSaleEvidence);
 router.post("/:id/archive", archiveSaleEvidenceHandler);
 router.get("/:id/candidates", getSaleEvidenceCandidatesHandler);
 router.post("/:id/attach", attachSaleEvidenceHandler);
+router.post("/:id/reassociate", reassociateSaleEvidenceHandler);
+router.post("/:id/void", voidSaleEvidenceHandler);
+router.get("/:id/history", getSaleEvidenceHistoryHandler);
 router.get("/:id/recovery", getSaleEvidenceRecoveryHandler);
 router.post("/:id/recovery", postSaleEvidenceRecoveryHandler);
 router.post("/:id/recovery/revise", reviseSaleEvidenceRecoveryHandler);

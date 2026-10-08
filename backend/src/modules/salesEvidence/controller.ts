@@ -31,6 +31,24 @@ import {
 } from "../documents/service";
 import { StorageUnavailableError } from "../../lib/storageReadiness";
 import { logger } from "../../lib/logger";
+import { getSaleEvidenceHistory, reassociateSaleEvidence, voidSaleEvidence } from "./corrections";
+
+function correctionHandler(operation: (id: string, input: any, actor: any, resolver?: any) => Promise<any>, label: string) {
+  return async (req: Request, res: Response) => {
+    try { res.json(await operation(String(req.params.id), req.body, req.user!, getCapabilitiesResolver(res))); }
+    catch (error: any) {
+      if (error instanceof ZodError) { res.status(400).json({ code: "VALIDATION_ERROR", error: `Invalid ${label}`, details: error.issues }); return; }
+      if (error instanceof SalesEvidenceConflictError || error?.statusCode === 403) {
+        res.status(error.code === "NOT_FOUND" ? 404 : error.statusCode).json({ code: error.code ?? "FORBIDDEN", error: error.message, document: error.document }); return;
+      }
+      logger.error(`Sales evidence ${label} error:`, error);
+      res.status(500).json({ error: "Internal server error" });
+    }
+  };
+}
+export const reassociateSaleEvidenceHandler = correctionHandler(reassociateSaleEvidence, "proof correction");
+export const voidSaleEvidenceHandler = correctionHandler(voidSaleEvidence, "mistaken-upload void");
+export const getSaleEvidenceHistoryHandler = correctionHandler((id, _input, actor, resolver) => getSaleEvidenceHistory(id, actor, resolver), "proof history");
 
 function getCapabilitiesResolver(res: Response) {
   if (res.locals?.businessCapabilities) {

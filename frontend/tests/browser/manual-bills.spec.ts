@@ -162,6 +162,8 @@ async function fixture(
     discoveryUnavailable?: boolean;
     failPostWithStockConflict?: boolean;
     delayPostResponseMs?: number;
+    attachedProof?: boolean;
+    voidConflict?: boolean;
   } = {},
 ) {
   const user = {
@@ -202,10 +204,11 @@ async function fixture(
     thumbnailFileName: null,
     thumbnailSize: null,
     remarks: null,
-    linkedEntityType: null,
-    linkedEntityId: null,
+    linkedEntityType: options.attachedProof ? "Invoice" : null,
+    linkedEntityId: options.attachedProof ? "source-sale" : null,
     visibility: "ADMIN_MANAGER",
-    saleRecoveryStatus: "UNRESOLVED",
+    saleRecoveryStatus: options.attachedProof ? "ATTACHED" : "UNRESOLVED",
+    canVoidMistakenUpload: !options.attachedProof && !options.preparedAttempt,
     recoveryCheckoutOperationKey: options.preparedAttempt ? "rec_mock_key_1" : null,
     recoveryCheckoutPayloadHash: options.preparedAttempt ? "hash_mock_1" : null,
     uploadedById: user.id,
@@ -234,6 +237,9 @@ async function fixture(
   let recordCalls = 0;
   let attachCalls = 0;
   let recoveryPostCalls = 0;
+  let voidCalls = 0;
+  let voided = false;
+  const proofHistory: any[] = [];
 
   await page.addInitScript(
     ({ user }) => {
@@ -258,6 +264,8 @@ async function fixture(
         });
 
       if (method === "GET" && path === "/api/auth/me") return respond({ user });
+      if (method === "GET" && path === "/api/invoices/manual-bills/source-sale") return respond({ ...record,
+        id: "source-sale", invoiceNo: "INV-SOURCE", externalBillNo: "SOURCE-PAPER", externalDocumentType: "PAN_INVOICE", externalBillDate: "2026-10-04", billRecordStatus: "VERIFIED" });
       if (method === "GET" && path === "/api/alerts") return respond({ alerts: [] });
       if (method === "PATCH" && path === "/api/users/me/presence")
         return respond({ ok: true });
@@ -348,8 +356,8 @@ async function fixture(
           !url.searchParams.get("saleRecoveryStatus") ||
           proof.saleRecoveryStatus === url.searchParams.get("saleRecoveryStatus");
         return respond({
-          documents: matches ? [proof] : [],
-          total: matches ? 1 : 0,
+          documents: matches && !voided ? [proof] : [],
+          total: matches && !voided ? 1 : 0,
           page: 1,
           pageSize: 20,
           totalPages: 1,
@@ -358,6 +366,28 @@ async function fixture(
 
       if (method === "GET" && path === "/api/sales-evidence/proof")
         return respond(proof);
+      if (method === "GET" && path === "/api/sales-evidence/proof/history") return respond({
+        document: { id: proof.id, saleRecoveryStatus: proof.saleRecoveryStatus, linkedEntityId: proof.linkedEntityId, retained: true, voidedAt: voided ? new Date().toISOString() : null }, history: proofHistory,
+      });
+      if (method === "POST" && path === "/api/sales-evidence/proof/reassociate") {
+        const body = request.postDataJSON(); payloads.push(body);
+        const observation = z.object({ billingChannel: z.string().nullable(), externalDocumentType: z.string().nullable(), externalBillNo: z.string().nullable(), externalBillDate: z.string().nullable(), billRecordStatus: z.string().nullable() }).strict();
+        const decision = z.object({ invoiceId: z.string(), expectedSourceInvoiceId: z.string(), expectedSourceInvoice: observation, expectedInvoice: observation,
+          reference: strictManualBillReferenceSchema, reason: z.string().trim().min(2), duplicateOverrideReason: z.string().optional() }).strict().safeParse(body);
+        if (!decision.success) return respond({ error: "Invalid correction contract" }, 400);
+        proof = { ...proof, linkedEntityId: body.invoiceId };
+        proofHistory.push({ id: "correction", action: "SALES_EVIDENCE_REASSOCIATED", actorName: user.name, actorRole: user.role, createdAt: new Date().toISOString(),
+          meta: { sourceInvoiceId: body.expectedSourceInvoiceId, targetInvoiceId: body.invoiceId, reason: body.reason, reference: body.reference } });
+        return respond({ document: proof, invoice: record, sourceInvoice: record, replayed: false });
+      }
+      if (method === "POST" && path === "/api/sales-evidence/proof/void") {
+        const body = request.postDataJSON(); payloads.push(body); voidCalls++;
+        if (!z.object({ expectedStatus: z.enum(["UNRESOLVED", "ARCHIVED"]), reason: z.string().trim().min(2) }).strict().safeParse(body).success) return respond({ error: "Invalid retained void contract" }, 400);
+        if (options.voidConflict && voidCalls === 1) { proof = { ...proof, saleRecoveryStatus: "ARCHIVED" }; return respond({ code: "VOID_CONFLICT", error: "Outcome changed; review archive first", document: proof }, 409); }
+        voided = true;
+        proofHistory.push({ id: "void", action: "SALE_EVIDENCE_VOIDED", actorName: user.name, actorRole: user.role, createdAt: new Date().toISOString(), meta: { retained: true, reason: body.reason } });
+        return respond({ document: proof, replayed: false });
+      }
       if (method === "GET" && path === "/api/sales-evidence/proof/candidates")
         return respond({ candidates: [record] });
       if (method === "GET" && path === "/api/sales-evidence/proof/file")
@@ -668,6 +698,39 @@ async function fixture(
 }
 
 for (const width of [1440, 390]) {
+  test(`correct proof association preserves source observation and keyboard history at width ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 });
+    const f = await fixture(page, { role: "MANAGER", attachedProof: true });
+    await evidence(page, { width, status: "ATTACHED" });
+    await page.getByRole("button", { name: "Correct association" }).click();
+    await expect(page.getByRole("dialog", { name: "Correct Proof Association" })).toBeVisible();
+    await expect.poll(() => page.getByRole("dialog").evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.keyboard.press("Tab");
+    expect(await page.getByRole("dialog").evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.screenshot({ path: test.info().outputPath(`correction-${width}.png`), fullPage: true });
+    await expect(page.getByText(/Current sale: INV-SOURCE/)).toBeVisible();
+    await page.getByRole("button", { name: /INV-TEST-1/ }).click();
+    await page.getByPlaceholder("e.g. PB-2081-0042").fill("CORRECT-PAPER");
+    await page.getByPlaceholder("Note for attaching this proof...").fill("Associated with wrong sale");
+    await page.getByRole("button", { name: "Confirm Correction" }).click(); await expect(page.getByRole("dialog")).toHaveCount(0);
+    expect(f.payloads[0].expectedSourceInvoiceId).toBe("source-sale"); expect(f.payloads[0].expectedSourceInvoice.billRecordStatus).toBe("VERIFIED");
+    expect(f.payloads[0].invoiceId).toBe("sale"); expect(f.payloads[0].reference.billNo).toBe("CORRECT-PAPER");
+    await page.getByRole("button", { name: "Proof history" }).click(); await expect(page.getByText("Associated with wrong sale")).toBeVisible();
+    await page.keyboard.press("Escape"); await expect(page.getByRole("dialog")).toHaveCount(0); expect(f.unexpected).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+  test(`retained mistaken upload void and history at width ${width}`, async ({ page }) => {
+    await page.setViewportSize({ width, height: 900 }); const f = await fixture(page, { role: "MANAGER" }); await evidence(page, { width });
+    await page.getByRole("button", { name: "Void mistaken upload" }).click();
+    await expect(page.getByText(/original file and audit remain retained/)).toBeVisible();
+    await expect.poll(() => page.getByRole("dialog").evaluate(el => el.contains(document.activeElement))).toBe(true);
+    await page.screenshot({ path: test.info().outputPath(`void-${width}.png`), fullPage: true });
+    await page.getByRole("textbox", { name: "Void reason" }).fill("Uploaded wrong physical bill");
+    await page.getByRole("button", { name: "Confirm Retained Void" }).click(); await expect(page.getByRole("dialog")).toHaveCount(0);
+    await expect(page.getByText("Mistaken upload voided. Its file and audit history are retained.")).toBeVisible();
+    await page.getByRole("button", { name: "View retained history" }).click(); await expect(page.getByText("Original file retained.")).toBeVisible();
+    expect(f.payloads[0]).toEqual({ expectedStatus: "UNRESOLVED", reason: "Uploaded wrong physical bill" }); expect(f.unexpected).toEqual([]);
+  });
   test(`record reference with keyboard modal and correct expected payload at width ${width}`, async ({
     page,
   }) => {
@@ -738,10 +801,11 @@ test("reference stale conflict keeps input and submits reviewed expected state",
   expect(f.unexpected).toEqual([]);
 });
 
-async function evidence(page: Page) {
-  await page.setViewportSize({ width: 1440, height: 900 });
+async function evidence(page: Page, options: { width?: number; status?: "ATTACHED" } = {}) {
+  await page.setViewportSize({ width: options.width ?? 1440, height: 900 });
   await page.goto("/manual-bills");
   await page.getByRole("button", { name: /Proof & Matching/ }).click();
+  if (options.status) await page.getByRole("button", { name: options.status, exact: true }).click();
   await expect(page.getByText("Paper proof", { exact: true })).toBeVisible();
 }
 
@@ -832,6 +896,15 @@ test("archive submits nonposting reason and closes after committed response", as
   await expect(page.getByRole("dialog")).toHaveCount(0);
   expect(f.payloads[0]).toEqual({ reason: "No operational sale" });
   expect(f.unexpected).toEqual([]);
+});
+
+test("retained void stale conflict preserves reason and requires refreshed status", async ({ page }) => {
+  const f = await fixture(page, { role: "MANAGER", voidConflict: true }); await evidence(page);
+  await page.getByRole("button", { name: "Void mistaken upload" }).click(); await page.getByRole("textbox", { name: "Void reason" }).fill("Wrong bill uploaded");
+  await page.getByRole("button", { name: "Confirm Retained Void" }).click(); await expect(page.getByRole("alert")).toContainText("Outcome changed");
+  await page.getByRole("button", { name: "Refresh and review outcome" }).click(); await expect(page.getByRole("textbox", { name: "Void reason" })).toHaveValue("Wrong bill uploaded");
+  await page.getByRole("button", { name: "Confirm Retained Void" }).click(); await expect(page.getByRole("dialog")).toHaveCount(0);
+  expect(f.payloads[1].expectedStatus).toBe("ARCHIVED"); expect(f.unexpected).toEqual([]);
 });
 
 test("proof preview releases authenticated blob URL on close and workspace unmount", async ({

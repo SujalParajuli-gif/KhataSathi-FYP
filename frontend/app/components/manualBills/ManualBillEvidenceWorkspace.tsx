@@ -10,6 +10,13 @@ import type {
 import {
   archiveSalesEvidence,
   attachSalesEvidence,
+  reassociateSalesEvidence,
+  voidSalesEvidence,
+  getSalesEvidenceHistory,
+  getManualBillRecord,
+  type ManualBillRecord,
+  type ExpectedManualBillRecord,
+  type ManualBillAuditEntry,
   fetchSalesEvidenceBlob,
   getSalesEvidenceCandidates,
   getSalesEvidence,
@@ -55,6 +62,37 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
 
   // Attach modal state
   const [attachOpen, setAttachOpen] = useState(false);
+  const [sourceInvoice, setSourceInvoice] = useState<ManualBillRecord | null>(null);
+  const [voidDoc, setVoidDoc] = useState<SalesEvidenceRecord | null>(null);
+  const [voidReason, setVoidReason] = useState("");
+  const [voidBusy, setVoidBusy] = useState(false);
+  const [voidError, setVoidError] = useState<string | null>(null);
+  const [voidReceipt, setVoidReceipt] = useState<string | null>(null);
+  const [historyId, setHistoryId] = useState<string | null>(null);
+  const [history, setHistory] = useState<ManualBillAuditEntry[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState<string | null>(null);
+
+  function expected(record: ManualBillRecord): ExpectedManualBillRecord {
+    return { billingChannel: record.billingChannel, externalDocumentType: record.externalDocumentType,
+      externalBillNo: record.externalBillNo, externalBillDate: record.externalBillDate, billRecordStatus: record.billRecordStatus };
+  }
+  async function openHistory(id: string) {
+    setHistoryId(id); setHistory([]); setHistoryError(null); setHistoryBusy(true);
+    try { setHistory((await getSalesEvidenceHistory(id)).history); }
+    catch (err: any) { setHistoryError(err?.response?.data?.error || "Unable to load retained proof history."); }
+    finally { setHistoryBusy(false); }
+  }
+  async function submitVoid(e: React.FormEvent) {
+    e.preventDefault();
+    if (!voidDoc || !["UNRESOLVED", "ARCHIVED"].includes(voidDoc.saleRecoveryStatus || "")) return;
+    setVoidBusy(true); setVoidError(null);
+    try {
+      await voidSalesEvidence(voidDoc.id, { expectedStatus: voidDoc.saleRecoveryStatus as "UNRESOLVED" | "ARCHIVED", reason: voidReason.trim() });
+      setVoidReceipt(voidDoc.id); setVoidDoc(null); await loadDocuments(); onRefreshParent?.();
+    } catch (err: any) { setVoidError(err?.response?.data?.error || "Unable to void this upload. Your reason has been kept."); }
+    finally { setVoidBusy(false); }
+  }
   const [selectedDoc, setSelectedDoc] = useState<SalesEvidenceRecord | null>(null);
   const [candidateSearch, setCandidateSearch] = useState("");
   const [candidates, setCandidates] = useState<PublicSaleCandidate[]>([]);
@@ -94,7 +132,8 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
       if (kind === "attach") {
         setSelectedDoc(current);
         setSelectedCandidate(null);
-        if (current.saleRecoveryStatus === "UNRESOLVED") {
+        if (current.saleRecoveryStatus === "UNRESOLVED" || current.saleRecoveryStatus === "ATTACHED") {
+          setSourceInvoice(current.saleRecoveryStatus === "ATTACHED" && current.linkedEntityId ? await getManualBillRecord(current.linkedEntityId) : null);
           const result = await getSalesEvidenceCandidates(current.id, candidateSearch.trim());
           setCandidates(result.candidates);
           setAttachConflict(null);
@@ -240,6 +279,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
   }
 
   async function openAttachModal(doc: SalesEvidenceRecord) {
+    setSourceInvoice(null);
     setAttachConflict(null);
     setSelectedDoc(doc);
     setSelectedCandidate(null);
@@ -257,10 +297,11 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
     // Initial candidate search
     setCandidateLoading(true);
     try {
+      if (doc.saleRecoveryStatus === "ATTACHED" && doc.linkedEntityId) setSourceInvoice(await getManualBillRecord(doc.linkedEntityId));
       const res = await getSalesEvidenceCandidates(doc.id);
       setCandidates(res.candidates);
-    } catch (err) {
-      console.error(err);
+    } catch (err: any) {
+      setAttachError(err?.response?.data?.error || "Unable to load the current sale and correction candidates.");
     } finally {
       setCandidateLoading(false);
     }
@@ -299,7 +340,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
     setAttaching(true);
     setAttachError(null);
     try {
-      await attachSalesEvidence(selectedDoc.id, {
+      const payload = {
         invoiceId: selectedCandidate.id,
         reference: {
           billNo: trimmedNo,
@@ -315,7 +356,11 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
         },
         reason: trimmedReason,
         duplicateOverrideReason: attachDuplicateReason.trim() || undefined,
-      });
+      };
+      if (selectedDoc.saleRecoveryStatus === "ATTACHED") {
+        if (!sourceInvoice || sourceInvoice.id !== selectedDoc.linkedEntityId) throw new Error("Refresh the original sale before correcting this proof.");
+        await reassociateSalesEvidence(selectedDoc.id, { ...payload, expectedSourceInvoiceId: sourceInvoice.id, expectedSourceInvoice: expected(sourceInvoice) });
+      } else { await attachSalesEvidence(selectedDoc.id, payload); }
 
       setAttachOpen(false);
       loadDocuments();
@@ -444,6 +489,10 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
           {error}
         </div>
       )}
+      {voidReceipt && <div role="status" className="rounded-xl border border-control-line bg-control-hover p-3 text-sm">
+        Mistaken upload voided. Its file and audit history are retained.
+        <button type="button" onClick={() => openHistory(voidReceipt)} className="ml-2 min-h-10 underline">View retained history</button>
+      </div>}
 
       {/* Documents Grid / Table */}
       {loading ? (
@@ -579,6 +628,13 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                         </button>
                       </>
                     )}
+                    {isAttached && <button type="button" onClick={() => openAttachModal(doc)}
+                      className="min-h-10 rounded-xl border border-control-line px-2.5 py-1 text-[11px] font-bold hover:bg-control-hover">Correct association</button>}
+                    {(isUnresolved || isArchived) && <button type="button" disabled={doc.canVoidMistakenUpload === false}
+                      title={doc.canVoidMistakenUpload === false ? "A prepared recovery attempt must retain this proof" : undefined}
+                      onClick={() => { setVoidDoc(doc); setVoidReason(""); setVoidError(null); }}
+                      className="min-h-10 rounded-xl border border-control-line px-2.5 py-1 text-[11px] font-bold hover:bg-control-hover">Void mistaken upload</button>}
+                    <button type="button" onClick={() => openHistory(doc.id)} className="min-h-10 rounded-xl border border-control-line px-2.5 py-1 text-[11px] font-bold hover:bg-control-hover">Proof history</button>
                   </div>
                 </div>
               );
@@ -687,9 +743,15 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
         <Modal
           open={attachOpen}
           onClose={() => setAttachOpen(false)}
-          title="Attach Proof to Existing Sale"
+          title={selectedDoc.saleRecoveryStatus === "ATTACHED" ? "Correct Proof Association" : "Attach Proof to Existing Sale"}
         >
           <div className="space-y-4 text-left max-h-[80vh] overflow-y-auto pr-1">
+            {selectedDoc.saleRecoveryStatus === "ATTACHED" && <div className="rounded-xl border border-control-line bg-control-hover p-3 text-sm">
+              <p>Current sale: {sourceInvoice?.invoiceNo || "Loading…"} · {sourceInvoice?.externalBillNo || "No paper reference"} · {sourceInvoice?.billRecordStatus}</p>
+              <p>Correction moves this proof to the selected sale and requires re-verification. Existing sale amounts and payments remain intact.</p>
+              {sourceInvoice?.replacementInvoiceId || sourceInvoice?.originalInvoiceId || sourceInvoice?.cancelledAt ?
+                <p role="alert">This original or replacement sale retains its proof. Association correction is unavailable.</p> : null}
+            </div>}
             {conflictNotice("attach")}
             {attachError && (
               <div className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-[13px] text-rose-700">
@@ -819,7 +881,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                   </ProjectSelect>
                 </div>
 
-                <div className="grid grid-cols-2 gap-2">
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                   <div>
                     <label className="block text-[12px] font-bold text-[#11120d] mb-1">
                       Paper Bill Number *
@@ -871,10 +933,11 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                   </button>
                   <button
                     type="submit"
-                    disabled={attaching || !!attachConflict || refreshingDecision || !selectedCandidate || !attachBillNo.trim()}
+                    disabled={attaching || !!attachConflict || refreshingDecision || !selectedCandidate || !attachBillNo.trim() ||
+                      (selectedDoc.saleRecoveryStatus === "ATTACHED" && (!sourceInvoice || !!sourceInvoice.cancelledAt || !!sourceInvoice.replacementInvoiceId || !!sourceInvoice.originalInvoiceId))}
                     className="flex items-center gap-1.5 rounded-xl bg-action px-4 py-2 text-[13px] font-bold text-white hover:bg-black disabled:opacity-50"
                   >
-                    {attaching ? "Attaching…" : "Confirm Attachment"}
+                    {attaching ? "Saving…" : selectedDoc.saleRecoveryStatus === "ATTACHED" ? "Confirm Correction" : "Confirm Attachment"}
                   </button>
                 </div>
               </form>
@@ -934,6 +997,40 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
         </Modal>
       )}
 
+      {voidDoc && <Modal open onClose={() => { if (!voidBusy) setVoidDoc(null); }} title="Void Mistaken Upload">
+        <form onSubmit={submitVoid} className="space-y-4 text-left">
+          <p className="text-sm">Remove {voidDoc.title || voidDoc.fileName} from actionable evidence. The original file and audit remain retained; its {voidDoc.saleRecoveryStatus} outcome will not be reset.</p>
+          {voidError && <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 p-3 text-sm">
+            {voidError}
+            <button type="button" disabled={voidBusy} className="block min-h-10 underline" onClick={async () => {
+              try { setVoidDoc(await getSalesEvidence(voidDoc.id)); setVoidError("Review the refreshed outcome before confirming. Your reason has been kept."); }
+              catch { setVoidError("This upload is no longer actionable. Close this dialog and refresh the list."); }
+            }}>Refresh and review outcome</button>
+          </div>}
+          <label className="block text-sm font-bold">Void reason
+            <textarea aria-label="Void reason" required minLength={2} maxLength={2000} rows={3} value={voidReason} onChange={(e) => setVoidReason(e.target.value)}
+              className="mt-1 w-full rounded-xl border border-control-line p-3 text-sm font-normal" />
+          </label>
+          <div className="flex flex-wrap justify-end gap-2">
+            <button type="button" disabled={voidBusy} onClick={() => setVoidDoc(null)} className="min-h-10 rounded-xl border border-control-line px-4">Cancel</button>
+            <button type="submit" disabled={voidBusy || voidReason.trim().length < 2 || voidDoc.canVoidMistakenUpload === false || !["UNRESOLVED", "ARCHIVED"].includes(voidDoc.saleRecoveryStatus || "")}
+              className="min-h-10 rounded-xl bg-action px-4 text-white disabled:opacity-50">{voidBusy ? "Saving…" : "Confirm Retained Void"}</button>
+          </div>
+        </form>
+      </Modal>}
+      {historyId && <Modal open onClose={() => setHistoryId(null)} title="Retained Proof History">
+        <div className="max-h-[70vh] space-y-3 overflow-y-auto text-left text-sm">
+          {historyBusy ? <p role="status">Loading proof history…</p> : historyError ? <p role="alert">{historyError}</p> : history.length === 0 ? <p>No retained review events.</p> : history.map((entry) =>
+            <article key={entry.id} className="rounded-xl border border-control-line p-3">
+              <p className="font-bold">{entry.action.replaceAll("_", " ")}</p>
+              <p className="text-secondary">{entry.actorName || entry.actorRole || "Reviewer"} · {new Date(entry.createdAt).toLocaleString()}</p>
+              {!!entry.meta?.reason && <p>{String(entry.meta.reason)}</p>}
+              {!!entry.meta?.sourceInvoiceId && <p className="break-all">Sale {String(entry.meta.sourceInvoiceId)} → {String(entry.meta.targetInvoiceId)}</p>}
+              {!!entry.meta?.reference && <p>Paper reference: {String((entry.meta.reference as any).billNo || "")}</p>}
+              {entry.meta?.retained === true && <p>Original file retained.</p>}
+            </article>)}
+        </div>
+      </Modal>}
       {/* Preview Modal */}
       {previewDoc && (
         <Modal
