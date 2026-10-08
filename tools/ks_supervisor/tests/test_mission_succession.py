@@ -95,3 +95,23 @@ class MissionSuccessionTests(BaseSupervisorTestCase):
         self.old_path.write_text("tampered")
         with self.assertRaises(ValueError):
             CycleLedger(self.config)
+
+    def test_explicit_legacy_result_and_unchanged_operational_approval(self):
+        self.legacy_fixture()
+        path = self.config.reviews_dir / f"{self.task_id}-review.md"
+        path.write_text("# Review\n\n## Result\n\nAPPROVED. Zero BLOCKERS.\n\n## BLOCKERS\n\nNone.\n"
+                        "\n## 2026-10-08 configured migration approval and targeted operational verification\n\n"
+                        "APPROVED operational follow-up; source APPROVED/ACCEPTED unchanged.\nNo new BLOCKER.\n")
+        run_git(self.repo_root, "add", ".")
+        run_git(self.repo_root, "commit", "-m", "Legacy review fixture")
+        original = path.read_bytes()
+        path.write_bytes(original + b"\nDecision: FIX REQUIRED\nRemaining blockers: B-1\n")
+        run_git(self.repo_root, "add", ".")
+        run_git(self.repo_root, "commit", "-m", "Current blocked review fixture")
+        with self.assertRaises(ValueError):
+            begin_mission(self.config, self.old, "Explicit historical recovery")
+        path.write_bytes(original)
+        run_git(self.repo_root, "add", ".")
+        run_git(self.repo_root, "commit", "-m", "Restored accepted review fixture")
+        begin_mission(self.config, self.old, "Explicit historical recovery")
+        self.assertEqual(path.read_bytes(), original)

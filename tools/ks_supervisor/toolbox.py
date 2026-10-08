@@ -809,7 +809,16 @@ def begin_mission(config, previous_mission=None, authorization=""):
             old_task = parse_task_contract(find_task_file(config.tasks_dir, old["task_id"]))
             old_review = parse_review(find_review_file(config.reviews_dir, old["task_id"]))
             old_report = parse_report(find_report_file(config.reports_dir, old["task_id"]))
-            if (not old_task or old_task.status != "ACCEPTED" or not old_review or old_review.decision != "APPROVED"
+            # The historical direct-completion review uses the canonical Result
+            # heading plus a later operational follow-up, rather than Decision.
+            # Recognize only explicit unchanged source approval and empty blockers;
+            # never reinterpret an unknown/failed current review in normal roles.
+            legacy_approval = bool(old_review and old_review.decision == "UNKNOWN" and not old_review.blockers
+                and re.search(r"^## Result\s+APPROVED\. Zero BLOCKERS\.", old_review.raw_content, re.M)
+                and "source APPROVED/ACCEPTED unchanged." in old_review.current_content
+                and "No new BLOCKER." in old_review.current_content
+                and not re.search(r"\bFIX[ _]REQUIRED\b", old_review.current_content, re.I))
+            if (not old_task or old_task.status != "ACCEPTED" or not old_review or not (old_review.decision == "APPROVED" or legacy_approval)
                     or old_review.blockers or not old_report or not old_report.is_complete):
                 raise ValueError("Historical recovery requires accepted completed task evidence")
             if CycleLedger(config, legacy=True).budget(old["task_id"]).get("cycles_used", 0) < 60:
