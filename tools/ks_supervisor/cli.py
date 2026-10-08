@@ -283,6 +283,8 @@ def main(argv: Optional[list] = None) -> int:
     mission_parser = subparsers.add_parser("mission", help="One-task binding/completion facts, never executes roles")
     mission_parser.add_argument("operation", choices=["begin", "bind", "finish"])
     mission_parser.add_argument("--mission")
+    mission_parser.add_argument("--previous-mission", help="Explicit completed legacy mission recovery")
+    mission_parser.add_argument("--authorization", default="")
     mission_parser.add_argument("--task", default="")
     mission_parser.add_argument("--accepted-file", action="append", default=[])
     mission_parser.add_argument("--next-task", default="")
@@ -337,7 +339,7 @@ def main(argv: Optional[list] = None) -> int:
                 result = role_instructions(config, args.role, args.task, args.action, args.mission)
             elif args.command == "mission":
                 if args.operation == "begin":
-                    result = begin_mission(config)
+                    result = begin_mission(config, args.previous_mission, args.authorization)
                 elif args.operation == "bind":
                     result = bind_mission(config, args.mission or "", args.task)
                 else:

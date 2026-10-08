@@ -32,6 +32,7 @@ from tools.ks_supervisor.state import (
 from tools.ks_supervisor.targeted import canonical_argv, run_check
 from tools.ks_supervisor.types import ExecutionMode, Role, WorkflowState
 from tools.ks_supervisor.verification import VerificationEvidence
+from tools.ks_supervisor.mission_history import current_mission, retired_missions, transitions, append_transition, fingerprint
 
 
 class DirectCodexVerificationRequired(ValueError):
@@ -173,9 +174,16 @@ class CycleLedger:
     OUTCOMES = {"PASS", "FAIL", "FIX_REQUIRED", "APPROVED", "ACCEPTED", "SUCCESS", "NO_EFFECT",
                 "INFRASTRUCTURE_FAILURE", "AUTH_QUOTA", "HUMAN_GATE", "REMEDIATED", "AUTH_CLASSIFIER_REMEDIATED", "REPORT_PROVENANCE_RECOVERED", "AWAITING_PROGRESS_INSPECTION", "PRODUCTIVE_CHECKPOINT", "BOUNDARY_READY"}
 
-    def __init__(self, config):
+    def __init__(self, config, mission_id=None, legacy=False):
         self.config = config
-        self.path = config.runtime_dir / "v3" / "cycles.jsonl"
+        self.mission_id = None if legacy else mission_id or current_mission(config)
+        if self.mission_id:
+            _mission_path(config, self.mission_id)
+        self.path = (config.runtime_dir / "v3" / "mission_cycles" / self.mission_id / "cycles.jsonl"
+                     if self.mission_id else config.runtime_dir / "v3" / "cycles.jsonl")
+        if self.mission_id and any(r["previous_mission"] == self.mission_id and r.get("legacy_recovery")
+                                   for r in transitions(config)):
+            self.path = config.runtime_dir / "v3/cycles.jsonl"
 
     def records(self):
         if not self.path.exists():
@@ -188,6 +196,8 @@ class CycleLedger:
                         or not isinstance(record["task_id"], str) or not isinstance(record["reason"], str)
                         or not isinstance(record["failure_signature"], str)):
                     raise ValueError("Invalid cycle")
+                if self.mission_id and "mission_cycles" in self.path.parts and record.get("mission_id") != self.mission_id:
+                    raise ValueError("Cycle mission identity changed")
             return records
         except (ValueError, KeyError, TypeError):
             raise ValueError("Unreadable cycle authority; human recovery required")
@@ -196,7 +206,8 @@ class CycleLedger:
         all_records = self.records()
         records = [r for r in all_records if r["task_id"] == task_id]
         if len(all_records) >= 60:
-            return {"status": "HUMAN_INPUT_REQUIRED", "reason": "Finite 60-cycle budget exhausted; review history before explicit recovery"}
+            return {"status": "HUMAN_INPUT_REQUIRED", "reason": "Finite 60-cycle budget exhausted; review history before explicit recovery",
+                    "cycles_used": len(all_records), "cycle_limit": 60, "mission_id": self.mission_id}
         infra_signature, infra_count, no_effect = "", 0, 0
         stagnation, last_blockers = {}, {}
         stopped = ""
@@ -258,9 +269,18 @@ class CycleLedger:
         stopped = stopped or next(iter(gates.values()), "")
         return {"status": "HUMAN_INPUT_REQUIRED" if stopped else "CONTINUE", "reason": stopped,
                 "infrastructure_failures": infra_count, "no_effect_returns": no_effect,
-                "stagnant_corrections": max(stagnation.values(), default=0), "cycles_used": len(all_records), "cycle_limit": 60}
+                "stagnant_corrections": max(stagnation.values(), default=0), "cycles_used": len(all_records), "cycle_limit": 60,
+                "mission_id": self.mission_id}
 
     def append(self, task_id, phase, outcome, blockers=(), reason="", failure_signature="", run_id="", **metadata):
+        if self.mission_id:
+            if self.mission_id in retired_missions(self.config) or _read_mission(self.config, self.mission_id)["status"] != "ACTIVE":
+                raise ValueError("Historical mission ledger is sealed")
+            if metadata.get("mission_id") not in {None, self.mission_id}:
+                raise ValueError("Cycle belongs to a different mission")
+            metadata["mission_id"] = self.mission_id
+        elif transitions(self.config):
+            raise ValueError("Legacy mission ledger is sealed")
         if phase not in self.PHASES or outcome not in self.OUTCOMES:
             raise ValueError("Unsupported cycle phase/outcome")
         if not re.fullmatch(r"[A-Za-z0-9_-]+", task_id or "NO_ACTIVE_TASK"):
@@ -760,29 +780,80 @@ def _read_mission(config, mission_id):
                 or not re.fullmatch(r"[0-9a-f]{40,64}", data["initial_head"])
                 or (data["task_id"] is not None and not re.fullmatch(r"[A-Za-z0-9_-]+", data["task_id"]))):
             raise ValueError("Invalid mission facts")
+        if mission_id in retired_missions(config):
+            return {**data, "status": "COMPLETE", "historical_status": "COMPLETED_ARCHIVED"}
         return data
     except (OSError, ValueError, KeyError, TypeError):
         raise ValueError("Unreadable mission authority; preserve history and request human recovery")
 
 
 def _save_mission(config, data):
+    if data["mission_id"] in retired_missions(config):
+        raise ValueError("Historical mission authority is sealed")
     path = _mission_path(config, data["mission_id"])
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
 
-def begin_mission(config):
+def begin_mission(config, previous_mission=None, authorization=""):
     """Bind facts for one Codex invocation; no task or role execution."""
     with SupervisorLock(config, role="V3_MISSION_BIND"):
         info = inspect_repository(config)
-        if info["recommended_category"] == "HUMAN_INPUT_REQUIRED":
+        previous = current_mission(config)
+        recovery = bool(previous_mission)
+        if recovery and (previous or not authorization.strip()):
+            raise ValueError("Explicit initial historical recovery authorization required")
+        preserved = []
+        if recovery:
+            old = _read_mission(config, previous_mission)
+            old_task = parse_task_contract(find_task_file(config.tasks_dir, old["task_id"]))
+            old_review = parse_review(find_review_file(config.reviews_dir, old["task_id"]))
+            old_report = parse_report(find_report_file(config.reports_dir, old["task_id"]))
+            if (not old_task or old_task.status != "ACCEPTED" or not old_review or old_review.decision != "APPROVED"
+                    or old_review.blockers or not old_report or not old_report.is_complete):
+                raise ValueError("Historical recovery requires accepted completed task evidence")
+            if CycleLedger(config, legacy=True).budget(old["task_id"]).get("cycles_used", 0) < 60:
+                raise ValueError("Historical recovery requires an exhausted legacy ledger")
+            previous = previous_mission
+            preserved = [fingerprint(config, p) for p in config.runtime_dir.rglob("*")
+                         if p.is_file() and p.name not in {"supervisor.lock", "supervisor.lock.json"}]
+        elif previous:
+            old = _read_mission(config, previous)
+            if old["status"] == "ACTIVE":
+                raise ValueError("Existing mission is active; resume its identity and budgets")
+            result = old.get("result", {})
+            if (not old["task_id"] or old["task_id"] != info["active_task"]
+                    or result.get("status") != "MISSION COMPLETE" or result.get("result") != "ACCEPTED"
+                    or result.get("task_id") != old["task_id"]
+                    or result.get("commit", {}).get("sha") != info["head"]):
+                raise ValueError("Fresh mission requires observed completed task/commit authority")
+            preserved = [fingerprint(config, _mission_path(config, previous))]
+            ledger_path = CycleLedger(config, previous).path
+            if ledger_path.exists():
+                preserved.append(fingerprint(config, ledger_path))
+        state = derive_workflow_state(config)
+        if info["recommended_category"] == "HUMAN_INPUT_REQUIRED" and not (recovery or previous):
             raise ValueError(info["reason"])
+        if (recovery or previous) and (state.is_hard_stop or not info["accepted"]
+                or info["dirty_paths"] or info["staged_paths"]
+                or info["branch"] in {"main", "master", "UI/UX-fixes-after-production"}
+                or info["derived_state"] != "ACCEPTED_NO_COMMIT_WORTHY_CHANGES"):
+            raise ValueError("Fresh mission requires clean valid Workflow v2 re-anchor and completed prior work")
         # An accepted task with nothing left to commit is not active work.
-        task_id = None if info["recommended_category"] in {"TASK_DEFINITION", "NEXT_TASK"} else info["active_task"]
+        task_id = None if recovery or previous or info["recommended_category"] in {"TASK_DEFINITION", "NEXT_TASK"} else info["active_task"]
         data = {"mission_id": uuid4().hex, "repo_root": str(config.repo_root.resolve()), "task_id": task_id,
                 "status": "ACTIVE", "initial_head": info["head"], "branch": info["branch"], "events": ["KS-START", "REANCHOR"],
                 "created_at": datetime.now(timezone.utc).isoformat()}
         _save_mission(config, data)
+        append_transition(config, {"mission_id": data["mission_id"], "previous_mission": previous,
+                                  "previous_status": "COMPLETED_ARCHIVED" if previous else None,
+                                  "legacy_recovery": recovery,
+                                  "authorization": authorization, "preserved": preserved,
+                                  "reanchor_head": info["head"], "branch": info["branch"],
+                                  "reanchor_content_identity": info["content_identity"],
+                                  "previous_budget": CycleLedger(config, legacy=True).budget(old["task_id"]) if recovery else None,
+                                  "created_at": data["created_at"]})
+        info = inspect_repository(config)
         return {**data, "inspection": info, "next": "USE_EXISTING_ROLE_DEFINITIONS"}
 
 
