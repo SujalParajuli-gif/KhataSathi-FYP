@@ -746,3 +746,164 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
     restoreSettings();
   }
 });
+
+
+test("getInvoice projects public payment DTOs without leaking internal keys, hashes, or storage paths, and strictly validates snapshots", async () => {
+  const originalFindUnique = prisma.invoice.findUnique;
+  try {
+    const validAccountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+    const validAssetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+    const validChecksum = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const validConfirmedAt = "2026-10-07T12:00:00.000Z";
+
+    const mockInvoiceData = {
+      id: "inv-test-proj-1",
+      invoiceNo: "INV-20261007-0001",
+      status: "FINALIZED",
+      paymentStatus: "PAID",
+      subTotal: 3000,
+      netTotal: 3000,
+      paidTotal: 3000,
+      customerNameSnapshot: "Test Customer",
+      customerPanSnapshot: null,
+      customerAddressSnapshot: null,
+      customerSnapshotCapturedAt: new Date("2026-10-07T10:00:00Z"),
+      items: [
+        {
+          id: "item-1",
+          invoiceId: "inv-test-proj-1",
+          productId: "prod-1",
+          qty: 1,
+          appliedUnitPrice: 3000,
+          originalUnitPrice: 3000,
+          overrideUnitPrice: null,
+          overrideReason: null,
+          overrideById: null,
+          overrideAt: null,
+          lineTotal: 3000,
+          productNameSnapshot: "Test Item",
+          productSkuSnapshot: "SKU-01",
+          snapshotCapturedAt: new Date("2026-10-07T10:00:00Z"),
+          createdAt: new Date("2026-10-07T10:00:00Z"),
+          product: { id: "prod-1", name: "Test Item", sku: "SKU-01", barcode: null },
+        },
+      ],
+      payments: [
+        // Payment 1: Valid payment with complete valid snapshot and internal keys
+        {
+          id: "pay-1",
+          invoiceId: "inv-test-proj-1",
+          method: "FONEPAY",
+          amount: 1500,
+          kind: "CHARGE",
+          status: "SUCCESS",
+          reference: "REF-VALID-1",
+          manualOperationKey: "manual-op-key-123456789012",
+          manualPayloadHash: "hash-secret-123456",
+          receivingAccountId: validAccountId,
+          receivingDestinationSnapshot: {
+            schemaVersion: 1,
+            accountId: validAccountId,
+            accountVersion: 2,
+            providerLabel: "Fonepay Primary",
+            accountHolder: "Store Main",
+            accountIdentifier: "9800112233",
+            settlementMethod: "FONEPAY",
+            confirmationMode: "MANUAL_RECEIPT",
+            qrAssetId: validAssetId,
+            qrChecksum: validChecksum,
+            confirmedById: "cashier-1",
+            confirmedAt: validConfirmedAt,
+            // unexpected / internal properties that must not leak:
+            storagePath: "/var/storage/internal/path.png",
+            rawDbRecord: { someInternal: true },
+          },
+          createdById: "cashier-1",
+          createdAt: new Date("2026-10-07T10:05:00Z"),
+          createdBy: { id: "cashier-1", name: "Cashier One" },
+          // unexpected relation that must not leak:
+          receivingAccount: { id: validAccountId, privateToken: "secret" },
+        },
+        // Payment 2: Payment with malformed snapshot (invalid checksum format and invalid version)
+        {
+          id: "pay-2",
+          invoiceId: "inv-test-proj-1",
+          method: "BANK_TRANSFER",
+          amount: 1500,
+          kind: "CHARGE",
+          status: "SUCCESS",
+          reference: "REF-MALFORMED-1",
+          manualOperationKey: "manual-op-key-999999999999",
+          manualPayloadHash: "hash-secret-999999",
+          receivingAccountId: validAccountId,
+          receivingDestinationSnapshot: {
+            schemaVersion: 1,
+            accountId: "not-a-valid-uuid",
+            accountVersion: -1, // invalid
+            providerLabel: "<script>alert(1)</script>", // invalid HTML
+            accountHolder: "Store Main",
+            accountIdentifier: null,
+            settlementMethod: "BANK_TRANSFER",
+            confirmationMode: "MANUAL_RECEIPT",
+            qrAssetId: validAssetId,
+            qrChecksum: "short-checksum", // not SHA-64
+            confirmedById: "cashier-1",
+            confirmedAt: "not-a-date", // invalid date
+          },
+          createdById: "cashier-1",
+          createdAt: new Date("2026-10-07T10:10:00Z"),
+          createdBy: { id: "cashier-1", name: "Cashier One" },
+        },
+      ],
+      cashier: { id: "cashier-1", name: "Cashier One", email: "cashier@test.com" },
+      customer: null,
+      cancelledBy: null,
+      creditNotesAsOriginal: [],
+      creditNoteAsReplacement: null,
+      returnRequests: [],
+    };
+
+    (prisma.invoice as any).findUnique = async () => structuredClone(mockInvoiceData);
+
+    const invoice = await getInvoice("inv-test-proj-1");
+    assert.ok(invoice);
+    assert.equal(invoice.payments.length, 2);
+
+    const p1 = invoice.payments[0];
+    assert.equal(p1.id, "pay-1");
+    assert.equal(p1.amount, 1500);
+    assert.equal(p1.method, "FONEPAY");
+    assert.equal(p1.receivingAccountId, validAccountId);
+    // Verify no internal operation keys or hashes are exposed
+    assert.equal((p1 as any).manualOperationKey, undefined);
+    assert.equal((p1 as any).manualPayloadHash, undefined);
+    assert.equal((p1 as any).receivingAccount, undefined);
+
+    // Verify valid snapshot is cleanly projected with no extra internal fields
+    assert.ok(p1.receivingDestinationSnapshot);
+    assert.equal(p1.receivingDestinationSnapshot.schemaVersion, 1);
+    assert.equal(p1.receivingDestinationSnapshot.accountId, validAccountId);
+    assert.equal(p1.receivingDestinationSnapshot.accountVersion, 2);
+    assert.equal(p1.receivingDestinationSnapshot.providerLabel, "Fonepay Primary");
+    assert.equal(p1.receivingDestinationSnapshot.accountHolder, "Store Main");
+    assert.equal(p1.receivingDestinationSnapshot.accountIdentifier, "9800112233");
+    assert.equal(p1.receivingDestinationSnapshot.settlementMethod, "FONEPAY");
+    assert.equal(p1.receivingDestinationSnapshot.confirmationMode, "MANUAL_RECEIPT");
+    assert.equal(p1.receivingDestinationSnapshot.qrAssetId, validAssetId);
+    assert.equal(p1.receivingDestinationSnapshot.qrChecksum, validChecksum.toLowerCase());
+    assert.equal(p1.receivingDestinationSnapshot.confirmedById, "cashier-1");
+    assert.equal(p1.receivingDestinationSnapshot.confirmedAt, validConfirmedAt);
+    assert.equal((p1.receivingDestinationSnapshot as any).storagePath, undefined);
+    assert.equal((p1.receivingDestinationSnapshot as any).rawDbRecord, undefined);
+
+    const p2 = invoice.payments[1];
+    assert.equal(p2.id, "pay-2");
+    assert.equal(p2.amount, 1500);
+    // Malformed snapshot is rejected and set to null (never invented or live inferred)
+    assert.equal(p2.receivingDestinationSnapshot, null);
+    assert.equal((p2 as any).manualOperationKey, undefined);
+    assert.equal((p2 as any).manualPayloadHash, undefined);
+  } finally {
+    prisma.invoice.findUnique = originalFindUnique;
+  }
+});

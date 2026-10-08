@@ -35,8 +35,52 @@ export const checkoutPaymentSchema = z
     amount: positiveMoneySchema.optional(),
     reference: safeText("Payment reference", 160).optional(),
     tenderedAmount: nonNegativeMoneySchema.optional(),
+    receivingAccountId: z
+      .string({ message: "Receiving account ID must be a valid UUID" })
+      .uuid({ message: "Receiving account ID must be a valid UUID" })
+      .optional(),
+    receivingAccountVersion: z
+      .number({ message: "Receiving account version must be a number" })
+      .int("Receiving account version must be an integer")
+      .positive("Receiving account version must be a positive integer")
+      .optional(),
+    manualReceiptConfirmed: z
+      .literal(true, { message: "Manual receipt confirmation must be true" })
+      .optional(),
   })
-  .strict();
+  .strict()
+  .superRefine((data, ctx) => {
+    const hasAccountId = data.receivingAccountId !== undefined;
+    const hasAccountVersion = data.receivingAccountVersion !== undefined;
+    const hasManualReceipt = data.manualReceiptConfirmed !== undefined;
+    const hasAnyDestination = hasAccountId || hasAccountVersion || hasManualReceipt;
+    const hasAllDestination = hasAccountId && hasAccountVersion && hasManualReceipt;
+
+    if (data.method === "CASH" || data.method === "ESEWA" || data.method === "NONE") {
+      if (hasAnyDestination) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: `Receiving destination fields are not allowed for ${data.method} payment`,
+        });
+      }
+    } else if (data.method === "FONEPAY" || data.method === "BANK_TRANSFER") {
+      if (hasAnyDestination && !hasAllDestination) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message:
+            "Receiving account ID, receiving account version, and manual receipt confirmation must be provided together",
+        });
+      }
+      if (hasAllDestination) {
+        if (!data.reference || !data.reference.trim()) {
+          ctx.addIssue({
+            code: z.ZodIssueCode.custom,
+            message: "Payment reference is required when recording a receiving destination",
+          });
+        }
+      }
+    }
+  });
 
 export const checkoutConfirmationItemSchema = z
   .object({

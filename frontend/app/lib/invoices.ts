@@ -35,6 +35,21 @@ export type InvoiceItemSummary = {
   lineTotal: number;
 };
 
+export type ReceivingDestinationSnapshotV1 = {
+  schemaVersion: 1;
+  accountId: string;
+  accountVersion: number;
+  providerLabel: string;
+  accountHolder: string;
+  accountIdentifier: string | null;
+  settlementMethod: "FONEPAY" | "BANK_TRANSFER";
+  confirmationMode: "MANUAL_RECEIPT";
+  qrAssetId: string;
+  qrChecksum: string;
+  confirmedById: string;
+  confirmedAt: string;
+};
+
 // the shape of each payment recorded against an invoice
 export type InvoicePaymentSummary = {
   id: string;
@@ -45,6 +60,8 @@ export type InvoicePaymentSummary = {
   cashTendered?: number;
   changeAmount?: number;
   reference?: string;
+  receivingAccountId?: string | null;
+  receivingDestinationSnapshot?: ReceivingDestinationSnapshotV1 | null;
   createdAt: string;
   createdByName?: string;
 };
@@ -345,6 +362,124 @@ export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
   return ref;
 }
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_REGEX = /^[0-9a-fA-F]{64}$/;
+const HTML_TAG_PATTERN = /<[^>]*>/;
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+export function parseReceivingDestinationSnapshot(
+  raw: unknown,
+): ReceivingDestinationSnapshotV1 | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (obj.schemaVersion !== 1) {
+    return null;
+  }
+  if (
+    typeof obj.accountId !== "string" ||
+    !UUID_REGEX.test(obj.accountId.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.accountVersion !== "number" ||
+    !Number.isInteger(obj.accountVersion) ||
+    !Number.isFinite(obj.accountVersion) ||
+    obj.accountVersion <= 0
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.providerLabel !== "string" ||
+    obj.providerLabel.trim().length === 0 ||
+    obj.providerLabel.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.providerLabel) ||
+    HTML_TAG_PATTERN.test(obj.providerLabel)
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.accountHolder !== "string" ||
+    obj.accountHolder.trim().length === 0 ||
+    obj.accountHolder.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.accountHolder) ||
+    HTML_TAG_PATTERN.test(obj.accountHolder)
+  ) {
+    return null;
+  }
+  if (!("accountIdentifier" in obj)) {
+    return null;
+  }
+  let accountIdentifier: string | null = null;
+  if (obj.accountIdentifier !== null) {
+    if (
+      typeof obj.accountIdentifier !== "string" ||
+      obj.accountIdentifier.trim().length === 0 ||
+      obj.accountIdentifier.length > 120 ||
+      CONTROL_CHAR_PATTERN.test(obj.accountIdentifier) ||
+      HTML_TAG_PATTERN.test(obj.accountIdentifier)
+    ) {
+      return null;
+    }
+    accountIdentifier = obj.accountIdentifier.trim();
+  }
+  if (
+    obj.settlementMethod !== "FONEPAY" &&
+    obj.settlementMethod !== "BANK_TRANSFER"
+  ) {
+    return null;
+  }
+  if (obj.confirmationMode !== "MANUAL_RECEIPT") {
+    return null;
+  }
+  if (
+    typeof obj.qrAssetId !== "string" ||
+    !UUID_REGEX.test(obj.qrAssetId.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.qrChecksum !== "string" ||
+    !SHA256_REGEX.test(obj.qrChecksum.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.confirmedById !== "string" ||
+    obj.confirmedById.trim().length === 0 ||
+    obj.confirmedById.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.confirmedById) ||
+    HTML_TAG_PATTERN.test(obj.confirmedById)
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.confirmedAt !== "string" ||
+    obj.confirmedAt.trim().length === 0 ||
+    isNaN(Date.parse(obj.confirmedAt))
+  ) {
+    return null;
+  }
+
+  return {
+    schemaVersion: 1,
+    accountId: obj.accountId.trim(),
+    accountVersion: obj.accountVersion,
+    providerLabel: obj.providerLabel.trim(),
+    accountHolder: obj.accountHolder.trim(),
+    accountIdentifier,
+    settlementMethod: obj.settlementMethod,
+    confirmationMode: "MANUAL_RECEIPT",
+    qrAssetId: obj.qrAssetId.trim(),
+    qrChecksum: obj.qrChecksum.trim().toLowerCase(),
+    confirmedById: obj.confirmedById.trim(),
+    confirmedAt: obj.confirmedAt.trim(),
+  };
+}
+
 // --
 
 // the main normalization function — converts a raw API invoice response into our AppInvoice format
@@ -525,6 +660,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
         ? undefined
         : Number(payment.changeAmount || 0),
     reference: payment.reference || undefined,
+    receivingAccountId: payment.receivingAccountId || undefined,
+    receivingDestinationSnapshot: parseReceivingDestinationSnapshot(payment.receivingDestinationSnapshot),
     createdAt: String(payment.createdAt || createdAt),
     createdByName: payment.createdBy?.name || undefined,
   }));

@@ -97,6 +97,11 @@ enum PaymentStatusInvoice {
   CANCELLED
 }
 
+enum PaymentReceivingConfirmationMode {
+  MANUAL_RECEIPT
+  DISPLAY_ONLY
+}
+
 enum ReturnReason {
   DAMAGED
   WRONG_ITEM
@@ -264,6 +269,9 @@ model User {
   productSearchSelections     ProductSearchSelection[]
   authSessions                AuthSession[]
   checkoutOperations          CheckoutOperation[]
+  paymentAccountsCreated      PaymentReceivingAccount[]    @relation("PaymentAccountCreator")
+  paymentAccountsUpdated      PaymentReceivingAccount[]    @relation("PaymentAccountUpdater")
+  paymentQrAssetsCreated      PaymentReceivingQrAsset[]    @relation("PaymentQrAssetCreator")
 
   @@index([role, isActive, lastPresenceAt])
 }
@@ -852,17 +860,23 @@ model Payment {
   reference       String?
   transactionUuid String?       @unique
   returnRequestId String?
-  createdById     String
-  voidedAt        DateTime?
-  voidedById      String?
-  createdAt       DateTime      @default(now())
+  createdById                  String
+  voidedAt                     DateTime?
+  voidedById                   String?
+  receivingAccountId           String?                       @db.VarChar(191)
+  receivingDestinationSnapshot Json?
+  manualOperationKey           String?                       @unique @db.VarChar(120)
+  manualPayloadHash            String?                       @db.Char(64)
+  createdAt                    DateTime                      @default(now())
 
-  invoice       Invoice        @relation(fields: [invoiceId], references: [id])
-  returnRequest ReturnRequest? @relation(fields: [returnRequestId], references: [id])
-  createdBy     User           @relation("PaymentCreator", fields: [createdById], references: [id])
-  voidedBy      User?          @relation("PaymentVoider", fields: [voidedById], references: [id])
+  invoice          Invoice                  @relation(fields: [invoiceId], references: [id])
+  returnRequest    ReturnRequest?           @relation(fields: [returnRequestId], references: [id])
+  createdBy        User                     @relation("PaymentCreator", fields: [createdById], references: [id])
+  voidedBy         User?                    @relation("PaymentVoider", fields: [voidedById], references: [id])
+  receivingAccount PaymentReceivingAccount? @relation("PaymentReceivingDestination", fields: [receivingAccountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([returnRequestId])
+  @@index([receivingAccountId])
 }
 
 model CashDrawer {
@@ -1151,4 +1165,54 @@ model SoftDeleteRecord {
   @@index([entityType, purgeAfter])
   @@index([deletedById])
   @@index([purgedAt])
+}
+
+model PaymentReceivingAccount {
+  id                  String                           @id @db.VarChar(191)
+  providerLabel       String                           @db.VarChar(120)
+  accountHolder       String                           @db.VarChar(120)
+  accountIdentifier   String?                          @db.VarChar(120)
+  settlementMethod    PaymentMethod?
+  confirmationMode    PaymentReceivingConfirmationMode
+  enabled             Boolean                          @default(false)
+  sortOrder           Int                              @default(0)
+  version             Int                              @default(1)
+  creationPayloadHash String                           @db.Char(64)
+  activeQrAssetId     String?                          @unique @db.VarChar(191)
+  createdById         String                           @db.VarChar(191)
+  updatedById         String                           @db.VarChar(191)
+  createdAt           DateTime                         @default(now())
+  updatedAt           DateTime                         @updatedAt
+
+  createdBy     User                     @relation("PaymentAccountCreator", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  updatedBy     User                     @relation("PaymentAccountUpdater", fields: [updatedById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  activeQrAsset PaymentReceivingQrAsset? @relation("PaymentAccountActiveQr", fields: [activeQrAssetId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  assets        PaymentReceivingQrAsset[] @relation("PaymentAccountAssets")
+  payments      Payment[]                @relation("PaymentReceivingDestination")
+
+  @@index([enabled, sortOrder, id])
+}
+
+model PaymentReceivingQrAsset {
+  id                         String   @id @db.VarChar(191)
+  accountId                  String   @db.VarChar(191)
+  publicationExpectedVersion Int
+  storedPath                 String   @db.VarChar(191)
+  fileName                   String   @db.VarChar(191)
+  thumbnailFileName          String   @db.VarChar(191)
+  mimeType                   String   @db.VarChar(32)
+  sizeBytes                  Int
+  thumbnailSizeBytes         Int
+  width                      Int
+  height                     Int
+  checksum                   String   @db.Char(64)
+  sourceChecksum             String   @db.Char(64)
+  createdById                String   @db.VarChar(191)
+  createdAt                  DateTime @default(now())
+
+  account   PaymentReceivingAccount  @relation("PaymentAccountAssets", fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  activeFor PaymentReceivingAccount? @relation("PaymentAccountActiveQr")
+  createdBy User                     @relation("PaymentQrAssetCreator", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([accountId])
 }

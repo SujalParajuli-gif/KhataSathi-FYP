@@ -149,10 +149,29 @@ function harness(options: {
         },
       },
       stockTransaction: { create: async ({ data }: any) => staged.stock.push(data) },
-      payment: { create: async ({ data }: any) => {
-        if (options.failAt === "payment") throw new Error("payment write failed");
-        staged.payments.push(data);
-      } },
+      payment: {
+        create: async ({ data }: any) => {
+          if (options.failAt === "payment") throw new Error("payment write failed");
+          const paymentRow = {
+            id: `payment-${staged.payments.length + 1}`,
+            kind: "CHARGE",
+            status: "SUCCESS",
+            reference: null,
+            cashTendered: null,
+            changeAmount: null,
+            receivingAccountId: null,
+            receivingDestinationSnapshot: null,
+            isVoided: false,
+            voidedAt: null,
+            voidedById: null,
+            voidReason: null,
+            createdAt: new Date(),
+            ...data,
+          };
+          staged.payments.push(paymentRow);
+          return paymentRow;
+        },
+      },
       auditLog: { create: async ({ data }: any) => {
         if (options.failAt === "audit") throw new Error("audit write failed");
         staged.audits.push(data);

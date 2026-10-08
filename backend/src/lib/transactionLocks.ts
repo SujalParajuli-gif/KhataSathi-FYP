@@ -122,7 +122,6 @@ export async function lockReturnRequestForUpdate(
   await tx.$queryRaw`SELECT id FROM ReturnRequest WHERE id = ${requestId} FOR UPDATE`;
 }
 
-
 export async function lockReturnItemsForUpdate(
   tx: LockingTransaction,
   requestId: string,
@@ -135,4 +134,87 @@ export async function lockReturnItemsForUpdate(
     FOR UPDATE
   `;
   return rows.map((row) => row.productId);
+}
+
+export async function lockBusinessSettingsForUpdate(tx: LockingTransaction) {
+  await tx.$queryRaw`SELECT id FROM BusinessSettings WHERE id = 1 FOR UPDATE`;
+}
+
+export async function lockPaymentReceivingAccountForUpdate(
+  tx: LockingTransaction,
+  accountId: string,
+) {
+  const rows = await tx.$queryRaw<Array<{
+    id: string;
+    providerLabel: string;
+    accountHolder: string;
+    accountIdentifier: string | null;
+    settlementMethod: string | null;
+    confirmationMode: string;
+    enabled: number | boolean;
+    sortOrder: number;
+    version: number;
+    creationPayloadHash: string;
+    activeQrAssetId: string | null;
+  }>>`
+    SELECT id, providerLabel, accountHolder, accountIdentifier, settlementMethod,
+           confirmationMode, enabled, sortOrder, version, creationPayloadHash, activeQrAssetId
+    FROM PaymentReceivingAccount
+    WHERE id = ${accountId}
+    FOR UPDATE
+  `;
+  const row = rows[0];
+  if (!row) return null;
+  return {
+    ...row,
+    enabled: Boolean(row.enabled),
+  };
+}
+
+export async function lockPaymentReceivingAccountsForUpdate(
+  tx: LockingTransaction,
+  accountIds: Iterable<string>,
+) {
+  const orderedIds = [...new Set(accountIds)].sort((left, right) =>
+    left.localeCompare(right),
+  );
+  const results = new Map<string, NonNullable<Awaited<ReturnType<typeof lockPaymentReceivingAccountForUpdate>>>>();
+  for (const accountId of orderedIds) {
+    const row = await lockPaymentReceivingAccountForUpdate(tx, accountId);
+    if (row) {
+      results.set(accountId, row);
+    }
+  }
+  return results;
+}
+
+export async function lockPaymentReceivingQrAssetForShare(
+  tx: LockingTransaction,
+  assetId: string,
+) {
+  const rows = await tx.$queryRaw<Array<{
+    id: string;
+    accountId: string;
+    publicationExpectedVersion: number;
+    storedPath: string;
+    fileName: string;
+    thumbnailFileName: string;
+    mimeType: string;
+    sizeBytes: number;
+    thumbnailSizeBytes: number;
+    width: number;
+    height: number;
+    checksum: string;
+    sourceChecksum: string;
+    createdById: string;
+    createdAt: Date;
+  }>>`
+    SELECT id, accountId, publicationExpectedVersion, storedPath, fileName, thumbnailFileName,
+           mimeType, sizeBytes, thumbnailSizeBytes, width, height, checksum, sourceChecksum,
+           createdById, createdAt
+    FROM PaymentReceivingQrAsset
+    WHERE id = ${assetId}
+    FOR SHARE
+  `;
+  return rows[0] || null;
 }

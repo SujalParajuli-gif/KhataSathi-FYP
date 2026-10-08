@@ -16,6 +16,9 @@ import {
   lockInvoiceItemForUpdate,
   lockInvoiceItemsForUpdate,
   lockInvoiceForUpdate,
+  lockPaymentReceivingAccountForUpdate,
+  lockPaymentReceivingAccountsForUpdate,
+  lockPaymentReceivingQrAssetForShare,
   lockProductsForUpdate,
   runFinancialTransaction,
 } from "../../lib/transactionLocks";
@@ -73,6 +76,10 @@ const MAX_CREATE_DRAFT_RETRIES = 5; // retry limit for when the auto-generated i
 const ACTIVE_RETURN_STATUSES = ["PENDING", "APPROVED"] as const;
 const PRICE_OVERRIDE_AUTH_TTL_MS = 5 * 60 * 1000;
 const MAX_PARKED_BILLS_PER_CASHIER = 5;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HTML_TAG_PATTERN = /<[^>]*>/;
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
 
 // we use this to round any currency value to 2 decimal places
 // without this, JavaScript floating point math can produce results like 10.0000000001
@@ -425,6 +432,168 @@ export type PublicCheckoutResponse = Record<string, unknown> & {
   esewaPaymentIntent?: unknown;
 };
 
+export type PublicPayment = {
+  id: string;
+  invoiceId: string;
+  method: string;
+  amount: number;
+  cashTendered?: number | null;
+  changeAmount?: number | null;
+  kind?: string;
+  status: string;
+  reference?: string | null;
+  transactionUuid?: string | null;
+  returnRequestId?: string | null;
+  createdById: string;
+  voidedAt?: Date | string | null;
+  voidedById?: string | null;
+  receivingAccountId?: string | null;
+  receivingDestinationSnapshot?: ReceivingDestinationSnapshot | null;
+  createdAt: Date | string;
+  createdBy?: {
+    id: string;
+    name: string;
+  } | null;
+};
+
+export function projectPublicPayment(raw: unknown): PublicPayment {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Replay payment must be an object");
+  }
+  const p = raw as Record<string, unknown>;
+  if (typeof p.id !== "string" || !p.id) {
+    throw new Error("Payment missing required string id");
+  }
+  if (typeof p.invoiceId !== "string" || !p.invoiceId) {
+    throw new Error("Payment missing required string invoiceId");
+  }
+  if (typeof p.method !== "string" || !p.method) {
+    throw new Error("Payment missing required string method");
+  }
+  if (typeof p.amount !== "number" || !Number.isFinite(p.amount)) {
+    throw new Error("Payment missing required numeric amount");
+  }
+  if (typeof p.status !== "string" || !p.status) {
+    throw new Error("Payment missing required string status");
+  }
+  if (typeof p.createdById !== "string" || !p.createdById) {
+    throw new Error("Payment missing required string createdById");
+  }
+  if (!(p.createdAt instanceof Date) && (typeof p.createdAt !== "string" || !p.createdAt)) {
+    throw new Error("Payment missing required createdAt");
+  }
+
+  let createdBy: { id: string; name: string } | null | undefined = undefined;
+  if ("createdBy" in p && p.createdBy !== undefined) {
+    if (p.createdBy === null) {
+      createdBy = null;
+    } else if (typeof p.createdBy === "object" && !Array.isArray(p.createdBy)) {
+      const cb = p.createdBy as Record<string, unknown>;
+      if (typeof cb.id === "string" && typeof cb.name === "string") {
+        createdBy = { id: cb.id, name: cb.name };
+      }
+    }
+  }
+
+  let receivingDestinationSnapshot: ReceivingDestinationSnapshot | null = null;
+  if (
+    "receivingDestinationSnapshot" in p &&
+    p.receivingDestinationSnapshot !== undefined &&
+    p.receivingDestinationSnapshot !== null
+  ) {
+    const s = p.receivingDestinationSnapshot as Record<string, unknown>;
+    const isIsoDate = (str: unknown): boolean =>
+      typeof str === "string" && str.trim().length > 0 && !isNaN(Date.parse(str));
+
+    if (
+      typeof s === "object" &&
+      !Array.isArray(s) &&
+      s.schemaVersion === 1 &&
+      typeof s.accountId === "string" &&
+      UUID_REGEX.test(s.accountId.trim()) &&
+      typeof s.accountVersion === "number" &&
+      Number.isInteger(s.accountVersion) &&
+      Number.isFinite(s.accountVersion) &&
+      s.accountVersion >= 1 &&
+      typeof s.providerLabel === "string" &&
+      s.providerLabel.trim().length > 0 &&
+      s.providerLabel.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.providerLabel) &&
+      !HTML_TAG_PATTERN.test(s.providerLabel) &&
+      typeof s.accountHolder === "string" &&
+      s.accountHolder.trim().length > 0 &&
+      s.accountHolder.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.accountHolder) &&
+      !HTML_TAG_PATTERN.test(s.accountHolder) &&
+      (s.accountIdentifier === null ||
+        (typeof s.accountIdentifier === "string" &&
+          s.accountIdentifier.trim().length > 0 &&
+          s.accountIdentifier.length <= 120 &&
+          !CONTROL_CHAR_PATTERN.test(s.accountIdentifier) &&
+          !HTML_TAG_PATTERN.test(s.accountIdentifier))) &&
+      (s.settlementMethod === "FONEPAY" || s.settlementMethod === "BANK_TRANSFER") &&
+      s.confirmationMode === "MANUAL_RECEIPT" &&
+      typeof s.qrAssetId === "string" &&
+      UUID_REGEX.test(s.qrAssetId.trim()) &&
+      typeof s.qrChecksum === "string" &&
+      /^[0-9a-fA-F]{64}$/.test(s.qrChecksum.trim()) &&
+      typeof s.confirmedById === "string" &&
+      s.confirmedById.trim().length > 0 &&
+      s.confirmedById.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.confirmedById) &&
+      !HTML_TAG_PATTERN.test(s.confirmedById) &&
+      isIsoDate(s.confirmedAt)
+    ) {
+      receivingDestinationSnapshot = {
+        schemaVersion: 1,
+        accountId: s.accountId.trim(),
+        accountVersion: s.accountVersion,
+        providerLabel: s.providerLabel.trim(),
+        accountHolder: s.accountHolder.trim(),
+        accountIdentifier:
+          typeof s.accountIdentifier === "string"
+            ? s.accountIdentifier.trim()
+            : null,
+        settlementMethod: s.settlementMethod,
+        confirmationMode: "MANUAL_RECEIPT",
+        qrAssetId: s.qrAssetId.trim(),
+        qrChecksum: s.qrChecksum.trim().toLowerCase(),
+        confirmedById: s.confirmedById.trim(),
+        confirmedAt: (s.confirmedAt as string).trim(),
+      };
+    }
+  }
+
+  const projected: PublicPayment = {
+    id: p.id,
+    invoiceId: p.invoiceId,
+    method: p.method,
+    amount: p.amount,
+    cashTendered: typeof p.cashTendered === "number" ? p.cashTendered : null,
+    changeAmount: typeof p.changeAmount === "number" ? p.changeAmount : null,
+    kind: typeof p.kind === "string" ? p.kind : "CHARGE",
+    status: p.status,
+    reference: typeof p.reference === "string" ? p.reference : null,
+    transactionUuid: typeof p.transactionUuid === "string" ? p.transactionUuid : null,
+    returnRequestId: typeof p.returnRequestId === "string" ? p.returnRequestId : null,
+    createdById: p.createdById,
+    voidedAt:
+      p.voidedAt instanceof Date || typeof p.voidedAt === "string"
+        ? p.voidedAt
+        : null,
+    voidedById: typeof p.voidedById === "string" ? p.voidedById : null,
+    receivingAccountId: typeof p.receivingAccountId === "string" ? p.receivingAccountId : null,
+    receivingDestinationSnapshot,
+    createdAt: p.createdAt instanceof Date ? p.createdAt : (p.createdAt as string),
+  };
+
+  if (createdBy !== undefined) {
+    projected.createdBy = createdBy;
+  }
+
+  return projected;
+}
+
 // sanitizes a stored checkout response on replay to guarantee explicit item allowlist
 export function toPublicCheckoutResponse(payload: unknown): PublicCheckoutResponse {
   if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
@@ -447,11 +616,16 @@ export function toPublicCheckoutResponse(payload: unknown): PublicCheckoutRespon
     throw new Error("Checkout response invoice items must be an array");
   }
 
+  const rawPayments = Array.isArray(rawInvoice.payments)
+    ? rawInvoice.payments.map(projectPublicPayment)
+    : undefined;
+
   return {
     ...raw,
     invoice: {
       ...rawInvoice,
       items: rawInvoice.items.map(projectReplayInvoiceItem),
+      ...(rawPayments !== undefined ? { payments: rawPayments } : {}),
     },
   };
 }
@@ -852,7 +1026,150 @@ type CheckoutPaymentInput = {
   amount?: number;
   reference?: string;
   tenderedAmount?: number;
+  receivingAccountId?: string | null;
+  receivingAccountVersion?: number | null;
+  manualReceiptConfirmed?: boolean | null;
 };
+
+export type ReceivingDestinationSnapshot = {
+  schemaVersion: 1;
+  accountId: string;
+  accountVersion: number;
+  providerLabel: string;
+  accountHolder: string;
+  accountIdentifier: string | null;
+  settlementMethod: string;
+  confirmationMode: string;
+  qrAssetId: string;
+  qrChecksum: string;
+  confirmedById: string;
+  confirmedAt: string;
+};
+
+export async function captureReceivingDestinationTx(
+  tx: any,
+  payment: {
+    receivingAccountId?: string | null;
+    receivingAccountVersion?: number | null;
+    manualReceiptConfirmed?: boolean | null;
+    method?: string;
+  },
+  actorId: string,
+): Promise<{
+  receivingAccountId: string;
+  receivingDestinationSnapshot: Prisma.InputJsonValue;
+} | null> {
+  const hasAnyDestination =
+    payment.receivingAccountId !== undefined ||
+    payment.receivingAccountVersion !== undefined ||
+    payment.manualReceiptConfirmed !== undefined;
+
+  if (!hasAnyDestination) {
+    return null;
+  }
+
+  if (payment.method !== "FONEPAY" && payment.method !== "BANK_TRANSFER") {
+    throw new Error(
+      "Receiving destination is only supported for Fonepay and Bank Transfer payments",
+    );
+  }
+  if (
+    !payment.receivingAccountId ||
+    typeof payment.receivingAccountId !== "string" ||
+    !UUID_REGEX.test(payment.receivingAccountId.trim())
+  ) {
+    throw new Error("Receiving account ID must be a valid UUID");
+  }
+  if (
+    payment.receivingAccountVersion === undefined ||
+    payment.receivingAccountVersion === null ||
+    typeof payment.receivingAccountVersion !== "number" ||
+    !Number.isInteger(payment.receivingAccountVersion) ||
+    payment.receivingAccountVersion < 1
+  ) {
+    throw new Error("Receiving account version must be a positive integer");
+  }
+  if (payment.manualReceiptConfirmed !== true) {
+    throw new Error(
+      "Cashier manual receipt confirmation is required for receiving destination",
+    );
+  }
+
+  const accountId = payment.receivingAccountId.trim();
+  const lockedAccount = await lockPaymentReceivingAccountForUpdate(tx, accountId);
+  if (!lockedAccount) {
+    const err: any = new Error("Receiving account not found");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (!lockedAccount.enabled) {
+    const err: any = new Error("Receiving account is disabled");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (lockedAccount.version !== payment.receivingAccountVersion) {
+    const err: any = new Error("Receiving account version changed");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (
+    payment.method !== lockedAccount.settlementMethod ||
+    lockedAccount.confirmationMode !== "MANUAL_RECEIPT"
+  ) {
+    const err: any = new Error(
+      "Receiving account does not support this payment method",
+    );
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (!lockedAccount.activeQrAssetId) {
+    const err: any = new Error("Receiving account has no active QR asset");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const lockedAsset = await lockPaymentReceivingQrAssetForShare(
+    tx,
+    lockedAccount.activeQrAssetId,
+  );
+  if (!lockedAsset || lockedAsset.accountId !== accountId) {
+    const err: any = new Error(
+      "Active QR asset not found or does not belong to this account",
+    );
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const snapshot: ReceivingDestinationSnapshot = {
+    schemaVersion: 1,
+    accountId: lockedAccount.id,
+    accountVersion: lockedAccount.version,
+    providerLabel: lockedAccount.providerLabel,
+    accountHolder: lockedAccount.accountHolder,
+    accountIdentifier: lockedAccount.accountIdentifier ?? null,
+    settlementMethod: lockedAccount.settlementMethod!,
+    confirmationMode: lockedAccount.confirmationMode,
+    qrAssetId: lockedAsset.id,
+    qrChecksum: lockedAsset.checksum,
+    confirmedById: actorId,
+    confirmedAt: new Date().toISOString(),
+  };
+
+  return {
+    receivingAccountId: lockedAccount.id,
+    receivingDestinationSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+  };
+}
 
 export type CheckoutConfirmationItemInput = {
   productId: string;
@@ -962,6 +1279,13 @@ export function buildCheckoutPayloadHash(
       amount: payment.amount,
       reference: payment.reference || null,
       tenderedAmount: payment.tenderedAmount ?? null,
+      ...(payment.receivingAccountId
+        ? {
+            receivingAccountId: payment.receivingAccountId,
+            receivingAccountVersion: payment.receivingAccountVersion,
+            manualReceiptConfirmed: payment.manualReceiptConfirmed === true,
+          }
+        : {}),
     })),
     ...(conf ? { confirmation: conf } : {}),
   };
@@ -1231,7 +1555,89 @@ export async function createPriceOverrideAuthorization(
   };
 }
 
-function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
+function hasDestinationProperty(obj: any, key: string): boolean {
+  return (
+    obj !== null &&
+    typeof obj === "object" &&
+    key in obj &&
+    obj[key] !== undefined
+  );
+}
+
+export function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
+  if (payment && typeof payment === "object") {
+    const hasAccountId = hasDestinationProperty(payment, "receivingAccountId");
+    const hasAccountVersion = hasDestinationProperty(
+      payment,
+      "receivingAccountVersion",
+    );
+    const hasManualReceipt = hasDestinationProperty(
+      payment,
+      "manualReceiptConfirmed",
+    );
+    const hasAnyDestination =
+      hasAccountId || hasAccountVersion || hasManualReceipt;
+
+    if (hasAnyDestination) {
+      if (
+        payment.method === "CASH" ||
+        payment.method === "ESEWA" ||
+        payment.method === "NONE" ||
+        !payment.method
+      ) {
+        throw new Error(
+          "Receiving destination is only supported for Fonepay and Bank Transfer payments",
+        );
+      }
+
+      if (payment.method !== "FONEPAY" && payment.method !== "BANK_TRANSFER") {
+        throw new Error(
+          "payment.method must be CASH, ESEWA, FONEPAY, BANK_TRANSFER, or NONE",
+        );
+      }
+
+      if (
+        !hasAccountId ||
+        typeof payment.receivingAccountId !== "string" ||
+        !UUID_REGEX.test(payment.receivingAccountId.trim())
+      ) {
+        throw new Error("Receiving account ID must be a valid UUID");
+      }
+
+      if (
+        !hasAccountVersion ||
+        typeof payment.receivingAccountVersion !== "number" ||
+        !Number.isInteger(payment.receivingAccountVersion) ||
+        payment.receivingAccountVersion < 1
+      ) {
+        throw new Error("Receiving account version must be a positive integer");
+      }
+
+      if (!hasManualReceipt || payment.manualReceiptConfirmed !== true) {
+        throw new Error(
+          "Cashier manual receipt confirmation is required for receiving destination",
+        );
+      }
+
+      const rawRef = typeof payment.reference === "string" ? payment.reference : "";
+      const trimmedRef = rawRef.trim();
+      if (!trimmedRef) {
+        throw new Error(
+          "Payment reference is required when recording a receiving destination",
+        );
+      }
+      if (rawRef.length > 160) {
+        throw new Error("Payment reference cannot exceed 160 characters");
+      }
+      if (/[\x00-\x1F\x7F]/.test(rawRef)) {
+        throw new Error("Payment reference cannot contain control characters");
+      }
+      if (/<[^>]*>/.test(rawRef)) {
+        throw new Error("Payment reference cannot contain HTML tags");
+      }
+    }
+  }
+
   if (!payment || !payment.method || payment.method === "NONE") {
     return { method: "NONE" as const };
   }
@@ -1247,30 +1653,74 @@ function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
     );
   }
 
-  const amount = roundCurrency(Number(payment.amount));
-  if (!Number.isFinite(amount) || amount <= 0) {
+  const rawAmount = Number(payment.amount);
+  if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+    throw new Error("Payment amount must be greater than zero");
+  }
+  const amount = roundCurrency(rawAmount);
+  if (amount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
-  const tenderedAmount =
-    payment.tenderedAmount === undefined ||
-    payment.tenderedAmount === null
-      ? undefined
-      : roundCurrency(Number(payment.tenderedAmount));
+  if (payment.reference !== undefined && payment.reference !== null) {
+    if (typeof payment.reference === "string") {
+      if (payment.reference.length > 160) {
+        throw new Error("Payment reference cannot exceed 160 characters");
+      }
+      if (/[\x00-\x1F\x7F]/.test(payment.reference)) {
+        throw new Error("Payment reference cannot contain control characters");
+      }
+      if (/<[^>]*>/.test(payment.reference)) {
+        throw new Error("Payment reference cannot contain HTML tags");
+      }
+    }
+  }
 
-  if (tenderedAmount !== undefined) {
+  let tenderedAmount: number | undefined = undefined;
+  if (
+    payment.tenderedAmount !== undefined &&
+    payment.tenderedAmount !== null
+  ) {
     if (payment.method !== "CASH") {
       throw new Error("Tendered amount only applies to cash payments");
     }
-    if (!Number.isFinite(tenderedAmount) || tenderedAmount < amount) {
+    const rawTendered = Number(payment.tenderedAmount);
+    if (!Number.isFinite(rawTendered)) {
+      throw new Error("Cash tendered must be a valid number");
+    }
+    tenderedAmount = roundCurrency(rawTendered);
+    if (tenderedAmount < amount) {
       throw new Error("Cash tendered cannot be less than the cash amount");
     }
+  }
+
+  const trimmedReference =
+    typeof payment.reference === "string" &&
+    payment.reference.trim().length > 0
+      ? payment.reference.trim()
+      : undefined;
+
+  if (
+    payment.receivingAccountId &&
+    payment.receivingAccountVersion !== undefined &&
+    payment.receivingAccountVersion !== null &&
+    payment.manualReceiptConfirmed === true
+  ) {
+    return {
+      method: payment.method,
+      amount,
+      reference: trimmedReference,
+      tenderedAmount,
+      receivingAccountId: payment.receivingAccountId.trim(),
+      receivingAccountVersion: Number(payment.receivingAccountVersion),
+      manualReceiptConfirmed: true as const,
+    };
   }
 
   return {
     method: payment.method,
     amount,
-    reference: payment.reference?.trim() || undefined,
+    reference: trimmedReference,
     tenderedAmount,
   };
 }
@@ -1829,6 +2279,10 @@ async function recordCheckoutManualDigitalPaymentTx(
   amount: number,
   createdById: string,
   reference?: string,
+  destinationData?: {
+    receivingAccountId?: string | null;
+    receivingDestinationSnapshot?: Prisma.InputJsonValue;
+  } | null,
 ) {
   const normalizedAmount = roundCurrency(amount);
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
@@ -1869,6 +2323,9 @@ async function recordCheckoutManualDigitalPaymentTx(
       status: "SUCCESS",
       reference: reference.trim(),
       createdById,
+      receivingAccountId: destinationData?.receivingAccountId || null,
+      receivingDestinationSnapshot:
+        destinationData?.receivingDestinationSnapshot ?? Prisma.DbNull,
     },
   });
 
@@ -1893,6 +2350,9 @@ async function recordCheckoutManualDigitalPaymentTx(
         method,
         reference: reference.trim(),
         amountAdded: normalizedAmount,
+        receivingAccountId: destinationData?.receivingAccountId || null,
+        receivingDestinationSnapshot:
+          destinationData?.receivingDestinationSnapshot || null,
         previousStatus: invoice.paymentStatus,
         nextStatus: nextPaymentStatus,
         paidTotal: nextPaidTotal,
@@ -2287,6 +2747,18 @@ export async function checkoutInvoiceTx(
     | Awaited<ReturnType<typeof createEsewaPaymentIntentTx>>
     | null = null;
 
+  const receivingAccountIds = Array.from(
+    new Set(
+      checkoutPayments
+        .map((p) => p.receivingAccountId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ).sort();
+
+  if (receivingAccountIds.length > 0) {
+    await lockPaymentReceivingAccountsForUpdate(tx, receivingAccountIds);
+  }
+
   let invoiceForPayments = finalized;
   for (const payment of checkoutPayments) {
     if (payment.method === "CASH") {
@@ -2317,6 +2789,10 @@ export async function checkoutInvoiceTx(
       payment.method === "FONEPAY" ||
       payment.method === "BANK_TRANSFER"
     ) {
+      const destinationData = payment.receivingAccountId
+        ? await captureReceivingDestinationTx(tx, payment, cashierId)
+        : null;
+
       await recordCheckoutManualDigitalPaymentTx(
         tx,
         invoiceForPayments,
@@ -2324,6 +2800,7 @@ export async function checkoutInvoiceTx(
         payment.amount,
         cashierId,
         payment.reference,
+        destinationData,
       );
       invoiceForPayments = await tx.invoice.findUniqueOrThrow({
         where: { id: invoice.id },
@@ -2394,7 +2871,18 @@ export async function checkoutInvoiceTx(
     },
   });
 
-  const response = { invoice: savedInvoice, esewaPaymentIntent };
+  const projectedPayments = Array.isArray(savedInvoice?.payments)
+    ? savedInvoice.payments.map(projectPublicPayment)
+    : [];
+
+  const responseInvoice = savedInvoice
+    ? {
+        ...savedInvoice,
+        payments: projectedPayments,
+      }
+    : null;
+
+  const response = { invoice: responseInvoice, esewaPaymentIntent };
   await tx.checkoutOperation.update({
     where: { id: operation.id },
     data: {
@@ -2406,7 +2894,7 @@ export async function checkoutInvoiceTx(
 
   return {
     operation,
-    invoice: savedInvoice,
+    invoice: responseInvoice,
     esewaPaymentIntent,
     response,
   };
@@ -3611,7 +4099,16 @@ export async function getInvoice(id: string) {
     },
   });
 
-  return invoice ? resolveInvoiceDisplayIdentity(invoice) : null;
+  if (!invoice) return null;
+
+  const projectedPayments = Array.isArray(invoice.payments)
+    ? invoice.payments.map((p) => projectPublicPayment(p))
+    : [];
+
+  return resolveInvoiceDisplayIdentity({
+    ...invoice,
+    payments: projectedPayments,
+  });
 }
 
 // --

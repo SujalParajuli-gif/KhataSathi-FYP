@@ -18,11 +18,18 @@ type State = {
   stock: any[];
   audits: any[];
   requests: Record<string, any>;
+  paymentAccounts?: Record<string, any>;
+  paymentQrAssets?: Record<string, any>;
+  overrideAuthorizations?: Record<string, any>;
 };
 
 function harness(options: {
   productPrices?: Record<string, { retailPrice: number; wholesalePrice: number }>;
   customer?: { id: string; isActive: boolean; loyaltyPercent: number; wholesalePercent: number } | null;
+  paymentAccounts?: Record<string, any>;
+  paymentQrAssets?: Record<string, any>;
+  failOnAuditAction?: string;
+  onAuditCreate?: (data: any, tx: any) => Promise<void> | void;
 } = {}) {
   let state: State = {
     invoices: {},
@@ -56,6 +63,8 @@ function harness(options: {
     stock: [],
     audits: [],
     requests: {},
+    paymentAccounts: options.paymentAccounts ? structuredClone(options.paymentAccounts) : {},
+    paymentQrAssets: options.paymentQrAssets ? structuredClone(options.paymentQrAssets) : {},
   };
 
   const originalTransaction = prisma.$transaction;
@@ -63,6 +72,8 @@ function harness(options: {
   const originalSettings = prisma.businessSettings.upsert;
   let nextInvoice = 0;
   let nextItem = 0;
+  let lastStaged: State | null = null;
+  let destinationQueryCount = 0;
 
   invalidateBusinessSettingsCache();
   (prisma.businessSettings as any).upsert = async () => ({
@@ -127,7 +138,62 @@ function harness(options: {
     };
 
     const tx: any = {
-      $queryRaw: async () => [],
+      $queryRaw: async (strings: TemplateStringsArray, ...values: any[]) => {
+        const sql = strings.join("?");
+        if (sql.includes("FROM PaymentReceivingAccount")) {
+          destinationQueryCount++;
+          const id = values[0];
+          const acc =
+            Object.values(staged.paymentAccounts || {}).find(
+              (a: any) => a.id === id,
+            ) || (staged.paymentAccounts as any)?.[id];
+          if (!acc) return [];
+          return [
+            {
+              id: acc.id,
+              providerLabel: acc.providerLabel,
+              accountHolder: acc.accountHolder,
+              accountIdentifier: acc.accountIdentifier ?? null,
+              settlementMethod: acc.settlementMethod ?? null,
+              confirmationMode: acc.confirmationMode,
+              enabled: acc.enabled ? 1 : 0,
+              sortOrder: acc.sortOrder ?? 0,
+              version: acc.version,
+              creationPayloadHash: acc.creationPayloadHash ?? "hash-123",
+              activeQrAssetId: acc.activeQrAssetId ?? null,
+            },
+          ];
+        }
+        if (sql.includes("FROM PaymentReceivingQrAsset")) {
+          destinationQueryCount++;
+          const id = values[0];
+          const asset =
+            Object.values(staged.paymentQrAssets || {}).find(
+              (a: any) => a.id === id,
+            ) || (staged.paymentQrAssets as any)?.[id];
+          if (!asset) return [];
+          return [
+            {
+              id: asset.id,
+              accountId: asset.accountId,
+              publicationExpectedVersion: asset.publicationExpectedVersion ?? 1,
+              storedPath: asset.storedPath ?? "payment-accounts/test/qr.png",
+              fileName: asset.fileName ?? "qr.png",
+              thumbnailFileName: asset.thumbnailFileName ?? "qr-thumb.png",
+              mimeType: asset.mimeType ?? "image/png",
+              sizeBytes: asset.sizeBytes ?? 1024,
+              thumbnailSizeBytes: asset.thumbnailSizeBytes ?? 512,
+              width: asset.width ?? 800,
+              height: asset.height ?? 800,
+              checksum: asset.checksum,
+              sourceChecksum: asset.sourceChecksum ?? "source-123",
+              createdById: asset.createdById ?? "admin",
+              createdAt: asset.createdAt ?? new Date(),
+            },
+          ];
+        }
+        return [];
+      },
       invoiceSequence: { upsert: async () => ({ lastNumber: ++nextInvoice }) },
       invoice: {
         findFirst: async () => null,
@@ -227,10 +293,37 @@ function harness(options: {
         create: async ({ data }: any) => staged.stock.push(data),
       },
       payment: {
-        create: async ({ data }: any) => staged.payments.push(data),
+        create: async ({ data }: any) => {
+          const paymentRow = {
+            id: `payment-${staged.payments.length + 1}`,
+            kind: "CHARGE",
+            status: "SUCCESS",
+            reference: null,
+            cashTendered: null,
+            changeAmount: null,
+            receivingAccountId: null,
+            receivingDestinationSnapshot: null,
+            isVoided: false,
+            voidedAt: null,
+            voidedById: null,
+            voidReason: null,
+            createdAt: new Date(),
+            ...data,
+          };
+          staged.payments.push(paymentRow);
+          return paymentRow;
+        },
       },
       auditLog: {
-        create: async ({ data }: any) => staged.audits.push(data),
+        create: async ({ data }: any) => {
+          if (options.failOnAuditAction && data.action === options.failOnAuditAction) {
+            throw new Error(`Simulated audit failure on ${data.action}`);
+          }
+          if (options.onAuditCreate) {
+            await options.onAuditCreate(data, tx);
+          }
+          staged.audits.push(data);
+        },
       },
       priceOverrideAuthorization: {
         findUnique: async ({ where }: any) => (staged as any).overrideAuthorizations?.[where.tokenHash] ?? null,
@@ -254,14 +347,26 @@ function harness(options: {
       },
     };
 
-    const result = await work(tx);
-    state = staged;
-    return result;
+    try {
+      const result = await work(tx);
+      lastStaged = structuredClone(staged);
+      state = staged;
+      return result;
+    } catch (err) {
+      lastStaged = structuredClone(staged);
+      throw err;
+    }
   };
 
   return {
     get state() {
       return state;
+    },
+    get lastStaged() {
+      return lastStaged;
+    },
+    get destinationQueryCount() {
+      return destinationQueryCount;
     },
     restore() {
       prisma.$transaction = originalTransaction;
@@ -750,6 +855,348 @@ test("fresh checkout with price override but mismatching confirmation throws PRI
         assert.equal(err.reason, "PRICE_OR_TOTAL_CHANGED");
         return true;
       },
+    );
+  } finally {
+    mock.restore();
+  }
+});
+
+test("fresh checkout with valid receiving destination and matching confirmation commits snapshot and completes", async () => {
+  const accountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+  const assetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+  const fixtureChecksum = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const mock = harness({
+    paymentAccounts: {
+      [accountId]: {
+        id: accountId,
+        providerLabel: "Fonepay Official",
+        accountHolder: "KhataSathi Store",
+        accountIdentifier: "9800000000",
+        settlementMethod: "FONEPAY",
+        confirmationMode: "MANUAL_RECEIPT",
+        enabled: true,
+        version: 1,
+        activeQrAssetId: assetId,
+      },
+    },
+    paymentQrAssets: {
+      [assetId]: {
+        id: assetId,
+        accountId: accountId,
+        checksum: fixtureChecksum,
+      },
+    },
+  });
+  try {
+    const input = makeInput({
+      payments: [
+        {
+          method: "FONEPAY" as const,
+          amount: 40,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 1,
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+    const result = await checkoutInvoice("cashier", input);
+    assert.ok(result.invoice);
+    assert.equal(mock.state.payments.length, 1);
+    const payment = mock.state.payments[0];
+    assert.equal(payment.method, "FONEPAY");
+    assert.equal(payment.amount, 40);
+    assert.equal(payment.receivingAccountId, accountId);
+    assert.ok(payment.receivingDestinationSnapshot);
+    assert.equal(payment.receivingDestinationSnapshot.schemaVersion, 1);
+    assert.equal(payment.receivingDestinationSnapshot.accountId, accountId);
+    assert.equal(payment.receivingDestinationSnapshot.accountVersion, 1);
+    assert.equal(payment.receivingDestinationSnapshot.providerLabel, "Fonepay Official");
+    assert.equal(payment.receivingDestinationSnapshot.qrChecksum, fixtureChecksum);
+    assert.equal(mock.state.stock.length, 2);
+    assert.ok(mock.state.operations[key]?.completedAt);
+  } finally {
+    mock.restore();
+  }
+});
+
+test("stale second split row in multi-payment checkout rolls back all staged payment/invoice/stock/audit/CheckoutOperation", async () => {
+  const accountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+  const assetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+  const fixtureChecksum = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const mock = harness({
+    paymentAccounts: {
+      [accountId]: {
+        id: accountId,
+        providerLabel: "Fonepay Official",
+        accountHolder: "KhataSathi Store",
+        settlementMethod: "FONEPAY",
+        confirmationMode: "MANUAL_RECEIPT",
+        enabled: true,
+        version: 2, // Live version is 2
+        activeQrAssetId: assetId,
+      },
+    },
+    paymentQrAssets: {
+      [assetId]: {
+        id: assetId,
+        accountId: accountId,
+        checksum: fixtureChecksum,
+      },
+    },
+  });
+  try {
+    // Split payment: row 1 Cash 20, row 2 Fonepay 20 with stale version 1
+    const input = makeInput({
+      payments: [
+        { method: "CASH" as const, amount: 20 },
+        {
+          method: "FONEPAY" as const,
+          amount: 20,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 1, // Stale!
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+
+    await assert.rejects(
+      checkoutInvoice("cashier", input),
+      (err: any) => {
+        assert.equal(err.code, "RECEIVING_ACCOUNT_CHANGED");
+        assert.equal(err.statusCode, 409);
+        assert.match(err.message, /version changed/i);
+        return true;
+      },
+    );
+
+    // Verify staged state during transaction execution captured the first split CASH payment, invoice, and stock before failure
+    const lastStaged = mock.lastStaged;
+    assert.ok(lastStaged, "Transaction work must have executed before rollback");
+    assert.equal(Object.keys(lastStaged.invoices).length, 1, "Invoice must be staged before failure");
+    assert.equal(lastStaged.payments.length, 1, "First CASH split payment must be staged before stale second row failure");
+    assert.equal(lastStaged.payments[0].method, "CASH");
+    assert.equal(lastStaged.stock.length, 2, "Stock deductions must be staged before failure");
+    assert.ok(lastStaged.operations[key], "Operation must be staged before failure");
+
+    // Verify complete rollback in committed state
+    assert.deepEqual(mock.state.invoices, {});
+    assert.deepEqual(mock.state.payments, []);
+    assert.deepEqual(mock.state.stock, []);
+    assert.deepEqual(mock.state.audits, []);
+    assert.deepEqual(mock.state.operations, {});
+  } finally {
+    mock.restore();
+  }
+});
+
+test("audit failure after staged payment also triggers rollback of all staged entities", async () => {
+  const accountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+  const assetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+  const fixtureChecksum = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const mock = harness({
+    failOnAuditAction: "INVOICE_PAYMENT_UPDATED",
+    paymentAccounts: {
+      [accountId]: {
+        id: accountId,
+        providerLabel: "Fonepay Official",
+        accountHolder: "KhataSathi Store",
+        settlementMethod: "FONEPAY",
+        confirmationMode: "MANUAL_RECEIPT",
+        enabled: true,
+        version: 1,
+        activeQrAssetId: assetId,
+      },
+    },
+    paymentQrAssets: {
+      [assetId]: {
+        id: assetId,
+        accountId: accountId,
+        checksum: fixtureChecksum,
+      },
+    },
+  });
+  try {
+    const input = makeInput({
+      payments: [
+        {
+          method: "FONEPAY" as const,
+          amount: 40,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 1,
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+
+    await assert.rejects(
+      checkoutInvoice("cashier", input),
+      /Simulated audit failure on INVOICE_PAYMENT_UPDATED/,
+    );
+
+    // Verify staged state captured fault branch: payment already created/staged when audit failed
+    const lastStaged = mock.lastStaged;
+    assert.ok(lastStaged, "Transaction work must have executed before throw");
+    assert.equal(lastStaged.payments.length, 1, "Payment was staged before audit failure");
+    assert.equal(lastStaged.payments[0].method, "FONEPAY");
+    assert.equal(Object.keys(lastStaged.invoices).length, 1, "Invoice was staged before audit failure");
+    assert.equal(lastStaged.stock.length, 2, "Stock was staged before audit failure");
+
+    // Verify complete rollback on audit failure in committed state
+    assert.deepEqual(mock.state.invoices, {});
+    assert.deepEqual(mock.state.payments, []);
+    assert.deepEqual(mock.state.stock, []);
+    assert.deepEqual(mock.state.audits, []);
+    assert.deepEqual(mock.state.operations, {});
+  } finally {
+    mock.restore();
+  }
+});
+
+test("response-loss / completed operation exact replay after account disabled, version edited, and QR replaced returns saved immutable snapshot", async () => {
+  const accountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+  const assetId1 = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+  const assetId2 = "e682e1db-8454-59fb-c2f6-3c5d7adb003";
+  const checksum1 = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const checksum2 = "b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90a1";
+  const mock = harness({
+    paymentAccounts: {
+      [accountId]: {
+        id: accountId,
+        providerLabel: "Fonepay Official",
+        accountHolder: "KhataSathi Store",
+        settlementMethod: "FONEPAY",
+        confirmationMode: "MANUAL_RECEIPT",
+        enabled: true,
+        version: 1,
+        activeQrAssetId: assetId1,
+      },
+    },
+    paymentQrAssets: {
+      [assetId1]: {
+        id: assetId1,
+        accountId: accountId,
+        checksum: checksum1,
+      },
+      [assetId2]: {
+        id: assetId2,
+        accountId: accountId,
+        checksum: checksum2,
+      },
+    },
+  });
+  try {
+    const input = makeInput({
+      payments: [
+        {
+          method: "FONEPAY" as const,
+          amount: 40,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 1,
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+
+    const firstResult = await checkoutInvoice("cashier", input);
+    assert.ok(firstResult.invoice);
+    assert.equal(mock.state.stock.length, 2);
+    assert.equal(mock.state.payments.length, 1);
+
+    // Live account is now disabled, version edited to 99, label changed, and QR replaced with assetId2
+    const account = (mock.state as any).paymentAccounts[accountId];
+    account.enabled = false;
+    account.version = 99;
+    account.providerLabel = "Completely Changed Bank Name";
+    account.activeQrAssetId = assetId2;
+
+    const initialDestinationQueries = mock.destinationQueryCount;
+    const initialAuditsCount = mock.state.audits.length;
+    const initialStockCount = mock.state.stock.length;
+    const initialPaymentsCount = mock.state.payments.length;
+
+    // Exact replay with same operation key
+    const replayResult = await checkoutInvoice("cashier", input);
+    assert.ok(replayResult.invoice);
+    const replayPayment = replayResult.invoice.payments[0];
+    assert.equal(replayPayment.receivingAccountId, accountId);
+    assert.ok(replayPayment.receivingDestinationSnapshot);
+    assert.equal(replayPayment.receivingDestinationSnapshot.accountVersion, 1);
+    assert.equal(replayPayment.receivingDestinationSnapshot.providerLabel, "Fonepay Official", "Snapshot must retain original providerLabel");
+    assert.equal(replayPayment.receivingDestinationSnapshot.qrChecksum, checksum1, "Snapshot must retain original asset checksum");
+
+    // Zero additional destination queries on replay
+    assert.equal(mock.destinationQueryCount, initialDestinationQueries, "ZERO additional destination queries on replay");
+    // Zero new audits, recomputes, or financial posting
+    assert.equal(mock.state.audits.length, initialAuditsCount, "ZERO new audit logs on replay");
+    assert.equal(mock.state.stock.length, initialStockCount, "ZERO new stock transactions on replay");
+    assert.equal(mock.state.payments.length, initialPaymentsCount, "ZERO new payment rows on replay");
+  } finally {
+    mock.restore();
+  }
+});
+
+test("changed destination tuple with same checkout key conflicts as different bill contents", async () => {
+  const accountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+  const assetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+  const fixtureChecksum = "a1b2c3d4e5f60718293a4b5c6d7e8f90a1b2c3d4e5f60718293a4b5c6d7e8f90";
+  const mock = harness({
+    paymentAccounts: {
+      [accountId]: {
+        id: accountId,
+        providerLabel: "Fonepay Official",
+        accountHolder: "KhataSathi Store",
+        settlementMethod: "FONEPAY",
+        confirmationMode: "MANUAL_RECEIPT",
+        enabled: true,
+        version: 1,
+        activeQrAssetId: assetId,
+      },
+    },
+    paymentQrAssets: {
+      [assetId]: {
+        id: assetId,
+        accountId: accountId,
+        checksum: fixtureChecksum,
+      },
+    },
+  });
+  try {
+    const input = makeInput({
+      payments: [
+        {
+          method: "FONEPAY" as const,
+          amount: 40,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 1,
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+
+    await checkoutInvoice("cashier", input);
+
+    // Replay with altered version in destination tuple
+    const alteredInput = makeInput({
+      payments: [
+        {
+          method: "FONEPAY" as const,
+          amount: 40,
+          reference: "FP-123456",
+          receivingAccountId: accountId,
+          receivingAccountVersion: 2,
+          manualReceiptConfirmed: true,
+        },
+      ],
+    });
+
+    await assert.rejects(
+      checkoutInvoice("cashier", alteredInput),
+      /different bill contents/,
     );
   } finally {
     mock.restore();

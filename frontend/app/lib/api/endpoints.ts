@@ -1511,12 +1511,18 @@ export type CheckoutInvoiceInput = {
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
+        receivingAccountId?: string;
+        receivingAccountVersion?: number;
+        manualReceiptConfirmed?: boolean;
     };
     payments?: Array<{
         method: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
+        receivingAccountId?: string;
+        receivingAccountVersion?: number;
+        manualReceiptConfirmed?: boolean;
     }>;
     confirmation?: {
         items: Array<{
@@ -1706,12 +1712,24 @@ export async function getPaymentGatewayDisplayApi(
     return res.data;
 }
 
-// recording a payment against an invoice (cash, eSewa, etc.)
+export type AddInvoicePaymentInput = {
+    method: string;
+    amount: number;
+    status?: string;
+    reference?: string;
+    manualOperationKey?: string;
+    receivingAccountId?: string;
+    receivingAccountVersion?: number;
+    manualReceiptConfirmed?: boolean;
+    overridePin?: string;
+};
+
+// recording a payment against an invoice (cash, eSewa, manual receipt, etc.)
 export async function addPaymentApi(
     invoiceId: string,
-    data: { method: string; amount: number; status?: string; reference?: string }
+    data: AddInvoicePaymentInput,
 ) {
-    const res = await api.post(`/api/invoices/${invoiceId}/payments`, data);
+    const res = await api.post(`/api/invoices/${encodeURIComponent(invoiceId)}/payments`, data);
     return res.data;
 }
 

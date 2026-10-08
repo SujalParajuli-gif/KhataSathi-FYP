@@ -68,10 +68,12 @@ import {
   isBusinessAccessDraftDirty,
   stageBusinessModeSelection,
 } from "~/lib/settings/businessModeDraft";
+import PaymentAccountsTab from "~/components/settings/PaymentAccountsTab";
 
 type TabKey =
   | "overview"
   | "drawer"
+  | "payment-accounts"
   | "cashier-controls"
   | "brands"
   | "audit"
@@ -898,10 +900,20 @@ export default function SettingsPage() {
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const tab: TabKey = (requestedTab === "drawer" && capabilities.posEnabled) || requestedTab === "cashier-controls" ||
-    requestedTab === "brands" || requestedTab === "audit" || requestedTab === "backup"
-    ? requestedTab
-    : "overview";
+  const tab: TabKey =
+    requestedTab === "drawer" && capabilities.posEnabled
+      ? "drawer"
+      : requestedTab === "payment-accounts" && isAdmin
+        ? "payment-accounts"
+        : requestedTab === "cashier-controls"
+          ? "cashier-controls"
+          : requestedTab === "brands"
+            ? "brands"
+            : requestedTab === "audit"
+              ? "audit"
+              : requestedTab === "backup"
+                ? "backup"
+                : "overview";
   function setTab(nextTab: TabKey) {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -2424,6 +2436,9 @@ export default function SettingsPage() {
     ...(capabilities.posEnabled
       ? [{ key: "drawer" as TabKey, label: "Cash Drawer" }]
       : []),
+    ...(isAdmin
+      ? [{ key: "payment-accounts" as TabKey, label: "Payment Accounts" }]
+      : []),
     { key: "cashier-controls", label: "Role Permissions" },
     { key: "brands", label: "Brands" },
     { key: "audit", label: "Audit & Security" },
@@ -2448,7 +2463,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (tab === "drawer" && !capabilities.posEnabled) setTab("overview");
-  }, [capabilities.posEnabled, tab]);
+    if (tab === "payment-accounts" && !isAdmin) setTab("overview");
+  }, [capabilities.posEnabled, isAdmin, tab]);
 
   const tabTitles: Record<TabKey, { title: string; subtitle: string }> = {
     overview: {
@@ -2456,6 +2472,10 @@ export default function SettingsPage() {
       subtitle: "System-wide operational defaults.",
     },
     drawer: { title: "Cash Drawer", subtitle: "Manage sessions and history." },
+    "payment-accounts": {
+      title: "Payment Accounts",
+      subtitle: "Static receiving QR codes & payment accounts.",
+    },
     "cashier-controls": {
       title: "Role Permissions",
       subtitle: "Role permissions and security controls.",
@@ -3437,6 +3457,10 @@ export default function SettingsPage() {
               </div>
             </div>
           </section>
+        ) : null}
+
+        {tab === "payment-accounts" && isAdmin ? (
+          <PaymentAccountsTab />
         ) : null}
 
         {tab === "cashier-controls" ? (

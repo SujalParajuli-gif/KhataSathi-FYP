@@ -57,9 +57,15 @@ import BillingWorksheetModal from "~/components/billing/BillingWorksheetModal";
 import BillingCalculatorModal from "~/components/billing/BillingCalculatorModal";
 import BillingCustomerHistoryModal from "~/components/billing/BillingCustomerHistoryModal";
 import BillingCompactHistoryOverlay from "~/components/billing/BillingCompactHistoryOverlay";
+import CashierQrGalleryModal from "~/components/billing/CashierQrGalleryModal";
+import SavedSalePaymentFollowup from "~/components/billing/SavedSalePaymentFollowup";
+import {
+  getEnabledPaymentAccountsApi,
+  type EnabledPaymentAccountDto,
+} from "~/lib/api/paymentAccounts";
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
-import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
+import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePrint, openInvoiceReceiptPrint, parseReceivingDestinationSnapshot, type ReceivingDestinationSnapshotV1 } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
@@ -389,15 +395,19 @@ function readStoredBillingViewSize(): BillingViewSize {
     : "100";
 }
 
-type PaymentMethod = "Cash" | "Fonepay" | "eSewa" | "Split";
+type PaymentMethod = "Cash" | "Fonepay" | "eSewa" | "Split" | "Bank Transfer";
 type PaymentStatus = "Paid" | "Partial" | "Unpaid";
 type PendingBillingConfirm = "checkout" | "clear-cart" | "park-cart" | null;
 type SplitPaymentDraft = {
   id: string;
-  method: "CASH" | "FONEPAY" | "ESEWA";
+  method: "CASH" | "FONEPAY" | "ESEWA" | "BANK_TRANSFER";
   amount: string;
   tenderedAmount: string;
   reference?: string;
+  receivingAccountId?: string;
+  receivingAccountVersion?: number;
+  receivingAccountLabel?: string;
+  manualReceiptConfirmed?: boolean;
 };
 type StockConflictReason =
   | "NOT_FOUND"
@@ -1410,6 +1420,7 @@ export default function BillingPage() {
   const [paperDraftChoice, setPaperDraftChoice] = useState<"RECORD_AFTER_SAVE" | "LATER">("RECORD_AFTER_SAVE");
   const [fonepayConfirmed, setFonepayConfirmed] = useState(false);
   const [storageLimitationWarning, setStorageLimitationWarning] = useState<string | null>(null);
+  const [manualPaymentInvoiceId, setManualPaymentInvoiceId] = useState<string | null>(null);
   const [savedSaleResult, setSavedSaleResult] = useState<{
     invoiceId: string;
     invoiceNo?: string;
@@ -1421,6 +1432,7 @@ export default function BillingPage() {
     pendingGatewayAmount?: number;
     paperRecorded?: boolean;
     paperBillNo?: string;
+    receivingDestinations?: ReceivingDestinationSnapshotV1[];
   } | null>(null);
   const [paperFollowup, setPaperFollowup] = useState<{
     status: "NONE" | "SUCCESS" | "FAILED_RETRYABLE" | "PENDING";
@@ -1448,6 +1460,7 @@ export default function BillingPage() {
   const [quickCustomerBusy, setQuickCustomerBusy] = useState(false);
   const [quickCustomerError, setQuickCustomerError] = useState("");
   const quickCustomerBusyRef = useRef(false);
+  const checkoutReviewBusyRef = useRef(false);
   const checkoutInputRevisionRef = useRef(0);
   const prevPanToCheckRef = useRef("");
   const currentUserRef = useRef(currentUser);
@@ -1785,13 +1798,35 @@ export default function BillingPage() {
   const [priceOverrideDraftPin, setPriceOverrideDraftPin] = useState("");
   const [priceOverrideError, setPriceOverrideError] = useState("");
   const [priceOverrideBusy, setPriceOverrideBusy] = useState(false);
+  const [isQrGalleryOpen, setIsQrGalleryOpen] = useState(false);
+  const [enabledPaymentAccounts, setEnabledPaymentAccounts] = useState<EnabledPaymentAccountDto[]>([]);
+  const [enabledAccountsLoading, setEnabledAccountsLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash"); // current payment method selected in the modal
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid"); // current paid/partial/unpaid selection
   const [paidAmount, setPaidAmount] = useState<string>(""); // manual partial payment amount typed by the cashier
   const [cashTendered, setCashTendered] = useState<string>(""); // cash received from customer, used to calculate change
   const [fonepayReference, setFonepayReference] = useState<string>(""); // manual Fonepay reference/remarks recorded with the invoice payment
+  const [bankTransferReference, setBankTransferReference] = useState<string>("");
+  const [receivingAccountId, setReceivingAccountId] = useState<string>("");
+  const [receivingAccountVersion, setReceivingAccountVersion] = useState<number | null>(null);
+  const [receivingAccountLabel, setReceivingAccountLabel] = useState<string>("");
+  const [manualReceiptConfirmed, setManualReceiptConfirmed] = useState<boolean>(false);
   const [splitCashAmount, setSplitCashAmount] = useState<string>(""); // cash portion when the bill is split between cash and eSewa
   const [splitPayments, setSplitPayments] = useState<SplitPaymentDraft[]>([]);
+
+  const loadEnabledPaymentAccounts = useCallback(async (options?: { force?: boolean; signal?: AbortSignal }) => {
+    setEnabledAccountsLoading(true);
+    try {
+      const list = await getEnabledPaymentAccountsApi({ signal: options?.signal });
+      const safeList = Array.isArray(list) ? list : [];
+      setEnabledPaymentAccounts(safeList);
+      return safeList;
+    } catch {
+      return [];
+    } finally {
+      setEnabledAccountsLoading(false);
+    }
+  }, []);
   const [invoiceNote, setInvoiceNote] = useState("");
   const [paymentError, setPaymentError] = useState(""); // payment modal validation message
   const [billingError, setBillingError] = useState(""); // main billing error shown above the cart or form
@@ -2078,6 +2113,7 @@ export default function BillingPage() {
           pendingGatewayAmount: pendingGatewayAmount > 0 ? pendingGatewayAmount : undefined,
           paperRecorded: Boolean(isRecorded),
           paperBillNo: existing?.externalBillNo || matchingStored?.draft?.billNo,
+          receivingDestinations: successfulPayments.map((p: any) => parseReceivingDestinationSnapshot(p.receivingDestinationSnapshot)).filter((snapshot): snapshot is ReceivingDestinationSnapshotV1 => snapshot !== null),
         });
         if (resumeId) {
           setShowSuccess(true);
@@ -2489,6 +2525,11 @@ export default function BillingPage() {
     paidAmount,
     cashTendered,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
     splitPayments,
     activeDraftInvoiceId,
     activeDraftRequestId,
@@ -2505,6 +2546,11 @@ export default function BillingPage() {
     paidAmount,
     cashTendered,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
     splitPayments,
     activeDraftInvoiceId,
     activeDraftRequestId,
@@ -2524,6 +2570,11 @@ export default function BillingPage() {
     paidAmount,
     cashTendered,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
     splitPayments,
     activeDraftInvoiceId,
     activeDraftRequestId,
@@ -2677,6 +2728,11 @@ export default function BillingPage() {
       paidAmount,
       cashTendered,
       fonepayReference,
+      bankTransferReference,
+      receivingAccountId,
+      receivingAccountVersion,
+      receivingAccountLabel,
+      manualReceiptConfirmed,
       splitPayments,
       activeDraftInvoiceId,
       activeDraftRequestId,
@@ -2693,6 +2749,11 @@ export default function BillingPage() {
     paidAmount,
     cashTendered,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
     splitPayments,
     activeDraftInvoiceId,
     activeDraftRequestId,
@@ -2937,7 +2998,13 @@ export default function BillingPage() {
           .filter((payment) => payment.method === "FONEPAY")
           .reduce((sum, payment) => sum + payment.amountNum, 0)
       : 0;
-  const splitDigitalAmount = splitEsewaAmount + splitFonepayAmount;
+  const splitBankTransferAmount =
+    normalizedSplitPayments.length > 0
+      ? normalizedSplitPayments
+          .filter((payment) => payment.method === "BANK_TRANSFER")
+          .reduce((sum, payment) => sum + payment.amountNum, 0)
+      : 0;
+  const splitDigitalAmount = splitEsewaAmount + splitFonepayAmount + splitBankTransferAmount;
   const splitBalance = Math.round((payableTotal - splitTotal) * 100) / 100;
 
   // payment status controls the real paid amount:
@@ -2981,6 +3048,8 @@ export default function BillingPage() {
           ? "Partial payment"
           : paymentMethod === "Fonepay"
             ? "Fonepay collection"
+            : paymentMethod === "Bank Transfer"
+            ? "Bank Transfer collection"
             : paymentMethod === "eSewa"
             ? "eSewa collection"
             : cashShort > 0
@@ -2997,6 +3066,8 @@ export default function BillingPage() {
           ? `Balance due ${formatNpr(balanceDue)}.`
           : paymentMethod === "Fonepay"
             ? `Collect ${formatNpr(payableTotal)} by Fonepay.`
+            : paymentMethod === "Bank Transfer"
+            ? `Collect ${formatNpr(payableTotal)} by Bank Transfer.`
             : paymentMethod === "eSewa"
             ? `Collect ${formatNpr(payableTotal)} online.`
             : cashShort > 0
@@ -3009,6 +3080,8 @@ export default function BillingPage() {
       ? "success"
       : paymentMethod === "Fonepay" && paymentStatus === "Paid"
         ? "fonepay"
+      : paymentMethod === "Bank Transfer" && paymentStatus === "Paid"
+        ? "bank_transfer"
       : paymentMethod === "eSewa" && paymentStatus === "Paid"
         ? "esewa"
         : paymentStatus === "Partial" ||
@@ -3613,6 +3686,11 @@ export default function BillingPage() {
     setPaidAmount("");
     setCashTendered("");
     setFonepayReference("");
+    setBankTransferReference("");
+    setReceivingAccountId("");
+    setReceivingAccountVersion(null);
+    setReceivingAccountLabel("");
+    setManualReceiptConfirmed(false);
     setSplitCashAmount("");
     setSplitPayments([]);
     setInvoiceNote("");
@@ -4345,7 +4423,7 @@ export default function BillingPage() {
 
       if (normalizedSplitPayments.every((row) => row.method !== "CASH")) {
         setPaymentError(
-          "Use eSewa or Fonepay when the full invoice amount is online.",
+          "Use eSewa, Fonepay, or Bank Transfer when the full invoice amount is non-cash.",
         );
         return false;
       }
@@ -4358,8 +4436,27 @@ export default function BillingPage() {
         return false;
       }
 
+      const missingBankTransferReference = normalizedSplitPayments.find(
+        (row) => row.method === "BANK_TRANSFER" && !row.reference?.trim(),
+      );
+      if (missingBankTransferReference) {
+        setPaymentError("Enter the Bank Transfer reference for the split payment.");
+        return false;
+      }
+
       if (normalizedSplitPayments.some((row) => row.method === "FONEPAY") && !fonepayConfirmed) {
         setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
+        return false;
+      }
+
+      const unconfirmedSplitManual = normalizedSplitPayments.find(
+        (row) =>
+          (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+          row.receivingAccountId &&
+          !row.manualReceiptConfirmed,
+      );
+      if (unconfirmedSplitManual) {
+        setPaymentError("Please confirm that you checked the receiving account and received the funds for all linked split rows.");
         return false;
       }
 
@@ -4385,6 +4482,21 @@ export default function BillingPage() {
       }
       if (!fonepayConfirmed) {
         setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
+        return false;
+      }
+      if (receivingAccountId && !manualReceiptConfirmed) {
+        setPaymentError("Please confirm that you checked this receiving account and received the funds.");
+        return false;
+      }
+    }
+
+    if (paymentMethod === "Bank Transfer" && paymentStatus !== "Unpaid") {
+      if (!bankTransferReference.trim()) {
+        setPaymentError("Enter the Bank Transfer reference or remarks.");
+        return false;
+      }
+      if (receivingAccountId && !manualReceiptConfirmed) {
+        setPaymentError("Please confirm that you checked this receiving account and received the funds.");
         return false;
       }
     }
@@ -4488,11 +4600,26 @@ export default function BillingPage() {
       current.map((payment) => {
         if (payment.id !== id) return payment;
         const next = { ...payment, ...patch };
-        if (patch.method === "ESEWA" || patch.method === "FONEPAY") {
+        if (patch.method === "ESEWA" || patch.method === "FONEPAY" || patch.method === "BANK_TRANSFER") {
           next.tenderedAmount = "";
         }
-        if (patch.method && patch.method !== "FONEPAY") {
+        if (patch.method && patch.method !== "FONEPAY" && patch.method !== "BANK_TRANSFER") {
           next.reference = "";
+          next.receivingAccountId = undefined;
+          next.receivingAccountVersion = undefined;
+          next.receivingAccountLabel = undefined;
+          next.manualReceiptConfirmed = false;
+        }
+        if (
+          patch.amount !== undefined ||
+          patch.method !== undefined ||
+          patch.reference !== undefined ||
+          patch.receivingAccountId !== undefined ||
+          patch.receivingAccountVersion !== undefined
+        ) {
+          if (patch.manualReceiptConfirmed === undefined) {
+            next.manualReceiptConfirmed = false;
+          }
         }
         return next;
       }),
@@ -4517,88 +4644,224 @@ export default function BillingPage() {
   }
 
   async function requestCheckoutConfirm() {
-    if (pendingCheckout) {
-      setPendingBillingConfirm("checkout");
-      return;
-    }
-    if (!canConfirm) {
-      if (hasUnresolvedCartLines) {
-        setPaymentError("Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.");
-      } else if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
-        setPaymentError(
-          "There is an outstanding paper bill reference for invoice " +
-            (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
-            ". Please retry or dismiss it before confirming checkout.",
-        );
-      }
-      return;
-    }
-    if (!validatePaymentBeforeConfirm()) return;
-
-    const liveFingerprintBeforeRefresh = computeReviewFingerprint(liveCheckoutInputsRef.current);
-
-    const startRevision = checkoutInputRevisionRef.current;
-    setStockConflicts([]);
-    setStockRefreshBusy(true);
+    if (checkoutReviewBusyRef.current) return;
+    checkoutReviewBusyRef.current = true;
     try {
-      const latestProducts = await refreshProductsForCheckout();
-      const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
+      if (pendingCheckout) {
+        setPendingBillingConfirm("checkout");
+        return;
+      }
+      if (!canConfirm) {
+        if (hasUnresolvedCartLines) {
+          setPaymentError("Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.");
+        } else if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
+          setPaymentError(
+            "There is an outstanding paper bill reference for invoice " +
+              (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
+              ". Please retry or dismiss it before confirming checkout.",
+          );
+        }
+        return;
+      }
+      if (!validatePaymentBeforeConfirm()) return;
 
-      if (
-        checkoutInputRevisionRef.current !== startRevision ||
-        computeReviewFingerprint({ ...liveCheckoutInputsRef.current, productsById }) !== liveFingerprintBeforeRefresh
-      ) {
+      const initialActor = getAuthUser();
+      const startRevision = checkoutInputRevisionRef.current;
+      const startFingerprint = computeReviewFingerprint(liveCheckoutInputsRef.current);
+
+      // Refresh and verify payment receiving account metadata when destination is linked
+      const liveBeforeReceiving = liveCheckoutInputsRef.current;
+      const hasLinkedReceivingSelections =
+        ((liveBeforeReceiving.paymentMethod === "Fonepay" || liveBeforeReceiving.paymentMethod === "Bank Transfer") &&
+          liveBeforeReceiving.paymentStatus !== "Unpaid" &&
+          Boolean(liveBeforeReceiving.receivingAccountId)) ||
+        (liveBeforeReceiving.paymentMethod === "Split" &&
+          liveBeforeReceiving.splitPayments.some(
+            (row) =>
+              (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+              Boolean(row.receivingAccountId),
+          ));
+
+      if (hasLinkedReceivingSelections) {
+        try {
+          const freshAccounts = await getEnabledPaymentAccountsApi();
+          const currentActor = getAuthUser();
+          if (
+            !currentActor ||
+            currentActor.id !== initialActor?.id ||
+            currentActor.role !== initialActor?.role
+          ) {
+            setPaymentError("Cashier session changed during review. Please review and confirm again.");
+            return;
+          }
+
+          if (
+            checkoutInputRevisionRef.current !== startRevision ||
+            computeReviewFingerprint(liveCheckoutInputsRef.current) !== startFingerprint
+          ) {
+            setPaymentError(
+              "Cart, customer, or payment details changed during receiving account verification. Please review and confirm again.",
+            );
+            return;
+          }
+
+          const freshList = Array.isArray(freshAccounts) ? freshAccounts : [];
+          setEnabledPaymentAccounts(freshList);
+
+          const liveInputs = liveCheckoutInputsRef.current;
+          if (
+            (liveInputs.paymentMethod === "Fonepay" || liveInputs.paymentMethod === "Bank Transfer") &&
+            liveInputs.paymentStatus !== "Unpaid" &&
+            liveInputs.receivingAccountId
+          ) {
+            const matching = freshList.find((acc) => acc.id === liveInputs.receivingAccountId);
+            const requiredMethod = liveInputs.paymentMethod === "Fonepay" ? "FONEPAY" : "BANK_TRANSFER";
+            const isCompatible =
+              matching &&
+              matching.supportedSettlement === true &&
+              matching.confirmationMode === "MANUAL_RECEIPT" &&
+              matching.settlementMethod === requiredMethod;
+            const isVersionCurrent = matching && matching.version === liveInputs.receivingAccountVersion;
+
+            if (!matching || !isCompatible || !isVersionCurrent) {
+              setManualReceiptConfirmed(false);
+              setReviewedCandidate(null);
+              setPaymentError(
+                "The selected receiving account was updated or is no longer available. Please select a receiving account and re-verify receipt.",
+              );
+              return;
+            }
+          }
+
+          if (liveInputs.paymentMethod === "Split") {
+            let splitStale = false;
+            for (const row of liveInputs.splitPayments) {
+              if (
+                (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+                row.receivingAccountId
+              ) {
+                const matching = freshList.find((acc) => acc.id === row.receivingAccountId);
+                const isCompatible =
+                  matching &&
+                  matching.supportedSettlement === true &&
+                  matching.confirmationMode === "MANUAL_RECEIPT" &&
+                  matching.settlementMethod === row.method;
+                const isVersionCurrent = matching && matching.version === row.receivingAccountVersion;
+
+                if (!matching || !isCompatible || !isVersionCurrent) {
+                  splitStale = true;
+                  break;
+                }
+              }
+            }
+
+            if (splitStale) {
+              setSplitPayments((current) =>
+                current.map((row) => ({
+                  ...row,
+                  manualReceiptConfirmed: false,
+                })),
+              );
+              setReviewedCandidate(null);
+              setPaymentError(
+                "One or more selected receiving accounts were updated or are no longer available. Please review split destinations and re-verify receipt.",
+              );
+              return;
+            }
+          }
+        } catch {
+          setPaymentError(
+            "Could not verify payment receiving accounts. Check connection and try again.",
+          );
+          return;
+        }
+      }
+
+      setStockConflicts([]);
+      setStockRefreshBusy(true);
+      try {
+        const latestProducts = await refreshProductsForCheckout();
+        const postStockActor = getAuthUser();
+        if (
+          !postStockActor ||
+          postStockActor.id !== initialActor?.id ||
+          postStockActor.role !== initialActor?.role
+        ) {
+          setPaymentError("Cashier session changed during catalog refresh. Please review and confirm again.");
+          return;
+        }
+
+        const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
+
+        if (
+          checkoutInputRevisionRef.current !== startRevision ||
+          computeReviewFingerprint({ ...liveCheckoutInputsRef.current, productsById }) !== startFingerprint
+        ) {
+          setPaymentError(
+            "Cart, customer, or payment details changed during catalog refresh. Please review and confirm again.",
+          );
+          return;
+        }
+        const liveCurrent = liveCheckoutInputsRef.current;
+        const conflicts = buildStockConflictsFromCart(liveCurrent.cart, latestProducts);
+        if (conflicts.length > 0) {
+          showStockConflicts(conflicts);
+          return;
+        }
+
+        const effectivePaidStr =
+          liveCurrent.paymentStatus === "Paid"
+            ? (liveCurrent.paidAmount.trim() || String(payableTotal))
+            : liveCurrent.paidAmount;
+
+        const result = deriveCandidateCheckoutState({
+          cart: liveCurrent.cart,
+          latestProductsById,
+          selectedCustomer: liveCurrent.selectedCustomer,
+          subtotalDiscountPercent: liveCurrent.discountPercent,
+          paymentMethod: liveCurrent.paymentMethod,
+          paymentStatus: liveCurrent.paymentStatus,
+          paidAmountStr: effectivePaidStr,
+          cashTenderedStr: liveCurrent.cashTendered,
+          fonepayReference: liveCurrent.fonepayReference,
+          bankTransferReference: liveCurrent.bankTransferReference,
+          receivingAccountId: liveCurrent.receivingAccountId || undefined,
+          receivingAccountVersion: liveCurrent.receivingAccountVersion ?? undefined,
+          receivingAccountLabel: liveCurrent.receivingAccountLabel || undefined,
+          manualReceiptConfirmed: liveCurrent.manualReceiptConfirmed || undefined,
+          splitPayments: liveCurrent.splitPayments,
+          splitCashAmountStr: splitCashAmount,
+          activeDraftInvoiceId: liveCurrent.activeDraftInvoiceId,
+          activeDraftRequestId: liveCurrent.activeDraftRequestId,
+          selectedCustomerId: liveCurrent.selectedCustomerId,
+          invoiceNote: liveCurrent.invoiceNote,
+          shouldUseQuantityWholesalePrice,
+        });
+
+        if (!result.success) {
+          setPaymentError(result.error);
+          return;
+        }
+
+        const candidateFingerprint = computeReviewFingerprint({
+          ...liveCheckoutInputsRef.current,
+          productsById: latestProductsById,
+        });
+
+        setReviewedCandidate({
+          ...result.candidate,
+          fingerprint: candidateFingerprint,
+        });
+        setPendingBillingConfirm("checkout");
+      } catch {
         setPaymentError(
-          "Cart, customer, or payment details changed during catalog refresh. Please review and confirm again.",
+          "Could not refresh product stock. Check connection and try again.",
         );
-        return;
+      } finally {
+        setStockRefreshBusy(false);
       }
-      const conflicts = buildStockConflictsFromCart(cart, latestProducts);
-      if (conflicts.length > 0) {
-        showStockConflicts(conflicts);
-        return;
-      }
-
-      const result = deriveCandidateCheckoutState({
-        cart,
-        latestProductsById,
-        selectedCustomer,
-        subtotalDiscountPercent: subtotalDiscountMeta.percent,
-        paymentMethod,
-        paymentStatus,
-        paidAmountStr: paidAmount,
-        cashTenderedStr: cashTendered,
-        fonepayReference,
-        splitPayments,
-        splitCashAmountStr: splitCashAmount,
-        activeDraftInvoiceId,
-        activeDraftRequestId,
-        selectedCustomerId,
-        invoiceNote,
-        shouldUseQuantityWholesalePrice,
-      });
-
-      if (!result.success) {
-        setPaymentError(result.error);
-        return;
-      }
-
-      const candidateFingerprint = computeReviewFingerprint({
-        ...liveCheckoutInputsRef.current,
-        productsById: latestProductsById,
-      });
-
-      setReviewedCandidate({
-        ...result.candidate,
-        fingerprint: candidateFingerprint,
-      });
-      setPendingBillingConfirm("checkout");
-    } catch {
-      setPaymentError(
-        "Could not refresh product stock. Check connection and try again.",
-      );
     } finally {
-      setStockRefreshBusy(false);
+      checkoutReviewBusyRef.current = false;
     }
   }
 
@@ -5013,6 +5276,7 @@ export default function BillingPage() {
         paymentStatus: result?.invoice?.paymentStatus ?? paymentStatus,
         paperRecorded: paperRecordedSuccessfully,
         paperBillNo: paperDraftBillNo.trim() || undefined,
+        receivingDestinations: (result?.invoice?.payments || []).filter((p: any) => p.status === "SUCCESS" && p.kind !== "REFUND").map((p: any) => parseReceivingDestinationSnapshot(p.receivingDestinationSnapshot)).filter(Boolean),
       });
       resetBill({ preserveStorageWarning: true });
       setShowSuccess(true);
@@ -5078,6 +5342,39 @@ export default function BillingPage() {
           }
           return;
         }
+      }
+
+      if (
+        responseCode === "RECEIVING_ACCOUNT_CHANGED" ||
+        responseCode === "RECEIVING_ACCOUNT_VERSION_MISMATCH" ||
+        responseCode === "RECEIVING_ACCOUNT_INACTIVE" ||
+        responseCode === "RECEIVING_ACCOUNT_NOT_FOUND" ||
+        responseCode === "RECEIVING_ACCOUNT_METHOD_UNSUPPORTED"
+      ) {
+        setPendingCheckout(null);
+        setReviewedCandidate(null);
+        setManualReceiptConfirmed(false);
+        setSplitPayments((current) =>
+          current.map((row) => ({
+            ...row,
+            manualReceiptConfirmed: false,
+          })),
+        );
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          null,
+        );
+        setBillingError(
+          responseData?.error ||
+            "The receiving account configuration changed on the server. Please select the account again, verify receipt, and confirm checkout.",
+        );
+        try {
+          await loadEnabledPaymentAccounts({ force: true });
+        } catch {}
+        return;
       }
 
       setBillingError(
@@ -5432,6 +5729,10 @@ export default function BillingPage() {
     const dispEsewa = disp?.splitEsewaAmount ?? splitEsewaAmount;
     const dispFonepay = disp?.splitFonepayAmount ?? splitFonepayAmount;
     const dispFonepayRef = disp?.fonepayReference ?? (fonepayReference.trim() || undefined);
+    const dispBankTransfer = disp?.splitBankTransferAmount ?? splitBankTransferAmount;
+    const dispBankTransferRef = disp?.bankTransferReference ?? (bankTransferReference.trim() || undefined);
+    const dispReceivingAccountLabel = disp?.receivingAccountLabel ?? receivingAccountLabel;
+    const dispReceivingAccountId = disp?.receivingAccountId ?? receivingAccountId;
     const dispChange = disp?.changeDue ?? changeDue;
     const dispBalance = disp?.balanceDue ?? balanceDue;
 
@@ -5443,6 +5744,8 @@ export default function BillingPage() {
             ? "Create unpaid invoice?"
             : paymentMethod === "Fonepay"
               ? "Confirm Fonepay payment?"
+            : paymentMethod === "Bank Transfer"
+              ? "Confirm Bank Transfer?"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa?"
               : "Finalize this invoice?",
@@ -5453,6 +5756,8 @@ export default function BillingPage() {
             ? "This will create the invoice without recording a payment."
             : paymentMethod === "Fonepay"
               ? "This will finalize the invoice and record this Fonepay reference."
+            : paymentMethod === "Bank Transfer"
+              ? "This will finalize the invoice and record this Bank Transfer reference."
             : paymentMethod === "eSewa"
               ? "KhataSathi will create the invoice and send this payment to eSewa."
               : "This will finalize the invoice and record the selected payment immediately.",
@@ -5463,6 +5768,8 @@ export default function BillingPage() {
             ? "Create Invoice"
             : paymentMethod === "Fonepay"
               ? "Confirm Fonepay"
+            : paymentMethod === "Bank Transfer"
+              ? "Confirm Bank Transfer"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa"
               : `Confirm ${formatNpr(dispCollect)}`,
@@ -5474,6 +5781,8 @@ export default function BillingPage() {
             ? "receipt_long"
             : paymentMethod === "Fonepay"
               ? "qr_code_2"
+            : paymentMethod === "Bank Transfer"
+              ? "account_balance"
             : paymentMethod === "eSewa"
               ? "qr_code_2"
               : "payments",
@@ -5514,11 +5823,35 @@ export default function BillingPage() {
               </span>
             </div>
           ) : null}
+          {paymentMethod === "Split" && dispBankTransfer > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Bank Transfer amount</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(dispBankTransfer)}
+              </span>
+            </div>
+          ) : null}
           {paymentMethod === "Fonepay" && dispFonepayRef ? (
             <div className="flex items-center justify-between gap-3">
               <span>Reference</span>
               <span className="max-w-[220px] truncate font-extrabold text-slate-900">
                 {dispFonepayRef}
+              </span>
+            </div>
+          ) : null}
+          {paymentMethod === "Bank Transfer" && dispBankTransferRef ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Reference</span>
+              <span className="max-w-[220px] truncate font-extrabold text-slate-900">
+                {dispBankTransferRef}
+              </span>
+            </div>
+          ) : null}
+          {(paymentMethod === "Fonepay" || paymentMethod === "Bank Transfer") && paymentStatus !== "Unpaid" ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Receiving Destination</span>
+              <span className="max-w-[220px] truncate font-extrabold text-slate-900">
+                {dispReceivingAccountId ? (dispReceivingAccountLabel || "Recorded account") : "Not recorded"}
               </span>
             </div>
           ) : null}
@@ -5559,7 +5892,11 @@ export default function BillingPage() {
     splitCashNum,
     splitEsewaAmount,
     splitFonepayAmount,
+    splitBankTransferAmount,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountLabel,
   ]);
 
   // setting up global hotkeys (F2, F3, F4, F5, F6, F9, Enter) so the cashier can work fully via keyboard
@@ -6126,6 +6463,20 @@ export default function BillingPage() {
             >
               <Icon name="print" className="text-[16px]" />
               Reprint Last
+            </button>
+            <button
+              type="button"
+              id="billing-qr-gallery-trigger"
+              aria-label="Store Payment QRs Gallery"
+              onClick={() => {
+                setIsQrGalleryOpen(true);
+                void loadEnabledPaymentAccounts();
+              }}
+              title="Open store payment QR codes gallery"
+              className={billingView.topButton}
+            >
+              <Icon name="qr_code_scanner" className="text-[16px]" />
+              QRs
             </button>
             <button
               type="button"
@@ -7585,10 +7936,23 @@ export default function BillingPage() {
             {/* Left: Inputs */}
             <div className="space-y-[12px]">
               <div>
-                <div className="mb-[8px] text-[14px] font-extrabold text-[#000000]">
-                  Payment Method
+                <div className="mb-[8px] flex items-center justify-between">
+                  <div className="text-[14px] font-extrabold text-[#000000]">
+                    Payment Method
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsQrGalleryOpen(true);
+                      void loadEnabledPaymentAccounts();
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 py-1 text-[11px] font-bold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
+                  >
+                    <Icon name="qr_code_scanner" className="text-[14px]" />
+                    <span>QR Gallery</span>
+                  </button>
                 </div>
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                   <button
                     type="button"
                     onClick={() => {
@@ -7613,6 +7977,7 @@ export default function BillingPage() {
                       setPaymentMethod("Fonepay");
                       setShowEsewaQr(false);
                       setPaymentError("");
+                      void loadEnabledPaymentAccounts();
                     }}
                     className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Fonepay" ? "border-[#E11D48] bg-[#FFF7F8]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
                   >
@@ -7660,11 +8025,34 @@ export default function BillingPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      setPaymentMethod("Bank Transfer");
+                      setShowEsewaQr(false);
+                      setPaymentError("");
+                      void loadEnabledPaymentAccounts();
+                    }}
+                    className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Bank Transfer" ? "border-[#2F67D8] bg-[#F8FBFF]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
+                  >
+                    <Icon name="account_balance" className="text-[22px] text-[#2F67D8]" />
+                    <span
+                      className={`text-[12px] font-extrabold ${paymentMethod === "Bank Transfer" ? "text-[#334155]" : "text-[#565449]"}`}
+                    >
+                      Bank Transfer
+                    </span>
+                    {paymentMethod === "Bank Transfer" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#2F67D8] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       setPaymentMethod("Split");
                       setPaymentStatus("Paid");
                       setShowEsewaQr(true);
                       setPaymentError("");
                       ensureDefaultSplitPayments();
+                      void loadEnabledPaymentAccounts();
                     }}
                     className={`relative flex h-[58px] items-center justify-center gap-2 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Split" ? "border-[#2F67D8] bg-[#F8FBFF] text-[#2F67D8]" : "border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"}`}
                   >
@@ -7710,12 +8098,14 @@ export default function BillingPage() {
               )}
 
               {paymentMethod === "Fonepay" && paymentStatus !== "Unpaid" ? (
-                <div className="space-y-2">
+                <div className="space-y-3">
                   <Input
                     label="Fonepay reference / remarks"
                     value={fonepayReference}
                     onChange={(v) => {
                       setFonepayReference(v.slice(0, 160));
+                      setManualReceiptConfirmed(false);
+                      setReviewedCandidate(null);
                       setPaymentError("");
                       setBillingError("");
                     }}
@@ -7724,18 +8114,161 @@ export default function BillingPage() {
                     invalid={!!paymentError && !fonepayReference.trim()}
                     helperText="Required for manual Fonepay collection and invoice history."
                   />
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-[#565449]">
+                      Store Receiving Destination (Optional)
+                    </label>
+                    <ProjectSelect
+                      value={receivingAccountId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const selected = enabledPaymentAccounts.find(
+                          (a) =>
+                            a.id === val &&
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "FONEPAY",
+                        );
+                        setReceivingAccountId(val);
+                        setReceivingAccountVersion(selected?.version ?? null);
+                        setReceivingAccountLabel(selected?.providerLabel ?? "");
+                        setManualReceiptConfirmed(false);
+                        setReviewedCandidate(null);
+                        setPaymentError("");
+                      }}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="">Receiving destination not recorded</option>
+                      {enabledPaymentAccounts
+                        .filter(
+                          (a) =>
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "FONEPAY",
+                        )
+                        .map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Manual Fonepay"})
+                          </option>
+                        ))}
+                    </ProjectSelect>
+                  </div>
+                  {receivingAccountId ? (
+                    <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={manualReceiptConfirmed}
+                        onChange={(e) => {
+                          setManualReceiptConfirmed(e.target.checked);
+                          setReviewedCandidate(null);
+                          setPaymentError("");
+                        }}
+                        className="h-4 w-4 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                      />
+                      <span>
+                        I checked this receiving account and received NPR{" "}
+                        {formatNpr(
+                          paymentStatus === "Paid"
+                            ? payableTotal
+                            : Number(paidAmount) || 0,
+                        )}
+                      </span>
+                    </label>
+                  ) : null}
                   <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
                     <input
                       type="checkbox"
                       checked={fonepayConfirmed}
                       onChange={(e) => {
                         setFonepayConfirmed(e.target.checked);
+                        setReviewedCandidate(null);
                         setPaymentError("");
                       }}
                       className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
                     />
                     <span>I have verified the Fonepay merchant SMS / app payment confirmation</span>
                   </label>
+                </div>
+              ) : null}
+
+              {paymentMethod === "Bank Transfer" && paymentStatus !== "Unpaid" ? (
+                <div className="space-y-3">
+                  <Input
+                    label="Bank transfer reference / remarks"
+                    value={bankTransferReference}
+                    onChange={(v) => {
+                      setBankTransferReference(v.slice(0, 160));
+                      setManualReceiptConfirmed(false);
+                      setReviewedCandidate(null);
+                      setPaymentError("");
+                      setBillingError("");
+                    }}
+                    placeholder="Voucher no., transfer remarks, or bank branch"
+                    leftIcon="account_balance"
+                    invalid={!!paymentError && !bankTransferReference.trim()}
+                    helperText="Required for bank transfer settlement and invoice history."
+                  />
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-[#565449]">
+                      Store Receiving Destination (Optional)
+                    </label>
+                    <ProjectSelect
+                      value={receivingAccountId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const selected = enabledPaymentAccounts.find(
+                          (a) =>
+                            a.id === val &&
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "BANK_TRANSFER",
+                        );
+                        setReceivingAccountId(val);
+                        setReceivingAccountVersion(selected?.version ?? null);
+                        setReceivingAccountLabel(selected?.providerLabel ?? "");
+                        setManualReceiptConfirmed(false);
+                        setReviewedCandidate(null);
+                        setPaymentError("");
+                      }}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="">Receiving destination not recorded</option>
+                      {enabledPaymentAccounts
+                        .filter(
+                          (a) =>
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "BANK_TRANSFER",
+                        )
+                        .map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Bank Account"})
+                          </option>
+                        ))}
+                    </ProjectSelect>
+                  </div>
+                  {receivingAccountId ? (
+                    <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={manualReceiptConfirmed}
+                        onChange={(e) => {
+                          setManualReceiptConfirmed(e.target.checked);
+                          setReviewedCandidate(null);
+                          setPaymentError("");
+                        }}
+                        className="h-4 w-4 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                      />
+                      <span>
+                        I checked this receiving account and received NPR{" "}
+                        {formatNpr(
+                          paymentStatus === "Paid"
+                            ? payableTotal
+                            : Number(paidAmount) || 0,
+                        )}
+                      </span>
+                    </label>
+                  ) : null}
                 </div>
               ) : null}
 
@@ -7769,10 +8302,26 @@ export default function BillingPage() {
                           row.method === "CASH"
                             ? Math.max(0, tenderedNum - amountNum)
                             : 0;
+                        const compatibleAccounts =
+                          row.method === "FONEPAY"
+                            ? enabledPaymentAccounts.filter(
+                                (a) =>
+                                  a.supportedSettlement === true &&
+                                  a.confirmationMode === "MANUAL_RECEIPT" &&
+                                  a.settlementMethod === "FONEPAY",
+                              )
+                            : row.method === "BANK_TRANSFER"
+                              ? enabledPaymentAccounts.filter(
+                                  (a) =>
+                                    a.supportedSettlement === true &&
+                                    a.confirmationMode === "MANUAL_RECEIPT" &&
+                                    a.settlementMethod === "BANK_TRANSFER",
+                                )
+                              : [];
                         return (
                           <div
                             key={row.id}
-                            className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[80px_minmax(0,1fr)_minmax(0,1fr)_32px]"
+                            className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_32px]"
                           >
                             <ProjectSelect
                               value={row.method}
@@ -7786,6 +8335,7 @@ export default function BillingPage() {
                             >
                               <option value="CASH">Cash</option>
                               <option value="FONEPAY">Fonepay</option>
+                              <option value="BANK_TRANSFER">Bank Transfer</option>
                               <option value="ESEWA">eSewa</option>
                             </ProjectSelect>
                             <input
@@ -7814,7 +8364,7 @@ export default function BillingPage() {
                                 placeholder="Tendered"
                                 className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
                               />
-                            ) : row.method === "FONEPAY" ? (
+                            ) : row.method === "FONEPAY" || row.method === "BANK_TRANSFER" ? (
                               <input
                                 value={row.reference || ""}
                                 onChange={(e) =>
@@ -7822,7 +8372,7 @@ export default function BillingPage() {
                                     reference: e.target.value.slice(0, 160),
                                   })
                                 }
-                                placeholder="Fonepay ref"
+                                placeholder={row.method === "FONEPAY" ? "Fonepay ref" : "Bank ref"}
                                 className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
                               />
                             ) : (
@@ -7833,11 +8383,60 @@ export default function BillingPage() {
                             <button
                               type="button"
                               onClick={() => removeSplitPayment(row.id)}
+                              aria-label={`Remove ${row.method === "BANK_TRANSFER" ? "Bank transfer" : row.method === "FONEPAY" ? "Fonepay" : row.method === "ESEWA" ? "eSewa" : "Cash"} payment row`}
                               disabled={splitPayments.length <= 1}
                               className="flex h-[32px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-white text-[#565449] disabled:opacity-40"
                             >
                               <Icon name="close" className="text-[14px]" />
                             </button>
+                            {(row.method === "FONEPAY" || row.method === "BANK_TRANSFER") ? (
+                              <div className="md:col-span-4 flex flex-col gap-1.5 pt-1 border-t border-slate-100">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-bold text-[#565449] shrink-0">
+                                    Receiving:
+                                  </span>
+                                  <ProjectSelect
+                                    value={row.receivingAccountId || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const acc = compatibleAccounts.find((a) => a.id === val);
+                                      updateSplitPayment(row.id, {
+                                        receivingAccountId: val || undefined,
+                                        receivingAccountVersion: acc?.version ?? undefined,
+                                        receivingAccountLabel: acc?.providerLabel ?? undefined,
+                                        manualReceiptConfirmed: false,
+                                      });
+                                    }}
+                                    className="h-[28px] flex-1 text-[10px] font-bold text-[#11120d]"
+                                  >
+                                    <option value="">Receiving destination not recorded</option>
+                                    {compatibleAccounts.map((acc) => (
+                                      <option key={acc.id} value={acc.id}>
+                                        {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Manual"})
+                                      </option>
+                                    ))}
+                                  </ProjectSelect>
+                                </div>
+                                {row.receivingAccountId ? (
+                                  <label className="flex items-center gap-2 text-[10px] font-bold text-slate-700 cursor-pointer pl-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(row.manualReceiptConfirmed)}
+                                      onChange={(e) =>
+                                        updateSplitPayment(row.id, {
+                                          manualReceiptConfirmed: e.target.checked,
+                                        })
+                                      }
+                                      className="h-3.5 w-3.5 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                                    />
+                                    <span>
+                                      I checked this receiving account and received NPR{" "}
+                                      {formatNpr(Number(row.amount) || 0)}
+                                    </span>
+                                  </label>
+                                ) : null}
+                              </div>
+                            ) : null}
                             {row.method === "CASH" && rowChange > 0 && (
                               <div className="md:col-span-4 text-[10px] font-bold text-[#179B4D]">
                                 Return change {formatNpr(rowChange)} for this
@@ -7855,6 +8454,7 @@ export default function BillingPage() {
                           checked={fonepayConfirmed}
                           onChange={(e) => {
                             setFonepayConfirmed(e.target.checked);
+                            setReviewedCandidate(null);
                             setPaymentError("");
                           }}
                           className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
@@ -7889,6 +8489,13 @@ export default function BillingPage() {
                         className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449] disabled:opacity-40"
                       >
                         + Fonepay row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addSplitPayment("BANK_TRANSFER")}
+                        className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449]"
+                      >
+                        + Bank Transfer row
                       </button>
                     </div>
                   </div>
@@ -9656,6 +10263,12 @@ export default function BillingPage() {
               >
                 Receipt
               </DialogButton>
+              {savedSaleResult && savedSaleResult.balanceDue > 0 ? (
+                <DialogButton onClick={() => {
+                  setShowSuccess(false);
+                  setManualPaymentInvoiceId(savedSaleResult.invoiceId);
+                }} icon="payments">Record Received Payment</DialogButton>
+              ) : null}
               {savedSaleResult && !savedSaleResult.paperRecorded && !savedSaleResult.paperBillNo ? (
                 <DialogButton
                   onClick={() => {
@@ -9729,9 +10342,21 @@ export default function BillingPage() {
                 {storageLimitationWarning}
               </div>
             ) : null}
+            {savedSaleResult.receivingDestinations?.map((destination, index) => (
+              <div key={`${destination.accountId}-${index}`} className="border-t border-[#cfcfd3] pt-2 text-[#565449]">
+                <span className="font-semibold">Recorded receiving destination: </span>
+                {destination.providerLabel} — {destination.accountHolder} — {destination.accountIdentifier || "No identifier recorded"}
+              </div>
+            ))}
           </div>
         ) : null}
       </SuccessDialog>
+
+      <SavedSalePaymentFollowup
+        actorId={currentUser?.id || ""}
+        invoiceId={manualPaymentInvoiceId}
+        onClose={() => setManualPaymentInvoiceId(null)}
+      />
 
       <BillingWorksheetModal
         open={isWorksheetOpen}
@@ -9979,6 +10604,10 @@ export default function BillingPage() {
           </div>
         </div>
       )}
+      <CashierQrGalleryModal
+        open={isQrGalleryOpen}
+        onClose={() => setIsQrGalleryOpen(false)}
+      />
     </>
   );
 }

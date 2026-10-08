@@ -162,9 +162,37 @@ function buildEsewaFailureRedirect(params: {
   });
 }
 
-// --
+import crypto from "crypto";
+import { Prisma } from "@prisma/client";
+import {
+  captureReceivingDestinationTx,
+  projectPublicPayment,
+} from "../invoices/service";
 
-// recording a manual payment (cash, card, etc.) against a finalized invoice
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const MANUAL_OP_KEY_REGEX = /^[A-Za-z0-9_-]{16,120}$/;
+const HTML_TAG_PATTERN = /<[^>]*>/;
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+function isManualOperationKeyConflict(error: unknown) {
+  if (!error || typeof error !== "object") return false;
+  const candidate = error as { code?: unknown; meta?: { target?: unknown } };
+  if (candidate.code !== "P2002") return false;
+  const target = Array.isArray(candidate.meta?.target)
+    ? candidate.meta?.target.join(",")
+    : String(candidate.meta?.target || "");
+  return target.includes("manualOperationKey");
+}
+
+export type AddPaymentOptions = {
+  manualOperationKey?: string | null;
+  receivingAccountId?: string | null;
+  receivingAccountVersion?: number | null;
+  manualReceiptConfirmed?: boolean | null;
+};
+
+// recording a manual payment (cash, fonepay, bank transfer, etc.) against a finalized invoice
 // we validate overpayment only for successful payments — pending/failed payments do not affect the balance
 export async function addPayment(
   invoiceId: string,
@@ -173,75 +201,342 @@ export async function addPayment(
   status: "PENDING" | "SUCCESS" | "FAILED",
   createdById: string,
   reference?: string,
+  options?: AddPaymentOptions,
 ) {
-  const normalizedAmount = roundCurrency(amount);
-  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
-    throw new Error("Payment amount must be greater than zero");
+  if (typeof amount !== "number" || !Number.isFinite(amount) || amount <= 0) {
+    const err: any = new Error("Payment amount must be greater than zero");
+    err.statusCode = 400;
+    err.code = "INVALID_PAYMENT_AMOUNT";
+    throw err;
   }
 
-  // checking for overpayment — the new payment plus what is already paid cannot exceed the net total
-  return runFinancialTransaction(prisma, async (tx) => {
-    await lockInvoiceForUpdate(tx, invoiceId);
-    const invoice = await tx.invoice.findUnique({
-      where: { id: invoiceId },
-      include: { payments: true },
-    });
-    if (!invoice) throw new Error("Invoice not found");
-    ensureInvoiceCanAcceptPayment(invoice);
+  if (!SUPPORTED_PAYMENT_METHODS.includes(method)) {
+    const err: any = new Error("Unsupported payment method");
+    err.statusCode = 400;
+    err.code = "UNSUPPORTED_PAYMENT_METHOD";
+    throw err;
+  }
 
-    if (status === "SUCCESS") {
-      const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
-      const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
-      if (currentPaid + normalizedAmount > paymentTargetTotal) {
-        throw new Error(
-          `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
-        );
-      }
+  if (method === "ESEWA") {
+    const err: any = new Error(
+      "Direct manual eSewa payment creation is prohibited. Use online eSewa initiation.",
+    );
+    err.statusCode = 400;
+    err.code = "MANUAL_ESEWA_PROHIBITED";
+    throw err;
+  }
+
+  const normalizedStatus = status || "SUCCESS";
+  if (
+    normalizedStatus !== "PENDING" &&
+    normalizedStatus !== "SUCCESS" &&
+    normalizedStatus !== "FAILED"
+  ) {
+    const err: any = new Error("Invalid payment status");
+    err.statusCode = 400;
+    err.code = "INVALID_PAYMENT_STATUS";
+    throw err;
+  }
+
+  const hasKey = options?.manualOperationKey !== undefined;
+  const hasAccountId = options?.receivingAccountId !== undefined;
+  const hasVersion = options?.receivingAccountVersion !== undefined;
+  const hasConfirmed = options?.manualReceiptConfirmed !== undefined;
+
+  const hasAnyLinked = hasKey || hasAccountId || hasVersion || hasConfirmed;
+
+  if (hasAnyLinked) {
+    if (method !== "FONEPAY" && method !== "BANK_TRANSFER") {
+      const err: any = new Error(
+        "Receiving destination is only supported for Fonepay and Bank Transfer payments",
+      );
+      err.statusCode = 400;
+      err.code = "INVALID_PAYMENT_METHOD_FOR_DESTINATION";
+      throw err;
     }
 
-    const actor = await getActorSummaryTx(tx, createdById);
-    // creating the payment record in the database
-    const payment = await tx.payment.create({
-      data: {
-        invoiceId,
-        method,
-        amount: normalizedAmount,
-        status,
-        reference: reference || null,
-        createdById,
-      },
-    });
+    if (normalizedStatus !== "SUCCESS") {
+      const err: any = new Error(
+        "Receiving destination can only be recorded for successful payments",
+      );
+      err.statusCode = 400;
+      err.code = "INVALID_PAYMENT_STATUS_FOR_DESTINATION";
+      throw err;
+    }
 
-    // recalculating the invoice payment status after adding this payment
-    const next = await recomputePaymentStatusTx(tx, invoiceId);
+    if (
+      typeof options?.manualOperationKey !== "string" ||
+      !MANUAL_OP_KEY_REGEX.test(options.manualOperationKey)
+    ) {
+      const err: any = new Error(
+        "Manual operation key must be 16-120 alphanumeric characters, underscores, or hyphens",
+      );
+      err.statusCode = 400;
+      err.code = "INVALID_MANUAL_OPERATION_KEY";
+      throw err;
+    }
 
-    // only logging successful payments in the audit — pending and failed ones are just records
-    if (status === "SUCCESS") {
-      await tx.auditLog.create({
+    if (
+      typeof options?.receivingAccountId !== "string" ||
+      !UUID_REGEX.test(options.receivingAccountId.trim())
+    ) {
+      const err: any = new Error("Receiving account ID must be a valid UUID");
+      err.statusCode = 400;
+      err.code = "INVALID_RECEIVING_ACCOUNT_ID";
+      throw err;
+    }
+
+    if (
+      typeof options?.receivingAccountVersion !== "number" ||
+      !Number.isInteger(options.receivingAccountVersion) ||
+      options.receivingAccountVersion < 1
+    ) {
+      const err: any = new Error(
+        "Receiving account version must be a positive integer",
+      );
+      err.statusCode = 400;
+      err.code = "INVALID_RECEIVING_ACCOUNT_VERSION";
+      throw err;
+    }
+
+    if (options?.manualReceiptConfirmed !== true) {
+      const err: any = new Error(
+        "Cashier manual receipt confirmation is required for receiving destination",
+      );
+      err.statusCode = 400;
+      err.code = "MANUAL_RECEIPT_CONFIRMATION_REQUIRED";
+      throw err;
+    }
+
+    if (
+      typeof reference !== "string" ||
+      reference.trim().length === 0 ||
+      reference.length > 160 ||
+      CONTROL_CHAR_PATTERN.test(reference) ||
+      HTML_TAG_PATTERN.test(reference)
+    ) {
+      const err: any = new Error(
+        "Reference is required when recording a receiving destination",
+      );
+      err.statusCode = 400;
+      err.code = "INVALID_REFERENCE";
+      throw err;
+    }
+  }
+
+  const normalizedAmount = roundCurrency(amount);
+  if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
+    const err: any = new Error("Payment amount must be greater than zero");
+    err.statusCode = 400;
+    err.code = "INVALID_PAYMENT_AMOUNT";
+    throw err;
+  }
+  const trimmedReference = reference?.trim() || null;
+  const manualOperationKey = hasAnyLinked ? options!.manualOperationKey!.trim() : null;
+  const receivingAccountId = hasAnyLinked ? options!.receivingAccountId!.trim() : null;
+  const receivingAccountVersion = hasAnyLinked ? options!.receivingAccountVersion! : null;
+
+  const payloadHash = hasAnyLinked
+    ? crypto
+        .createHash("sha256")
+        .update(
+          JSON.stringify({
+            invoiceId,
+            method,
+            amount: normalizedAmount,
+            reference: trimmedReference,
+            receivingAccountId,
+            receivingAccountVersion,
+            manualReceiptConfirmed: true,
+          }),
+        )
+        .digest("hex")
+    : null;
+
+  try {
+    return await runFinancialTransaction(prisma, async (tx) => {
+      await lockInvoiceForUpdate(tx, invoiceId);
+
+      // Look up by manual operation key if supplied (idempotent replay) BEFORE invoice eligibility/guards
+      if (manualOperationKey) {
+        const existingKeyPayment = await tx.payment.findUnique({
+          where: { manualOperationKey },
+          include: { createdBy: { select: { id: true, name: true } } },
+        });
+
+        if (existingKeyPayment) {
+          if (
+            existingKeyPayment.invoiceId === invoiceId &&
+            existingKeyPayment.createdById === createdById &&
+            existingKeyPayment.manualPayloadHash === payloadHash
+          ) {
+            return projectPublicPayment(existingKeyPayment);
+          }
+          const err: any = new Error(
+            "Manual payment operation key was already used with different payment parameters",
+          );
+          err.statusCode = 409;
+          err.code = "MANUAL_OPERATION_KEY_CONFLICT";
+          throw err;
+        }
+      }
+
+      const invoice = await tx.invoice.findUnique({
+        where: { id: invoiceId },
+        include: { payments: true },
+      });
+      if (!invoice) {
+        const err: any = new Error("Invoice not found");
+        err.statusCode = 404;
+        err.code = "INVOICE_NOT_FOUND";
+        throw err;
+      }
+      ensureInvoiceCanAcceptPayment(invoice);
+
+      if (hasAnyLinked && receivingAccountId) {
+        // Pending gateway check: cannot record manual confirmation while an online charge is pending
+        const pendingGateway = invoice.payments.some(
+          (p: any) =>
+            p.status === "PENDING" &&
+            p.method === "ESEWA" &&
+            !p.voidedAt &&
+            isChargePayment(p),
+        );
+        if (pendingGateway) {
+          const err: any = new Error(
+            "Cannot record manual payment while an online gateway payment is pending confirmation",
+          );
+          err.statusCode = 409;
+          err.code = "GATEWAY_OUTCOME_UNRESOLVED";
+          throw err;
+        }
+
+        // Duplicate receipt check: cannot record identical successful receipt on this invoice
+        const duplicateReceipt = invoice.payments.some(
+          (p: any) =>
+            p.status === "SUCCESS" &&
+            !p.voidedAt &&
+            p.method === method &&
+            p.receivingAccountId === receivingAccountId &&
+            p.amount === normalizedAmount &&
+            p.reference?.trim() === trimmedReference,
+        );
+        if (duplicateReceipt) {
+          const err: any = new Error(
+            "A payment with this exact receipt details is already recorded for this invoice",
+          );
+          err.statusCode = 409;
+          err.code = "PAYMENT_ALREADY_RECORDED";
+          throw err;
+        }
+      }
+
+      if (normalizedStatus === "SUCCESS") {
+        const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
+        const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+        if (currentPaid + normalizedAmount > paymentTargetTotal) {
+          const err: any = new Error(
+            `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
+          );
+          err.statusCode = 400;
+          err.code = "OVERPAYMENT";
+          throw err;
+        }
+      }
+
+      // Capture receiving destination if supplied
+      const destinationData =
+        hasAnyLinked && receivingAccountId
+          ? await captureReceivingDestinationTx(
+              tx,
+              {
+                receivingAccountId,
+                receivingAccountVersion,
+                manualReceiptConfirmed: true,
+                method,
+              },
+              createdById,
+            )
+          : null;
+
+      const actor = await getActorSummaryTx(tx, createdById);
+
+      // creating the payment record in the database
+      const payment = await tx.payment.create({
         data: {
-          actorId: createdById,
-          action: "INVOICE_PAYMENT_UPDATED",
-          entityType: "Invoice",
-          entityId: invoiceId,
-        meta: {
-          invoiceNo: invoice.invoiceNo,
-          actorName: actor?.name || null,
-          actorRole: actor?.role || null,
+          invoiceId,
           method,
-          reference: reference || null,
-          amountAdded: normalizedAmount,
-            previousStatus: invoice.paymentStatus,
-            nextStatus: next.paymentStatus,
-            paidTotal: next.paidTotal,
-            netTotal: next.netTotal,
-            remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal),
-          },
+          amount: normalizedAmount,
+          status: normalizedStatus,
+          reference: trimmedReference,
+          createdById,
+          receivingAccountId: destinationData?.receivingAccountId || null,
+          receivingDestinationSnapshot:
+            destinationData?.receivingDestinationSnapshot ?? Prisma.DbNull,
+          manualOperationKey,
+          manualPayloadHash: payloadHash,
+        },
+        include: {
+          createdBy: { select: { id: true, name: true } },
         },
       });
-    }
 
-    return payment;
-  });
+      // recalculating the invoice payment status after adding this payment
+      const next = await recomputePaymentStatusTx(tx, invoiceId);
+
+      // only logging successful payments in the audit — pending and failed ones are just records
+      if (normalizedStatus === "SUCCESS") {
+        await tx.auditLog.create({
+          data: {
+            actorId: createdById,
+            action: "INVOICE_PAYMENT_UPDATED",
+            entityType: "Invoice",
+            entityId: invoiceId,
+            meta: {
+              invoiceNo: invoice.invoiceNo,
+              actorName: actor?.name || null,
+              actorRole: actor?.role || null,
+              method,
+              reference: trimmedReference,
+              amountAdded: normalizedAmount,
+              receivingAccountId: destinationData?.receivingAccountId || null,
+              receivingDestinationSnapshot:
+                destinationData?.receivingDestinationSnapshot || null,
+              previousStatus: invoice.paymentStatus,
+              nextStatus: next.paymentStatus,
+              paidTotal: next.paidTotal,
+              netTotal: next.netTotal,
+              remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal),
+            },
+          },
+        });
+      }
+
+      return projectPublicPayment(payment);
+    });
+  } catch (err: any) {
+    if (isManualOperationKeyConflict(err) && manualOperationKey) {
+      const committed = await prisma.payment.findUnique({
+        where: { manualOperationKey },
+        include: { createdBy: { select: { id: true, name: true } } },
+      });
+      if (
+        committed &&
+        committed.invoiceId === invoiceId &&
+        committed.createdById === createdById &&
+        committed.manualPayloadHash === payloadHash
+      ) {
+        return projectPublicPayment(committed);
+      }
+      const conflictErr: any = new Error(
+        "Manual payment operation key was already used with different payment parameters",
+      );
+      conflictErr.statusCode = 409;
+      conflictErr.code = "MANUAL_OPERATION_KEY_CONFLICT";
+      throw conflictErr;
+    }
+    throw err;
+  }
 }
 
 // --
@@ -629,11 +924,12 @@ export async function failEsewaPayment(paymentId: string) {
 
 // listing all payments for a specific invoice — includes who recorded each payment
 export async function listPayments(invoiceId: string) {
-  return prisma.payment.findMany({
+  const payments = await prisma.payment.findMany({
     where: { invoiceId },
     include: { createdBy: { select: { id: true, name: true } } },
     orderBy: { createdAt: "desc" }, // newest payments first
   });
+  return payments.map(projectPublicPayment);
 }
 
 // voiding a payment — marks a successful payment as failed with void metadata,

@@ -553,6 +553,21 @@ export default function InvoiceDetailModal({
                           <div className="mt-[4px] break-all font-semibold text-[#000000]">
                             {payment.reference || "-"}
                           </div>
+                          {payment.receivingDestinationSnapshot ? (
+                            <div className="mt-1.5 rounded-md border border-[#E2E8F0] bg-[#F8FAFC] p-1.5 text-[10px] text-[#334155]">
+                              <div className="font-extrabold text-[#0F172A]">
+                                {payment.receivingDestinationSnapshot.providerLabel} — {payment.receivingDestinationSnapshot.accountHolder}
+                              </div>
+                              <div className="font-mono text-[#64748B]">
+                                {payment.receivingDestinationSnapshot.accountIdentifier ?? "Identifier: None recorded"}
+                              </div>
+                            </div>
+                          ) : payment.method === "Fonepay" || payment.method === "Bank Transfer" ? (
+                            <div className="mt-1.5 text-[10px] font-semibold text-[#8C8889]">
+                              Receiving destination not recorded
+                            </div>
+                          ) : null}
+
                         </div>
                         {/* void button — only shown for successful, non-voided payments when admin */}
                         {onVoidPayment &&

@@ -11,6 +11,7 @@ export const documentStorageRoot = configuredDocumentRoot
 export const documentTempDir = path.join(documentStorageRoot, ".temp");
 export const documentFilesDir = path.join(documentStorageRoot, "documents");
 export const importSourcesDir = path.join(documentStorageRoot, "import-sources");
+export const paymentAccountsDir = path.join(documentStorageRoot, "payment-accounts");
 
 export class StorageUnavailableError extends Error {
   statusCode = 503;
@@ -23,7 +24,7 @@ export class StorageUnavailableError extends Error {
 }
 
 function requiredStorageDirectories() {
-  return [uploadsRoot, productUploadsDir, documentStorageRoot, documentTempDir, documentFilesDir, importSourcesDir];
+  return [uploadsRoot, productUploadsDir, documentStorageRoot, documentTempDir, documentFilesDir, importSourcesDir, paymentAccountsDir];
 }
 
 function isStorageSystemError(error: unknown) {
@@ -71,7 +72,7 @@ export function assertApplicationStorageAccessible() {
 
 export function assertDocumentStorageAccessible() {
   try {
-    for (const directory of [documentStorageRoot, documentTempDir, documentFilesDir, importSourcesDir]) {
+    for (const directory of [documentStorageRoot, documentTempDir, documentFilesDir, importSourcesDir, paymentAccountsDir]) {
       fs.mkdirSync(directory, { recursive: true });
       fs.accessSync(directory, fs.constants.R_OK | fs.constants.W_OK);
     }
