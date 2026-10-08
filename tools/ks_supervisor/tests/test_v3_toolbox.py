@@ -39,7 +39,9 @@ class V3ToolboxTests(BaseSupervisorTestCase):
 
     def mock_worker(self, role, task_id, **kwargs):
         self.source.write_text(self.source.read_text() + "worker continuation\n", encoding="utf-8")
-        self.report.write_text("Status: COMPLETE — AWAITING SENIOR REVIEW\nChecks: NOT RUN by v3 worker.\n", encoding="utf-8")
+        with self.report.open("ab") as stream:
+            stream.write((f"\n## Worker turn {kwargs['run_id']}\nStatus: COMPLETE — AWAITING SENIOR REVIEW\n"
+                          "Checks: NOT RUN by v3 worker.\n").encode())
         return self.result(task_id, kwargs["run_id"])
 
     def result(self, task_id, run_id, **overrides):

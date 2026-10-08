@@ -63,6 +63,9 @@ AUTH_OR_QUOTA_PATTERNS: List[Tuple[str, str]] = [
     (r"unauthorized", "Unauthorized / authentication credentials invalid"),
     (r"invalid\s+(?:api\s+)?key", "Invalid API key / credentials"),
     (r"credentials?\s+(?:expired|invalid|missing)", "Credentials expired, invalid, or missing"),
+    (r"(?:invalid|expired)\s+credentials?", "Invalid or expired credentials"),
+    (r"(?:authentication|auth|token)\s+(?:expired|invalid)", "Authentication/token expired or invalid"),
+    (r"account\s+unavailable", "Provider account unavailable"),
     (r"insufficient\s+(?:quota|credits?)", "Insufficient quota or credits on account"),
     (r"credit\s+balance", "Credit balance exhausted"),
     (r"plan\s+(?:limit|upgrade\s+required)", "Plan limit reached / account upgrade required"),
@@ -83,6 +86,107 @@ _TOKEN_FIELDS = (
     "candidatesTokenCount", "totalTokenCount", "thoughtsTokenCount", "cachedContentTokenCount",
 )
 _RESULT_TYPES = {"result", "final", "final_result", "done", "complete", "completed", "turn_complete", "end"}
+
+
+def provider_auth_quota_signal(stdout: str, stderr: str = "", exit_code: int = 0,
+                               cli_output: bool = False) -> Tuple[bool, Optional[str]]:
+    """Read provider envelopes/CLI diagnostics, never assistant/tool/content prose.
+
+    Known error fields and status codes are authoritative even when a wrapper
+    exits zero. A successful result's response/content is deliberately unread.
+    ``cli_output`` is only for the non-model `agy models` command.
+    """
+    codes = {"UNAUTHENTICATED", "RESOURCE_EXHAUSTED", "QUOTA_EXCEEDED", "QUOTA_EXHAUSTED",
+             "RATE_LIMIT_EXCEEDED", "RATE_LIMIT_EXHAUSTED", "AUTH_EXPIRED", "TOKEN_EXPIRED",
+             "LOGIN_REQUIRED", "INVALID_CREDENTIALS", "EXPIRED_CREDENTIALS", "ACCOUNT_UNAVAILABLE", "AUTH_ERROR", "QUOTA_ERROR", "401", "429"}
+    diagnostic_prefix = re.compile(r"\s*(?:error\b|fatal\b|rpc error\b|resource_exhausted\b|unauthenticated\s*$|(?:authentication|login) required\b|(?:quota|rate limit) (?:exhausted|exceeded)\b|(?:credentials?|authentication|token) (?:expired|invalid)\b|(?:invalid|expired) credentials?\b|account unavailable\b|429\s+Too\s+Many\s+Requests\b)", re.I)
+
+    def diagnostic(value, depth=0):
+        if depth > 3:
+            return False, None
+        if isinstance(value, dict):
+            # Only error-payload fields, not arbitrary recursive model JSON.
+            for key in ("code", "status", "type", "reason"):
+                if str(value.get(key, "")).upper().replace("-", "_") in codes:
+                    return True, "Provider auth/quota error code: " + str(value[key])
+            if value.get("error"):
+                hit = diagnostic(value["error"], depth + 1)
+                if hit[0]:
+                    return hit
+            value = " ".join(str(value.get(k, "")) for k in ("message", "error_message", "errorMessage", "reason", "code", "status"))
+        for pattern, reason in AUTH_OR_QUOTA_PATTERNS:
+            if re.search(pattern, str(value), re.IGNORECASE):
+                return True, reason
+        return False, None
+
+    def envelope(node):
+        for key in ("auth_or_quota_failure", "authOrQuotaFailure"):
+            if node.get(key) is True:
+                return True, "Explicit provider auth/quota failure metadata"
+        status = str(node.get("status") or node.get("subtype") or node.get("state") or "").upper()
+        if status in codes:
+            return True, "Provider auth/quota status: " + status
+        for key in ("error", "error_message", "errorMessage"):
+            if node.get(key):
+                hit = diagnostic(node[key])
+                if hit[0]:
+                    return hit
+        if status in {"ERROR", "FAILED", "FAILURE", "AUTH_ERROR", "QUOTA_ERROR"} or node.get("is_error") is True:
+            hit = diagnostic({k: node.get(k, "") for k in ("code", "status", "message", "reason")})
+            if hit[0]:
+                return hit
+            # The CLI can put a diagnostic in a FAILED result's response.
+            # Require the known CLI error signature; SUCCESS responses remain unread.
+            response = node.get("response")
+            if isinstance(response, str) and diagnostic_prefix.match(response):
+                return diagnostic(response)
+        return False, None
+
+    def records(text, is_stderr=False):
+        for line in text.splitlines():
+            try:
+                event = json.loads(line)
+            except ValueError:
+                # Raw stdout is not a provider channel unless a failing CLI
+                # emits a known diagnostic. Bare model prose is never scanned.
+                signature = diagnostic_prefix.match(line)
+                if (is_stderr or exit_code != 0) and (signature or cli_output):
+                    hit = diagnostic(line)
+                    if hit[0]:
+                        return hit
+                continue
+            if not isinstance(event, dict):
+                continue
+            kind = str(event.get("event") or event.get("type") or "").lower()
+            untyped_error = event.get("error") if isinstance(event.get("error"), dict) else {}
+            known_untyped = (is_stderr or exit_code != 0 or event.get("auth_or_quota_failure") is True
+                             or str(event.get("status", "")).upper() in codes
+                             or any(str(untyped_error.get(k, "")).upper() in codes for k in ("code", "status")))
+            if kind in _RESULT_TYPES | {"error", "provider_error", "runtime_error"} or not kind and known_untyped:
+                nodes = [event]
+                nodes += [event[k] for k in ("result", "provider_metadata", "runtime_metadata") if isinstance(event.get(k), dict)]
+                for node in nodes:
+                    hit = envelope(node)
+                    if hit[0]:
+                        return hit
+                if kind in {"error", "provider_error", "runtime_error"}:
+                    hit = diagnostic(event)
+                    if hit[0]:
+                        return hit
+            elif kind == "step_update":
+                update = event.get("step_update", {})
+                step = update.get("step", update) if isinstance(update, dict) else {}
+                if isinstance(step, dict) and step.get("type") == "CORTEX_STEP_TYPE_ERROR_MESSAGE":
+                    hit = diagnostic(step.get("errorMessage", step.get("error", {})))
+                    if hit[0]:
+                        return hit
+        return False, None
+
+    for text, trusted in ((stdout, False), (stderr, True)):
+        hit = records(text, trusted)
+        if hit[0]:
+            return hit
+    return False, None
 
 
 def _walk_json(node: Any, depth: int = 0):
@@ -405,7 +509,7 @@ class AntigravityAdapter(BaseAgentAdapter):
             )
             combined = (res.stdout or "") + "\n" + (res.stderr or "")
             if res.returncode != 0:
-                is_auth_quota, auth_reason = self.check_for_auth_or_quota_failure(combined)
+                is_auth_quota, auth_reason = self.check_for_auth_or_quota_failure(res.stdout or "", stderr=res.stderr or "", exit_code=res.returncode, cli_output=True)
                 if is_auth_quota:
                     return False, [], f"PROVIDER_QUOTA_OR_AUTH_REQUIRED: {auth_reason}"
                 return False, [], f"MODEL_DISCOVERY_FAILED: `agy models` failed with exit code {res.returncode}: {res.stderr.strip()[:200]}"
@@ -696,12 +800,9 @@ class AntigravityAdapter(BaseAgentAdapter):
 
         return is_denied, denied_actions
 
-    def check_for_auth_or_quota_failure(self, output: str) -> Tuple[bool, Optional[str]]:
-        """Scan terminal output for explicit provider authentication or quota exhaustion errors."""
-        for pattern, reason in AUTH_OR_QUOTA_PATTERNS:
-            if re.search(pattern, output, re.IGNORECASE):
-                return True, reason
-        return False, None
+    def check_for_auth_or_quota_failure(self, output: str, *, stderr: str = "", exit_code: int = 0,
+                                        cli_output: bool = False) -> Tuple[bool, Optional[str]]:
+        return provider_auth_quota_signal(output, stderr, exit_code, cli_output)
 
     def invoke(
         self,
@@ -715,6 +816,7 @@ class AntigravityAdapter(BaseAgentAdapter):
         run_id: str = "",
         verification_observer: Optional[Callable[[dict], None]] = None,
         action: str = "",
+        runtime_logs=None,
     ) -> AgentResult:
         """Invoke Antigravity headless CLI non-interactively with selected model profile and streaming telemetry."""
         start_time = time.time()
@@ -806,9 +908,14 @@ class AntigravityAdapter(BaseAgentAdapter):
         captured_session_id: Optional[str] = None
 
         try:
-            stream_file = open(stream_path, "w", encoding="utf-8")
-            stderr_file = open(stderr_path, "w", encoding="utf-8")
+            if runtime_logs is not None:
+                stream_file, stderr_file = runtime_logs.open()
+            else:
+                stream_file = open(stream_path, "w", encoding="utf-8")
+                stderr_file = open(stderr_path, "w", encoding="utf-8")
         except Exception:
+            if runtime_logs is not None:
+                raise  # v3 ownership evidence must fail closed.
             stream_file = None
             stderr_file = None
 
@@ -992,7 +1099,7 @@ class AntigravityAdapter(BaseAgentAdapter):
                 denied_actions.append(td)
 
         soft_denial = stream["soft_denial"] or text_denied or bool(denied_actions)
-        is_auth_quota, auth_reason = self.check_for_auth_or_quota_failure(combined_output)
+        is_auth_quota, auth_reason = self.check_for_auth_or_quota_failure(full_stdout, stderr=full_stderr, exit_code=exit_code)
 
         if timed_out:
             error_msg = f"Antigravity execution timed out ({timeout_kind}) after {duration:.1f}s"

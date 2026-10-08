@@ -244,6 +244,7 @@ def main(argv: Optional[list] = None) -> int:
     worker_parser.add_argument("--task", required=True)
     worker_parser.add_argument("--mode", choices=["implement", "fix"], default="implement")
     worker_parser.add_argument("--correction", help="Repository-local current-content correction JSON from Codex")
+    worker_parser.add_argument("--continuation", help="Current-content bounded slice JSON from Codex")
     worker_parser.add_argument("--json", action="store_true")
     verify_parser = subparsers.add_parser("verify-source", help="Codex-selected reviewed source checks with content-bound evidence")
     verify_parser.add_argument("--task", required=True)
@@ -259,6 +260,24 @@ def main(argv: Optional[list] = None) -> int:
     cycle_parser.add_argument("--reason", default="")
     cycle_parser.add_argument("--failure-signature", default="")
     cycle_parser.add_argument("--json", action="store_true")
+    recovery_parser = subparsers.add_parser("recover-runtime-log-gate", help="Append explicit recovery of one bound adapter-log false gate")
+    recovery_parser.add_argument("--task", required=True)
+    recovery_parser.add_argument("--mission", required=True)
+    recovery_parser.add_argument("--blocked-run", required=True)
+    recovery_parser.add_argument("--authorization", required=True)
+    recovery_parser.add_argument("--json", action="store_true")
+    auth_recovery_parser = subparsers.add_parser("recover-auth-output-gate", help="Append explicit recovery of proven model-prose auth false positive")
+    auth_recovery_parser.add_argument("--task", required=True)
+    auth_recovery_parser.add_argument("--mission", required=True)
+    auth_recovery_parser.add_argument("--blocked-run", required=True)
+    auth_recovery_parser.add_argument("--authorization", required=True)
+    auth_recovery_parser.add_argument("--json", action="store_true")
+    progress_parser = subparsers.add_parser("record-worker-checkpoint", help="Record Codex-inspected progress; never acceptance")
+    progress_parser.add_argument("--task", required=True)
+    progress_parser.add_argument("--mission", required=True)
+    progress_parser.add_argument("--run", required=True)
+    progress_parser.add_argument("--assessment", required=True)
+    progress_parser.add_argument("--json", action="store_true")
     for tool_parser in (worker_parser, verify_parser, cycle_parser):
         tool_parser.add_argument("--mission", help="ks-start immutable one-task mission handle; manual use may omit")
     mission_parser = subparsers.add_parser("mission", help="One-task binding/completion facts, never executes roles")
@@ -291,9 +310,9 @@ def main(argv: Optional[list] = None) -> int:
 
     config = SupervisorConfig(repo_root=Path(args.repo).resolve())
 
-    if args.command in {"inspect", "chat-entrypoint", "delegate-gemini", "verify-source", "record-cycle", "mission", "role-instructions"}:
+    if args.command in {"inspect", "chat-entrypoint", "delegate-gemini", "verify-source", "record-cycle", "mission", "role-instructions", "recover-runtime-log-gate", "recover-auth-output-gate", "record-worker-checkpoint"}:
         from tools.ks_supervisor.toolbox import (inspect_repository, delegate_gemini, verify_source, record_cycle,
-            DirectCodexVerificationRequired, begin_mission, bind_mission, finish_mission, role_instructions, chat_entrypoint)
+            DirectCodexVerificationRequired, begin_mission, bind_mission, finish_mission, role_instructions, chat_entrypoint, recover_runtime_log_gate, recover_auth_output_gate, record_worker_checkpoint)
         try:
             if args.command == "inspect":
                 result = inspect_repository(config)
@@ -301,7 +320,16 @@ def main(argv: Optional[list] = None) -> int:
                 result = chat_entrypoint(config, args.token)
             elif args.command == "delegate-gemini":
                 result = delegate_gemini(config, args.task, args.mode,
-                                        config.repo_root / args.correction if args.correction else None, mission_id=args.mission)
+                                         config.repo_root / args.correction if args.correction else None, mission_id=args.mission,
+                                         continuation_path=config.repo_root / args.continuation if args.continuation else None)
+            elif args.command == "record-worker-checkpoint":
+                from tools.ks_supervisor.toolbox import _packet_path
+                packet = json.loads(_packet_path(config, config.repo_root / args.assessment).read_text(encoding="utf-8"))
+                result = record_worker_checkpoint(config, args.task, args.mission, args.run, packet)
+            elif args.command == "recover-runtime-log-gate":
+                result = recover_runtime_log_gate(config, args.task, args.mission, args.blocked_run, args.authorization)
+            elif args.command == "recover-auth-output-gate":
+                result = recover_auth_output_gate(config, args.task, args.mission, args.blocked_run, args.authorization)
             elif args.command == "verify-source":
                 result = verify_source(config, args.task, args.check_commands,
                                        args.content_identity, args.source_reviewed, mission_id=args.mission)

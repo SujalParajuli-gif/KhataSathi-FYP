@@ -699,7 +699,7 @@ class TestModelSelectionAndSafety(BaseSupervisorTestCase):
             ("All 12 unit tests passed cleanly.", False),
         ]
         for text, expected in samples:
-            is_quota, reason = adapter.check_for_auth_or_quota_failure(text)
+            is_quota, reason = adapter.check_for_auth_or_quota_failure("", stderr=text, exit_code=1)
             self.assertEqual(is_quota, expected, f"Failed for text: {text}")
 
         # Test supervisor halts on quota failure without retries
