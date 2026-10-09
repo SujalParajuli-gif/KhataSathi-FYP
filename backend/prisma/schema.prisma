@@ -1213,6 +1213,7 @@ model Document {
   saleRecoveryStatus           SaleRecoveryStatus?
   recoveryCheckoutOperationKey String?             @unique @db.VarChar(120)
   recoveryCheckoutPayloadHash  String?             @db.Char(64)
+  purchaseReview Json? // Untrusted observations and separately saved human corrections; never posting authority
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 

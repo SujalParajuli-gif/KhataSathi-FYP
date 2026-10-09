@@ -7,6 +7,7 @@ import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { suppliers, saveSupplier, receipts, receipt, purchaseError, type Supplier, type ReceiptSummary, type PurchaseReceipt } from "~/lib/api/purchases";
 import PurchaseReceiptForm from "~/components/purchases/PurchaseReceiptForm";
 import PurchaseReceiptDetail from "~/components/purchases/PurchaseReceiptDetail";
+import PurchaseBillReview from "~/components/purchases/PurchaseBillReview";
 
 export default function PurchasesRoute() {
   const caps = useBusinessCapabilities(); const role = getAuthUser()?.role;
@@ -22,6 +23,7 @@ export default function PurchasesRoute() {
   const [loading, setLoading] = useState(false); const [error, setError] = useState(""); const [refresh, setRefresh] = useState(0);
   const [selected, setSelected] = useState<string | null>(null); const [detail, setDetail] = useState<PurchaseReceipt | null>(null);
   const selection = useRef(0);
+  const [reviewingBill, setReviewingBill] = useState(false);
   useEffect(() => {
     if (!allowed) return;
     const c = new AbortController();
@@ -43,6 +45,8 @@ export default function PurchasesRoute() {
   if (!allowed) return <p role="alert" className="p-6">Purchases require administrator or manager access and enabled inventory.</p>;
   const field = "w-full rounded-lg border border-line bg-surface px-3 py-2 text-sm";
   return <div className="space-y-6 p-4 sm:p-6 text-ink">
+    <button type="button" className="rounded-lg border border-line bg-surface px-4 py-2 text-sm" onClick={() => setReviewingBill(true)}>Review bill scan</button>
+    {reviewingBill && <PurchaseBillReview onClose={() => setReviewingBill(false)} />}
     <header className="flex flex-wrap items-center justify-between gap-3"><div><h1 className="text-2xl font-semibold">Purchases</h1><p className="text-sm text-muted">Supplier receipts, stock confirmation and recorded installments</p></div><button type="button" disabled={!selectedSupplier?.isActive} className="rounded-lg bg-action px-4 py-2 text-sm text-white disabled:opacity-50" onClick={() => setCreating(true)}>New purchase</button></header>
     <section className="rounded-xl border border-line bg-surface p-4"><div className="mb-3 flex flex-wrap justify-between gap-3"><h2 className="font-semibold">Suppliers</h2><button type="button" className="text-sm underline" onClick={() => { setSupplierError(""); setSupplierDraft({ id: "", name: "", contact: "", phone: "", panNo: "", address: "", isActive: true }); }}>Create supplier</button></div><input aria-label="Search suppliers" className={field} value={supplierQ} maxLength={160} placeholder="Search name, phone or PAN" onChange={e => { setSupplierQ(e.target.value); setSupplierPage(1); }} />
       <div className="mt-3 flex flex-wrap gap-2">{supplierRows.map(s => <div key={s.id} className="flex rounded-lg border border-line"><button type="button" aria-pressed={selectedSupplier?.id === s.id} className={`px-3 py-2 text-sm ${selectedSupplier?.id === s.id ? "bg-inset font-semibold" : ""}`} onClick={() => setSelectedSupplier(s)}>{s.name}{s.isActive ? "" : " · inactive"}</button><button type="button" className="border-l border-line px-2 text-sm underline" aria-label={`Edit supplier ${s.name}`} onClick={() => { setSupplierError(""); setSupplierDraft(s); }}>Edit</button></div>)}</div>

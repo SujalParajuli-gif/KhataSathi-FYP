@@ -23,10 +23,16 @@ import {
 } from "../documents/validation";
 import { asStorageUnavailableError } from "../../lib/storageReadiness";
 import { safeDiskUpload } from "../../lib/uploadMiddleware";
+import { purchaseReviewHandler } from "./purchaseReviewController";
 
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard); // all inventory routes require authentication
 router.use(denyStaff);
+router.get("/purchase-sources/:id/review", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("get"));
+router.post("/purchase-sources/:id/extract", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("extract"));
+router.patch("/purchase-sources/:id/review", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("save"));
+router.get("/purchase-sources/:id/candidates", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("candidates"));
+router.get("/purchase-sources/:id/duplicates", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("duplicates"));
 
 // configuring multer for optional bill photo uploads during restock
 const billUpload = multer({
