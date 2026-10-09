@@ -96,6 +96,31 @@ class MissionSuccessionTests(BaseSupervisorTestCase):
         with self.assertRaises(ValueError):
             CycleLedger(self.config)
 
+    def test_authorized_manual_closeout_reanchors_without_rewriting_prior_mission(self):
+        self.legacy_fixture()
+        first = begin_mission(self.config, self.old, "Explicit recovery")
+        first.update(status="COMPLETE", task_id=self.task_id,
+            result={"status": "MISSION COMPLETE", "result": "ACCEPTED", "task_id": self.task_id,
+                    "commit": {"sha": first["initial_head"]}})
+        _save_mission(self.config, first)
+        prior = (self.config.runtime_dir / "v3/missions" / (first["mission_id"] + ".json")).read_bytes()
+        self.write_task(task_id="TASK-MANUAL", status="ACCEPTED")
+        self.write_checkpoint(current_task="TASK-MANUAL", task_status="ACCEPTED")
+        (self.config.reports_dir / "TASK-MANUAL-implementation.md").write_text("Status: COMPLETE\n")
+        (self.config.reviews_dir / "TASK-MANUAL-review.md").write_text("Decision: APPROVED\nRemaining blockers: NONE\n")
+        run_git(self.repo_root, "add", ".")
+        run_git(self.repo_root, "commit", "-m", "TASK-MANUAL: Accepted manual work")
+        with self.assertRaisesRegex(ValueError, "explicit authorization"):
+            begin_mission(self.config)
+        (self.repo_root / "dirty.txt").write_text("Preserve local work")
+        with self.assertRaisesRegex(ValueError, "clean valid"):
+            begin_mission(self.config, authorization="User authorizes reviewed manual closeout re-anchor")
+        (self.repo_root / "dirty.txt").unlink()
+        second = begin_mission(self.config, authorization="User authorizes reviewed manual closeout re-anchor")
+        self.assertEqual(CycleLedger(self.config).budget("TASK-NEXT")["cycles_used"], 0)
+        self.assertNotEqual(first["mission_id"], second["mission_id"])
+        self.assertEqual(prior, (self.config.runtime_dir / "v3/missions" / (first["mission_id"] + ".json")).read_bytes())
+
     def test_explicit_legacy_result_and_unchanged_operational_approval(self):
         self.legacy_fixture()
         path = self.config.reviews_dir / f"{self.task_id}-review.md"

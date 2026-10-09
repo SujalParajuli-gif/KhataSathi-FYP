@@ -855,11 +855,27 @@ def begin_mission(config, previous_mission=None, authorization=""):
             if old["status"] == "ACTIVE":
                 raise ValueError("Existing mission is active; resume its identity and budgets")
             result = old.get("result", {})
-            if (not old["task_id"] or old["task_id"] != info["active_task"]
+            if (not old["task_id"]
                     or result.get("status") != "MISSION COMPLETE" or result.get("result") != "ACCEPTED"
                     or result.get("task_id") != old["task_id"]
-                    or result.get("commit", {}).get("sha") != info["head"]):
+                    or not result.get("commit", {}).get("sha")):
                 raise ValueError("Fresh mission requires observed completed task/commit authority")
+            if old["task_id"] != info["active_task"] or result["commit"]["sha"] != info["head"]:
+                # A manually reviewed task may finish between ks-start missions.
+                # Re-anchor prospectively; never change the sealed prior result.
+                old_task = parse_task_contract(find_task_file(config.tasks_dir, old["task_id"]))
+                old_review = parse_review(find_review_file(config.reviews_dir, old["task_id"]))
+                old_report = parse_report(find_report_file(config.reports_dir, old["task_id"]))
+                ancestor, _, _ = run_git(config.repo_root, "merge-base", "--is-ancestor", result["commit"]["sha"], info["head"])
+                code, subject, _ = run_git(config.repo_root, "log", "-1", "--format=%s")
+                if (not authorization.strip() or not old_task or old_task.status != "ACCEPTED"
+                        or not old_review or old_review.decision != "APPROVED" or old_review.blockers
+                        or not old_report or not old_report.is_complete or ancestor or code
+                        or old["branch"] != info["branch"] or not info["active_task"]
+                        or not subject.startswith(info["active_task"] + ": ")
+                        or not info["senior_review"] or info["senior_review"]["decision"] != "APPROVED"
+                        or info["senior_review"]["blockers"] or not (info["implementation_report"] or {}).get("is_complete")):
+                    raise ValueError("Changed completion anchor requires explicit authorization and accepted manual task/ancestor evidence")
             preserved = [fingerprint(config, _mission_path(config, previous))]
             ledger_path = CycleLedger(config, previous).path
             if ledger_path.exists():
