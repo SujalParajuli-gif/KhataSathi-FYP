@@ -1,6 +1,7 @@
 import prisma from "../../db/prisma";
 import { getCashierPrivilege } from "../settings/service";
 import { resolveDisplayProduct, type DisplayProduct } from "../invoices/service";
+import { buildBusinessDateRange } from "../../lib/businessDate";
 
 export class CustomerValidationError extends Error {
   field: string;
@@ -646,6 +647,21 @@ export async function deactivateCustomer(id: string, actorId?: string) {
   });
 }
 
+export function getEligibleCustomerInvoiceWhere(customerId: string) {
+  return {
+    customerId,
+    status: "FINALIZED" as const,
+    cancelledAt: null,
+    deletedAt: null,
+    paymentStatus: { not: "CANCELLED" as const },
+    creditNotesAsOriginal: {
+      none: {
+        replacementInvoiceId: { not: null },
+      },
+    },
+  };
+}
+
 export type CustomerProductPurchaseHistoryItem = {
   id: string;
   invoiceId: string;
@@ -681,18 +697,7 @@ export async function getCustomerProductPurchaseHistory(
       prisma.invoiceItem.findMany({
         where: {
           productId,
-          invoice: {
-            customerId,
-            status: "FINALIZED",
-            cancelledAt: null,
-            deletedAt: null,
-            paymentStatus: { not: "CANCELLED" },
-            creditNotesAsOriginal: {
-              none: {
-                replacementInvoiceId: { not: null },
-              },
-            },
-          },
+          invoice: getEligibleCustomerInvoiceWhere(customerId),
         },
         select: {
           id: true,
@@ -825,6 +830,51 @@ export async function lookupCustomers(params: {
   });
 }
 
+export type PurchaseHistoryReturnEntry = {
+  returnItemId: string;
+  returnRequestId: string;
+  status: "PENDING" | "APPROVED" | "REJECTED" | "REVERSED";
+  qtyReturned: number;
+  unitPrice: number;
+  lineTotal: number;
+  reason: string;
+  createdAt: string | null;
+};
+
+export type PurchaseHistoryReturnSummary = {
+  approvedQty: number;
+  pendingQty: number;
+  rejectedQty: number;
+  reversedQty: number;
+  hasReturns: boolean;
+  entries: PurchaseHistoryReturnEntry[];
+};
+
+export type PurchaseHistorySupersededBy = {
+  creditNoteNo: string;
+  replacementInvoiceId: string;
+  replacementInvoiceNo: string | null;
+  createdAt: string | null;
+  reason: string | null;
+};
+
+export type PurchaseHistoryReplaces = {
+  creditNoteNo: string;
+  originalInvoiceId: string;
+  originalInvoiceNo: string | null;
+  createdAt: string | null;
+  reason: string | null;
+};
+
+export type PurchaseHistoryExternalReference = {
+  billingChannel: string | null;
+  externalDocumentType: string | null;
+  externalBillNo: string | null;
+  externalBillDate: string | null;
+  billRecordStatus: string | null;
+  isRecorded: boolean;
+};
+
 export type CustomerPurchaseHistoryItem = {
   id: string;
   invoiceId: string;
@@ -836,21 +886,49 @@ export type CustomerPurchaseHistoryItem = {
   displayProduct: DisplayProduct;
   qty: number;
   appliedUnitPrice: number;
+  state: "ELIGIBLE" | "SUPERSEDED" | "CANCELLED";
+  lineTotal: number;
+  originalUnitPrice: number | null;
+  overrideUnitPrice: number | null;
+  overrideReason: string | null;
+  returnedQty: number;
+  returnSummary: PurchaseHistoryReturnSummary;
+  supersededBy: PurchaseHistorySupersededBy | null;
+  replaces: PurchaseHistoryReplaces | null;
+  externalReference: PurchaseHistoryExternalReference;
+  invoiceStatus: "DRAFT" | "FINALIZED";
+  isCancelled: boolean;
+  cancelledAt: string | null;
 };
 
-export async function getCustomerPurchaseHistory(params: {
+export type CustomerPurchaseHistoryParams = {
   customerId: string;
-  q: string;
-  page: number;
-  pageSize: number;
-}): Promise<{
+  productId?: string;
+  q?: string;
+  from?: string;
+  to?: string;
+  state?: "eligible" | "all" | "cancelled" | "superseded" | "returned";
+  page?: number;
+  pageSize?: number;
+};
+
+export async function getCustomerPurchaseHistory(params: CustomerPurchaseHistoryParams): Promise<{
   items: CustomerPurchaseHistoryItem[];
   total: number;
   page: number;
   pageSize: number;
   totalPages: number;
 }> {
-  const { customerId, q, page, pageSize } = params;
+  const {
+    customerId,
+    productId,
+    q,
+    from,
+    to,
+    state = "eligible",
+    page = 1,
+    pageSize = 20,
+  } = params;
 
   const customer = await prisma.customer.findUnique({
     where: { id: customerId },
@@ -861,22 +939,77 @@ export async function getCustomerPurchaseHistory(params: {
     throw new Error("Customer not found.");
   }
 
-  const invoiceWhere = {
-    customerId,
-    status: "FINALIZED" as const,
-    cancelledAt: null,
-    deletedAt: null,
-    paymentStatus: { not: "CANCELLED" as const },
-    creditNotesAsOriginal: {
-      none: {
-        replacementInvoiceId: { not: null },
+  const normalizedState = (state || "eligible").toLowerCase();
+
+  let invoiceWhere: any;
+
+  if (normalizedState === "eligible" || normalizedState === "returned") {
+    invoiceWhere = getEligibleCustomerInvoiceWhere(customerId);
+  } else if (normalizedState === "superseded") {
+    invoiceWhere = {
+      customerId,
+      status: "FINALIZED",
+      deletedAt: null,
+      creditNotesAsOriginal: {
+        some: {
+          replacementInvoiceId: { not: null },
+        },
       },
-    },
-  };
+    };
+  } else if (normalizedState === "cancelled") {
+    invoiceWhere = {
+      customerId,
+      status: "FINALIZED",
+      deletedAt: null,
+      OR: [
+        { cancelledAt: { not: null } },
+        { paymentStatus: "CANCELLED" },
+      ],
+      creditNotesAsOriginal: {
+        none: {
+          replacementInvoiceId: { not: null },
+        },
+      },
+    };
+  } else {
+    // "all"
+    invoiceWhere = {
+      customerId,
+      status: "FINALIZED",
+      deletedAt: null,
+    };
+  }
+
+  const dateRange = buildBusinessDateRange({ from, to });
+  if (dateRange) {
+    const dateClause = {
+      OR: [
+        { finalizedAt: dateRange },
+        { finalizedAt: null, createdAt: dateRange },
+      ],
+    };
+    invoiceWhere = {
+      AND: [invoiceWhere, dateClause],
+    };
+  }
 
   const itemWhere: any = {
     invoice: invoiceWhere,
   };
+
+  if (productId) {
+    itemWhere.productId = productId;
+  }
+
+  if (normalizedState === "returned") {
+    itemWhere.returnItems = {
+      some: {
+        returnRequest: {
+          status: "APPROVED",
+        },
+      },
+    };
+  }
 
   if (q) {
     itemWhere.OR = [
@@ -902,24 +1035,85 @@ export async function getCustomerPurchaseHistory(params: {
       where: itemWhere,
       select: {
         id: true,
+        invoiceId: true,
         productId: true,
         qty: true,
         appliedUnitPrice: true,
+        originalUnitPrice: true,
+        overrideUnitPrice: true,
+        overrideReason: true,
+        lineTotal: true,
         productNameSnapshot: true,
         productSkuSnapshot: true,
         snapshotCapturedAt: true,
+        createdAt: true,
         product: {
           select: {
             name: true,
             sku: true,
           },
         },
+        returnItems: {
+          select: {
+            id: true,
+            returnRequestId: true,
+            qtyReturned: true,
+            unitPrice: true,
+            lineTotal: true,
+            returnRequest: {
+              select: {
+                id: true,
+                status: true,
+                reason: true,
+                createdAt: true,
+              },
+            },
+          },
+        },
         invoice: {
           select: {
             id: true,
             invoiceNo: true,
+            status: true,
+            paymentStatus: true,
             finalizedAt: true,
             createdAt: true,
+            cancelledAt: true,
+            billingChannel: true,
+            externalDocumentType: true,
+            externalBillNo: true,
+            externalBillDate: true,
+            billRecordStatus: true,
+            creditNotesAsOriginal: {
+              select: {
+                id: true,
+                creditNoteNo: true,
+                replacementInvoiceId: true,
+                reason: true,
+                createdAt: true,
+                replacementInvoice: {
+                  select: {
+                    id: true,
+                    invoiceNo: true,
+                  },
+                },
+              },
+            },
+            creditNoteAsReplacement: {
+              select: {
+                id: true,
+                creditNoteNo: true,
+                originalInvoiceId: true,
+                reason: true,
+                createdAt: true,
+                originalInvoice: {
+                  select: {
+                    id: true,
+                    invoiceNo: true,
+                  },
+                },
+              },
+            },
           },
         },
       },
@@ -935,19 +1129,141 @@ export async function getCustomerPurchaseHistory(params: {
     const totalPages = Math.ceil(total / pageSize);
 
     const mappedItems: CustomerPurchaseHistoryItem[] = items.map((item) => {
-      const invoiceDate = item.invoice.finalizedAt || item.invoice.createdAt;
+      const invoice = item.invoice || ({} as any);
+      const rawDate = invoice.finalizedAt ?? invoice.createdAt;
+      const invoiceDate = rawDate ? new Date(rawDate).toISOString() : "";
       const displayProduct = resolveDisplayProduct(item, "FINALIZED");
+
+      const creditNotesAsOriginal = Array.isArray(invoice.creditNotesAsOriginal)
+        ? invoice.creditNotesAsOriginal
+        : [];
+      const hasReplacement = creditNotesAsOriginal.some(
+        (cn: any) => cn.replacementInvoiceId != null,
+      );
+      const isCancelled = Boolean(
+        invoice.cancelledAt != null || invoice.paymentStatus === "CANCELLED",
+      );
+
+      let itemState: "ELIGIBLE" | "SUPERSEDED" | "CANCELLED" = "ELIGIBLE";
+      if (hasReplacement) {
+        itemState = "SUPERSEDED";
+      } else if (isCancelled) {
+        itemState = "CANCELLED";
+      }
+
+      const returnItems = Array.isArray(item.returnItems) ? item.returnItems : [];
+      let approvedQty = 0;
+      let pendingQty = 0;
+      let rejectedQty = 0;
+      let reversedQty = 0;
+
+      const entries: PurchaseHistoryReturnEntry[] = returnItems.map((ri: any) => {
+        const qty = Number(ri.qtyReturned);
+        const status = (ri.returnRequest?.status ?? "PENDING") as PurchaseHistoryReturnEntry["status"];
+        if (status === "APPROVED") {
+          approvedQty += qty;
+        } else if (status === "PENDING") {
+          pendingQty += qty;
+        } else if (status === "REJECTED") {
+          rejectedQty += qty;
+        } else if (status === "REVERSED") {
+          reversedQty += qty;
+        }
+        return {
+          returnItemId: ri.id,
+          returnRequestId: ri.returnRequestId,
+          status,
+          qtyReturned: qty,
+          unitPrice: Number(ri.unitPrice),
+          lineTotal: Number(ri.lineTotal),
+          reason: ri.returnRequest?.reason ?? "OTHER",
+          createdAt: ri.returnRequest?.createdAt
+            ? new Date(ri.returnRequest.createdAt).toISOString()
+            : null,
+        };
+      });
+
+      const returnSummary: PurchaseHistoryReturnSummary = {
+        approvedQty,
+        pendingQty,
+        rejectedQty,
+        reversedQty,
+        hasReturns: returnItems.length > 0,
+        entries,
+      };
+
+      const cnOriginal = creditNotesAsOriginal.find(
+        (cn: any) => cn.replacementInvoiceId != null,
+      );
+      const supersededBy: PurchaseHistorySupersededBy | null = cnOriginal
+        ? {
+            creditNoteNo: cnOriginal.creditNoteNo,
+            replacementInvoiceId: cnOriginal.replacementInvoiceId,
+            replacementInvoiceNo: cnOriginal.replacementInvoice?.invoiceNo ?? null,
+            createdAt: cnOriginal.createdAt
+              ? new Date(cnOriginal.createdAt).toISOString()
+              : null,
+            reason: cnOriginal.reason ?? null,
+          }
+        : null;
+
+      const cnRepl = invoice.creditNoteAsReplacement;
+      const replaces: PurchaseHistoryReplaces | null = cnRepl
+        ? {
+            creditNoteNo: cnRepl.creditNoteNo,
+            originalInvoiceId: cnRepl.originalInvoiceId,
+            originalInvoiceNo: cnRepl.originalInvoice?.invoiceNo ?? null,
+            createdAt: cnRepl.createdAt
+              ? new Date(cnRepl.createdAt).toISOString()
+              : null,
+            reason: cnRepl.reason ?? null,
+          }
+        : null;
+
+      const rawBillNo = typeof invoice.externalBillNo === "string" ? invoice.externalBillNo.trim() : "";
+      const recordStatus = typeof invoice.billRecordStatus === "string" ? invoice.billRecordStatus.trim().toUpperCase() : "";
+      const isRecorded = Boolean(
+        rawBillNo.length > 0 && (recordStatus === "RECORDED" || recordStatus === "VERIFIED"),
+      );
+      const externalReference: PurchaseHistoryExternalReference = {
+        billingChannel: invoice.billingChannel ?? null,
+        externalDocumentType: invoice.externalDocumentType ?? null,
+        externalBillNo: invoice.externalBillNo ?? null,
+        externalBillDate: invoice.externalBillDate
+          ? new Date(invoice.externalBillDate).toISOString().split("T")[0]
+          : null,
+        billRecordStatus: invoice.billRecordStatus ?? null,
+        isRecorded,
+      };
+
       return {
         id: item.id,
-        invoiceId: item.invoice.id,
-        invoiceNo: item.invoice.invoiceNo,
-        invoiceDate: invoiceDate.toISOString(),
+        invoiceId: invoice.id || item.invoiceId,
+        invoiceNo: invoice.invoiceNo || "",
+        invoiceDate,
         productId: item.productId,
         productName: displayProduct.name ?? "Unknown item",
         productSku: displayProduct.sku,
         displayProduct,
-        qty: item.qty,
-        appliedUnitPrice: item.appliedUnitPrice,
+        qty: Number(item.qty),
+        appliedUnitPrice: Number(item.appliedUnitPrice),
+        state: itemState,
+        lineTotal: Number(item.lineTotal),
+        originalUnitPrice:
+          item.originalUnitPrice != null ? Number(item.originalUnitPrice) : null,
+        overrideUnitPrice:
+          item.overrideUnitPrice != null ? Number(item.overrideUnitPrice) : null,
+        overrideReason: item.overrideReason ?? null,
+        returnedQty: approvedQty,
+        returnSummary,
+        supersededBy,
+        replaces,
+        externalReference,
+        invoiceStatus: invoice.status || "FINALIZED",
+        isCancelled,
+        cancelledAt: invoice.cancelledAt
+          ? new Date(invoice.cancelledAt).toISOString()
+          : null,
       };
     });
 

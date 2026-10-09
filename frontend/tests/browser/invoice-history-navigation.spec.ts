@@ -23,6 +23,7 @@ async function setup(page: Page, detail: (route: Route, id: string) => Promise<v
     if (path === "/api/auth/me") return respond({ user });
     if (path.endsWith("/capabilities")) return respond({ businessMode: "FULL_POS", catalogEnabled: true, inventoryEnabled: true, posEnabled: true, stockTracked: true, staffDraftRequestsEnabled: true });
     if (path === "/api/invoices") return respond({ invoices: list, total: list.length });
+    if (path.startsWith("/api/invoices/manual-bills/")) return respond({ record: null, proofs: [], history: [] });
     if (path.startsWith("/api/invoices/")) return detail(route, decodeURIComponent(path.slice("/api/invoices/".length)));
     if (path.endsWith("/customers")) return respond([customer]);
     if (path.endsWith("/products") || path.endsWith("/products/lookup") || path.endsWith("/products/by-ids")) return respond({ products: [product], total: 1 });

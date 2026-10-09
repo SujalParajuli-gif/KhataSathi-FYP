@@ -1440,6 +1440,81 @@ export type CustomerProductPurchaseHistoryItem = {
     appliedUnitPrice: number;
 };
 
+export type PurchaseHistoryReturnEntry = {
+    returnItemId: string;
+    returnRequestId: string;
+    status: "PENDING" | "APPROVED" | "REJECTED" | "REVERSED";
+    qtyReturned: number;
+    unitPrice: number;
+    lineTotal: number;
+    reason: string;
+    createdAt: string | null;
+};
+
+export type PurchaseHistoryReturnSummary = {
+    approvedQty: number;
+    pendingQty: number;
+    rejectedQty: number;
+    reversedQty: number;
+    hasReturns: boolean;
+    entries: PurchaseHistoryReturnEntry[];
+};
+
+export type PurchaseHistorySupersededBy = {
+    creditNoteNo: string;
+    replacementInvoiceId: string;
+    replacementInvoiceNo: string | null;
+    createdAt: string | null;
+    reason: string | null;
+};
+
+export type PurchaseHistoryReplaces = {
+    creditNoteNo: string;
+    originalInvoiceId: string;
+    originalInvoiceNo: string | null;
+    createdAt: string | null;
+    reason: string | null;
+};
+
+export type PurchaseHistoryExternalReference = {
+    billingChannel: string | null;
+    externalDocumentType: string | null;
+    externalBillNo: string | null;
+    externalBillDate: string | null;
+    billRecordStatus: string | null;
+    isRecorded: boolean;
+};
+
+export type CustomerPurchaseHistoryItem = {
+    id: string;
+    invoiceId: string;
+    invoiceNo: string;
+    invoiceDate: string;
+    productId: string;
+    productName: string;
+    productSku: string | null;
+    displayProduct?: {
+        name: string | null;
+        sku: string | null;
+        source: "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT";
+    };
+    qty: number;
+    appliedUnitPrice: number;
+    state?: "ELIGIBLE" | "SUPERSEDED" | "CANCELLED";
+    lineTotal?: number;
+    originalUnitPrice?: number | null;
+    overrideUnitPrice?: number | null;
+    overrideReason?: string | null;
+    returnedQty?: number;
+    returnSummary?: PurchaseHistoryReturnSummary;
+    supersededBy?: PurchaseHistorySupersededBy | null;
+    replaces?: PurchaseHistoryReplaces | null;
+    externalReference?: PurchaseHistoryExternalReference;
+    invoiceStatus?: "DRAFT" | "FINALIZED";
+    isCancelled?: boolean;
+    cancelledAt?: string | null;
+};
+
 export async function getCustomerProductHistoryApi(
     customerId: string,
     productIds: string[],
@@ -1455,8 +1530,25 @@ export async function getCustomerProductHistoryApi(
     return res.data;
 }
 
+export type CustomerPurchaseHistoryState =
+    | "eligible"
+    | "all"
+    | "cancelled"
+    | "superseded"
+    | "returned";
+
+export type CustomerPurchaseHistoryParams = {
+    productId?: string;
+    q?: string;
+    from?: string;
+    to?: string;
+    state?: CustomerPurchaseHistoryState;
+    page?: number;
+    pageSize?: number;
+};
+
 export type CustomerPurchaseHistoryResponse = {
-    items: CustomerProductPurchaseHistoryItem[];
+    items: CustomerPurchaseHistoryItem[];
     total: number;
     page: number;
     pageSize: number;
@@ -1465,7 +1557,7 @@ export type CustomerPurchaseHistoryResponse = {
 
 export async function getCustomerPurchaseHistoryApi(
     customerId: string,
-    params: { q?: string; page?: number; pageSize?: number },
+    params: CustomerPurchaseHistoryParams,
     options?: { signal?: AbortSignal },
 ): Promise<CustomerPurchaseHistoryResponse> {
     const res = await api.get<CustomerPurchaseHistoryResponse>(

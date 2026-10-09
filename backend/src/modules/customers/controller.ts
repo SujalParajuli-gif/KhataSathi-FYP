@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as custService from "./service";
+import { parseBusinessDate } from "../../lib/businessDate";
 
 // validating and trimming the customer name — we require it to be a non-empty string
 function parseCustomerName(value: unknown) {
@@ -482,9 +483,14 @@ function parseProductIds(queryParam: unknown): string[] {
 
 export async function getProductPurchaseHistory(req: Request, res: Response) {
   try {
-    const customerId = String(req.params.customerId || req.params.id || "").trim();
-    if (!customerId) {
+    const rawCustomerId = req.params.customerId ?? req.params.id;
+    if (typeof rawCustomerId !== "string" || !rawCustomerId.trim()) {
       res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+    const customerId = rawCustomerId.trim();
+    if (customerId.length > 191) {
+      res.status(400).json({ error: "Customer ID cannot exceed 191 characters." });
       return;
     }
 
@@ -602,6 +608,24 @@ export async function getCustomerPurchaseHistory(req: Request, res: Response) {
       return;
     }
     const customerId = rawCustomerId.trim();
+    if (customerId.length > 191) {
+      res.status(400).json({ error: "Customer ID cannot exceed 191 characters." });
+      return;
+    }
+
+    let productId: string | undefined;
+    if (req.query.productId !== undefined) {
+      if (typeof req.query.productId !== "string") {
+        res.status(400).json({ error: "Product ID must be a string." });
+        return;
+      }
+      const trimmed = req.query.productId.trim();
+      if (!trimmed || trimmed.length > 191 || /[\s,]/.test(trimmed)) {
+        res.status(400).json({ error: "Invalid product ID." });
+        return;
+      }
+      productId = trimmed;
+    }
 
     if (req.query.q !== undefined && typeof req.query.q !== "string") {
       res.status(400).json({ error: "Search query 'q' must be a string." });
@@ -641,9 +665,79 @@ export async function getCustomerPurchaseHistory(req: Request, res: Response) {
       pageSize = parsedSize;
     }
 
+    let from: string | undefined;
+    if (req.query.from !== undefined) {
+      if (typeof req.query.from !== "string") {
+        res.status(400).json({ error: "Date 'from' must be a string." });
+        return;
+      }
+      const trimmedFrom = req.query.from.trim();
+      if (!trimmedFrom) {
+        res.status(400).json({ error: "Date 'from' cannot be empty." });
+        return;
+      }
+      try {
+        parseBusinessDate(trimmedFrom, "from");
+        from = trimmedFrom;
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'from' date." });
+        return;
+      }
+    }
+
+    let to: string | undefined;
+    if (req.query.to !== undefined) {
+      if (typeof req.query.to !== "string") {
+        res.status(400).json({ error: "Date 'to' must be a string." });
+        return;
+      }
+      const trimmedTo = req.query.to.trim();
+      if (!trimmedTo) {
+        res.status(400).json({ error: "Date 'to' cannot be empty." });
+        return;
+      }
+      try {
+        parseBusinessDate(trimmedTo, "to");
+        to = trimmedTo;
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'to' date." });
+        return;
+      }
+    }
+
+    if (from && to) {
+      const fromDate = parseBusinessDate(from, "from");
+      const toDate = parseBusinessDate(to, "to");
+      if (fromDate.getTime() > toDate.getTime()) {
+        res.status(400).json({ error: "The 'from' date cannot be after the 'to' date." });
+        return;
+      }
+    }
+
+    let state: "eligible" | "all" | "cancelled" | "superseded" | "returned" = "eligible";
+    if (req.query.state !== undefined) {
+      if (typeof req.query.state !== "string") {
+        res.status(400).json({ error: "State must be a string." });
+        return;
+      }
+      const normalizedState = req.query.state.trim().toLowerCase();
+      const validStates = ["eligible", "all", "cancelled", "superseded", "returned"] as const;
+      if (!validStates.includes(normalizedState as any)) {
+        res.status(400).json({
+          error: "Invalid state filter. Allowed values: eligible, all, cancelled, superseded, returned.",
+        });
+        return;
+      }
+      state = normalizedState as typeof state;
+    }
+
     const result = await custService.getCustomerPurchaseHistory({
       customerId,
+      productId,
       q,
+      from,
+      to,
+      state,
       page,
       pageSize,
     });

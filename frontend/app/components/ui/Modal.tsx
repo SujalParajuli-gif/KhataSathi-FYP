@@ -122,7 +122,7 @@ export function ModalFrame({
     }
 
     function handleDialogKeys(event: KeyboardEvent) {
-      if (!isTopDialog()) return;
+      if (event.defaultPrevented || !isTopDialog()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
