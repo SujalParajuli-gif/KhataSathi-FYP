@@ -5,6 +5,8 @@ import prisma from "../../db/prisma";
 import { getDocumentForFileAccess, getDocumentFilePath } from "../documents/service";
 import { detectDocumentFormat } from "../documents/validation";
 import { getBusinessCapabilities } from "../settings/capabilities";
+import { ConfirmationInput, ReviewResolution, PurchaseConfirmationError, matchesResolution } from "./purchaseReviewClaim";
+import { postFinancialPurchaseReceipt, attachDocumentsToPurchaseReceipt } from "./purchases";
 import { validateBillDate } from "./purchaseValidation";
 
 export class PurchaseReviewError extends Error {
@@ -19,14 +21,14 @@ export const observationSchema = z.object({
 }).strict();
 export const correctedSchema = observationSchema.extend({
   supplierId: text.nullable(),
-  lines: z.array(z.object({ name: text, code: text.nullable(), unit: text.nullable(), quantity: decimal, cost: decimal, productId: text.nullable() }).strict()).max(100),
+  lines: z.array(z.object({ name: text, code: text.nullable(), unit: text.nullable(), quantity: decimal, cost: decimal, productId: text.nullable(), conversionFactor: decimal.optional() }).strict()).max(100),
 }).strict();
 export type Observation = z.infer<typeof observationSchema>;
 export type Corrected = z.infer<typeof correctedSchema>;
 export type ReviewState = {
   version: 1; revision: string; extractionId: string; operationKey: string; sourceSha256: string;
   model: string; extractedAt: string; observations: Observation; warnings: string[]; corrected: Corrected | null;
-  savedFromRevision?: string;
+  savedFromRevision?: string; resolution?: ReviewResolution;
 };
 export const extractionRequest = z.object({ operationKey: z.string().uuid(), expectedRevision: z.string().uuid().nullable() }).strict();
 export const saveRequest = z.object({ expectedRevision: z.string().uuid(), corrected: correctedSchema }).strict();
@@ -77,17 +79,17 @@ export async function readPurchaseBill(bytes: Buffer, mimeType: string) {
   } finally { clearTimeout(timer); }
 }
 
-function assertSource(doc: any, role: string) {
+function assertSource(doc: any, role: string, allowResolved = false) {
   if (!doc || doc.deletedAt || !["PURCHASE_BILL", "STOCK_BILL"].includes(doc.documentType) || (role === "MANAGER" && doc.visibility === "ADMIN_ONLY")) throw new PurchaseReviewError(404, "Purchase source not found");
-  if (doc.linkedEntityId || doc.linkedEntityType) throw new PurchaseReviewError(409, "Source is already linked. Review the existing receipt instead.");
+  if ((doc.linkedEntityId || doc.linkedEntityType) && !(allowResolved && doc.purchaseReview?.resolution?.receiptId === doc.linkedEntityId && doc.linkedEntityType === "StockReceiveBatch")) throw new PurchaseReviewError(409, "Source is already linked. Review the existing receipt instead.");
 }
-async function source(id: string, role: string) {
+async function source(id: string, role: string, allowResolved = false) {
   if (!["ADMIN", "MANAGER"].includes(role) || !(await getBusinessCapabilities()).inventoryEnabled) throw new PurchaseReviewError(403, "Purchase review requires enabled inventory and administrator or manager access.");
-  const doc = await getDocumentForFileAccess(id, role, { capabilities: { inventoryEnabled: true } }); assertSource(doc, role); return doc!;
+  const doc = await getDocumentForFileAccess(id, role, { capabilities: { inventoryEnabled: true } }); assertSource(doc, role, allowResolved); return doc!;
 }
 function state(doc: any): ReviewState | null { return doc.purchaseReview as ReviewState | null; }
 function dto(doc: any) { return { document: { id: doc.id, title: doc.title || doc.fileName, mimeType: doc.mimeType, fileUrl: `/api/documents/${encodeURIComponent(doc.id)}/file` }, review: state(doc) }; }
-export async function getPurchaseReview(id: string, role: string) { return dto(await source(id, role)); }
+export async function getPurchaseReview(id: string, role: string) { return dto(await source(id, role, true)); }
 
 export async function extractPurchaseReview(id: string, role: string, actorId: string, input: z.infer<typeof extractionRequest>) {
   const doc = await source(id, role); const prior = state(doc);
@@ -152,4 +154,29 @@ export async function purchaseReviewDuplicates(id: string, role: string) {
   if (!OR.length) return { items: [] };
   const items = await prisma.stockReceiveBatch.findMany({ where: { OR }, take: 10, orderBy: [{ createdAt: "desc" }, { id: "desc" }], select: { id: true, supplierName: true, billNumber: true, payable: true, supplierId: true, postedAt: true } });
   return { items: items.map(r => ({ id: r.id, supplierName: r.supplierName, billNumber: r.billNumber, knownPayable: r.payable !== null && r.supplierId !== null && r.postedAt !== null, reason: ids.includes(r.id) ? "Same uploaded file" : "Same bill reference; identity requires human review" })) };
+}
+
+
+export async function confirmPurchaseReview(id: string, role: string, actorId: string, input: ConfirmationInput) {
+  const doc = await source(id, role, true); const review = state(doc);
+  if (review?.resolution) {
+    if (!matchesResolution(review.resolution, input, actorId)) throw new PurchaseConfirmationError(409, "This review already has a different confirmed outcome. Reload to inspect it.");
+    return dto(doc);
+  }
+  if (!review || review.revision !== input.expectedRevision || !review.corrected) throw new PurchaseConfirmationError(409, "Save and inspect the current corrected review before confirming.");
+  const claim = { ...input, documentId: id, actorId };
+  if (input.action === "attach") {
+    await attachDocumentsToPurchaseReceipt(input.receiptId, [id], actorId, role, claim);
+  } else {
+    const facts = correctedSchema.parse(review.corrected);
+    if (!facts.supplierId || facts.payable === null || !facts.lines.length || facts.lines.some(l => !l.productId || !l.unit || l.quantity === null || l.cost === null || l.conversionFactor === null))
+      throw new PurchaseConfirmationError(400, "Resolve supplier, products, units, quantities, conversion factors, acquisition costs and payable before creating a receipt.");
+    // Separate extraction replay from financial identity; clients cannot supply or rotate posting keys.
+    const operationKey = "purchase-review-" + createHash("sha256").update(JSON.stringify([id, review.revision])).digest("hex");
+    await postFinancialPurchaseReceipt({ supplierId: facts.supplierId, billNumber: facts.billNumber, billDate: facts.billDate, payable: facts.payable,
+      operationKey, reason: input.reason, documentIds: [id], lines: facts.lines.map(l => ({ productId: l.productId!, inputUnit: l.unit!, inputQty: l.quantity!, unitAcquisitionCost: l.cost!, conversionFactor: l.conversionFactor ?? "1" })) }, actorId, role, claim);
+  }
+  const current = await source(id, role, true);
+  if (!state(current)?.resolution || !matchesResolution(state(current)!.resolution!, input, actorId)) throw new PurchaseConfirmationError(409, "Confirmation outcome changed. Reload the source to inspect the committed receipt.");
+  return dto(current);
 }

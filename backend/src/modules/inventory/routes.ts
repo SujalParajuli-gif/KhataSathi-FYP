@@ -28,6 +28,7 @@ import { purchaseReviewHandler } from "./purchaseReviewController";
 const router: ReturnType<typeof Router> = Router();
 router.use(authGuard); // all inventory routes require authentication
 router.use(denyStaff);
+router.post("/purchase-sources/:id/confirm", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("confirm"));
 router.get("/purchase-sources/:id/review", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("get"));
 router.post("/purchase-sources/:id/extract", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("extract"));
 router.patch("/purchase-sources/:id/review", requireRole("ADMIN", "MANAGER"), purchaseReviewHandler("save"));

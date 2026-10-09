@@ -21,6 +21,8 @@ import {
     PurchaseDecimal,
 } from "./purchaseValidation";
 
+import { ReviewClaim, validateReviewClaim, recordReviewResolution } from "./purchaseReviewClaim";
+
 const Decimal = PurchaseDecimal;
 
 export class FinancialPurchaseConflictError extends Error {
@@ -262,7 +264,8 @@ export async function listSuppliers(params?: {
 export async function postFinancialPurchaseReceipt(
     input: FinancialPurchaseReceiptInput,
     actorId: string,
-    actorRole: string
+    actorRole: string,
+    reviewClaim?: ReviewClaim
 ) {
     const role = validatePurchaseActorRole(actorRole);
     const normalizedActorId = validateScalarId(actorId, "Actor ID");
@@ -397,9 +400,12 @@ export async function postFinancialPurchaseReceipt(
                     if (doc.linkedEntityType !== null || doc.linkedEntityId !== null) {
                         throw new Error(`Document ${docId} is already linked to another record`);
                     }
+                    if (reviewClaim && reviewClaim.documentId === doc.id) validateReviewClaim(doc, reviewClaim, role);
                     documentsToClaim.push(doc);
                 }
             }
+
+            if (reviewClaim && !documentsToClaim.some(doc => doc.id === reviewClaim.documentId)) throw new Error("Reviewed source must be claimed with receipt");
 
             // Aggregate stock delta per distinct product and validate exact Float representation BEFORE effects
             const stockDeltaByProduct = new Map<string, InstanceType<typeof Decimal>>();
@@ -575,6 +581,7 @@ export async function postFinancialPurchaseReceipt(
                 });
             }
 
+            if (reviewClaim) await recordReviewResolution(tx, documentsToClaim.find(doc => doc.id === reviewClaim.documentId), reviewClaim, batch.id);
             return batch.id;
         });
     } catch (error: any) {
@@ -604,7 +611,8 @@ export async function attachDocumentsToPurchaseReceipt(
     batchId: string,
     documentIds: string[],
     actorId: string,
-    actorRole: string
+    actorRole: string,
+    reviewClaim?: ReviewClaim
 ) {
     const role = validatePurchaseActorRole(actorRole);
     const normalizedBatchId = validateScalarId(batchId, "Purchase receipt ID");
@@ -657,6 +665,7 @@ export async function attachDocumentsToPurchaseReceipt(
             if (doc.deletedAt) {
                 throw new Error(`Document ${docId} has been deleted and cannot be attached`);
             }
+            if (reviewClaim && reviewClaim.documentId === doc.id) validateReviewClaim(doc, reviewClaim, role);
             // Idempotent check: if already linked to this receipt, skip
             if (
                 doc.linkedEntityType === "StockReceiveBatch" &&
@@ -707,6 +716,11 @@ export async function attachDocumentsToPurchaseReceipt(
                     },
                 },
             });
+        }
+        if (reviewClaim) {
+            const reviewedDoc = docsById.get(reviewClaim.documentId);
+            if (!reviewedDoc) throw new Error("Reviewed source must be attached with receipt");
+            await recordReviewResolution(tx, reviewedDoc, reviewClaim, normalizedBatchId);
         }
     });
 
