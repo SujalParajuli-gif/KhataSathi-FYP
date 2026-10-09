@@ -8,6 +8,7 @@ import { getBusinessCapabilities } from "../settings/capabilities";
 import { ConfirmationInput, ReviewResolution, PurchaseConfirmationError, matchesResolution } from "./purchaseReviewClaim";
 import { postFinancialPurchaseReceipt, attachDocumentsToPurchaseReceipt } from "./purchases";
 import { validateBillDate } from "./purchaseValidation";
+import { parseJsonFromAiText } from "../products/importService";
 
 export class PurchaseReviewError extends Error {
   constructor(public status: number, message: string) { super(message); }
@@ -70,7 +71,6 @@ export async function readPurchaseBill(bytes: Buffer, mimeType: string) {
     if (!response.ok) throw new PurchaseReviewError(503, "Bill reader is unavailable. Your source and saved review are retained.");
     const payload = await response.json() as any; const content = payload?.candidates?.[0]?.content?.parts?.map((p: any) => p.text || "").join("");
     if (!content || content.length > 65_536) throw new PurchaseReviewError(502, "Reader returned an invalid bill. Try a clearer source.");
-    const { parseJsonFromAiText } = await import("../products/importService.js");
     const normalized = normalizeObservations(parseJsonFromAiText(content));
     return { ...normalized, model };
   } catch (e) {

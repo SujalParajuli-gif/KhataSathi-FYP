@@ -5,7 +5,27 @@ import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import PurchaseReviewConfirmation from "./PurchaseReviewConfirmation";
 import PurchaseDocuments from "./PurchaseDocuments";
 import { purchaseError } from "~/lib/api/purchases";
+import { fetchDocumentFileBlobApi } from "~/lib/api/endpoints";
 import { getBillReview, extractBill, saveBillReview, billCandidates, billDuplicates, type CorrectedBill, type ReviewResponse, type Candidate, type Duplicate } from "~/lib/api/purchaseReview";
+
+function BillSourcePreview({ id, mimeType }: { id: string; mimeType: string }) {
+  const [url, setUrl] = useState("");
+  const [error, setError] = useState("");
+  const [attempt, setAttempt] = useState(0);
+  useEffect(() => {
+    let active = true; let objectUrl = "";
+    setUrl(""); setError("");
+    fetchDocumentFileBlobApi(id).then(blob => {
+      if (!active) return;
+      objectUrl = URL.createObjectURL(blob);
+      setUrl(objectUrl);
+    }).catch(e => { if (active) setError(e instanceof Error ? e.message : "Could not load the bill source."); });
+    return () => { active = false; if (objectUrl) URL.revokeObjectURL(objectUrl); };
+  }, [id, attempt]);
+  if (error) return <div className="space-y-2"><p role="alert" className="text-sm text-error">Source preview: {error}</p><button type="button" className="text-sm underline" onClick={() => setAttempt(v => v + 1)}>Retry source preview</button></div>;
+  if (!url) return <p role="status" className="text-sm text-muted">Loading bill source…</p>;
+  return mimeType === "application/pdf" ? <iframe title="Purchase bill source" src={url} className="h-[500px] w-full rounded-lg border border-line" /> : <img alt="Purchase bill source" src={url} className="max-h-[600px] w-full rounded-lg border border-line object-contain" />;
+}
 
 function CandidatePicker({ source, q, kind, selected, onSelect, disabled }: { source: string; q: string; kind: "supplier" | "product"; selected: string | null; onSelect: (id: string | null) => void; disabled: boolean }) {
   const [rows, setRows] = useState<Candidate[]>([]); const [error, setError] = useState("");
@@ -56,7 +76,7 @@ export default function PurchaseBillReview({ onClose, onConfirmed }: { onClose: 
       {response && <div className="flex flex-wrap items-center gap-3"><button type="button" className="rounded-lg border border-line px-3 py-2" disabled={locked || !!response.review && !replaceConfirmed && !frozen.current} onClick={() => void mutate("extract")}>{frozen.current ? "Retry same read" : response.review ? "Read again" : "Read bill"}</button>{response.review && <label className="text-sm"><input type="checkbox" checked={replaceConfirmed} disabled={locked} onChange={e => setReplaceConfirmed(e.target.checked)} /> Reading again replaces this draft; prior saved evidence remains audited.</label>}
         <button type="button" disabled={locked} className="text-sm underline" onClick={() => { if (!draft || window.confirm("Reload current review and discard unsaved edits?")) setReload(v => v + 1); }}>Reload saved review</button></div>}
       {busy && <p role="status">Working… your source is retained.</p>}{error && <p role="alert" className="text-sm text-error">{error} Your edits are preserved.</p>}{notice && <p role="status">{notice}</p>}
-      {response && <div className="grid min-w-0 gap-4 lg:grid-cols-2"><section className="min-w-0 space-y-3"><h3 className="font-semibold">Source: {response.document.title}</h3>{response.document.mimeType === "application/pdf" ? <iframe title="Purchase bill source" src={response.document.fileUrl} className="h-[500px] w-full rounded-lg border border-line" /> : <img alt="Purchase bill source" src={response.document.fileUrl} className="max-h-[600px] w-full rounded-lg border border-line object-contain" />}
+      {response && <div className="grid min-w-0 gap-4 lg:grid-cols-2"><section className="min-w-0 space-y-3"><h3 className="font-semibold">Source: {response.document.title}</h3><BillSourcePreview key={response.document.id} id={response.document.id} mimeType={response.document.mimeType} />
         {response.review && <><p className="text-xs text-muted">Untrusted reader observations · {response.review.model} · {new Date(response.review.extractedAt).toLocaleString()}</p><details><summary>Original extracted observations</summary><pre className="overflow-auto whitespace-pre-wrap break-words rounded bg-inset p-3 text-xs">{JSON.stringify(response.review.observations, null, 2)}</pre></details></>}</section>
         <section className="min-w-0 space-y-4"><h3 className="font-semibold">Human review</h3>{!draft ? <p>Read this source to begin. Missing fields and matches remain unresolved.</p> : <fieldset disabled={locked} className="space-y-3">
           {!!response.review?.warnings.length && <ul className="list-inside list-disc rounded-lg bg-inset p-3 text-sm">{response.review.warnings.map((w, i) => <li key={i}>{w}</li>)}</ul>}
