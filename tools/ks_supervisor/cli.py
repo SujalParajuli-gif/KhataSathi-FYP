@@ -105,6 +105,15 @@ def cmd_run(
     # Update config from CLI flags
     config.enable_live_agents = live
     config.enable_auto_commit = enable_auto_commit
+    if live and not dry_run:
+        from tools.ks_supervisor.ownership import delegation_eligible
+        from tools.ks_supervisor.state import derive_workflow_state
+        task = derive_workflow_state(config).task_contract
+        if not delegation_eligible(task):
+            print(json.dumps({"status": "CURRENT_CODEX_SESSION_REQUIRED", "implementation_owner": "CODEX",
+                              "next": "Continue ks-start/ks-impl in the current chat; no worker or nested Codex launch",
+                              "reason": "Full legacy supervision requires justified HIGH-risk/HIGH-usage delegation"}))
+            return 2
     
     runner = SupervisorRunner(config)
     cli_invocation: Optional[AgentInvocation] = None

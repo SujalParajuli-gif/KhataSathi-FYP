@@ -10,7 +10,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from tools.ks_supervisor.cli import main
-from tools.ks_supervisor.tests.test_supervisor import BaseSupervisorTestCase
+from tools.ks_supervisor.tests.delegated_fixture import DelegatedSupervisorTestCase as BaseSupervisorTestCase
 from tools.ks_supervisor.toolbox import (
     CycleLedger, SourcePermissions, delegate_gemini, inspect_repository,
     record_cycle, source_identity, verify_source, worker_prompt,
@@ -80,6 +80,7 @@ class V3ToolboxTests(BaseSupervisorTestCase):
 
     def test_missing_and_incomplete_plan_cannot_delegate(self):
         self.write_task(task_id=self.task_id, planning_required="YES", execution_mode="PLANNED_IMPLEMENTATION")
+        (self.config.plans_dir / f"{self.task_id}-plan.md").unlink(missing_ok=True)
         for content in (None, "# Plan\n- TODO: IMPLEMENTATION-READY", "Final plan disposition: DRAFT."):
             if content is not None:
                 self.plan(content)
@@ -150,7 +151,7 @@ class V3ToolboxTests(BaseSupervisorTestCase):
         with patch("tools.ks_supervisor.targeted.execute_check", return_value=1):
             result = verify_source(self.config, self.task_id, ["pnpm --dir backend run build"], source_identity(self.config), True)
         self.assertEqual(result["outcome"], "FAIL")
-        self.assertEqual(inspect_repository(self.config)["recommended_category"], "GEMINI_FIX")
+        self.assertEqual(inspect_repository(self.config)["recommended_category"], "CODEX_FIX")
         packet = self.repo_root / "docs/engineering/ai/reports/correction.json"
         packet.write_text(json.dumps({"task_id": self.task_id, "content_identity": source_identity(self.config),
                                       "failures": [{"id": "C-1", "command": "backend build", "diagnostic": "TS2322", "correction": "repair type"}]}), encoding="utf-8")
@@ -182,7 +183,7 @@ class V3ToolboxTests(BaseSupervisorTestCase):
         with patch("tools.ks_supervisor.targeted.execute_check", return_value=0):
             verify_source(self.config, self.task_id, ["pnpm --dir backend run build"], source_identity(self.config), True)
         self.review.write_text("Decision: FIX_REQUIRED\nRemaining blockers: B-1\n- B-1: missing idempotency\n", encoding="utf-8")
-        self.assertEqual(inspect_repository(self.config)["recommended_category"], "GEMINI_FIX")
+        self.assertEqual(inspect_repository(self.config)["recommended_category"], "CODEX_FIX")
 
     def test_accepted_closeout_and_next_categories_never_reopen(self):
         self.review.write_text("Decision: APPROVED\nRemaining blockers: NONE\n", encoding="utf-8")
@@ -408,6 +409,7 @@ class V3ToolboxTests(BaseSupervisorTestCase):
         # The user sends exactly ONE chat token; this driver is that same Codex
         # session. No terminal launcher or user-invoked manual role is involved.
         self.write_task(task_id=self.task_id, planning_required="YES", execution_mode="PLANNED_IMPLEMENTATION")
+        (self.config.plans_dir / f"{self.task_id}-plan.md").unlink(missing_ok=True)
         entry = chat_entrypoint(self.config, "ks-start")
         self.assertEqual(entry["session"], "CURRENT_CODEX_SESSION")
         self.assertFalse(entry["requires_powershell"])

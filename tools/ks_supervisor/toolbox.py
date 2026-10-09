@@ -18,9 +18,10 @@ from tools.ks_supervisor.adapters.base import redact_secrets
 from tools.ks_supervisor.lock import SupervisorLock
 from tools.ks_supervisor.runtime_logs import SupervisorRuntimeLogs
 from tools.ks_supervisor.bounded_turns import validate_slice, slice_prompt
-from tools.ks_supervisor.report_provenance import (REPORT_REWRITE_REASON, report_overlay,
-    report_violations, save_report_bytes, digest)
+from tools.ks_supervisor.report_provenance import (REPORT_REWRITE_REASON, REPORT_TURN_REASON, report_overlay,
+    report_violations, save_report_bytes, digest, recoverable_report_gate)
 from tools.ks_supervisor.models import select_model_for_action
+from tools.ks_supervisor.ownership import implementation_owner, delegation_eligible
 from tools.ks_supervisor.permissions import CommandPermissions
 from tools.ks_supervisor.repo import (
     capture_repository_baseline, compute_file_hash, compute_repository_delta,
@@ -172,7 +173,7 @@ class CycleLedger:
     """Append-only facts and finite budgets, shared across resumes. No action execution."""
     PHASES = {"worker", "planning", "verification", "review", "closeout", "task_definition", "reanchor", "remediation", "progress"}
     OUTCOMES = {"PASS", "FAIL", "FIX_REQUIRED", "APPROVED", "ACCEPTED", "SUCCESS", "NO_EFFECT",
-                "INFRASTRUCTURE_FAILURE", "AUTH_QUOTA", "HUMAN_GATE", "REMEDIATED", "AUTH_CLASSIFIER_REMEDIATED", "REPORT_PROVENANCE_RECOVERED", "AWAITING_PROGRESS_INSPECTION", "PRODUCTIVE_CHECKPOINT", "BOUNDARY_READY"}
+                "INFRASTRUCTURE_FAILURE", "AUTH_QUOTA", "HUMAN_GATE", "REMEDIATED", "AUTH_CLASSIFIER_REMEDIATED", "REPORT_PROVENANCE_RECOVERED", "POLICY_TRANSITION", "AWAITING_PROGRESS_INSPECTION", "PRODUCTIVE_CHECKPOINT", "BOUNDARY_READY"}
 
     def __init__(self, config, mission_id=None, legacy=False):
         self.config = config
@@ -245,6 +246,9 @@ class CycleLedger:
             if outcome == "REPORT_PROVENANCE_RECOVERED":
                 validate_report_recovery(self.config, record, records)
                 gates.pop(record["resolved_run_id"], None)
+            if outcome == "POLICY_TRANSITION":
+                validate_policy_transition(record, records)
+                gates.pop(record["resolved_run_id"], None)
             effective = assessments.get(record["run_id"], outcome) if record["phase"] == "worker" and outcome not in {"AUTH_QUOTA", "HUMAN_GATE"} else outcome
             if effective == "INFRASTRUCTURE_FAILURE":
                 signature = record["phase"] + ":" + record["failure_signature"]
@@ -313,6 +317,8 @@ class CycleLedger:
                   "run_id": run_id or uuid4().hex, "recorded_at": datetime.now(timezone.utc).isoformat(), **metadata}
         if outcome == "REPORT_PROVENANCE_RECOVERED":
             validate_report_recovery(self.config, record, self.records())
+        if outcome == "POLICY_TRANSITION":
+            validate_policy_transition(record, self.records())
         self.records()  # Fail closed on corrupt history; never discard it.
         self.path.parent.mkdir(parents=True, exist_ok=True)
         with self.path.open("a", encoding="utf-8") as stream:
@@ -382,6 +388,12 @@ def inspect_repository(config):
             category = "CODEX_VERIFY"  # V3 approval never survives a changed reviewed input.
     branch_ok = bool(task and task.branch_worktree and git.branch == re.split(r";|\s+/\s+", task.branch_worktree)[0].strip(" `")
                      and git.branch not in {"main", "master", "UI/UX-fixes-after-production"})
+    owner = implementation_owner(task)
+    # Corrections remain local by default even within a delegated parent task.
+    if category == "GEMINI_FIX":
+        category = "CODEX_FIX"
+    elif owner == "CODEX" and category.startswith("GEMINI_"):
+        category = category.replace("GEMINI_", "CODEX_", 1)
     return {"schema_version": 3, "workflow_version": cp.workflow_version_effective,
             "branch": git.branch, "head": git.head_sha,
             "dirty_paths": sorted({name for _, name in _read_porcelain_entries(config.repo_root, untracked_mode="all")}),
@@ -389,15 +401,17 @@ def inspect_repository(config):
             "task_status": task.status if task else None, "checkpoint_task_status": cp.current_task_status,
             "phase": cp.current_phase, "risk": task.risk if task else None,
             "difficulty": task.difficulty if task else None, "planning_required": bool(task and task.planning_required),
+            "implementation_owner": owner, "expected_usage": task.expected_usage if task else None,
+            "delegation_reason": task.delegation_reason if task else None,
             "plan": plan, "implementation_report": report, "senior_review": review,
             "unresolved_blockers": review["blockers"] if review else [], "accepted": accepted,
             "derived_state": state.state.value, "recommended_category": category,
             "reason": budget["reason"] or state.stop_reason or state.reason,
             "content_identity": identity, "budget": budget,
-            "allowed_operations": {"inspect": True, "delegate_gemini": branch_ok and category in {"GEMINI_IMPLEMENT", "GEMINI_CONTINUE", "GEMINI_FIX"},
+            "allowed_operations": {"inspect": True, "delegate_gemini": branch_ok and delegation_eligible(task) and category in {"GEMINI_IMPLEMENT", "GEMINI_CONTINUE", "GEMINI_FIX", "CODEX_FIX"},
                                    "verify_source": bool(task and not accepted and category != "HUMAN_INPUT_REQUIRED"),
                                    "codex_logical_roles": category != "HUMAN_INPUT_REQUIRED"},
-            "gated_operations": ["migration execution", "connected fixtures/configured DB writes", "production/deploy/external providers", "destructive operations", "push/merge"],
+            "gated_operations": ["migration outside standing approved target/SQL shape", "connected fixtures/configured DB writes", "production/deploy/external providers", "destructive operations", "push/merge without existing authorization"],
             "commit_policy": "Codex must apply existing accepted-scope/branch/index/hygiene gates and current user restrictions; toolbox never commits",
             "verification": VerificationEvidence(config, task_id).plan(SourcePermissions()) if task_id else None}
 
@@ -428,12 +442,13 @@ def worker_prompt(config, task_id, mode, info, correction="", current_diff_path=
 
 
 def _protected(config, task_id):
-    """Protect all authority; the active implementation report alone is writable."""
+    """Protect authority/history; the human progress dashboard never gates work."""
     paths = [config.repo_root / "AGENTS.md", config.repo_root / "GEMINI.md"]
     paths += [p for p in (config.repo_root / "docs/engineering").rglob("*") if p.is_file()]
     paths += [p for p in (config.repo_root / ".agents").rglob("*") if p.is_file()]
     report = find_report_file(config.reports_dir, task_id)
-    return {str(p.relative_to(config.repo_root)): compute_file_hash(_safe_path(config, p)) for p in paths if p != report}
+    dashboard = config.repo_root / "docs/engineering/PROJECT_PROGRESS.md"
+    return {str(p.relative_to(config.repo_root)): compute_file_hash(_safe_path(config, p)) for p in paths if p not in {report, dashboard}}
 
 
 def delegate_gemini(config, task_id, mode="implement", correction_path=None, mission_id=None, continuation_path=None):
@@ -445,7 +460,7 @@ def delegate_gemini(config, task_id, mode="implement", correction_path=None, mis
         info = _active(config, task_id)
         if not info["allowed_operations"]["delegate_gemini"]:
             raise ValueError("Worker not allowed by current branch/plan/category")
-        if mode == "implement" and info["recommended_category"] == "GEMINI_FIX":
+        if mode == "implement" and info["recommended_category"] in {"GEMINI_FIX", "CODEX_FIX"}:
             raise ValueError("Latest blockers require fix mode, not implementation restart")
         continuation = None
         if continuation_path:
@@ -493,6 +508,8 @@ def delegate_gemini(config, task_id, mode="implement", correction_path=None, mis
             prompt += report_overlay(run_id)
         before = capture_repository_baseline(config, task_id, info["derived_state"])
         protected = _protected(config, task_id)
+        dashboard_path = config.repo_root / "docs/engineering/PROJECT_PROGRESS.md"
+        dashboard_before = compute_file_hash(dashboard_path)
         # Snapshot clean tracked files too: detecting only dirty paths misses reset-to-HEAD edits.
         _, tracked, _ = run_git(config.repo_root, "ls-files", "-z")
         tracked_before = {n: compute_file_hash(_safe_path(config, config.repo_root / n)) for n in tracked.split("\0") if n}
@@ -537,7 +554,11 @@ def delegate_gemini(config, task_id, mode="implement", correction_path=None, mis
                 if name.replace("\\", "/") not in allowed:
                     violations.append("Worker changed outside bounded slice: " + name)
         report_candidate = report_path.read_bytes() if report_path.exists() else None
-        violations.extend(report_violations(report_before, report_candidate, run_id if mission_id else None, report_existed))
+        report_errors = report_violations(report_before, report_candidate, run_id if mission_id else None, report_existed, strict_format=False)
+        violations.extend(report_errors)
+        warnings = [v for v in report_violations(report_before, report_candidate, run_id if mission_id else None, report_existed) if v not in report_errors]
+        if compute_file_hash(dashboard_path) != dashboard_before:
+            warnings.append("Human progress dashboard changed; restore trusted structure and reconcile latest authoritative status")
         violations.extend(runtime_logs.violations())
         if delta.head_changed or delta.branch_changed or index_before != index_after:
             violations.append("Worker changed HEAD, branch or index")
@@ -581,12 +602,15 @@ def delegate_gemini(config, task_id, mode="implement", correction_path=None, mis
                   report_updated=any(a.startswith("report:") for a in delta.changed_workflow_artifacts),
                   runtime_location=str(directory), senior_review_sha256=(info["senior_review"] or {}).get("sha256"),
                   mission_id=mission_id, bounded_slice=continuation, report_provenance=report_evidence,
+                  warnings=warnings, protected_drift=[{"path": name, "before": prior_hash,
+                      "after": compute_file_hash(config.repo_root / name)} for name, prior_hash in protected.items()
+                      if compute_file_hash(config.repo_root / name) != prior_hash],
                   provider_recovery=({"event": "PROVIDER_RESUME_CONFIRMED", "recovered_gate_runs": recovered_auth}
                                      if result_info.get("success") and recovered_auth else None),
                   senior_review_length=(find_review_file(config.reviews_dir, task_id).stat().st_size
                                         if info["senior_review"] else 0))
         output = {**launch, "result": result_info, "changed_paths": changed,
-                  "workflow_effects": delta.changed_workflow_artifacts, "violations": violations,
+                  "workflow_effects": delta.changed_workflow_artifacts, "violations": violations, "warnings": warnings,
                   "outcome": outcome, "cycle": cycle, "verification_owner": "Codex Senior",
                   "next": "HUMAN_INPUT_REQUIRED" if cycle["budget"]["status"] == "HUMAN_INPUT_REQUIRED" else "RETURN_TO_CODEX"}
         (directory / "return.json").write_text(json.dumps(output, indent=2), encoding="utf-8")
@@ -731,7 +755,7 @@ def record_worker_checkpoint(config, task_id, mission_id, worker_run_id, assessm
                 or output["outcome"] != original["outcome"] or output["cycle"]["record"] != original
                 or (result.get("auth_or_quota_failure") and not auth_remediated) or result.get("soft_permission_denial")
                 or (output["violations"] and not (remediated and (output["violations"] == RUNTIME_LOG_VIOLATIONS
-                    or report_remediated and output["violations"] == [REPORT_REWRITE_REASON])))
+                    or report_remediated and output["violations"] == [original["reason"]])))
                 or (original["outcome"] == "AUTH_QUOTA" and not auth_remediated)
                 or (original["outcome"] == "HUMAN_GATE" and not remediated)
                 or not (result.get("success") or result.get("timed_out") or auth_remediated)):
@@ -898,7 +922,7 @@ def validate_report_recovery(config, record, records):
     original = next((r for r in records if r["run_id"] == record.get("resolved_run_id")
                      and r["task_id"] == record["task_id"] and r["phase"] == "worker"), None)
     if (record["phase"] != "remediation" or not original or original["outcome"] != "HUMAN_GATE"
-            or original["reason"] != REPORT_REWRITE_REASON
+            or original["reason"] not in {REPORT_REWRITE_REASON, REPORT_TURN_REASON}
             or record.get("original_record_sha256") != _identity(original)
             or not record.get("authorization") or not record.get("mission_id")
             or original.get("mission_id") != record["mission_id"]):
@@ -914,14 +938,14 @@ def validate_report_recovery(config, record, records):
         values[key] = path.read_bytes()
         if digest(values[key]) != item.get("sha256"):
             raise ValueError("Report recovery evidence was modified")
-    if (values["candidate"].startswith(values["prior"])
+    if (not recoverable_report_gate(original, values["prior"], values["candidate"])
             or values["recovered"] != values["prior"] + values["section"]
             or report_violations(b"", values["section"], original["run_id"])
             or b"Codex-recovered checkpoint" not in values["section"]):
         raise ValueError("Recovery must restore exact history and append only current-turn evidence")
     output = json.loads(values["worker_return"])
     if (output.get("cycle", {}).get("record") != original
-            or output.get("violations") != [REPORT_REWRITE_REASON]):
+            or output.get("violations") != [original["reason"]]):
         raise ValueError("Recovery proof does not match original worker gate")
 
 
@@ -945,15 +969,15 @@ def recover_report_provenance_gate(config, task_id, mission_id, blocked_run_id, 
         records = ledger.records()
         original = next((r for r in records if r["task_id"] == task_id and r["run_id"] == blocked_run_id
                          and r["phase"] == "worker"), None)
-        if (not original or original["outcome"] != "HUMAN_GATE" or original["reason"] != REPORT_REWRITE_REASON
+        if (not original or original["outcome"] != "HUMAN_GATE" or original["reason"] not in {REPORT_REWRITE_REASON, REPORT_TURN_REASON}
                 or original.get("mission_id") != mission_id
                 or any(r.get("resolved_run_id") == blocked_run_id for r in records)):
-            raise ValueError("Only the unresolved exact report rewrite gate can be recovered")
+            raise ValueError("Only an unresolved supported report provenance gate can be recovered")
         directory = config.runtime_dir / "v3/workers" / blocked_run_id
         output_path = _packet_path(config, directory / "return.json")
         output = json.loads(output_path.read_text(encoding="utf-8"))
         result = output["result"]
-        if (output["cycle"]["record"] != original or output["violations"] != [REPORT_REWRITE_REASON]
+        if (output["cycle"]["record"] != original or output["violations"] != [original["reason"]]
                 or result.get("auth_or_quota_failure") or result.get("soft_permission_denial")
                 or not (result.get("success") or result.get("timed_out"))):
             raise ValueError("Other genuine worker gates cannot be resolved as report recovery")
@@ -980,6 +1004,8 @@ def recover_report_provenance_gate(config, task_id, mission_id, blocked_run_id, 
             prior_hash, candidate_hash = previous["report_sha256"], audit["after_report_sha256"]
         if digest(prior) != prior_hash or digest(candidate) != candidate_hash:
             raise ValueError("Recovered report bytes do not match recorded provenance hashes")
+        if not recoverable_report_gate(original, prior, candidate):
+            raise ValueError("Report turn recovery requires a recorded empty first report with only a preamble error")
         report = _safe_path(config, find_report_file(config.reports_dir, task_id))
         if not report or compute_file_hash(report) != current_report_sha256:
             raise ValueError("Canonical report changed during recovery inspection")
@@ -1116,7 +1142,15 @@ def role_instructions(config, shortcut, task_id="", action="", mission_id=None):
         if action == "FIX" and not review_path:
             raise ValueError("Fix role requires canonical Senior context; source-only corrections use delegate-gemini --correction")
         correction = remediation_review_context(review_path, find_report_file(config.reports_dir, task_id)) if action == "FIX" else ""
-        prompt = worker_prompt(config, task_id, "fix" if action == "FIX" else "implement", info, correction)
+        if info["implementation_owner"] == "CODEX" or action == "FIX":
+            prompt = (f"Implement {task_id} in this current Codex session as the sole writer. "
+                      "Read AGENTS.md, the task contract and required complete plan. Preserve partial work. "
+                      "Risk controls planning/invariants/checks, not delegation. Run affected checks, inspect the full diff, "
+                      "append concise actual evidence, then one bounded senior self-review. Do not claim independent review. "
+                      "Dashboard/cosmetic report drift never blocks implementation; reconcile the dashboard from authority. "
+                      "Retain mission budgets and all production/target/history safeguards.\n" + correction)
+        else:
+            prompt = worker_prompt(config, task_id, "fix" if action == "FIX" else "implement", info, correction)
     elif shortcut == "ks-next":
         if action not in {"CLOSEOUT", "TASK_DEFINITION"}:
             raise ValueError("ks-next role instructions require CLOSEOUT or TASK_DEFINITION")
@@ -1126,6 +1160,46 @@ def role_instructions(config, shortcut, task_id="", action="", mission_id=None):
         raise ValueError("Unknown manual role")
     return {"role": shortcut, "task_id": task_id, "instructions": prompt, "execution": "CURRENT_SESSION_OR_WORKSPACE_WORKER",
             "mission_id": mission_id, "authority": "Existing role builder, AGENTS.md and installed role skill"}
+
+
+def validate_policy_transition(record, records):
+    """Only an exact dashboard-only legacy gate can be prospectively disposed."""
+    original = next((r for r in records if r["run_id"] == record.get("resolved_run_id")), None)
+    dashboard_reason = "Worker changed protected authority: docs\\engineering\\PROJECT_PROGRESS.md"
+    if (record["phase"] != "remediation" or not original or original["outcome"] != "HUMAN_GATE"
+            or original["reason"].replace("/", "\\") != dashboard_reason
+            or original["task_id"] != record["task_id"]
+            or record.get("original_record_sha256") != _identity(original)
+            or not record.get("mission_id") or not record.get("authorization")
+            or record.get("implementation_owner") != "CODEX"
+            or not record.get("history_sha256") or not record.get("authority_snapshot")
+            or any(r.get("run_id") != record.get("run_id") and r.get("resolved_run_id") == original["run_id"] and r.get("outcome") == "POLICY_TRANSITION" for r in records)):
+        raise ValueError("Policy transition requires the exact dashboard-only gate and preserved history/authority")
+
+
+def transition_dashboard_policy(config, task_id, mission_id, blocked_run_id, authorization, history_baseline):
+    """Append approved warning/owner policy; never rewrite a gate or reset a budget."""
+    with SupervisorLock(config, task_id=task_id, role="CODEX_POLICY_TRANSITION"):
+        mission = _read_mission(config, mission_id)
+        state = derive_workflow_state(config)
+        ledger = CycleLedger(config, mission_id)
+        records = ledger.records()
+        if (mission["status"] != "ACTIVE" or mission["task_id"] != task_id
+                or state.active_task_id != task_id or mission["branch"] != state.git_state.branch
+                or mission["initial_head"] != state.git_state.head_sha or len(records) >= 60
+                or state.task_contract.status.upper() == "ACCEPTED" or not authorization.strip()):
+            raise ValueError("Policy transition requires unchanged active task/branch/HEAD and remaining budget")
+        baseline = json.loads(Path(history_baseline).read_text(encoding="utf-8"))
+        if not baseline or any(compute_file_hash(Path(path)) != expected for path, expected in baseline.items()):
+            raise ValueError("Historical evidence differs; policy cannot dispose this gate")
+        original = next((r for r in records if r["run_id"] == blocked_run_id), None)
+        if not original:
+            raise ValueError("Unknown gate")
+        return ledger.append(task_id, "remediation", "POLICY_TRANSITION",
+                             reason="Approved direct-first policy: dashboard warning, Codex owner; original gate retained",
+                             resolved_run_id=blocked_run_id, original_record_sha256=_identity(original),
+                             authorization=authorization, implementation_owner="CODEX",
+                             history_sha256=_identity(baseline), authority_snapshot=_identity(_protected(config, task_id)))
 
 
 def finish_mission(config, mission_id, accepted_files, next_task_id="", next_title=""):

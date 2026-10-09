@@ -77,3 +77,8 @@ If the user explicitly assigns a different role, such as architecture reviewer, 
 For every frontend implementation or repair, use the installed frontend-design and engineering skills; inspect existing app.css/shared primitives/nearby established screens and follow frozen Master Plan section 6.4. Reuse the project light theme, local IBM Plex Sans/Space Mono, shared select/date/modal components and local Material Symbols assets. Verify icon coverage and desktop/mobile/keyboard states. Do not invent a feature-specific palette, dark theme, component system or remote icon/font runtime.
 
 Resolve the installed skill entry points from the available skill catalog; on this setup they are normally `~/.agents/skills/frontend-design/SKILL.md` and `~/.agents/skills/engineering/SKILL.md`. Read those instructions before frontend edits rather than relying only on their names.
+
+
+## Delegation eligibility and return (2026-10-09)
+
+Gemini receives a bounded junior-style handoff only for HIGH risk + HIGH expected usage with an explicit implementation-owner decision and concrete handoff/review benefit. Risk alone is insufficient. Read the task/complete plan and relevant owning code; continue preserved partial work. Follow the workspace-only prompt permission contract: Codex verifies after return. Return changed paths, actual progress, remaining issues and suggested checks marked NOT RUN. Reports and dashboard formatting do not establish acceptance. Do not rewrite previous report bytes or edit the progress dashboard. Codex handles ordinary mechanical corrections and the single bounded review/closeout.

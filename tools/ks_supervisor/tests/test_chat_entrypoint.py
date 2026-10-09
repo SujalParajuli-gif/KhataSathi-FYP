@@ -33,7 +33,7 @@ class ChatEntrypointTests(BaseSupervisorTestCase):
         self.assertEqual(packet["session"], "CURRENT_CODEX_SESSION")
         self.assertEqual(packet["mission_definition"], MISSION_DEFINITION)
         self.assertEqual(packet["inspection"]["active_task"], self.task_id)
-        self.assertEqual(packet["inspection"]["recommended_category"], "GEMINI_CONTINUE")
+        self.assertEqual(packet["inspection"]["recommended_category"], "CODEX_CONTINUE")
         self.assertEqual(packet["inspection"]["plan"]["state"], "IMPLEMENTATION_READY")
         self.assertEqual(before, (self.source.read_bytes(), self.config.checkpoint_path.read_bytes()))
         codex.assert_not_called()
@@ -64,8 +64,8 @@ class ChatEntrypointTests(BaseSupervisorTestCase):
         self.assertIn("Stop after review", senior["role_instructions"]["instructions"])
         with patch.object(AntigravityAdapter, "build_prompt", return_value="existing implementer") as builder:
             implementer = chat_entrypoint(self.config, "ks-impl")
-        self.assertTrue(builder.call_args.kwargs["workspace_only"])
-        self.assertIn("existing implementer", implementer["role_instructions"]["instructions"])
+        builder.assert_not_called()
+        self.assertIn("current Codex session", implementer["role_instructions"]["instructions"])
         self.assertFalse((self.config.runtime_dir / "v3/missions").exists())
 
     def test_next_retains_router_advance_and_shared_closeout(self):

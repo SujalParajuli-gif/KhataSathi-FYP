@@ -5,7 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from tools.ks_supervisor.tests.test_supervisor import BaseSupervisorTestCase
+from tools.ks_supervisor.tests.delegated_fixture import DelegatedSupervisorTestCase as BaseSupervisorTestCase
 from tools.ks_supervisor.toolbox import (
     CycleLedger, RUNTIME_LOG_GATE_REASON, RUNTIME_LOG_VIOLATIONS,
     begin_mission, delegate_gemini, recover_runtime_log_gate,

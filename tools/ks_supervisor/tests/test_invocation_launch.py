@@ -230,6 +230,9 @@ class TestInvocationLaunch(BaseSupervisorTestCase):
         self.assert_preserved(before)
 
     def test_cli_never_prints_step_complete_on_preflight_or_launch_failure(self):
+        contract = self.config.tasks_dir / f"{self.task_id}-test.md"
+        with contract.open("a") as stream:
+            stream.write("\nExpected Usage: HIGH\nImplementation Owner: GEMINI\nDelegation Reason: Bounded expensive independent implementation fixture.\n")
         for kind in ("preflight", "launch"):
             with self.subTest(kind=kind):
                 prompt = "too long " * 5000 if kind == "preflight" else "small prompt"

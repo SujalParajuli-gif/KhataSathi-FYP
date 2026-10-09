@@ -1,7 +1,7 @@
 """No live worker: deterministic same-mission bounded continuation regressions."""
 import json
 from unittest.mock import patch
-from tools.ks_supervisor.tests.test_supervisor import BaseSupervisorTestCase
+from tools.ks_supervisor.tests.delegated_fixture import DelegatedSupervisorTestCase as BaseSupervisorTestCase
 from tools.ks_supervisor.toolbox import (CycleLedger, begin_mission, delegate_gemini,
     inspect_repository, record_worker_checkpoint, source_identity, finish_mission)
 from tools.ks_supervisor.types import AgentResult, Role

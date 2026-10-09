@@ -4,7 +4,7 @@ from io import StringIO
 from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
-from tools.ks_supervisor.tests.test_supervisor import BaseSupervisorTestCase
+from tools.ks_supervisor.tests.delegated_fixture import DelegatedSupervisorTestCase as BaseSupervisorTestCase
 from tools.ks_supervisor.adapters.antigravity import AntigravityAdapter, provider_auth_quota_signal
 from tools.ks_supervisor.runtime_logs import SupervisorRuntimeLogs
 from tools.ks_supervisor.toolbox import (CycleLedger, begin_mission, delegate_gemini,

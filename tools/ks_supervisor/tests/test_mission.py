@@ -32,7 +32,7 @@ class MissionTests(BaseSupervisorTestCase):
         self.assertEqual(result["task_id"], self.task_id)
         self.assertEqual(source.read_text(), "existing partial work")
         self.assertEqual(self.config.checkpoint_path.read_bytes(), before)
-        self.assertEqual(result["inspection"]["recommended_category"], "GEMINI_CONTINUE")
+        self.assertEqual(result["inspection"]["recommended_category"], "CODEX_CONTINUE")
 
     def test_no_active_task_can_bind_exactly_once_after_existing_definition(self):
         self.write_checkpoint(current_task="")
@@ -95,9 +95,8 @@ class MissionTests(BaseSupervisorTestCase):
     def test_worker_reuses_owning_implementation_builder_with_thin_overlay(self):
         with patch.object(AntigravityAdapter, "build_prompt", return_value="existing implementer") as builder:
             packet = role_instructions(self.config, "ks-impl", self.task_id)
-        self.assertIn("existing implementer", packet["instructions"])
-        self.assertTrue(builder.call_args.kwargs["workspace_only"])
-        self.assertEqual(builder.call_args.args, (Role.IMPLEMENTATION, self.task_id))
+        self.assertIn("current Codex session", packet["instructions"])
+        builder.assert_not_called()
         self.assertLess(len(packet["instructions"]), 3000)
 
     def test_senior_is_review_only_even_for_autopilot_contracts(self):

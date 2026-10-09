@@ -68,5 +68,5 @@ Once the plan artifact is written and self-reviewed:
 
 1. Update the task contract's `Implementation notes` indicating that planning is complete and referencing the plan artifact.
 2. Transition the task status to `PLAN_READY_FOR_IMPLEMENTATION`.
-3. Hand off to the Implementation Agent (`ks-impl` / `GEMINI.md`).
+3. Continue ks-impl as current Codex by default. Delegate to Gemini only for HIGH risk + HIGH expected usage when bounded handoff and review materially reduce expected work; record owner and reason.
 4. The Implementation Agent reads the complete artifact and linked relevant authority, implements the whole scoped outcome, verifies its acceptance criteria, and writes a concise report referencing exact final-content evidence. Reviewer reuse follows AGENTS12; incomplete or questionable evidence is verified rather than assumed.

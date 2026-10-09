@@ -2,11 +2,12 @@
 import json
 from unittest.mock import patch
 
-from tools.ks_supervisor.tests.test_supervisor import BaseSupervisorTestCase
+from tools.ks_supervisor.tests.delegated_fixture import DelegatedSupervisorTestCase as BaseSupervisorTestCase
 from tools.ks_supervisor.tests import test_bounded_turns as bounded
 from tools.ks_supervisor.toolbox import (CycleLedger, begin_mission, inspect_repository,
     recover_report_provenance_gate, record_cycle)
-from tools.ks_supervisor.report_provenance import report_violations, digest, REPORT_REWRITE_REASON
+from tools.ks_supervisor.report_provenance import (report_violations, digest, REPORT_REWRITE_REASON,
+    REPORT_TURN_REASON, recoverable_report_gate)
 from tools.ks_supervisor.repo import compute_file_hash, run_git
 
 
@@ -210,3 +211,75 @@ class ReportProvenanceTests(BaseSupervisorTestCase):
             after_report_sha256=compute_file_hash(self.report))))
         self.recover(output)
         self.assertEqual(self.report.read_bytes(), self.prior + self.section(output["run_id"]))
+
+    def initial_preamble(self, exists=False, suffix=""):
+        self.prior = b""
+        if exists:
+            self.report.write_bytes(b"")
+        else:
+            self.report.unlink()
+        def worker(role, task_id, **kw):
+            self.source.write_text(self.source.read_text() + "new source\n")
+            self.report.write_bytes(("# First report\nStatus: IN_PROGRESS\n\n"
+                f"## Worker turn {kw['run_id']}\nChecks NOT RUN\n" + suffix).encode())
+            return self.result(task_id, kw["run_id"])
+        # Simulate historical strict-format gates; the new live path only warns.
+        original = report_violations
+        def strict(*args, **kwargs):
+            kwargs.pop('strict_format', None)
+            return original(*args, **kwargs)
+        with patch('tools.ks_supervisor.toolbox.report_violations', side_effect=strict):
+            return self.turn(worker)
+
+    def test_initial_preamble_recovery_preserves_gate_candidate_budget_and_source(self):
+        output = self.initial_preamble()
+        self.assertEqual(output["violations"], [REPORT_TURN_REASON])
+        ledger = CycleLedger(self.config)
+        before = ledger.path.read_bytes()
+        candidate = self.report.read_bytes()
+        source = self.source.read_bytes()
+        recovered = self.recover(output)
+        self.assertEqual(self.report.read_bytes(), self.section(output["run_id"]))
+        self.assertTrue(ledger.path.read_bytes().startswith(before))
+        self.assertEqual(recovered["budget"]["cycles_used"], 2)
+        self.assertEqual(self.source.read_bytes(), source)
+        self.assertEqual(self.mission_path.read_bytes(), self.mission_before)
+        from pathlib import Path
+        proof = recovered["record"]["report_recovery"]
+        self.assertEqual(Path(proof["candidate"]["path"]).read_bytes(), candidate)
+        self.assertEqual(self.assess(output)["record"]["outcome"], "PRODUCTIVE_CHECKPOINT")
+
+    def test_existing_empty_report_turn_gate_is_not_initial_preamble_recovery(self):
+        output = self.initial_preamble(exists=True)
+        with self.assertRaises(ValueError):
+            self.recover(output)
+
+    def test_initial_preamble_extra_or_wrong_headings_remain_gated(self):
+        output = self.initial_preamble(suffix="## Other section\n")
+        with self.assertRaises(ValueError):
+            self.recover(output)
+        original = output["cycle"]["record"]
+        candidate = self.report.read_bytes()
+        wrong = candidate.replace(output["run_id"].encode(), b"a" * 32)
+        forged = {**original, "report_provenance": {**original["report_provenance"],
+            "candidate": {"sha256": digest(wrong), "length": len(wrong)}}}
+        self.assertFalse(recoverable_report_gate(forged, b"", wrong))
+
+    def test_initial_preamble_requires_approval_and_recorded_empty_prior(self):
+        output = self.initial_preamble()
+        candidate = self.report.read_bytes()
+        with self.assertRaises(ValueError):
+            self.recover(output, authorization="")
+        original = output["cycle"]["record"]
+        self.assertFalse(recoverable_report_gate({**original, "report_provenance": {}}, b"", candidate))
+        self.assertFalse(recoverable_report_gate(original, b"old history\n", candidate))
+        self.assertEqual(self.report.read_bytes(), candidate)
+
+    def test_initial_preamble_recovery_does_not_clear_quota_or_allow_duplicate_repair(self):
+        output = self.initial_preamble()
+        CycleLedger(self.config).append(self.task_id, "worker", "AUTH_QUOTA", reason="Real quota exhausted")
+        result = self.recover(output)
+        self.assertEqual(result["budget"]["status"], "HUMAN_INPUT_REQUIRED")
+        self.assertIn("Real quota", result["budget"]["reason"])
+        with self.assertRaises(ValueError):
+            self.recover(output)

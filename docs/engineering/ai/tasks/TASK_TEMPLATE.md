@@ -3,6 +3,9 @@
 Status: READY
 Difficulty: X/10
 Risk: LOW / MEDIUM / HIGH
+Expected Usage: LOW / HIGH
+Implementation Owner: CODEX / GEMINI (default CODEX)
+Delegation Reason: <required only for GEMINI; HIGH/HIGH eligibility plus concrete handoff/review advantage>
 Planning Required: YES / NO
 Execution Mode: READ_ONLY_DIRECT / SENIOR_AUTOPILOT / DIRECT_IMPLEMENTATION / PLANNED_IMPLEMENTATION
 Senior Review Required: YES / NO

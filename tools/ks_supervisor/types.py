@@ -89,6 +89,9 @@ class TaskContract:
     status: str = ""
     difficulty: str = ""
     risk: str = "MEDIUM"
+    expected_usage: str = ""
+    implementation_owner: str = "CODEX"
+    delegation_reason: str = ""
     planning_required: bool = False
     execution_mode: ExecutionMode = ExecutionMode.DIRECT_IMPLEMENTATION
     senior_review_required: bool = True

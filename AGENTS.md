@@ -303,8 +303,8 @@ Before assigning or starting a new task, state:
 
 1. **`READ_ONLY_DIRECT`**: Senior read-only inspection, dry-runs, architecture evaluation, or deployment readiness checks (`ks-deploy`). Zero code mutation.
 2. **`SENIOR_AUTOPILOT`**: Bounded LOW-risk tasks where Planning Required = NO, touching no financial, tax, auth, migration, or production paths, and no unresolved user decisions exist. Never downgrade task risk to retain autopilot.
-3. **`DIRECT_IMPLEMENTATION`**: Well-specified tasks with complete implementation-grade contracts and Planning Required = NO. Handed directly to implementation agent (`GEMINI.md`).
-4. **`PLANNED_IMPLEMENTATION`**: Tasks where Planning Required = YES (all HIGH-risk tasks, schema/migrations, multi-step transaction flows). Produce `docs/engineering/ai/plans/TASK-XXX-plan.md` before coding using the planner skill. The senior may write/self-review this artifact in the current session and then hand off implementation; a separate user invocation or agent is not required. Planning and implementation remain distinct responsibilities; a required missing/incomplete plan still stops implementation.
+3. **`DIRECT_IMPLEMENTATION`**: Well-specified tasks with complete implementation-grade contracts and Planning Required = NO. Implemented by the current Codex agent by default; Gemini only under the ownership rule below.
+4. **`PLANNED_IMPLEMENTATION`**: Tasks where Planning Required = YES (all HIGH-risk tasks, schema/migrations, multi-step transaction flows). Produce `docs/engineering/ai/plans/TASK-XXX-plan.md` before coding using the planner skill. The senior may write/self-review this artifact in the current session and then implement directly or justify delegation; a separate user invocation or agent is not required. Planning and implementation remain distinct responsibilities; a required missing/incomplete plan still stops implementation.
 
 Scale plan length to ambiguity and risk. Required plans must contain implementation-ready decisions, existing reusable code, state/transaction/access/retry/failure rules where applicable, acceptance evidence and exact checks. There is no required section count and no requirement to restate the task or frozen architecture. Link existing authoritative details and expand only unresolved decisions. HIGH-risk planning, failure-path checks and senior review remain mandatory under this workflow.
 
@@ -776,7 +776,7 @@ invocations. Existing user constraints always take precedence.
 - **`ks-senior`**: Canonical Senior review only. Inspect implementation/evidence, write the review, return ACCEPTED (canonical APPROVED with zero blockers) or FIX_REQUIRED, then stop. Do not plan, implement, closeout, commit or begin another task.
 - **`ks-start`**: Codex-owned one-task mission controller. Follow workflow-router section 9, reuse existing role builders in this session, bind exactly one task, and stop after acceptance/closeout/authorized commit and reporting the next candidate without starting it.
 - **`ks-plan`**: Invokes `khatasathi-implementation-planner` to create `docs/engineering/ai/plans/TASK-XXX-plan.md` for `PLANNED_IMPLEMENTATION` tasks.
-- **`ks-impl`**: Invokes `GEMINI.md` implementation agent with task contract and plan artifact.
+- **`ks-impl`**: Invokes the selected implementation owner with the task contract and required plan; current Codex by default.
 - **`ks-next`**: Invokes `khatasathi-workflow-router` to inspect repository state and trigger the next deterministic transition.
 - **`ks-deploy`**: Read-only deployment readiness audit; never executes deployment.
 
@@ -785,10 +785,23 @@ invocations. Existing user constraints always take precedence.
 - **Three-task re-anchor rule:** After every 3 completed autopilot tasks, the senior workflow MUST re-anchor by re-reading `IMPLEMENTATION_CHECKPOINT.md`, `TASK_REGISTRY.md`, Git branch/status, and HEAD revision before continuing.
 - Autopilot must halt immediately on `PLAN/REPO DRIFT`, missing plans, hygiene failure, or unresolved user decisions.
 
-For the v3 `ks-start` one-task mission, a missing/incomplete plan invokes the planner role in the same session; MEDIUM/HIGH work stays assigned to the bounded Gemini worker after planning. Ordinary implementation/test/review failures invoke precise correction and verification, subject to section 9's budgets. Legacy/manual shortcuts remain available. Current user restrictions (including no commit/live invocation in a tooling patch) override lifecycle defaults. Application startup/schema/target and production gates remain unchanged.
+For the v3 `ks-start` one-task mission, a missing/incomplete plan invokes the planner role in the same session; CODEX is the default implementation owner at every risk; Gemini is eligible only for HIGH risk + HIGH expected usage with a concrete handoff benefit and complete plan. Ordinary implementation/test/review failures invoke precise correction and verification, subject to section 9's budgets. Legacy/manual shortcuts remain available. Current user restrictions (including no commit/live invocation in a tooling patch) override lifecycle defaults. Application startup/schema/target and production gates remain unchanged.
 
 ## KhataSathi UI continuity (2026-10-05)
 
 For every frontend implementation or repair, use the installed frontend-design and engineering skills; inspect existing app.css/shared primitives/nearby established screens and follow frozen Master Plan section 6.4. Reuse the project light theme, local IBM Plex Sans/Space Mono, shared select/date/modal components and local Material Symbols assets. Verify icon coverage and desktop/mobile/keyboard states. Do not invent a feature-specific palette, dark theme, component system or remote icon/font runtime.
 
 Resolve the installed skill entry points from the available skill catalog; on this setup they are normally `~/.agents/skills/frontend-design/SKILL.md` and `~/.agents/skills/engineering/SKILL.md`. Read those instructions before frontend edits rather than relying only on their names.
+
+
+## Direct-first ownership policy (2026-10-09, explicit user authorization)
+
+Risk measures consequences; Expected Usage (LOW/HIGH) measures anticipated exploration/implementation work. New contracts record Expected Usage, Implementation Owner (CODEX/GEMINI), and a one-sentence Delegation Reason when GEMINI is selected. Missing usage/owner on unaccepted legacy tasks defaults to CODEX, not another approval gate. Never retrofit accepted task history.
+
+CODEX implements LOW/MEDIUM work and HIGH/LOW work. HIGH/HIGH permits Gemini only where a bounded junior-style handoff plus expected review is materially cheaper than direct implementation; it does not compel delegation. The current agent may plan, implement and perform one bounded senior self-review, honestly labeled self-review. HIGH direct work retains its required concise complete plan, failure/invariant checks and review; never relabel it LOW-risk autopilot. Internal planning uses the current session, with a short durable artifact for recovery rather than an extra agent.
+
+Use lightweight router authority/re-anchor for every ks-start; full worker supervision is only for eligible delegated work. Retain one task, one writer, finite mission budgets and sealed historical missions. Ordinary fixes stay with Codex by default, without another worker/read/report cycle. Reuse successful content/command/configuration/target-bound check evidence; relevant changes invalidate it. Review fixes only for listed blockers and direct regressions.
+
+PROJECT_PROGRESS.md is only the user's progress tracker. Changes, missing formatting, sync markers or stale status in that file NEVER stop an agent or become an authority/provenance gate. Preserve a local copy, restore trustworthy prior structure when available and reconcile latest state from checkpoint/registry/accepted reviews. If no trustworthy prior structure exists, minimally repair the current structure; never guess historical content. Keep the Obsidian hard link by editing contents in place. Formatting issues in newly appended report sections also warn; wrong invocation identity or rewriting historical bytes remains a hard stop.
+
+The user's standing feature-migration authorization supersedes blanket separate-approval wording only for reviewed non-destructive SQL on owned disposable targets and existing localhost:3306/khatasathi_vps_copy_20261003. Validate exact target/schema/nullability/enum shape, backups, preservation and rehearsal. Production, destructive/backfill SQL, unknown targets and configured synthetic writes remain gated. Existing authorization persists; do not ask again for the same approved action. Push uses existing explicit publication authorization, exact scope and hygiene; no stable merge/deploy is implied.
