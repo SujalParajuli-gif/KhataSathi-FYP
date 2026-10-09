@@ -118,6 +118,31 @@ async function setupBillingRoutes(page: any, accountsList = mockAccounts) {
   });
 }
 
+test("payment redesign preserves mobile controls and never labels an unverified gateway live", async ({ page }, testInfo) => {
+  await setupBillingRoutes(page);
+  await page.route("**/api/payments/gateway-display", (route) => route.fulfill({
+    contentType: "application/json", body: JSON.stringify({ esewa: { environment: "UNVERIFIED", label: "eSewa" } }),
+  }));
+  await page.goto("/billing");
+  await page.getByRole("button", { name: /PAY NOW/ }).click();
+  const modal = page.getByRole("dialog", { name: "Confirm Payment", exact: true });
+  await expect(modal).toBeVisible();
+  await expect(modal.getByText("NPR NPR", { exact: false })).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("payment-desktop.png") });
+  await page.setViewportSize({ width: 360, height: 800 });
+  await modal.locator('button:has-text("eSewa")').click();
+  await expect(modal.getByText("Unknown", { exact: true })).toBeVisible();
+  await expect(modal.getByText("Gateway environment is not confirmed.")).toBeVisible();
+  await expect(modal.getByText(/Live eSewa/)).toHaveCount(0);
+  await page.screenshot({ path: testInfo.outputPath("payment-mobile.png") });
+  await modal.locator('button:has-text("Bank Transfer")').click();
+  await expect(modal.locator('input[placeholder*="Voucher no"]')).toBeVisible();
+  await modal.locator('button:has-text("Split")').click();
+  await expect(modal.getByRole("button", { name: "Remove eSewa payment row", exact: true })).toBeVisible();
+  await expect(modal.getByRole("button", { name: "+ Bank Transfer row", exact: true })).toBeVisible();
+  expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth)).toBe(true);
+});
+
 test.describe("POS Billing Receiving Destination Controls", () => {
   test("Bank Transfer method controls, destination selection, attestation, and checkout", async ({
     page,
@@ -173,7 +198,7 @@ test.describe("POS Billing Receiving Destination Controls", () => {
     await refInput.fill("NABIL-TXN-9988");
 
     // Attestation checkbox appears
-    const attestCheckbox = page.locator('label').filter({ hasText: /I checked this receiving account and received NPR/i }).locator('input[type="checkbox"]');
+    const attestCheckbox = page.getByRole('checkbox', { name: /I checked this receiving account and received NPR/i });
     await expect(attestCheckbox).toBeVisible();
     await expect(attestCheckbox).not.toBeChecked();
 
@@ -283,10 +308,10 @@ test.describe("POS Billing Receiving Destination Controls", () => {
     const listbox = page.locator('[role="listbox"]');
     await listbox.locator('button[role="option"]:has-text("Store Fonepay QR")').click();
 
-    const attestCheckbox = page.locator('label').filter({ hasText: /I checked this receiving account and received NPR/i }).locator('input[type="checkbox"]');
+    const attestCheckbox = page.getByRole('checkbox', { name: /I checked this receiving account and received NPR/i });
     await attestCheckbox.check();
 
-    const fonepayMerchantCheckbox = page.locator('label').filter({ hasText: /I have verified the Fonepay merchant/i }).locator('input[type="checkbox"]');
+    const fonepayMerchantCheckbox = page.getByRole('checkbox', { name: /I have verified the Fonepay merchant/i });
     await fonepayMerchantCheckbox.check();
 
     // Click confirm: backend enabled accounts refresh returns version 2, rejecting review
@@ -355,7 +380,7 @@ test.describe("POS Billing Receiving Destination Controls", () => {
     await listbox.locator('button[role="option"]:has-text("Nabil Main Current")').click();
 
     // Check row attestation
-    const rowAttestCheckbox = page.locator('label').filter({ hasText: /I checked this receiving account and received NPR/i }).locator('input[type="checkbox"]');
+    const rowAttestCheckbox = page.getByRole('checkbox', { name: /I checked this receiving account and received NPR/i });
     await rowAttestCheckbox.check();
 
     // Submit split review
@@ -434,7 +459,7 @@ test.describe("POS Billing Receiving Destination Controls", () => {
     const refInput = page.locator('input[placeholder*="Voucher no"]').first();
     await refInput.fill("RETRY-TXN-1122");
 
-    const attestCheckbox = page.locator('label').filter({ hasText: /I checked this receiving account and received NPR/i }).locator('input[type="checkbox"]');
+    const attestCheckbox = page.getByRole('checkbox', { name: /I checked this receiving account and received NPR/i });
     await attestCheckbox.check();
 
     // Confirm checkout to open review dialog
