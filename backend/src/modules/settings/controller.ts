@@ -132,6 +132,13 @@ export async function updateBusinessDefaults(req: Request, res: Response) {
         req.body?.draftRequestExpiryMinutes,
         "draftRequestExpiryMinutes",
       ),
+      businessName: req.body?.businessName,
+      legalName: req.body?.legalName,
+      panNo: req.body?.panNo,
+      businessAddress: req.body?.businessAddress,
+      businessPhone: req.body?.businessPhone,
+      taxCalculationMode: req.body?.taxCalculationMode,
+      defaultBillingChannel: req.body?.defaultBillingChannel,
     }, req.user!.id);
 
     res.json(settings);

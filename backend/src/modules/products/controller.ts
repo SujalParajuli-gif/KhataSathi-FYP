@@ -7,9 +7,11 @@ import * as productService from "./service";
 import * as documentService from "../documents/service";
 import { getCashierPrivilege } from "../settings/service";
 import {
+  type ProductLookupVisibility,
   redactInventoryFromProduct,
   redactProductForLookup,
   resolveProductLookupVisibility,
+  sanitizeProductForResponse,
 } from "./lookupVisibility";
 import { getBusinessCapabilities } from "../settings/capabilities";
 import {
@@ -198,6 +200,27 @@ function parseRequiredNumber(
   return normalized;
 }
 
+export async function getRequestProductVisibility(
+  req: Request,
+  options?: { allowCatalogRate?: boolean },
+): Promise<ProductLookupVisibility> {
+  const role = req.user?.role || "";
+  const normalizedRole = String(role).toUpperCase();
+  if (normalizedRole === "ADMIN") {
+    return {
+      canViewPurchaseCost: true,
+      canViewWholesalePrice: true,
+      canViewCatalogRate: true,
+    };
+  }
+  const privilege = req.user?.id ? await getCashierPrivilege(req.user.id) : null;
+  return resolveProductLookupVisibility(
+    role,
+    privilege?.canViewWholesalePrice === true,
+    options,
+  );
+}
+
 // listing products with optional filters — supports search, brand, category, active status, low stock, and pagination
 export async function list(req: Request, res: Response) {
   try {
@@ -210,20 +233,25 @@ export async function list(req: Request, res: Response) {
     }
     const startedAt = Date.now();
     const result = await productService.listProducts(filters);
-    const searchLogId = await safelyRecordProductListSearch(
-      req,
-      "PRODUCTS",
-      filters,
-      result.total,
-      Date.now() - startedAt,
-    );
+    const [visibility, searchLogId] = await Promise.all([
+      getRequestProductVisibility(req, { allowCatalogRate: true }),
+      safelyRecordProductListSearch(
+        req,
+        "PRODUCTS",
+        filters,
+        result.total,
+        Date.now() - startedAt,
+      ),
+    ]);
     res.json({
       ...result,
-      products: capabilities.stockTracked
-        ? result.products
-        : result.products.map((product) =>
-            redactInventoryFromProduct(product as Record<string, any>),
-          ),
+      products: result.products.map((product) =>
+        sanitizeProductForResponse(
+          product as Record<string, any>,
+          visibility,
+          capabilities.stockTracked,
+        ),
+      ),
       stockTracked: capabilities.stockTracked,
       searchLogId,
     });
@@ -248,10 +276,8 @@ export async function listForPriceLookup(req: Request, res: Response) {
     const startedAt = Date.now();
     const result = await productService.listProducts(filters);
     const searchDurationMs = Date.now() - startedAt;
-    const [privilege, searchLogId] = await Promise.all([
-      req.user!.role === "ADMIN"
-        ? Promise.resolve({ canViewWholesalePrice: true })
-        : getCashierPrivilege(req.user!.id),
+    const [visibility, searchLogId] = await Promise.all([
+      getRequestProductVisibility(req),
       safelyRecordProductListSearch(
         req,
         "PRODUCT_LOOKUP",
@@ -260,23 +286,17 @@ export async function listForPriceLookup(req: Request, res: Response) {
         searchDurationMs,
       ),
     ]);
-    const visibility = resolveProductLookupVisibility(
-      req.user!.role,
-      privilege.canViewWholesalePrice === true,
-    );
 
     res.set("Cache-Control", "private, no-store");
     res.json({
       ...result,
-      products: result.products.map((product) => {
-        const visible = redactProductForLookup(
+      products: result.products.map((product) =>
+        sanitizeProductForResponse(
           product as Record<string, any>,
           visibility,
-        );
-        return capabilities.stockTracked
-          ? visible
-          : redactInventoryFromProduct(visible);
-      }),
+          capabilities.stockTracked,
+        ),
+      ),
       visibility,
       stockTracked: capabilities.stockTracked,
       searchLogId,
@@ -317,10 +337,13 @@ export async function getOne(req: Request, res: Response) {
       res.status(404).json({ error: "Product not found" });
       return;
     }
+    const visibility = await getRequestProductVisibility(req, { allowCatalogRate: true });
     res.json(
-      capabilities.stockTracked
-        ? product
-        : redactInventoryFromProduct(product as Record<string, any>),
+      sanitizeProductForResponse(
+        product as Record<string, any>,
+        visibility,
+        capabilities.stockTracked,
+      ),
     );
   } catch (err) {
     console.error("Get product error:", err);
@@ -328,7 +351,11 @@ export async function getOne(req: Request, res: Response) {
   }
 }
 
-export async function getMany(req: Request, res: Response) {
+async function handleBatchLookup(
+  req: Request,
+  res: Response,
+  options?: { allowCatalogRate?: boolean },
+) {
   try {
     const capabilities = await getBusinessCapabilities();
     const ids = String(req.query.ids || "")
@@ -343,19 +370,32 @@ export async function getMany(req: Request, res: Response) {
       res.status(400).json({ error: "A maximum of 50 products can be refreshed at once." });
       return;
     }
-    const products = await productService.getProductsByIds(ids);
+    const [products, visibility] = await Promise.all([
+      productService.getProductsByIds(ids),
+      getRequestProductVisibility(req, options),
+    ]);
     res.json({
-      products: capabilities.stockTracked
-        ? products
-        : products.map((product) =>
-            redactInventoryFromProduct(product as Record<string, any>),
-          ),
+      products: products.map((product) =>
+        sanitizeProductForResponse(
+          product as Record<string, any>,
+          visibility,
+          capabilities.stockTracked,
+        ),
+      ),
       stockTracked: capabilities.stockTracked,
     });
   } catch (err) {
     console.error("Batch product lookup error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
+}
+
+export async function getMany(req: Request, res: Response) {
+  return handleBatchLookup(req, res);
+}
+
+export async function getManyForCatalog(req: Request, res: Response) {
+  return handleBatchLookup(req, res, { allowCatalogRate: true });
 }
 
 export async function getByCode(req: Request, res: Response) {
@@ -371,10 +411,13 @@ export async function getByCode(req: Request, res: Response) {
       res.status(404).json({ error: "Active product not found" });
       return;
     }
+    const visibility = await getRequestProductVisibility(req);
     res.json(
-      capabilities.stockTracked
-        ? product
-        : redactInventoryFromProduct(product as Record<string, any>),
+      sanitizeProductForResponse(
+        product as Record<string, any>,
+        visibility,
+        capabilities.stockTracked,
+      ),
     );
   } catch (err) {
     console.error("Product code lookup error:", err);
@@ -385,6 +428,10 @@ export async function getByCode(req: Request, res: Response) {
 // creating a new product — all input values are validated through the parse helper functions
 export async function create(req: Request, res: Response) {
   try {
+    if (Object.prototype.hasOwnProperty.call(req.body || {}, "taxCategory")) {
+      res.status(400).json({ error: "Set product tax category through the ADMIN tax-category endpoint." });
+      return;
+    }
     const capabilities = await getBusinessCapabilities();
     const product = await productService.createProduct({
       name: parseRequiredText(req.body.name, "name"),
@@ -490,9 +537,17 @@ export async function create(req: Request, res: Response) {
 // updating an existing product — only the fields that are provided in the request body get changed
 export async function update(req: Request, res: Response) {
   try {
-    const capabilities = await getBusinessCapabilities();
     const productId = String(req.params.id);
     const body = req.body || {};
+    if (Object.prototype.hasOwnProperty.call(body, "taxCategory")) {
+      res.status(req.user!.role === "ADMIN" ? 400 : 403).json({
+        error: req.user!.role === "ADMIN"
+          ? "Set product tax category through the ADMIN tax-category endpoint."
+          : "Only an administrator can change a product tax category.",
+      });
+      return;
+    }
+    const capabilities = await getBusinessCapabilities();
     const data: any = {};
 
     // building the update object — each field is only included if it was actually sent in the request
@@ -652,6 +707,32 @@ export async function update(req: Request, res: Response) {
       return;
     }
     console.error("Update product error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function updateTaxCategory(req: Request, res: Response) {
+  try {
+    const product = await productService.updateProductTaxCategory(
+      String(req.params.id),
+      req.body?.taxCategory,
+      { id: req.user!.id, role: req.user!.role },
+    );
+    res.json({ id: product.id, taxCategory: product.taxCategory });
+  } catch (err: any) {
+    if (err.code === "INVALID_TAX_CATEGORY") {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err.code === "FORBIDDEN") {
+      res.status(403).json({ error: err.message });
+      return;
+    }
+    if (err.code === "P2025") {
+      res.status(404).json({ error: "Product not found" });
+      return;
+    }
+    console.error("Update product tax category error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

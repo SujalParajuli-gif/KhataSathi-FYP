@@ -33,6 +33,14 @@ interface CategorizedHistoryFilters {
     pageSize?: number;
 }
 
+// Restricted proof events are served only by visibility-checked dedicated history.
+// Apply before pagination, search and count so hidden evidence has no side channel.
+function privateAuditExclusions() {
+    return ["SALE_RECOVERY_", "SALE_EVIDENCE_", "SALES_EVIDENCE_", "PAYMENT_ACCOUNT_", "PURCHASE_"]
+        .map((prefix) => ({ action: { not: { startsWith: prefix } } }))
+        .concat([{ action: { not: { equals: "MANUAL_BILL_ATTACHED" } } } as any]);
+}
+
 const HISTORY_CATEGORY_FILTERS: Record<string, { actions?: string[]; entityTypes?: string[] }> = {
     sales: {
         actions: [
@@ -327,8 +335,13 @@ export async function listAuditLogs(filters: AuditFilters) {
     const { from, to, action, actorId, entityType, page = 1, pageSize = 50 } = filters;
 
     // building the where clause dynamically based on which filters are provided
-    const where: any = {};
-    if (action) where.action = { contains: action }; // partial match on action name
+    const andFilters: any[] = [
+        ...privateAuditExclusions(),
+    ];
+    if (action) {
+        andFilters.push({ action: { contains: action } });
+    }
+    const where: any = { AND: andFilters };
     if (actorId) where.actorId = actorId;
     if (entityType) where.entityType = entityType;
     if (from || to) {
@@ -391,14 +404,18 @@ export async function listCategorizedHistory(filters: CategorizedHistoryFilters)
     const { category = "all", from, to, q, action, actorId, page = 1, pageSize = 30 } = filters;
 
     const where: any = {};
-    const andFilters: any[] = [];
+    const andFilters: any[] = [
+        ...privateAuditExclusions(),
+    ];
     const categoryWhere = buildCategoryWhere(category);
     if (Object.keys(categoryWhere).length) {
         andFilters.push(categoryWhere);
     }
     const businessDateRange = buildBusinessDateRange({ from, to });
     if (businessDateRange) where.createdAt = businessDateRange;
-    if (action) where.action = { contains: action };
+    if (action) {
+        andFilters.push({ action: { contains: action } });
+    }
     if (actorId) where.actorId = actorId;
     if (q) {
         andFilters.push({ OR: [

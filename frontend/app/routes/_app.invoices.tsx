@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
+import { useSearchParams } from "react-router";
 import { createPortal } from "react-dom";
 import {
   InvoiceStatusChip,
@@ -47,10 +48,19 @@ import { isRateLimitError } from "~/lib/api/client";
 import { submitEsewaForm } from "~/lib/esewa";
 import type {
   AppInvoice,
+  FrontendIdentitySource,
   InvoiceStatusLabel,
   PaymentMethodLabel,
 } from "~/lib/invoices";
-import { formatNpr, normalizeInvoice, openInvoicePrint } from "~/lib/invoices";
+import {
+  cleanDisplayString,
+  formatNpr,
+  getIdentitySourceLabel,
+  getInvoiceItemProvenanceNotice,
+  isValidBackendIdentitySource,
+  normalizeInvoice,
+  openInvoicePrint,
+} from "~/lib/invoices";
 
 // we use this helper function to easily join multiple tailwind class strings
 function cn(...xs: Array<string | false | null | undefined>) {
@@ -225,6 +235,7 @@ type ReturnLineState = {
   productId?: string;
   name: string;
   sku?: string;
+  identitySource: FrontendIdentitySource;
   qtyPurchased: number;
   qtyReturning: number;
   unitPrice: number;
@@ -234,6 +245,7 @@ type AppReturnRequestItem = {
   id: string;
   name: string;
   sku?: string;
+  identitySource: FrontendIdentitySource;
   qtyReturned: number;
   unitPrice: number;
   lineTotal: number;
@@ -347,14 +359,49 @@ function normalizeReturnRequest(raw: any): AppReturnRequest {
       ? String(raw.reviewedBy.name)
       : undefined,
     items: Array.isArray(raw.items)
-      ? raw.items.map((item: any) => ({
-          id: String(item.id),
-          name: String(item.product?.name || "Returned item"),
-          sku: item.product?.sku ? String(item.product.sku) : undefined,
-          qtyReturned: Number(item.qtyReturned || 0),
-          unitPrice: Number(item.unitPrice || 0),
-          lineTotal: Number(item.lineTotal || 0),
-        }))
+      ? raw.items.map((item: any) => {
+          let identitySource: FrontendIdentitySource;
+          let name: string;
+          let sku: string | undefined = undefined;
+
+          if (!("displayProduct" in item)) {
+            identitySource = "COMPATIBILITY_UNVERIFIED";
+            name =
+              cleanDisplayString(item.product?.name) ||
+              cleanDisplayString(item.name) ||
+              "Returned item";
+            sku =
+              cleanDisplayString(item.product?.sku) ||
+              cleanDisplayString(item.sku) ||
+              undefined;
+          } else {
+            const dp = item.displayProduct;
+            if (
+              dp === null ||
+              typeof dp !== "object" ||
+              !isValidBackendIdentitySource(dp.source)
+            ) {
+              identitySource = "UNRESOLVED";
+              name = "Returned item";
+              sku = undefined;
+            } else {
+              identitySource = dp.source;
+              name = cleanDisplayString(dp.name) || "Returned item";
+              const cleanSku = cleanDisplayString(dp.sku);
+              sku = cleanSku !== null ? cleanSku : undefined;
+            }
+          }
+
+          return {
+            id: String(item.id),
+            name,
+            sku,
+            identitySource,
+            qtyReturned: Number(item.qtyReturned || 0),
+            unitPrice: Number(item.unitPrice || 0),
+            lineTotal: Number(item.lineTotal || 0),
+          };
+        })
       : [],
   };
 }
@@ -1531,8 +1578,14 @@ function InvoiceReturnRequestModal({
                         <div className="truncate text-[13px] font-extrabold text-[#000000]">
                           {line.name}
                         </div>
-                        <div className="mt-0.5 flex flex-wrap gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
+                        <div className="mt-0.5 flex flex-wrap items-center gap-x-2 gap-y-1 text-[11px] font-semibold text-[#8C8889]">
                           {line.sku ? <span>SKU: {line.sku}</span> : null}
+                          <span
+                            className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                            title={getIdentitySourceLabel(line.identitySource)}
+                          >
+                            [{getIdentitySourceLabel(line.identitySource)}]
+                          </span>
                           <span>{formatNpr(line.unitPrice)} / unit</span>
                         </div>
                       </div>
@@ -1605,8 +1658,15 @@ function InvoiceReturnRequestModal({
                         <div className="text-[13px] font-extrabold text-[#000000] truncate">
                           {line.name}
                         </div>
-                        <div className="text-[11px] font-semibold text-[#8C8889] mt-0.5">
-                          {line.sku ? `SKU: ${line.sku} · ` : ""}{formatNpr(line.unitPrice)}/unit
+                        <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] font-semibold text-[#8C8889] mt-0.5">
+                          {line.sku ? <span>SKU: {line.sku} · </span> : null}
+                          <span
+                            className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                            title={getIdentitySourceLabel(line.identitySource)}
+                          >
+                            [{getIdentitySourceLabel(line.identitySource)}]
+                          </span>
+                          <span>· {formatNpr(line.unitPrice)}/unit</span>
                         </div>
                       </div>
                       <span className="shrink-0 rounded-full bg-slate-100 px-2 py-0.5 text-[10.5px] font-extrabold text-[#565449]">
@@ -2005,8 +2065,14 @@ function ReturnReviewModal({
                             <div className="truncate font-extrabold text-[#000000]">
                               {item.name}
                             </div>
-                            <div className="mt-0.5 text-[11px] font-semibold text-[#8C8889]">
-                              {item.sku || "No SKU"}
+                            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] font-semibold text-[#8C8889]">
+                              <span>{item.sku || "No SKU"}</span>
+                              <span
+                                className="inline-flex items-center rounded-full bg-slate-100 px-1.5 py-0.2 text-[10px] font-medium text-slate-600"
+                                title={getIdentitySourceLabel(item.identitySource)}
+                              >
+                                [{getIdentitySourceLabel(item.identitySource)}]
+                              </span>
                             </div>
                           </div>
                           <div className="font-mono font-extrabold text-[#000000]">
@@ -2409,6 +2475,11 @@ export default function CashierInvoicesPage() {
   const [selectedInvoiceId, setSelectedInvoiceId] = useState<string | null>(
     null,
   );
+  const [searchParams, setSearchParams] = useSearchParams();
+  const urlInvoiceId = searchParams.get("invoiceId")?.trim() || null;
+  const activeDetailRequestRef = useRef<object | null>(null);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [detailError, setDetailError] = useState<string | null>(null);
   const [detailInvoice, setDetailInvoice] = useState<AppInvoice | null>(null); // invoice shown in the read-only detail modal
   const [editInvoice, setEditInvoice] = useState<AppInvoice | null>(null); // invoice currently being edited in the payment modal
   const [modifyInvoice, setModifyInvoice] = useState<AppInvoice | null>(null);
@@ -2838,27 +2909,83 @@ export default function CashierInvoicesPage() {
     setMobileFiltersOpen(false);
   }
 
-  // fetching the full invoice details when the user clicks to view it
+  // fetching the full invoice details when the user clicks to view it or arrives with an invoiceId search param
   async function openInvoice(id: string) {
-    // we show the cached preview version first so the modal opens instantly
-    const cached = invoices.find((invoice) => invoice.id === id) || null;
-    setSelectedInvoiceId(id);
-    setDetailInvoice(cached);
+    const cleanId = id.trim();
+    if (!cleanId) return;
+
+    const request = {};
+    activeDetailRequestRef.current = request;
+    setSelectedInvoiceId(cleanId);
+    setDetailError(null);
+
+    // Wait for the protected detail read; a list row is not a successful detail response.
+    setDetailInvoice(null);
+    setDetailLoading(true);
 
     // then we fetch the detailed version from the backend inside a try block
     try {
-      const detailed = await hydrateInvoice(id);
-      setDetailInvoice(detailed);
-    } catch {
-      setDetailInvoice(cached);
+      const detailed = await hydrateInvoice(cleanId);
+      if (activeDetailRequestRef.current === request) {
+        setDetailInvoice(detailed);
+        setDetailLoading(false);
+        setDetailError(null);
+      }
+    } catch (err: any) {
+      if (activeDetailRequestRef.current === request) {
+        setDetailLoading(false);
+        setDetailInvoice(null);
+        const message =
+          err?.response?.data?.error ||
+          err?.message ||
+          "Invoice not found or could not be loaded.";
+        setDetailError(typeof message === "string" ? message : "Invoice could not be loaded.");
+      }
     }
   }
 
   function closeInvoice() {
+    activeDetailRequestRef.current = null;
     setSelectedInvoiceId(null);
     setDetailInvoice(null);
+    setDetailLoading(false);
+    setDetailError(null);
     setPendingVoidPaymentId(null);
+
+    if (searchParams.get("invoiceId")) {
+      setSearchParams(
+        (current) => {
+          const next = new URLSearchParams(current);
+          next.delete("invoiceId");
+          return next;
+        },
+        { replace: true, preventScrollReset: true },
+      );
+    }
   }
+
+  const lastOpenedUrlInvoiceIdRef = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (urlInvoiceId) {
+      lastOpenedUrlInvoiceIdRef.current = urlInvoiceId;
+      void openInvoice(urlInvoiceId);
+    } else {
+      if (lastOpenedUrlInvoiceIdRef.current) {
+        activeDetailRequestRef.current = null;
+        setSelectedInvoiceId(null);
+        setDetailInvoice(null);
+        setDetailLoading(false);
+        setDetailError(null);
+        setPendingVoidPaymentId(null);
+      }
+      lastOpenedUrlInvoiceIdRef.current = null;
+    }
+  }, [urlInvoiceId]);
+
+  useEffect(() => () => {
+    activeDetailRequestRef.current = null;
+  }, []);
 
   // this opens the edit modal with the invoice's due amount prefilled so cashiers can settle it faster
   function openEditInvoice(invoice: AppInvoice) {
@@ -2970,6 +3097,7 @@ export default function CashierInvoicesPage() {
         productId: item.productId,
         name: item.name,
         sku: item.sku,
+        identitySource: item.identitySource,
         qtyPurchased:
           item.remainingReturnableQty !== undefined
             ? item.remainingReturnableQty
@@ -4249,8 +4377,15 @@ export default function CashierInvoicesPage() {
                           <div className="truncate text-[14px] font-extrabold text-[#000000]">
                             {invoice.customerName}
                           </div>
-                          <div className="mt-0.5 max-w-[220px] truncate text-[13px] font-semibold text-[#8C8889]">
-                            {invoice.customerSubtitle}
+                          {invoice.customerSubtitle ? (
+                            <div className="mt-0.5 max-w-[220px] truncate text-[13px] font-semibold text-[#8C8889]">
+                              {invoice.customerSubtitle}
+                            </div>
+                          ) : null}
+                          <div className="mt-1">
+                            <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                              {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                            </span>
                           </div>
                         </div>
                       </div>
@@ -4260,6 +4395,14 @@ export default function CashierInvoicesPage() {
                       <div className="max-w-[280px] truncate rounded-[10px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
                         {getCompactInvoiceSummary(invoice)}
                       </div>
+                      {(() => {
+                        const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                        return notice ? (
+                          <div className="mt-1 max-w-[280px] truncate text-[10px] font-bold text-[#8C8889]">
+                            {notice}
+                          </div>
+                        ) : null;
+                      })()}
                     </td>
 
                     <td className="px-4 py-3 align-top">
@@ -4364,17 +4507,35 @@ export default function CashierInvoicesPage() {
               </div>
 
               <div className="mt-3 border-t border-[#E5E7EB] pt-3">
-                <div className="text-[14px] font-extrabold text-[#000000]">
-                  {invoice.customerName}
+                <div className="flex flex-wrap items-center gap-1.5">
+                  <span className="text-[14px] font-extrabold text-[#000000]">
+                    {invoice.customerName}
+                  </span>
+                  <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#F8FAFC] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                    {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                  </span>
                 </div>
-                <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
-                  {invoice.customerSubtitle} | By {invoice.cashierName}
+                {invoice.customerSubtitle ? (
+                  <div className="mt-1 text-[13px] font-semibold text-[#8C8889]">
+                    {invoice.customerSubtitle}
+                  </div>
+                ) : null}
+                <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889]">
+                  By {invoice.cashierName}
                 </div>
               </div>
 
               <div className="mt-3 rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] px-3 py-2 text-[13px] font-bold text-[#565449]">
                 {getCompactInvoiceSummary(invoice)}
               </div>
+              {(() => {
+                const notice = getInvoiceItemProvenanceNotice(invoice.items);
+                return notice ? (
+                  <div className="mt-1 px-1 text-[10px] font-bold text-[#8C8889]">
+                    {notice}
+                  </div>
+                ) : null;
+              })()}
 
               <div className="mt-3 flex items-center justify-between gap-2">
                 <div className="flex min-w-0 items-center gap-1.5">
@@ -4448,6 +4609,8 @@ export default function CashierInvoicesPage() {
       <InvoiceDetailModal
         open={!!selectedInvoiceId}
         invoice={detailInvoice}
+        loading={detailLoading}
+        error={detailError}
         onClose={closeInvoice}
         onVoidPayment={isAdminView || canCashierVoidPayment ? handleVoidPayment : undefined}
         voidingPaymentId={voidingPaymentId}

@@ -6,6 +6,7 @@ import {
   lockReturnRequestForUpdate,
   runFinancialTransaction,
 } from "../../lib/transactionLocks";
+import { resolveDisplayProduct } from "../invoices/service";
 
 type ReturnReasonInput =
   | "DAMAGED"
@@ -63,10 +64,68 @@ const returnRequestInclude = {
   items: {
     include: {
       product: { select: { id: true, name: true, sku: true, barcode: true } },
-      invoiceItem: { select: { id: true, qty: true, appliedUnitPrice: true } },
+      invoiceItem: {
+        select: {
+          id: true,
+          qty: true,
+          appliedUnitPrice: true,
+          productNameSnapshot: true,
+          productSkuSnapshot: true,
+          snapshotCapturedAt: true,
+          product: { select: { id: true, name: true, sku: true } },
+        },
+      },
     },
   },
 };
+
+export function mapReturnRequestDisplayIdentity<
+  T extends {
+    items?: any[];
+    [key: string]: any;
+  },
+>(request: T): T & { items: Array<any> } {
+  if (!request || !Array.isArray(request.items)) {
+    return {
+      ...request,
+      items: [],
+    };
+  }
+
+  const items = request.items.map((item: any) => {
+    const rawInvoiceItem = item.invoiceItem;
+    // Resolve display product using the linked original invoiceItem's snapshots and marker
+    // Returns only reference finalized invoices
+    const displayProduct = rawInvoiceItem
+      ? resolveDisplayProduct(rawInvoiceItem, "FINALIZED")
+      : resolveDisplayProduct(
+          {
+            product: item.product,
+          },
+          "FINALIZED",
+        );
+
+    // Sanitize invoiceItem so raw snapshot fields remain internal and are not exposed on the wire
+    const sanitizedInvoiceItem = rawInvoiceItem
+      ? {
+          id: rawInvoiceItem.id,
+          qty: rawInvoiceItem.qty,
+          appliedUnitPrice: rawInvoiceItem.appliedUnitPrice,
+        }
+      : rawInvoiceItem;
+
+    return {
+      ...item,
+      displayProduct,
+      invoiceItem: sanitizedInvoiceItem,
+    };
+  });
+
+  return {
+    ...request,
+    items,
+  };
+}
 
 function normalizeReason(value: string): ReturnReasonInput {
   const normalized = String(value || "").trim().toUpperCase();
@@ -212,12 +271,14 @@ export async function listReturnRequests(filters: {
     ...(canSeeAllReturns ? {} : { createdById: filters.userId }),
   };
 
-  return prisma.returnRequest.findMany({
+  const records = await prisma.returnRequest.findMany({
     where,
     include: returnRequestInclude,
     orderBy: { createdAt: "desc" },
     take: 100,
   });
+
+  return records.map(mapReturnRequestDisplayIdentity);
 }
 
 export async function createReturnRequest(
@@ -240,7 +301,11 @@ export async function createReturnRequest(
     const invoice = await tx.invoice.findUnique({
       where: { id: invoiceId },
       include: {
-        items: { include: { product: true } },
+        items: {
+          include: {
+            product: { select: { id: true, name: true, sku: true } },
+          },
+        },
         customer: true,
       },
     });
@@ -300,9 +365,12 @@ export async function createReturnRequest(
         alreadyReturned,
       );
 
+      const display = resolveDisplayProduct(invoiceItem, "FINALIZED");
+      const itemName = display.name || invoiceItem.product?.name || "Item";
+
       if (requested.qty > remainingQty) {
         throw new Error(
-          `${invoiceItem.product?.name || "Item"} only has ${remainingQty} unit(s) available to return.`,
+          `${itemName} only has ${remainingQty} unit(s) available to return.`,
         );
       }
 
@@ -385,7 +453,7 @@ export async function createReturnRequest(
       },
     });
 
-    return request;
+    return mapReturnRequestDisplayIdentity(request);
   });
 }
 
@@ -478,10 +546,12 @@ export async function approveReturnRequest(id: string, reviewedById: string) {
       },
     });
 
-    return tx.returnRequest.findUnique({
+    const updated = await tx.returnRequest.findUnique({
       where: { id: requestId },
       include: returnRequestInclude,
     });
+
+    return updated ? mapReturnRequestDisplayIdentity(updated) : null;
   });
 }
 
@@ -614,10 +684,12 @@ export async function reverseApprovedReturnRequest(
       },
     });
 
-    return tx.returnRequest.findUnique({
+    const updated = await tx.returnRequest.findUnique({
       where: { id: requestId },
       include: returnRequestInclude,
     });
+
+    return updated ? mapReturnRequestDisplayIdentity(updated) : null;
   });
 }
 
@@ -686,9 +758,11 @@ export async function rejectReturnRequest(
       },
     });
 
-    return tx.returnRequest.findUnique({
+    const updated = await tx.returnRequest.findUnique({
       where: { id: requestId },
       include: returnRequestInclude,
     });
+
+    return updated ? mapReturnRequestDisplayIdentity(updated) : null;
   });
 }

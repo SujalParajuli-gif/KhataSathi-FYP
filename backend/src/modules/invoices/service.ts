@@ -12,9 +12,13 @@ import {
 import prisma from "../../db/prisma";
 import {
   lockCashierForUpdate,
+  lockBillingDraftRequestForUpdate,
   lockInvoiceItemForUpdate,
   lockInvoiceItemsForUpdate,
   lockInvoiceForUpdate,
+  lockPaymentReceivingAccountForUpdate,
+  lockPaymentReceivingAccountsForUpdate,
+  lockPaymentReceivingQrAssetForShare,
   lockProductsForUpdate,
   runFinancialTransaction,
 } from "../../lib/transactionLocks";
@@ -23,6 +27,7 @@ import {
   getBusinessSettings,
   resolveWholesaleQtyThreshold,
 } from "../settings/service";
+import { assertCashierCanReview } from "../draft-requests/service";
 import { createEsewaPaymentIntentTx } from "../payments/service";
 import {
   buildInsufficientStockMessage,
@@ -30,13 +35,51 @@ import {
   type StockConflict,
   StockConflictError,
 } from "./stockConflicts";
+import {
+  cancelManualBillObligationTx,
+  initializeManualBillMetadataTx,
+} from "./manualBill/service";
 
 export { StockConflictError } from "./stockConflicts";
+
+export class CheckoutReviewConflictError extends Error {
+  readonly code = "CHECKOUT_REVIEW_REQUIRED";
+  readonly reason: "PRICE_OR_TOTAL_CHANGED" | "MISSING_CONFIRMATION";
+  readonly details?: {
+    confirmedPayableTotal?: number;
+    currentPayableTotal?: number;
+    itemDiscrepancies?: Array<{
+      productId: string;
+      productName: string;
+      confirmedUnitPrice?: number;
+      currentUnitPrice?: number;
+      confirmedQty?: number;
+      currentQty?: number;
+    }>;
+  };
+
+  constructor(
+    message: string,
+    options?: {
+      reason?: "PRICE_OR_TOTAL_CHANGED" | "MISSING_CONFIRMATION";
+      details?: CheckoutReviewConflictError["details"];
+    },
+  ) {
+    super(message);
+    this.name = "CheckoutReviewConflictError";
+    this.reason = options?.reason || "PRICE_OR_TOTAL_CHANGED";
+    this.details = options?.details;
+  }
+}
 
 const MAX_CREATE_DRAFT_RETRIES = 5; // retry limit for when the auto-generated invoice number collides with an existing one
 const ACTIVE_RETURN_STATUSES = ["PENDING", "APPROVED"] as const;
 const PRICE_OVERRIDE_AUTH_TTL_MS = 5 * 60 * 1000;
 const MAX_PARKED_BILLS_PER_CASHIER = 5;
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const HTML_TAG_PATTERN = /<[^>]*>/;
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
 
 // we use this to round any currency value to 2 decimal places
 // without this, JavaScript floating point math can produce results like 10.0000000001
@@ -44,6 +87,547 @@ const MAX_PARKED_BILLS_PER_CASHIER = 5;
 // differences cause the comparison to fail even though they should be equal
 function roundCurrency(value: number) {
   return Math.round(value * 100) / 100;
+}
+
+export const publicInvoiceItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+  product: {
+    select: {
+      id: true,
+      name: true,
+      sku: true,
+      barcode: true,
+    },
+  },
+} as const;
+
+export type PublicInvoiceItem = {
+  id: string;
+  invoiceId: string;
+  productId: string;
+  qty: number;
+  appliedUnitPrice: number;
+  originalUnitPrice: number | null;
+  overrideUnitPrice: number | null;
+  overrideReason: string | null;
+  overrideById: string | null;
+  overrideAt: Date | string | null;
+  lineTotal: number;
+  createdAt: Date | string;
+  product?: {
+    id: string;
+    name: string;
+    sku: string | null;
+    barcode: string | null;
+  } | null;
+};
+
+export const detailInvoiceItemSelect = {
+  ...publicInvoiceItemSelect,
+  productNameSnapshot: true,
+  productSkuSnapshot: true,
+  snapshotCapturedAt: true,
+} as const;
+
+export type DisplayIdentitySource =
+  | "CAPTURED"
+  | "LEGACY_LIVE_FALLBACK"
+  | "LEGACY_UNAVAILABLE"
+  | "DRAFT_CURRENT";
+
+export type DisplayCustomer = {
+  name: string | null;
+  panNo: string | null;
+  address: string | null;
+  source: DisplayIdentitySource;
+};
+
+export type DisplayProduct = {
+  name: string | null;
+  sku: string | null;
+  source: DisplayIdentitySource;
+};
+
+export function cleanDisplayString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.trim().length === 0) return null;
+  return value;
+}
+
+export function resolveDisplayCustomer(invoice: {
+  status: string;
+  customerId?: string | null;
+  customerNameSnapshot?: string | null;
+  customerPanSnapshot?: string | null;
+  customerAddressSnapshot?: string | null;
+  customerSnapshotCapturedAt?: Date | string | null;
+  customer?: {
+    name?: string | null;
+    [key: string]: any;
+  } | null;
+}): DisplayCustomer {
+  if (invoice.status === "DRAFT") {
+    const liveName = cleanDisplayString(invoice.customer?.name);
+    return {
+      name: liveName,
+      panNo: null,
+      address: null,
+      source: "DRAFT_CURRENT",
+    };
+  }
+
+  // FINALIZED (or any non-draft, e.g. cancelled finalized)
+  if (invoice.customerSnapshotCapturedAt != null) {
+    return {
+      name: cleanDisplayString(invoice.customerNameSnapshot),
+      panNo: cleanDisplayString(invoice.customerPanSnapshot),
+      address: cleanDisplayString(invoice.customerAddressSnapshot),
+      source: "CAPTURED",
+    };
+  }
+
+  // Legacy finalized without snapshot capture marker
+  const liveName = cleanDisplayString(invoice.customer?.name);
+  if (liveName !== null) {
+    return {
+      name: liveName,
+      panNo: null,
+      address: null,
+      source: "LEGACY_LIVE_FALLBACK",
+    };
+  }
+
+  return {
+    name: null,
+    panNo: null,
+    address: null,
+    source: "LEGACY_UNAVAILABLE",
+  };
+}
+
+export function resolveDisplayProduct(
+  item: {
+    productNameSnapshot?: string | null;
+    productSkuSnapshot?: string | null;
+    snapshotCapturedAt?: Date | string | null;
+    product?: {
+      name?: string | null;
+      sku?: string | null;
+      [key: string]: any;
+    } | null;
+  },
+  invoiceStatus: string,
+): DisplayProduct {
+  if (invoiceStatus === "DRAFT") {
+    const liveName = cleanDisplayString(item.product?.name);
+    const liveSku = cleanDisplayString(item.product?.sku);
+    return {
+      name: liveName,
+      sku: liveSku,
+      source: "DRAFT_CURRENT",
+    };
+  }
+
+  // FINALIZED (or any non-draft)
+  if (item.snapshotCapturedAt != null) {
+    return {
+      name: cleanDisplayString(item.productNameSnapshot),
+      sku: cleanDisplayString(item.productSkuSnapshot),
+      source: "CAPTURED",
+    };
+  }
+
+  // Legacy item without snapshot capture marker
+  const liveName = cleanDisplayString(item.product?.name);
+  const liveSku = cleanDisplayString(item.product?.sku);
+  if (liveName !== null || liveSku !== null) {
+    return {
+      name: liveName,
+      sku: liveSku,
+      source: "LEGACY_LIVE_FALLBACK",
+    };
+  }
+
+  return {
+    name: null,
+    sku: null,
+    source: "LEGACY_UNAVAILABLE",
+  };
+}
+
+export function resolveInvoiceDisplayIdentity<
+  T extends {
+    status: string;
+    customerId?: string | null;
+    customerNameSnapshot?: string | null;
+    customerPanSnapshot?: string | null;
+    customerAddressSnapshot?: string | null;
+    customerSnapshotCapturedAt?: Date | string | null;
+    customer?: {
+      name?: string | null;
+      [key: string]: any;
+    } | null;
+    items?: any[];
+    [key: string]: any;
+  },
+>(invoice: T): T & {
+  displayCustomer: DisplayCustomer;
+  items: Array<any>;
+} {
+  const displayCustomer = resolveDisplayCustomer(invoice);
+  if (!Array.isArray(invoice.items)) {
+    return {
+      ...invoice,
+      displayCustomer,
+      items: [],
+    };
+  }
+
+  const items = invoice.items.map((item) => ({
+    ...item,
+    displayProduct: resolveDisplayProduct(item, invoice.status),
+  }));
+
+  return {
+    ...invoice,
+    displayCustomer,
+    items,
+  };
+}
+
+export const publicDraftItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+} as const;
+
+export const publicParkedInvoiceItemSelect = {
+  id: true,
+  invoiceId: true,
+  productId: true,
+  qty: true,
+  appliedUnitPrice: true,
+  originalUnitPrice: true,
+  overrideUnitPrice: true,
+  overrideReason: true,
+  overrideById: true,
+  overrideAt: true,
+  lineTotal: true,
+  createdAt: true,
+  product: {
+    select: {
+      id: true,
+      name: true,
+      sku: true,
+      barcode: true,
+      retailPrice: true,
+      wholesalePrice: true,
+      wholesaleQtyThreshold: true,
+      stock: true,
+      reservedStock: true,
+      isActive: true,
+      imageUrl: true,
+    },
+  },
+} as const;
+
+// projects stored replay JSON items using an explicit allowlist and basic structural checks
+export function projectReplayInvoiceItem(raw: unknown): PublicInvoiceItem {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Replay invoice item must be an object");
+  }
+
+  const item = raw as Record<string, unknown>;
+
+  // Structural checks: required fields must be present and correctly typed
+  if (typeof item.id !== "string" || !item.id) {
+    throw new Error("Replay invoice item missing required string id");
+  }
+  if (typeof item.invoiceId !== "string" || !item.invoiceId) {
+    throw new Error("Replay invoice item missing required string invoiceId");
+  }
+  if (typeof item.productId !== "string" || !item.productId) {
+    throw new Error("Replay invoice item missing required string productId");
+  }
+  if (typeof item.qty !== "number" || !Number.isFinite(item.qty)) {
+    throw new Error("Replay invoice item missing required numeric qty");
+  }
+  if (typeof item.appliedUnitPrice !== "number" || !Number.isFinite(item.appliedUnitPrice)) {
+    throw new Error("Replay invoice item missing required numeric appliedUnitPrice");
+  }
+  if (typeof item.lineTotal !== "number" || !Number.isFinite(item.lineTotal)) {
+    throw new Error("Replay invoice item missing required numeric lineTotal");
+  }
+  if (!(item.createdAt instanceof Date) && typeof item.createdAt !== "string") {
+    throw new Error("Replay invoice item missing required createdAt");
+  }
+
+  let product: PublicInvoiceItem["product"] = undefined;
+  if ("product" in item && item.product !== undefined) {
+    if (item.product === null) {
+      product = null;
+    } else if (typeof item.product === "object" && !Array.isArray(item.product)) {
+      const p = item.product as Record<string, unknown>;
+      if (typeof p.id !== "string" || typeof p.name !== "string") {
+        throw new Error("Replay invoice item product must include valid id and name");
+      }
+      product = {
+        id: p.id,
+        name: p.name,
+        sku: typeof p.sku === "string" ? p.sku : null,
+        barcode: typeof p.barcode === "string" ? p.barcode : null,
+      };
+    } else {
+      throw new Error("Replay invoice item product must be an object or null");
+    }
+  }
+
+  const projected: PublicInvoiceItem = {
+    id: item.id,
+    invoiceId: item.invoiceId,
+    productId: item.productId,
+    qty: item.qty,
+    appliedUnitPrice: item.appliedUnitPrice,
+    originalUnitPrice: typeof item.originalUnitPrice === "number" ? item.originalUnitPrice : null,
+    overrideUnitPrice: typeof item.overrideUnitPrice === "number" ? item.overrideUnitPrice : null,
+    overrideReason: typeof item.overrideReason === "string" ? item.overrideReason : null,
+    overrideById: typeof item.overrideById === "string" ? item.overrideById : null,
+    overrideAt:
+      item.overrideAt instanceof Date || typeof item.overrideAt === "string"
+        ? item.overrideAt
+        : null,
+    lineTotal: item.lineTotal,
+    createdAt: item.createdAt,
+  };
+
+  if (product !== undefined) {
+    projected.product = product;
+  }
+
+  return projected;
+}
+
+export type PublicCheckoutResponse = Record<string, unknown> & {
+  invoice: (Record<string, unknown> & { items: PublicInvoiceItem[] }) | null;
+  esewaPaymentIntent?: unknown;
+};
+
+export type PublicPayment = {
+  id: string;
+  invoiceId: string;
+  method: string;
+  amount: number;
+  cashTendered?: number | null;
+  changeAmount?: number | null;
+  kind?: string;
+  status: string;
+  reference?: string | null;
+  transactionUuid?: string | null;
+  returnRequestId?: string | null;
+  createdById: string;
+  voidedAt?: Date | string | null;
+  voidedById?: string | null;
+  receivingAccountId?: string | null;
+  receivingDestinationSnapshot?: ReceivingDestinationSnapshot | null;
+  createdAt: Date | string;
+  createdBy?: {
+    id: string;
+    name: string;
+  } | null;
+};
+
+export function projectPublicPayment(raw: unknown): PublicPayment {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Replay payment must be an object");
+  }
+  const p = raw as Record<string, unknown>;
+  if (typeof p.id !== "string" || !p.id) {
+    throw new Error("Payment missing required string id");
+  }
+  if (typeof p.invoiceId !== "string" || !p.invoiceId) {
+    throw new Error("Payment missing required string invoiceId");
+  }
+  if (typeof p.method !== "string" || !p.method) {
+    throw new Error("Payment missing required string method");
+  }
+  if (typeof p.amount !== "number" || !Number.isFinite(p.amount)) {
+    throw new Error("Payment missing required numeric amount");
+  }
+  if (typeof p.status !== "string" || !p.status) {
+    throw new Error("Payment missing required string status");
+  }
+  if (typeof p.createdById !== "string" || !p.createdById) {
+    throw new Error("Payment missing required string createdById");
+  }
+  if (!(p.createdAt instanceof Date) && (typeof p.createdAt !== "string" || !p.createdAt)) {
+    throw new Error("Payment missing required createdAt");
+  }
+
+  let createdBy: { id: string; name: string } | null | undefined = undefined;
+  if ("createdBy" in p && p.createdBy !== undefined) {
+    if (p.createdBy === null) {
+      createdBy = null;
+    } else if (typeof p.createdBy === "object" && !Array.isArray(p.createdBy)) {
+      const cb = p.createdBy as Record<string, unknown>;
+      if (typeof cb.id === "string" && typeof cb.name === "string") {
+        createdBy = { id: cb.id, name: cb.name };
+      }
+    }
+  }
+
+  let receivingDestinationSnapshot: ReceivingDestinationSnapshot | null = null;
+  if (
+    "receivingDestinationSnapshot" in p &&
+    p.receivingDestinationSnapshot !== undefined &&
+    p.receivingDestinationSnapshot !== null
+  ) {
+    const s = p.receivingDestinationSnapshot as Record<string, unknown>;
+    const isIsoDate = (str: unknown): boolean =>
+      typeof str === "string" && str.trim().length > 0 && !isNaN(Date.parse(str));
+
+    if (
+      typeof s === "object" &&
+      !Array.isArray(s) &&
+      s.schemaVersion === 1 &&
+      typeof s.accountId === "string" &&
+      UUID_REGEX.test(s.accountId.trim()) &&
+      typeof s.accountVersion === "number" &&
+      Number.isInteger(s.accountVersion) &&
+      Number.isFinite(s.accountVersion) &&
+      s.accountVersion >= 1 &&
+      typeof s.providerLabel === "string" &&
+      s.providerLabel.trim().length > 0 &&
+      s.providerLabel.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.providerLabel) &&
+      !HTML_TAG_PATTERN.test(s.providerLabel) &&
+      typeof s.accountHolder === "string" &&
+      s.accountHolder.trim().length > 0 &&
+      s.accountHolder.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.accountHolder) &&
+      !HTML_TAG_PATTERN.test(s.accountHolder) &&
+      (s.accountIdentifier === null ||
+        (typeof s.accountIdentifier === "string" &&
+          s.accountIdentifier.trim().length > 0 &&
+          s.accountIdentifier.length <= 120 &&
+          !CONTROL_CHAR_PATTERN.test(s.accountIdentifier) &&
+          !HTML_TAG_PATTERN.test(s.accountIdentifier))) &&
+      (s.settlementMethod === "FONEPAY" || s.settlementMethod === "BANK_TRANSFER") &&
+      s.confirmationMode === "MANUAL_RECEIPT" &&
+      typeof s.qrAssetId === "string" &&
+      UUID_REGEX.test(s.qrAssetId.trim()) &&
+      typeof s.qrChecksum === "string" &&
+      /^[0-9a-fA-F]{64}$/.test(s.qrChecksum.trim()) &&
+      typeof s.confirmedById === "string" &&
+      s.confirmedById.trim().length > 0 &&
+      s.confirmedById.length <= 120 &&
+      !CONTROL_CHAR_PATTERN.test(s.confirmedById) &&
+      !HTML_TAG_PATTERN.test(s.confirmedById) &&
+      isIsoDate(s.confirmedAt)
+    ) {
+      receivingDestinationSnapshot = {
+        schemaVersion: 1,
+        accountId: s.accountId.trim(),
+        accountVersion: s.accountVersion,
+        providerLabel: s.providerLabel.trim(),
+        accountHolder: s.accountHolder.trim(),
+        accountIdentifier:
+          typeof s.accountIdentifier === "string"
+            ? s.accountIdentifier.trim()
+            : null,
+        settlementMethod: s.settlementMethod,
+        confirmationMode: "MANUAL_RECEIPT",
+        qrAssetId: s.qrAssetId.trim(),
+        qrChecksum: s.qrChecksum.trim().toLowerCase(),
+        confirmedById: s.confirmedById.trim(),
+        confirmedAt: (s.confirmedAt as string).trim(),
+      };
+    }
+  }
+
+  const projected: PublicPayment = {
+    id: p.id,
+    invoiceId: p.invoiceId,
+    method: p.method,
+    amount: p.amount,
+    cashTendered: typeof p.cashTendered === "number" ? p.cashTendered : null,
+    changeAmount: typeof p.changeAmount === "number" ? p.changeAmount : null,
+    kind: typeof p.kind === "string" ? p.kind : "CHARGE",
+    status: p.status,
+    reference: typeof p.reference === "string" ? p.reference : null,
+    transactionUuid: typeof p.transactionUuid === "string" ? p.transactionUuid : null,
+    returnRequestId: typeof p.returnRequestId === "string" ? p.returnRequestId : null,
+    createdById: p.createdById,
+    voidedAt:
+      p.voidedAt instanceof Date || typeof p.voidedAt === "string"
+        ? p.voidedAt
+        : null,
+    voidedById: typeof p.voidedById === "string" ? p.voidedById : null,
+    receivingAccountId: typeof p.receivingAccountId === "string" ? p.receivingAccountId : null,
+    receivingDestinationSnapshot,
+    createdAt: p.createdAt instanceof Date ? p.createdAt : (p.createdAt as string),
+  };
+
+  if (createdBy !== undefined) {
+    projected.createdBy = createdBy;
+  }
+
+  return projected;
+}
+
+// sanitizes a stored checkout response on replay to guarantee explicit item allowlist
+export function toPublicCheckoutResponse(payload: unknown): PublicCheckoutResponse {
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
+    throw new Error("Checkout response must be an object");
+  }
+  const raw = payload as Record<string, unknown>;
+  if (!("invoice" in raw)) {
+    throw new Error("Checkout response must contain an invoice property");
+  }
+
+  if (raw.invoice === null) {
+    return { ...raw, invoice: null };
+  }
+  if (!raw.invoice || typeof raw.invoice !== "object" || Array.isArray(raw.invoice)) {
+    throw new Error("Checkout response invoice must be an object or null");
+  }
+
+  const rawInvoice = raw.invoice as Record<string, unknown>;
+  if (!("items" in rawInvoice) || !Array.isArray(rawInvoice.items)) {
+    throw new Error("Checkout response invoice items must be an array");
+  }
+
+  const rawPayments = Array.isArray(rawInvoice.payments)
+    ? rawInvoice.payments.map(projectPublicPayment)
+    : undefined;
+
+  return {
+    ...raw,
+    invoice: {
+      ...rawInvoice,
+      items: rawInvoice.items.map(projectReplayInvoiceItem),
+      ...(rawPayments !== undefined ? { payments: rawPayments } : {}),
+    },
+  };
 }
 
 export function buildActiveReturnBlockMessage(
@@ -442,11 +1026,166 @@ type CheckoutPaymentInput = {
   amount?: number;
   reference?: string;
   tenderedAmount?: number;
+  receivingAccountId?: string | null;
+  receivingAccountVersion?: number | null;
+  manualReceiptConfirmed?: boolean | null;
 };
 
-type CheckoutInput = {
+export type ReceivingDestinationSnapshot = {
+  schemaVersion: 1;
+  accountId: string;
+  accountVersion: number;
+  providerLabel: string;
+  accountHolder: string;
+  accountIdentifier: string | null;
+  settlementMethod: string;
+  confirmationMode: string;
+  qrAssetId: string;
+  qrChecksum: string;
+  confirmedById: string;
+  confirmedAt: string;
+};
+
+export async function captureReceivingDestinationTx(
+  tx: any,
+  payment: {
+    receivingAccountId?: string | null;
+    receivingAccountVersion?: number | null;
+    manualReceiptConfirmed?: boolean | null;
+    method?: string;
+  },
+  actorId: string,
+): Promise<{
+  receivingAccountId: string;
+  receivingDestinationSnapshot: Prisma.InputJsonValue;
+} | null> {
+  const hasAnyDestination =
+    payment.receivingAccountId !== undefined ||
+    payment.receivingAccountVersion !== undefined ||
+    payment.manualReceiptConfirmed !== undefined;
+
+  if (!hasAnyDestination) {
+    return null;
+  }
+
+  if (payment.method !== "FONEPAY" && payment.method !== "BANK_TRANSFER") {
+    throw new Error(
+      "Receiving destination is only supported for Fonepay and Bank Transfer payments",
+    );
+  }
+  if (
+    !payment.receivingAccountId ||
+    typeof payment.receivingAccountId !== "string" ||
+    !UUID_REGEX.test(payment.receivingAccountId.trim())
+  ) {
+    throw new Error("Receiving account ID must be a valid UUID");
+  }
+  if (
+    payment.receivingAccountVersion === undefined ||
+    payment.receivingAccountVersion === null ||
+    typeof payment.receivingAccountVersion !== "number" ||
+    !Number.isInteger(payment.receivingAccountVersion) ||
+    payment.receivingAccountVersion < 1
+  ) {
+    throw new Error("Receiving account version must be a positive integer");
+  }
+  if (payment.manualReceiptConfirmed !== true) {
+    throw new Error(
+      "Cashier manual receipt confirmation is required for receiving destination",
+    );
+  }
+
+  const accountId = payment.receivingAccountId.trim();
+  const lockedAccount = await lockPaymentReceivingAccountForUpdate(tx, accountId);
+  if (!lockedAccount) {
+    const err: any = new Error("Receiving account not found");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (!lockedAccount.enabled) {
+    const err: any = new Error("Receiving account is disabled");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (lockedAccount.version !== payment.receivingAccountVersion) {
+    const err: any = new Error("Receiving account version changed");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (
+    payment.method !== lockedAccount.settlementMethod ||
+    lockedAccount.confirmationMode !== "MANUAL_RECEIPT"
+  ) {
+    const err: any = new Error(
+      "Receiving account does not support this payment method",
+    );
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  if (!lockedAccount.activeQrAssetId) {
+    const err: any = new Error("Receiving account has no active QR asset");
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const lockedAsset = await lockPaymentReceivingQrAssetForShare(
+    tx,
+    lockedAccount.activeQrAssetId,
+  );
+  if (!lockedAsset || lockedAsset.accountId !== accountId) {
+    const err: any = new Error(
+      "Active QR asset not found or does not belong to this account",
+    );
+    err.code = "RECEIVING_ACCOUNT_CHANGED";
+    err.statusCode = 409;
+    throw err;
+  }
+
+  const snapshot: ReceivingDestinationSnapshot = {
+    schemaVersion: 1,
+    accountId: lockedAccount.id,
+    accountVersion: lockedAccount.version,
+    providerLabel: lockedAccount.providerLabel,
+    accountHolder: lockedAccount.accountHolder,
+    accountIdentifier: lockedAccount.accountIdentifier ?? null,
+    settlementMethod: lockedAccount.settlementMethod!,
+    confirmationMode: lockedAccount.confirmationMode,
+    qrAssetId: lockedAsset.id,
+    qrChecksum: lockedAsset.checksum,
+    confirmedById: actorId,
+    confirmedAt: new Date().toISOString(),
+  };
+
+  return {
+    receivingAccountId: lockedAccount.id,
+    receivingDestinationSnapshot: snapshot as unknown as Prisma.InputJsonValue,
+  };
+}
+
+export type CheckoutConfirmationItemInput = {
+  productId: string;
+  qty: number;
+  appliedUnitPrice: number;
+};
+
+export type CheckoutConfirmationInput = {
+  items: CheckoutConfirmationItemInput[];
+  payableTotal: number;
+};
+
+export type CheckoutInput = {
   operationKey: string;
   draftInvoiceId?: string | null;
+  draftRequestId?: string | null;
   customerId?: string | null;
   discountAmount?: number;
   overridePin?: string | null;
@@ -454,15 +1193,77 @@ type CheckoutInput = {
   items: CheckoutItemInput[];
   payment?: CheckoutPaymentInput | null;
   payments?: CheckoutPaymentInput[] | null;
+  confirmation?: CheckoutConfirmationInput | null;
 };
+
+export function normalizeCheckoutConfirmation(
+  confirmation?: CheckoutConfirmationInput | null,
+): { items: CheckoutConfirmationItemInput[]; payableTotal: number } | null {
+  if (!confirmation) return null;
+  if (!Array.isArray(confirmation.items) || confirmation.items.length === 0) {
+    throw new Error("Confirmation items cannot be empty");
+  }
+  const payableTotal = Number(confirmation.payableTotal);
+  if (!Number.isFinite(payableTotal) || payableTotal < 0 || !Number.isInteger(payableTotal)) {
+    throw new Error("Confirmation payable total must be a valid whole NPR integer");
+  }
+
+  const seenProductIds = new Set<string>();
+  const normalizedItems: CheckoutConfirmationItemInput[] = [];
+
+  for (const item of confirmation.items) {
+    const productId = String(item.productId || "").trim();
+    if (!productId) {
+      throw new Error("Confirmation item productId is required");
+    }
+    if (seenProductIds.has(productId)) {
+      throw new Error(`Duplicate confirmation product ID: ${productId}`);
+    }
+    seenProductIds.add(productId);
+
+    const qty = Number(item.qty);
+    if (!Number.isFinite(qty) || qty <= 0) {
+      throw new Error("Confirmation item quantity must be greater than zero");
+    }
+
+    const appliedUnitPrice = roundCurrency(Number(item.appliedUnitPrice));
+    if (!Number.isFinite(appliedUnitPrice) || appliedUnitPrice < 0) {
+      throw new Error("Confirmation item appliedUnitPrice must be a valid non-negative number");
+    }
+
+    normalizedItems.push({
+      productId,
+      qty,
+      appliedUnitPrice,
+    });
+  }
+
+  // canonicalize order by productId for deterministic fingerprinting and matching
+  normalizedItems.sort((a, b) => a.productId.localeCompare(b.productId));
+
+  return {
+    items: normalizedItems,
+    payableTotal,
+  };
+}
 
 export function buildCheckoutPayloadHash(
   input: CheckoutInput,
   items: ReturnType<typeof normalizeCheckoutItems>,
   payments: ReturnType<typeof normalizeCheckoutPayments>,
+  includeEmptyDraftRequest = false,
+  normalizedConfirmation?: ReturnType<typeof normalizeCheckoutConfirmation>,
 ) {
+  const draftRequestId = String(input.draftRequestId || "").trim() || null;
+  const conf =
+    normalizedConfirmation !== undefined
+      ? normalizedConfirmation
+      : normalizeCheckoutConfirmation(input.confirmation);
+
   const fingerprintPayload = {
     draftInvoiceId: String(input.draftInvoiceId || "").trim() || null,
+    // Preserve ordinary operation hashes written before request-linked checkout existed.
+    ...(draftRequestId || includeEmptyDraftRequest ? { draftRequestId } : {}),
     customerId: String(input.customerId || "").trim() || null,
     discountAmount:
       input.discountAmount === undefined ? null : roundCurrency(input.discountAmount),
@@ -478,7 +1279,15 @@ export function buildCheckoutPayloadHash(
       amount: payment.amount,
       reference: payment.reference || null,
       tenderedAmount: payment.tenderedAmount ?? null,
+      ...(payment.receivingAccountId
+        ? {
+            receivingAccountId: payment.receivingAccountId,
+            receivingAccountVersion: payment.receivingAccountVersion,
+            manualReceiptConfirmed: payment.manualReceiptConfirmed === true,
+          }
+        : {}),
     })),
+    ...(conf ? { confirmation: conf } : {}),
   };
   return createHash("sha256").update(JSON.stringify(fingerprintPayload)).digest("hex");
 }
@@ -497,6 +1306,7 @@ async function replayCheckoutOperation(
   cashierId: string,
   operationKey: string,
   payloadHash: string,
+  compatiblePayloadHash?: string,
 ) {
   const operation = await prisma.checkoutOperation.findUnique({
     where: { operationKey },
@@ -505,13 +1315,13 @@ async function replayCheckoutOperation(
   if (operation.actorId !== cashierId) {
     throw new Error("Checkout operation key belongs to another user.");
   }
-  if (operation.payloadHash !== payloadHash) {
+  if (operation.payloadHash !== payloadHash && operation.payloadHash !== compatiblePayloadHash) {
     throw new Error("Checkout operation key was already used with different bill contents.");
   }
   if (!operation.completedAt || !operation.invoiceId || !operation.responseJson) {
     throw new Error("Checkout operation is still being resolved. Please retry shortly.");
   }
-  return operation.responseJson as {
+  return toPublicCheckoutResponse(operation.responseJson as Record<string, unknown>) as {
     invoice: { id: string } | null;
     esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
   };
@@ -565,7 +1375,7 @@ function normalizeOverrideUnitPrice(value: unknown) {
   return normalized;
 }
 
-function normalizeCheckoutItems(items: CheckoutItemInput[]) {
+export function normalizeCheckoutItems(items: CheckoutItemInput[]) {
   if (!Array.isArray(items) || items.length === 0) {
     throw new Error("Checkout requires at least one item");
   }
@@ -745,7 +1555,89 @@ export async function createPriceOverrideAuthorization(
   };
 }
 
-function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
+function hasDestinationProperty(obj: any, key: string): boolean {
+  return (
+    obj !== null &&
+    typeof obj === "object" &&
+    key in obj &&
+    obj[key] !== undefined
+  );
+}
+
+export function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
+  if (payment && typeof payment === "object") {
+    const hasAccountId = hasDestinationProperty(payment, "receivingAccountId");
+    const hasAccountVersion = hasDestinationProperty(
+      payment,
+      "receivingAccountVersion",
+    );
+    const hasManualReceipt = hasDestinationProperty(
+      payment,
+      "manualReceiptConfirmed",
+    );
+    const hasAnyDestination =
+      hasAccountId || hasAccountVersion || hasManualReceipt;
+
+    if (hasAnyDestination) {
+      if (
+        payment.method === "CASH" ||
+        payment.method === "ESEWA" ||
+        payment.method === "NONE" ||
+        !payment.method
+      ) {
+        throw new Error(
+          "Receiving destination is only supported for Fonepay and Bank Transfer payments",
+        );
+      }
+
+      if (payment.method !== "FONEPAY" && payment.method !== "BANK_TRANSFER") {
+        throw new Error(
+          "payment.method must be CASH, ESEWA, FONEPAY, BANK_TRANSFER, or NONE",
+        );
+      }
+
+      if (
+        !hasAccountId ||
+        typeof payment.receivingAccountId !== "string" ||
+        !UUID_REGEX.test(payment.receivingAccountId.trim())
+      ) {
+        throw new Error("Receiving account ID must be a valid UUID");
+      }
+
+      if (
+        !hasAccountVersion ||
+        typeof payment.receivingAccountVersion !== "number" ||
+        !Number.isInteger(payment.receivingAccountVersion) ||
+        payment.receivingAccountVersion < 1
+      ) {
+        throw new Error("Receiving account version must be a positive integer");
+      }
+
+      if (!hasManualReceipt || payment.manualReceiptConfirmed !== true) {
+        throw new Error(
+          "Cashier manual receipt confirmation is required for receiving destination",
+        );
+      }
+
+      const rawRef = typeof payment.reference === "string" ? payment.reference : "";
+      const trimmedRef = rawRef.trim();
+      if (!trimmedRef) {
+        throw new Error(
+          "Payment reference is required when recording a receiving destination",
+        );
+      }
+      if (rawRef.length > 160) {
+        throw new Error("Payment reference cannot exceed 160 characters");
+      }
+      if (/[\x00-\x1F\x7F]/.test(rawRef)) {
+        throw new Error("Payment reference cannot contain control characters");
+      }
+      if (/<[^>]*>/.test(rawRef)) {
+        throw new Error("Payment reference cannot contain HTML tags");
+      }
+    }
+  }
+
   if (!payment || !payment.method || payment.method === "NONE") {
     return { method: "NONE" as const };
   }
@@ -761,35 +1653,79 @@ function normalizeCheckoutPayment(payment?: CheckoutPaymentInput | null) {
     );
   }
 
-  const amount = roundCurrency(Number(payment.amount));
-  if (!Number.isFinite(amount) || amount <= 0) {
+  const rawAmount = Number(payment.amount);
+  if (!Number.isFinite(rawAmount) || rawAmount <= 0) {
+    throw new Error("Payment amount must be greater than zero");
+  }
+  const amount = roundCurrency(rawAmount);
+  if (amount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
 
-  const tenderedAmount =
-    payment.tenderedAmount === undefined ||
-    payment.tenderedAmount === null
-      ? undefined
-      : roundCurrency(Number(payment.tenderedAmount));
+  if (payment.reference !== undefined && payment.reference !== null) {
+    if (typeof payment.reference === "string") {
+      if (payment.reference.length > 160) {
+        throw new Error("Payment reference cannot exceed 160 characters");
+      }
+      if (/[\x00-\x1F\x7F]/.test(payment.reference)) {
+        throw new Error("Payment reference cannot contain control characters");
+      }
+      if (/<[^>]*>/.test(payment.reference)) {
+        throw new Error("Payment reference cannot contain HTML tags");
+      }
+    }
+  }
 
-  if (tenderedAmount !== undefined) {
+  let tenderedAmount: number | undefined = undefined;
+  if (
+    payment.tenderedAmount !== undefined &&
+    payment.tenderedAmount !== null
+  ) {
     if (payment.method !== "CASH") {
       throw new Error("Tendered amount only applies to cash payments");
     }
-    if (!Number.isFinite(tenderedAmount) || tenderedAmount < amount) {
+    const rawTendered = Number(payment.tenderedAmount);
+    if (!Number.isFinite(rawTendered)) {
+      throw new Error("Cash tendered must be a valid number");
+    }
+    tenderedAmount = roundCurrency(rawTendered);
+    if (tenderedAmount < amount) {
       throw new Error("Cash tendered cannot be less than the cash amount");
     }
+  }
+
+  const trimmedReference =
+    typeof payment.reference === "string" &&
+    payment.reference.trim().length > 0
+      ? payment.reference.trim()
+      : undefined;
+
+  if (
+    payment.receivingAccountId &&
+    payment.receivingAccountVersion !== undefined &&
+    payment.receivingAccountVersion !== null &&
+    payment.manualReceiptConfirmed === true
+  ) {
+    return {
+      method: payment.method,
+      amount,
+      reference: trimmedReference,
+      tenderedAmount,
+      receivingAccountId: payment.receivingAccountId.trim(),
+      receivingAccountVersion: Number(payment.receivingAccountVersion),
+      manualReceiptConfirmed: true as const,
+    };
   }
 
   return {
     method: payment.method,
     amount,
-    reference: payment.reference?.trim() || undefined,
+    reference: trimmedReference,
     tenderedAmount,
   };
 }
 
-function normalizeCheckoutPayments(input: CheckoutInput) {
+export function normalizeCheckoutPayments(input: CheckoutInput) {
   const rawPayments = Array.isArray(input.payments)
     ? input.payments
     : input.payment
@@ -1025,8 +1961,10 @@ async function finalizeCheckoutInvoiceTx(
   tx: any,
   invoiceId: string,
   userId: string,
+  snapshotMode: "CAPTURE_CURRENT" | "DEFER_TO_CORRECTION",
   discountAmount?: number,
   overridePin?: string | null,
+  expectedPayableTotal?: number | null,
 ) {
   const invoice = await tx.invoice.findUnique({
     where: { id: invoiceId },
@@ -1039,6 +1977,19 @@ async function finalizeCheckoutInvoiceTx(
   if (!invoice) throw new Error("Invoice not found");
   if (invoice.status !== "DRAFT") throw new Error("Invoice is already finalized");
   if (invoice.items.length === 0) throw new Error("Cannot finalize an empty invoice");
+
+  if (snapshotMode === "CAPTURE_CURRENT") {
+    for (const item of invoice.items) {
+      if (
+        typeof item.product?.name !== "string" ||
+        !item.product.name.trim() ||
+        typeof item.product?.sku !== "string" ||
+        !item.product.sku.trim()
+      ) {
+        throw new Error("Cannot finalize invoice with missing product name or SKU");
+      }
+    }
+  }
 
   const subTotal = roundCurrency(
     invoice.items.reduce((sum: number, item: any) => sum + item.lineTotal, 0),
@@ -1055,6 +2006,23 @@ async function finalizeCheckoutInvoiceTx(
   const appliedDiscountPercent =
     subTotal > 0 ? roundCurrency((normalizedDiscount / subTotal) * 100) : 0;
   const netTotal = roundPayableTotal(subTotal - normalizedDiscount);
+
+  if (expectedPayableTotal !== undefined && expectedPayableTotal !== null) {
+    const normalizedExpected = roundPayableTotal(expectedPayableTotal);
+    if (normalizedExpected !== netTotal) {
+      throw new CheckoutReviewConflictError(
+        `Invoice payable total (Rs. ${netTotal}) has changed from the reviewed total (Rs. ${normalizedExpected}). Please review and confirm the updated bill.`,
+        {
+          reason: "PRICE_OR_TOTAL_CHANGED",
+          details: {
+            confirmedPayableTotal: normalizedExpected,
+            currentPayableTotal: netTotal,
+          },
+        },
+      );
+    }
+  }
+
   const isManualDiscountOverride =
     Math.abs(normalizedDiscount - computedDiscount) > 0.001;
 
@@ -1072,7 +2040,20 @@ async function finalizeCheckoutInvoiceTx(
     );
   }
 
+  const captureTimestamp = snapshotMode === "CAPTURE_CURRENT" ? new Date() : null;
+
   for (const item of invoice.items) {
+    if (captureTimestamp) {
+      await tx.invoiceItem.update({
+        where: { id: item.id },
+        data: {
+          productNameSnapshot: item.product.name,
+          productSkuSnapshot: item.product.sku,
+          costAtSale: null,
+          snapshotCapturedAt: captureTimestamp,
+        },
+      });
+    }
     const updated = await tx.product.updateMany({
       where: {
         id: item.productId,
@@ -1124,9 +2105,17 @@ async function finalizeCheckoutInvoiceTx(
       paidTotal: 0,
       paymentStatus: netTotal <= 0 ? "PAID" : "UNPAID",
       finalizedAt: new Date(),
+      ...(captureTimestamp && {
+        customerNameSnapshot: invoice.customer?.name ?? null,
+        customerPanSnapshot: invoice.customer?.panNo ?? null,
+        customerAddressSnapshot: invoice.customer?.address ?? null,
+        customerSnapshotCapturedAt: captureTimestamp,
+      }),
     },
     include: { payments: true },
   });
+
+  await initializeManualBillMetadataTx(tx, invoiceId);
 
   await tx.auditLog.create({
     data: {
@@ -1290,6 +2279,10 @@ async function recordCheckoutManualDigitalPaymentTx(
   amount: number,
   createdById: string,
   reference?: string,
+  destinationData?: {
+    receivingAccountId?: string | null;
+    receivingDestinationSnapshot?: Prisma.InputJsonValue;
+  } | null,
 ) {
   const normalizedAmount = roundCurrency(amount);
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
@@ -1330,6 +2323,9 @@ async function recordCheckoutManualDigitalPaymentTx(
       status: "SUCCESS",
       reference: reference.trim(),
       createdById,
+      receivingAccountId: destinationData?.receivingAccountId || null,
+      receivingDestinationSnapshot:
+        destinationData?.receivingDestinationSnapshot ?? Prisma.DbNull,
     },
   });
 
@@ -1354,6 +2350,9 @@ async function recordCheckoutManualDigitalPaymentTx(
         method,
         reference: reference.trim(),
         amountAdded: normalizedAmount,
+        receivingAccountId: destinationData?.receivingAccountId || null,
+        receivingDestinationSnapshot:
+          destinationData?.receivingDestinationSnapshot || null,
         previousStatus: invoice.paymentStatus,
         nextStatus: nextPaymentStatus,
         paidTotal: nextPaidTotal,
@@ -1428,296 +2427,527 @@ async function prepareCheckoutInvoiceTx(
   });
 }
 
+export type NormalizedCheckoutContext = {
+  operationKey: string;
+  payloadHash: string;
+  input: CheckoutInput;
+  checkoutItems: ReturnType<typeof normalizeCheckoutItems>;
+  checkoutPayments: ReturnType<typeof normalizeCheckoutPayments>;
+  normalizedConfirmation: ReturnType<typeof normalizeCheckoutConfirmation>;
+};
+
+export type CheckoutInvoiceTxResult = {
+  operation: { id: string };
+  invoice: any;
+  esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
+  response: {
+    invoice: any;
+    esewaPaymentIntent: Awaited<ReturnType<typeof createEsewaPaymentIntentTx>> | null;
+  };
+};
+
+export async function checkoutInvoiceTx(
+  tx: any,
+  cashierId: string,
+  normalizedContext: NormalizedCheckoutContext,
+  settings: any,
+): Promise<CheckoutInvoiceTxResult> {
+  const {
+    operationKey,
+    payloadHash,
+    input,
+    checkoutItems,
+    checkoutPayments,
+    normalizedConfirmation,
+  } = normalizedContext;
+
+  const operation = await tx.checkoutOperation.create({
+    data: { operationKey, actorId: cashierId, payloadHash },
+    select: { id: true },
+  });
+
+  if (!normalizedConfirmation) {
+    throw new CheckoutReviewConflictError(
+      "Checkout review confirmation is required for fresh checkout.",
+      { reason: "MISSING_CONFIRMATION" },
+    );
+  }
+
+  const draftRequestId = String(input.draftRequestId || "").trim();
+  let linkedDraftRequest: any = null;
+  if (draftRequestId) {
+    await lockBillingDraftRequestForUpdate(tx, draftRequestId);
+    linkedDraftRequest = await tx.billingDraftRequest.findUnique({
+      where: { id: draftRequestId },
+    });
+    if (!linkedDraftRequest) throw Object.assign(new Error("Draft request not found."), { statusCode: 404 });
+    const actor = await tx.user.findUnique({
+      where: { id: cashierId },
+      select: { id: true, role: true },
+    });
+    if (!actor) throw new Error("Checkout actor not found.");
+    assertCashierCanReview(actor, linkedDraftRequest);
+    if (
+      linkedDraftRequest.status !== "ACCEPTED" &&
+      linkedDraftRequest.status !== "PARTIALLY_ACCEPTED"
+    ) {
+      throw Object.assign(new Error("Only accepted draft requests can be completed."), { statusCode: 409 });
+    }
+    if (linkedDraftRequest.completedInvoiceId) {
+      throw Object.assign(new Error("This draft request is already linked to a completed invoice."), { statusCode: 409 });
+    }
+  }
+  const customerId = input.customerId ? String(input.customerId) : null;
+  const customer = customerId
+    ? await tx.customer.findUnique({
+        where: { id: customerId },
+        select: {
+          id: true,
+          isActive: true,
+          loyaltyPercent: true,
+          wholesalePercent: true,
+        },
+      })
+    : null;
+
+  if (customerId && (!customer || !customer.isActive)) {
+    throw new Error("Customer not found");
+  }
+
+  const draftInvoiceId = String(input.draftInvoiceId || "").trim();
+  if (draftInvoiceId) {
+    await lockInvoiceForUpdate(tx, draftInvoiceId);
+  }
+  await lockProductsForUpdate(
+    tx,
+    checkoutItems.map((item) => item.productId),
+  );
+  const ownReservedItems = draftInvoiceId
+    ? await tx.invoiceItem.findMany({
+        where: { invoiceId: draftInvoiceId },
+        select: { productId: true, qty: true },
+      })
+    : [];
+  const checkoutProductsById = await validateCheckoutProductsTx(
+    tx,
+    checkoutItems,
+    buildReservedQtyByProduct(ownReservedItems),
+  );
+  const invoice = await prepareCheckoutInvoiceTx(
+    tx,
+    cashierId,
+    input,
+    customerId,
+  );
+
+  const priceOverrideLines: Array<{
+    productId: string;
+    productName: string;
+    sku?: string | null;
+    qty: number;
+    originalUnitPrice: number;
+    overrideUnitPrice: number;
+    overrideReason: string;
+    lineDifference: number;
+    overrideAuthorizationToken?: string | null;
+  }> = [];
+  const pricedCheckoutLines = checkoutItems.map((line) => {
+    const product = checkoutProductsById.get(line.productId);
+
+    const originalUnitPrice = roundCurrency(
+      shouldUseQuantityWholesalePrice(
+        customer,
+        line.qty,
+        resolveWholesaleQtyThreshold(product, settings),
+        product.wholesaleEligible,
+      )
+        ? product.wholesalePrice
+        : product.retailPrice,
+    );
+    const hasPriceOverride =
+      line.overrideUnitPrice !== undefined &&
+      Math.abs(line.overrideUnitPrice - originalUnitPrice) > 0.001;
+    const appliedUnitPrice = hasPriceOverride
+      ? Number(line.overrideUnitPrice)
+      : originalUnitPrice;
+
+    if (hasPriceOverride) {
+      priceOverrideLines.push({
+        productId: line.productId,
+        productName: product.name,
+        sku: product.sku || null,
+        qty: line.qty,
+        originalUnitPrice,
+        overrideUnitPrice: appliedUnitPrice,
+        overrideReason: line.overrideReason || "Price corrected at billing",
+        lineDifference: roundCurrency(
+          (appliedUnitPrice - originalUnitPrice) * line.qty,
+        ),
+        overrideAuthorizationToken: line.overrideAuthorizationToken,
+      });
+    }
+
+    return {
+      ...line,
+      product,
+      appliedUnitPrice,
+      originalUnitPrice,
+      hasPriceOverride,
+    };
+  });
+
+  const confItemsByProduct = new Map(
+    normalizedConfirmation.items.map((item) => [item.productId, item]),
+  );
+  const discrepancies: Array<{
+    productId: string;
+    productName: string;
+    confirmedUnitPrice?: number;
+    currentUnitPrice?: number;
+    confirmedQty?: number;
+    currentQty?: number;
+  }> = [];
+
+  for (const line of checkoutItems) {
+    const confItem = confItemsByProduct.get(line.productId);
+    const product = checkoutProductsById.get(line.productId);
+    const pricedLine = pricedCheckoutLines.find(
+      (item) => item.productId === line.productId,
+    )!;
+    if (!confItem) {
+      discrepancies.push({
+        productId: line.productId,
+        productName: product?.name || line.productId,
+        currentUnitPrice: pricedLine.appliedUnitPrice,
+        currentQty: line.qty,
+      });
+    } else {
+      const priceDiff = Math.abs(
+        confItem.appliedUnitPrice - pricedLine.appliedUnitPrice,
+      );
+      const qtyDiff = Math.abs(confItem.qty - line.qty);
+      if (priceDiff > 0.001 || qtyDiff > 0.0001) {
+        discrepancies.push({
+          productId: line.productId,
+          productName: product?.name || line.productId,
+          confirmedUnitPrice: confItem.appliedUnitPrice,
+          currentUnitPrice: pricedLine.appliedUnitPrice,
+          confirmedQty: confItem.qty,
+          currentQty: line.qty,
+        });
+      }
+    }
+  }
+
+  for (const confItem of normalizedConfirmation.items) {
+    if (!checkoutItems.some((line) => line.productId === confItem.productId)) {
+      discrepancies.push({
+        productId: confItem.productId,
+        productName: confItem.productId,
+        confirmedUnitPrice: confItem.appliedUnitPrice,
+        confirmedQty: confItem.qty,
+      });
+    }
+  }
+
+  if (discrepancies.length > 0) {
+    throw new CheckoutReviewConflictError(
+      "Checkout items or prices have changed since review. Please review and confirm the updated bill.",
+      {
+        reason: "PRICE_OR_TOTAL_CHANGED",
+        details: {
+          itemDiscrepancies: discrepancies,
+          confirmedPayableTotal: normalizedConfirmation.payableTotal,
+        },
+      },
+    );
+  }
+
+  for (const overrideLine of priceOverrideLines) {
+    await consumePriceOverrideAuthorizationTx(tx, {
+      cashierId,
+      invoiceId: invoice.id,
+      customerId,
+      productId: overrideLine.productId,
+      qty: overrideLine.qty,
+      originalUnitPrice: overrideLine.originalUnitPrice,
+      overrideUnitPrice: overrideLine.overrideUnitPrice,
+      overrideReason: overrideLine.overrideReason,
+      token: overrideLine.overrideAuthorizationToken,
+    });
+  }
+
+  for (const line of checkoutItems) {
+    const pricedLine = pricedCheckoutLines.find(
+      (item) => item.productId === line.productId,
+    )!;
+
+    await tx.invoiceItem.create({
+      data: {
+        invoiceId: invoice.id,
+        productId: line.productId,
+        qty: line.qty,
+        appliedUnitPrice: pricedLine.appliedUnitPrice,
+        originalUnitPrice: pricedLine.hasPriceOverride
+          ? pricedLine.originalUnitPrice
+          : null,
+        overrideUnitPrice: pricedLine.hasPriceOverride
+          ? pricedLine.appliedUnitPrice
+          : null,
+        overrideReason: pricedLine.hasPriceOverride
+          ? line.overrideReason || "Price corrected at billing"
+          : null,
+        overrideById: pricedLine.hasPriceOverride ? cashierId : null,
+        overrideAt: pricedLine.hasPriceOverride ? new Date() : null,
+        lineTotal: roundCurrency(pricedLine.appliedUnitPrice * line.qty),
+      },
+    });
+  }
+
+  const finalized = await finalizeCheckoutInvoiceTx(
+    tx,
+    invoice.id,
+    cashierId,
+    "CAPTURE_CURRENT",
+    input.discountAmount,
+    input.overridePin,
+    normalizedConfirmation.payableTotal,
+  );
+
+  if (priceOverrideLines.length > 0) {
+    const actor = await tx.user.findUnique({
+      where: { id: cashierId },
+      select: { id: true, name: true, role: true },
+    });
+
+    await tx.auditLog.create({
+      data: {
+        actorId: cashierId,
+        action: "CASHIER_PRICE_OVERRIDE_APPLIED",
+        entityType: "Invoice",
+        entityId: invoice.id,
+        meta: {
+          invoiceNo: invoice.invoiceNo,
+          actorName: actor?.name || null,
+          actorRole: actor?.role || null,
+          overrideCount: priceOverrideLines.length,
+          totalDifference: roundCurrency(
+            priceOverrideLines.reduce(
+              (sum, item) => sum + item.lineDifference,
+              0,
+            ),
+          ),
+          items: priceOverrideLines,
+        },
+      },
+    });
+  }
+
+  let esewaPaymentIntent:
+    | Awaited<ReturnType<typeof createEsewaPaymentIntentTx>>
+    | null = null;
+
+  const receivingAccountIds = Array.from(
+    new Set(
+      checkoutPayments
+        .map((p) => p.receivingAccountId)
+        .filter((id): id is string => Boolean(id)),
+    ),
+  ).sort();
+
+  if (receivingAccountIds.length > 0) {
+    await lockPaymentReceivingAccountsForUpdate(tx, receivingAccountIds);
+  }
+
+  let invoiceForPayments = finalized;
+  for (const payment of checkoutPayments) {
+    if (payment.method === "CASH") {
+      await recordCheckoutCashPaymentTx(
+        tx,
+        invoiceForPayments,
+        payment.amount,
+        cashierId,
+        payment.reference,
+        payment.tenderedAmount,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    } else if (payment.method === "ESEWA") {
+      esewaPaymentIntent = await createEsewaPaymentIntentTx(
+        tx,
+        invoiceForPayments,
+        payment.amount,
+        cashierId,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    } else if (
+      payment.method === "FONEPAY" ||
+      payment.method === "BANK_TRANSFER"
+    ) {
+      const destinationData = payment.receivingAccountId
+        ? await captureReceivingDestinationTx(tx, payment, cashierId)
+        : null;
+
+      await recordCheckoutManualDigitalPaymentTx(
+        tx,
+        invoiceForPayments,
+        payment.method,
+        payment.amount,
+        cashierId,
+        payment.reference,
+        destinationData,
+      );
+      invoiceForPayments = await tx.invoice.findUniqueOrThrow({
+        where: { id: invoice.id },
+        include: { payments: true },
+      });
+    }
+  }
+
+  if (linkedDraftRequest) {
+    const claimed = await tx.billingDraftRequest.updateMany({
+      where: {
+        id: linkedDraftRequest.id,
+        status: { in: ["ACCEPTED", "PARTIALLY_ACCEPTED"] },
+        completedInvoiceId: null,
+      },
+      data: {
+        status: "COMPLETED",
+        completedInvoiceId: invoice.id,
+        modifiedAt: new Date(),
+      },
+    });
+    if (claimed.count !== 1) {
+      throw Object.assign(new Error("This draft request changed during checkout. Please retry."), { statusCode: 409 });
+    }
+    await tx.auditLog.create({
+      data: {
+        actorId: cashierId,
+        action: "DRAFT_REQUEST_COMPLETED",
+        entityType: "BillingDraftRequest",
+        entityId: linkedDraftRequest.id,
+        meta: {
+          requestNo: linkedDraftRequest.requestNo,
+          invoiceId: invoice.id,
+          invoiceNo: invoice.invoiceNo,
+        },
+      },
+    });
+  }
+
+  const savedInvoice = await tx.invoice.findUnique({
+    where: { id: invoice.id },
+    include: {
+      items: {
+        select: publicInvoiceItemSelect,
+      },
+      payments: {
+        include: { createdBy: { select: { id: true, name: true } } },
+        orderBy: { createdAt: "desc" },
+      },
+      cashier: { select: { id: true, name: true, email: true } },
+      customer: {
+        select: {
+          id: true,
+          name: true,
+          phone: true,
+          email: true,
+          loyaltyPercent: true,
+          wholesalePercent: true,
+        },
+      },
+      cancelledBy: {
+        select: {
+          id: true,
+          name: true,
+          role: true,
+        },
+      },
+    },
+  });
+
+  const projectedPayments = Array.isArray(savedInvoice?.payments)
+    ? savedInvoice.payments.map(projectPublicPayment)
+    : [];
+
+  const responseInvoice = savedInvoice
+    ? {
+        ...savedInvoice,
+        payments: projectedPayments,
+      }
+    : null;
+
+  const response = { invoice: responseInvoice, esewaPaymentIntent };
+  await tx.checkoutOperation.update({
+    where: { id: operation.id },
+    data: {
+      invoiceId: invoice.id,
+      responseJson: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
+      completedAt: new Date(),
+    },
+  });
+
+  return {
+    operation,
+    invoice: responseInvoice,
+    esewaPaymentIntent,
+    response,
+  };
+}
+
 // atomic checkout for the POS billing screen: create invoice, add items, finalize stock, and record initial payment
 export async function checkoutInvoice(cashierId: string, input: CheckoutInput) {
   const checkoutItems = normalizeCheckoutItems(input.items);
   const checkoutPayments = normalizeCheckoutPayments(input);
+  const normalizedConfirmation = normalizeCheckoutConfirmation(input.confirmation);
   const operationKey = String(input.operationKey || "").trim();
   if (!/^[A-Za-z0-9_-]{16,120}$/.test(operationKey)) {
     throw new Error("A valid checkout operation key is required.");
   }
-  const payloadHash = buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments);
+  if (operationKey.startsWith("rec_")) {
+    throw new Error("Recovery operation keys cannot be used for ordinary checkout.");
+  }
+  const payloadHash = buildCheckoutPayloadHash(
+    input,
+    checkoutItems,
+    checkoutPayments,
+    false,
+    normalizedConfirmation,
+  );
   const settings = await getBusinessSettings();
+
+  const normalizedContext: NormalizedCheckoutContext = {
+    operationKey,
+    payloadHash,
+    input,
+    checkoutItems,
+    checkoutPayments,
+    normalizedConfirmation,
+  };
 
   try {
     return await runFinancialTransaction(prisma, async (tx) => {
-      const operation = await tx.checkoutOperation.create({
-        data: { operationKey, actorId: cashierId, payloadHash },
-        select: { id: true },
-      });
-      const customerId = input.customerId ? String(input.customerId) : null;
-    const customer = customerId
-      ? await tx.customer.findUnique({
-          where: { id: customerId },
-          select: {
-            id: true,
-            isActive: true,
-            loyaltyPercent: true,
-            wholesalePercent: true,
-          },
-        })
-      : null;
-
-    if (customerId && (!customer || !customer.isActive)) {
-      throw new Error("Customer not found");
-    }
-
-    const draftInvoiceId = String(input.draftInvoiceId || "").trim();
-    if (draftInvoiceId) {
-      await lockInvoiceForUpdate(tx, draftInvoiceId);
-    }
-    await lockProductsForUpdate(
-      tx,
-      checkoutItems.map((item) => item.productId),
-    );
-    const ownReservedItems = draftInvoiceId
-      ? await tx.invoiceItem.findMany({
-          where: { invoiceId: draftInvoiceId },
-          select: { productId: true, qty: true },
-        })
-      : [];
-    const checkoutProductsById = await validateCheckoutProductsTx(
-      tx,
-      checkoutItems,
-      buildReservedQtyByProduct(ownReservedItems),
-    );
-    const invoice = await prepareCheckoutInvoiceTx(
-      tx,
-      cashierId,
-      input,
-      customerId,
-    );
-
-    const priceOverrideLines: Array<{
-      productId: string;
-      productName: string;
-      sku?: string | null;
-      qty: number;
-      originalUnitPrice: number;
-      overrideUnitPrice: number;
-      overrideReason: string;
-      lineDifference: number;
-      overrideAuthorizationToken?: string | null;
-    }> = [];
-    const pricedCheckoutLines = checkoutItems.map((line) => {
-      const product = checkoutProductsById.get(line.productId);
-
-      const originalUnitPrice = roundCurrency(
-        shouldUseQuantityWholesalePrice(
-          customer,
-          line.qty,
-          resolveWholesaleQtyThreshold(product, settings),
-          product.wholesaleEligible,
-        )
-          ? product.wholesalePrice
-          : product.retailPrice,
-      );
-      const hasPriceOverride =
-        line.overrideUnitPrice !== undefined &&
-        Math.abs(line.overrideUnitPrice - originalUnitPrice) > 0.001;
-      const appliedUnitPrice = hasPriceOverride
-        ? Number(line.overrideUnitPrice)
-        : originalUnitPrice;
-
-      if (hasPriceOverride) {
-        priceOverrideLines.push({
-          productId: line.productId,
-          productName: product.name,
-          sku: product.sku || null,
-          qty: line.qty,
-          originalUnitPrice,
-          overrideUnitPrice: appliedUnitPrice,
-          overrideReason: line.overrideReason || "Price corrected at billing",
-          lineDifference: roundCurrency(
-            (appliedUnitPrice - originalUnitPrice) * line.qty,
-          ),
-          overrideAuthorizationToken: line.overrideAuthorizationToken,
-        });
-      }
-
-      return {
-        ...line,
-        product,
-        appliedUnitPrice,
-        originalUnitPrice,
-        hasPriceOverride,
-      };
-    });
-
-    for (const overrideLine of priceOverrideLines) {
-      await consumePriceOverrideAuthorizationTx(tx, {
+      const result = await checkoutInvoiceTx(
+        tx,
         cashierId,
-        invoiceId: invoice.id,
-        customerId,
-        productId: overrideLine.productId,
-        qty: overrideLine.qty,
-        originalUnitPrice: overrideLine.originalUnitPrice,
-        overrideUnitPrice: overrideLine.overrideUnitPrice,
-        overrideReason: overrideLine.overrideReason,
-        token: overrideLine.overrideAuthorizationToken,
-      });
-    }
-
-    for (const line of checkoutItems) {
-      const pricedLine = pricedCheckoutLines.find(
-        (item) => item.productId === line.productId,
-      )!;
-
-      await tx.invoiceItem.create({
-        data: {
-          invoiceId: invoice.id,
-          productId: line.productId,
-          qty: line.qty,
-          appliedUnitPrice: pricedLine.appliedUnitPrice,
-          originalUnitPrice: pricedLine.hasPriceOverride
-            ? pricedLine.originalUnitPrice
-            : null,
-          overrideUnitPrice: pricedLine.hasPriceOverride
-            ? pricedLine.appliedUnitPrice
-            : null,
-          overrideReason: pricedLine.hasPriceOverride
-            ? line.overrideReason || "Price corrected at billing"
-            : null,
-          overrideById: pricedLine.hasPriceOverride ? cashierId : null,
-          overrideAt: pricedLine.hasPriceOverride ? new Date() : null,
-          lineTotal: roundCurrency(pricedLine.appliedUnitPrice * line.qty),
-        },
-      });
-    }
-
-    const finalized = await finalizeCheckoutInvoiceTx(
-      tx,
-      invoice.id,
-      cashierId,
-      input.discountAmount,
-      input.overridePin,
-    );
-
-    if (priceOverrideLines.length > 0) {
-      const actor = await tx.user.findUnique({
-        where: { id: cashierId },
-        select: { id: true, name: true, role: true },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorId: cashierId,
-          action: "CASHIER_PRICE_OVERRIDE_APPLIED",
-          entityType: "Invoice",
-          entityId: invoice.id,
-          meta: {
-            invoiceNo: invoice.invoiceNo,
-            actorName: actor?.name || null,
-            actorRole: actor?.role || null,
-            overrideCount: priceOverrideLines.length,
-            totalDifference: roundCurrency(
-              priceOverrideLines.reduce(
-                (sum, item) => sum + item.lineDifference,
-                0,
-              ),
-            ),
-            items: priceOverrideLines,
-          },
-        },
-      });
-    }
-
-    let esewaPaymentIntent:
-      | Awaited<ReturnType<typeof createEsewaPaymentIntentTx>>
-      | null = null;
-
-    let invoiceForPayments = finalized;
-    for (const payment of checkoutPayments) {
-      if (payment.method === "CASH") {
-        await recordCheckoutCashPaymentTx(
-          tx,
-          invoiceForPayments,
-          payment.amount,
-          cashierId,
-          payment.reference,
-          payment.tenderedAmount,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      } else if (payment.method === "ESEWA") {
-        esewaPaymentIntent = await createEsewaPaymentIntentTx(
-          tx,
-          invoiceForPayments,
-          payment.amount,
-          cashierId,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      } else if (
-        payment.method === "FONEPAY" ||
-        payment.method === "BANK_TRANSFER"
-      ) {
-        await recordCheckoutManualDigitalPaymentTx(
-          tx,
-          invoiceForPayments,
-          payment.method,
-          payment.amount,
-          cashierId,
-          payment.reference,
-        );
-        invoiceForPayments = await tx.invoice.findUniqueOrThrow({
-          where: { id: invoice.id },
-          include: { payments: true },
-        });
-      }
-    }
-
-    const savedInvoice = await tx.invoice.findUnique({
-      where: { id: invoice.id },
-      include: {
-        items: {
-          include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true } },
-          },
-        },
-        payments: {
-          include: { createdBy: { select: { id: true, name: true } } },
-          orderBy: { createdAt: "desc" },
-        },
-        cashier: { select: { id: true, name: true, email: true } },
-        customer: {
-          select: {
-            id: true,
-            name: true,
-            phone: true,
-            email: true,
-            loyaltyPercent: true,
-            wholesalePercent: true,
-          },
-        },
-        cancelledBy: {
-          select: {
-            id: true,
-            name: true,
-            role: true,
-          },
-        },
-      },
-    });
-
-    const response = { invoice: savedInvoice, esewaPaymentIntent };
-    await tx.checkoutOperation.update({
-      where: { id: operation.id },
-      data: {
-        invoiceId: invoice.id,
-        responseJson: JSON.parse(JSON.stringify(response)) as Prisma.InputJsonValue,
-        completedAt: new Date(),
-      },
-    });
-    return response;
+        normalizedContext,
+        settings,
+      );
+      return result.response;
     });
   } catch (error) {
     if (!isCheckoutOperationKeyConflict(error)) throw error;
-    return replayCheckoutOperation(cashierId, operationKey, payloadHash);
+    // TASK-1A-003 briefly wrote ordinary hashes with an explicit null request.
+    // Only absent-request retries may accept that alternate encoding.
+    const compatiblePayloadHash = String(input.draftRequestId || "").trim()
+      ? undefined
+      : buildCheckoutPayloadHash(input, checkoutItems, checkoutPayments, true, normalizedConfirmation);
+    return replayCheckoutOperation(cashierId, operationKey, payloadHash, compatiblePayloadHash);
   }
 }
 
@@ -1775,6 +3005,9 @@ export async function modifyFinalizedInvoice(
           where: { id: customerId },
           select: {
             id: true,
+            name: true,
+            panNo: true,
+            address: true,
             isActive: true,
             loyaltyPercent: true,
             wholesalePercent: true,
@@ -1784,6 +3017,36 @@ export async function modifyFinalizedInvoice(
 
     if (customerId && (!customer || !customer.isActive)) {
       throw new Error("Customer not found");
+    }
+
+    // Group original items by productId to check correspondence and detect ambiguous duplicates
+    const originalItemsByProductId = new Map<string, typeof original.items>();
+    for (const item of original.items) {
+      const list = originalItemsByProductId.get(item.productId) || [];
+      list.push(item);
+      originalItemsByProductId.set(item.productId, list);
+    }
+
+    for (const line of replacementItems) {
+      const candidates = originalItemsByProductId.get(line.productId);
+      if (candidates && candidates.length > 1) {
+        const first = candidates[0];
+        const isConflict = candidates.slice(1).some((c) => {
+          const nameDiff = c.productNameSnapshot !== first.productNameSnapshot;
+          const skuDiff = c.productSkuSnapshot !== first.productSkuSnapshot;
+          const costDiff = c.costAtSale !== first.costAtSale;
+          const timeDiff =
+            (c.snapshotCapturedAt?.getTime() ?? null) !==
+            (first.snapshotCapturedAt?.getTime() ?? null);
+          return nameDiff || skuDiff || costDiff || timeDiff;
+        });
+
+        if (isConflict) {
+          throw new Error(
+            `Cannot modify invoice: conflicting historical snapshots found for retained product ${line.productId}. Ambiguous line correspondence cannot be inherited.`,
+          );
+        }
+      }
     }
 
     const actor = await tx.user.findUnique({
@@ -1819,10 +3082,27 @@ export async function modifyFinalizedInvoice(
       },
     });
 
+    await cancelManualBillObligationTx(tx, original, userId, actor);
+
     const replacementProductsById = await validateCheckoutProductsTx(
       tx,
       replacementItems,
     );
+
+    for (const line of replacementItems) {
+      const isRetained = (originalItemsByProductId.get(line.productId)?.length ?? 0) > 0;
+      if (!isRetained) {
+        const prod = replacementProductsById.get(line.productId);
+        const name = typeof prod?.name === "string" ? prod.name.trim() : "";
+        const sku = typeof prod?.sku === "string" ? prod.sku.trim() : "";
+        if (!name || !sku) {
+          throw new Error(
+            `Cannot modify invoice: valid product name and SKU are required for new line item (${line.productId})`,
+          );
+        }
+      }
+    }
+
     const replacementInvoiceNo = await generateInvoiceNo(tx);
     const replacement = await tx.invoice.create({
       data: {
@@ -1832,6 +3112,12 @@ export async function modifyFinalizedInvoice(
         customerId,
       },
     });
+
+    const createdReplacementLines: Array<{
+      id: string;
+      productId: string;
+      sourceOriginalItemIds: string[];
+    }> = [];
 
     for (const line of replacementItems) {
       const product = replacementProductsById.get(line.productId);
@@ -1845,7 +3131,7 @@ export async function modifyFinalizedInvoice(
         ? Number(product.wholesalePrice)
         : Number(product.retailPrice);
 
-      await tx.invoiceItem.create({
+      const created = await tx.invoiceItem.create({
         data: {
           invoiceId: replacement.id,
           productId: line.productId,
@@ -1854,15 +3140,91 @@ export async function modifyFinalizedInvoice(
           lineTotal: roundCurrency(appliedUnitPrice * line.qty),
         },
       });
+
+      const candidates = originalItemsByProductId.get(line.productId) || [];
+      createdReplacementLines.push({
+        id: created.id,
+        productId: line.productId,
+        sourceOriginalItemIds: candidates.map((c) => c.id),
+      });
     }
 
     const finalizedReplacement = await finalizeCheckoutInvoiceTx(
       tx,
       replacement.id,
       userId,
+      "DEFER_TO_CORRECTION",
       input.discountAmount,
       input.overridePin,
     );
+
+    const correctionTimestamp = new Date();
+
+    // Determine replacement customer snapshot
+    let customerNameSnapshot: string | null = null;
+    let customerPanSnapshot: string | null = null;
+    let customerAddressSnapshot: string | null = null;
+    let customerSnapshotCapturedAt: Date | null = null;
+
+    if (customerId === original.customerId) {
+      // Retained customer (same customer or both walk-in): inherit original snapshot exactly
+      customerNameSnapshot = original.customerNameSnapshot ?? null;
+      customerPanSnapshot = original.customerPanSnapshot ?? null;
+      customerAddressSnapshot = original.customerAddressSnapshot ?? null;
+      customerSnapshotCapturedAt = original.customerSnapshotCapturedAt ?? null;
+    } else if (customerId === null) {
+      // Changed to walk-in: capture null customer values with a correction marker
+      customerNameSnapshot = null;
+      customerPanSnapshot = null;
+      customerAddressSnapshot = null;
+      customerSnapshotCapturedAt = correctionTimestamp;
+    } else {
+      // Changed to new registered customer: capture current customer values with correction marker
+      customerNameSnapshot = customer?.name ?? null;
+      customerPanSnapshot = customer?.panNo ?? null;
+      customerAddressSnapshot = customer?.address ?? null;
+      customerSnapshotCapturedAt = correctionTimestamp;
+    }
+
+    await tx.invoice.update({
+      where: { id: finalizedReplacement.id },
+      data: {
+        customerNameSnapshot,
+        customerPanSnapshot,
+        customerAddressSnapshot,
+        customerSnapshotCapturedAt,
+      },
+    });
+
+    // Update replacement items with inherited or newly captured snapshots
+    for (const line of createdReplacementLines) {
+      const candidates = originalItemsByProductId.get(line.productId);
+      if (candidates && candidates.length > 0) {
+        // Retained line: inherit original tuple exactly (including legacy null marker or original timestamp)
+        const source = candidates[0];
+        await tx.invoiceItem.update({
+          where: { id: line.id },
+          data: {
+            productNameSnapshot: source.productNameSnapshot ?? null,
+            productSkuSnapshot: source.productSkuSnapshot ?? null,
+            costAtSale: source.costAtSale ?? null,
+            snapshotCapturedAt: source.snapshotCapturedAt ?? null,
+          },
+        });
+      } else {
+        // Newly introduced product: capture current product identity with null cost and correction marker
+        const prod = replacementProductsById.get(line.productId)!;
+        await tx.invoiceItem.update({
+          where: { id: line.id },
+          data: {
+            productNameSnapshot: prod.name,
+            productSkuSnapshot: prod.sku,
+            costAtSale: null,
+            snapshotCapturedAt: correctionTimestamp,
+          },
+        });
+      }
+    }
 
     const creditedAmount = roundCurrency(
       Math.min(original.paidTotal, finalizedReplacement.netTotal),
@@ -1958,6 +3320,11 @@ export async function modifyFinalizedInvoice(
           creditedAmount,
           actorName: actor?.name || null,
           actorRole: actor?.role || null,
+          lineInheritance: createdReplacementLines.map((line) => ({
+            replacementItemId: line.id,
+            productId: line.productId,
+            sourceOriginalItemIds: line.sourceOriginalItemIds,
+          })),
         },
       },
     });
@@ -1966,9 +3333,7 @@ export async function modifyFinalizedInvoice(
       where: { id: finalizedReplacement.id },
       include: {
         items: {
-          include: {
-            product: { select: { id: true, name: true, sku: true, barcode: true } },
-          },
+          select: publicInvoiceItemSelect,
         },
         payments: {
           include: { createdBy: { select: { id: true, name: true } } },
@@ -1999,25 +3364,9 @@ export async function modifyFinalizedInvoice(
   });
 }
 
-const parkedDraftInclude = {
+export const parkedDraftInclude = {
   items: {
-    include: {
-      product: {
-        select: {
-          id: true,
-          name: true,
-          sku: true,
-          barcode: true,
-          retailPrice: true,
-          wholesalePrice: true,
-          wholesaleQtyThreshold: true,
-          stock: true,
-          reservedStock: true,
-          isActive: true,
-          imageUrl: true,
-        },
-      },
-    },
+    select: publicParkedInvoiceItemSelect,
   },
   customer: {
     select: {
@@ -2601,6 +3950,9 @@ export async function listInvoices(filters: InvoiceFilters) {
             qty: true,
             appliedUnitPrice: true,
             lineTotal: true,
+            productNameSnapshot: true,
+            productSkuSnapshot: true,
+            snapshotCapturedAt: true,
             product: {
               select: { id: true, name: true, sku: true, barcode: true },
             },
@@ -2661,8 +4013,10 @@ export async function listInvoices(filters: InvoiceFilters) {
   const totalSales = roundCurrency(Number(financials._sum.netTotal || 0));
   const totalPaid = roundCurrency(Number(financials._sum.paidTotal || 0));
 
+  const mappedInvoices = invoices.map((inv) => resolveInvoiceDisplayIdentity(inv));
+
   return {
-    invoices,
+    invoices: mappedInvoices,
     total,
     page: safePage,
     pageSize: safePageSize,
@@ -2687,13 +4041,11 @@ export async function listInvoices(filters: InvoiceFilters) {
 // fetching a single invoice with all its related data — items, payments, cashier, customer
 // we include full details here because this is used for the invoice detail view and print page
 export async function getInvoice(id: string) {
-  return prisma.invoice.findUnique({
+  const invoice = await prisma.invoice.findUnique({
     where: { id },
     include: {
       items: {
-        include: {
-          product: { select: { id: true, name: true, sku: true, barcode: true } },
-        },
+        select: detailInvoiceItemSelect,
       },
       payments: {
         include: { createdBy: { select: { id: true, name: true } } },
@@ -2731,7 +4083,7 @@ export async function getInvoice(id: string) {
         },
       },
       returnRequests: {
-        where: { status: { in: ["PENDING", "APPROVED", "COMPLETED"] } },
+        where: { status: { in: ["PENDING", "APPROVED"] } },
         select: {
           id: true,
           status: true,
@@ -2745,6 +4097,17 @@ export async function getInvoice(id: string) {
         },
       },
     },
+  });
+
+  if (!invoice) return null;
+
+  const projectedPayments = Array.isArray(invoice.payments)
+    ? invoice.payments.map((p) => projectPublicPayment(p))
+    : [];
+
+  return resolveInvoiceDisplayIdentity({
+    ...invoice,
+    payments: projectedPayments,
   });
 }
 
@@ -2811,6 +4174,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
           appliedUnitPrice: recalculatedUnitPrice,
           lineTotal: newLineTotal,
         },
+        select: publicDraftItemSelect,
       });
 
       await recomputeSubtotal(invoiceId, tx); // updating the invoice subtotal after changing the item
@@ -2843,6 +4207,7 @@ export async function addItem(invoiceId: string, productId: string, qty: number)
         appliedUnitPrice,
         lineTotal,
       },
+      select: publicDraftItemSelect,
     });
 
     await recomputeSubtotal(invoiceId, tx);
@@ -2906,6 +4271,7 @@ export async function updateItem(invoiceId: string, itemId: string, qty: number)
     const updated = await tx.invoiceItem.update({
       where: { id: itemId },
       data: { qty: normalizedQty, appliedUnitPrice, lineTotal },
+      select: publicDraftItemSelect,
     });
 
     await recomputeSubtotal(invoiceId, tx); // updating the invoice subtotal
@@ -2958,6 +4324,20 @@ export async function finalizeInvoice(
     if (!invoice) throw new Error("Invoice not found");
     if (invoice.status !== "DRAFT") throw new Error("Invoice is already finalized");
     if (invoice.items.length === 0) throw new Error("Cannot finalize an empty invoice");
+
+    const captureTimestamp = new Date();
+
+    for (const item of invoice.items) {
+      const productName =
+        typeof item.product?.name === "string" ? item.product.name.trim() : "";
+      const productSku =
+        typeof item.product?.sku === "string" ? item.product.sku.trim() : "";
+      if (!productName || !productSku) {
+        throw new Error(
+          `Cannot finalize invoice: product name and SKU are required for line item ${item.id}`,
+        );
+      }
+    }
 
     // recalculating subtotal from all line items instead of using the stored value
     // we do this because items might have been added or changed since the last subtotal update
@@ -3041,6 +4421,17 @@ export async function finalizeInvoice(
           createdById: userId,
         },
       });
+
+      // capture historical item snapshot atomically in the financial transaction
+      await tx.invoiceItem.update({
+        where: { id: item.id },
+        data: {
+          productNameSnapshot: item.product.name,
+          productSkuSnapshot: item.product.sku,
+          costAtSale: null,
+          snapshotCapturedAt: captureTimestamp,
+        },
+      });
     }
 
     // updating the invoice record to mark it as finalized and saving all the computed totals
@@ -3054,9 +4445,15 @@ export async function finalizeInvoice(
         netTotal,
         paidTotal: 0, // no payment has been recorded yet at the time of finalization
         paymentStatus: netTotal <= 0 ? "PAID" : "UNPAID", // if the discount covers everything, we mark it as paid automatically
-        finalizedAt: new Date(),
+        finalizedAt: captureTimestamp,
+        customerNameSnapshot: invoice.customer ? invoice.customer.name : null,
+        customerPanSnapshot: invoice.customer?.panNo ?? null,
+        customerAddressSnapshot: invoice.customer?.address ?? null,
+        customerSnapshotCapturedAt: captureTimestamp,
       },
     });
+
+    await initializeManualBillMetadataTx(tx, invoiceId);
 
     // creating an audit log entry so the admin can see who finalized which invoice,
     // what the totals were, what discount was applied, and whether it was auto-marked as paid
@@ -3169,6 +4566,8 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
         cancelledById: userId,
       },
     });
+
+    await cancelManualBillObligationTx(tx, invoice, userId, actor);
 
     // creating a detailed audit log entry with all the context about the cancellation
     await tx.auditLog.create({

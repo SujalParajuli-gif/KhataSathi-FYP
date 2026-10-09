@@ -1,5 +1,9 @@
 @import "tailwindcss";
 
+/* KhataSathi uses its established light theme. Legacy dark utilities must not
+   activate independently when the operating system prefers dark colors. */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
 /* Leave scrollable content reachable above the persistent background task. */
 body[data-import-notification="visible"] [data-app-scroll-container] {
   padding-bottom: max(140px, env(safe-area-inset-bottom));
@@ -17,7 +21,7 @@ body[data-import-notification="visible"] [data-app-scroll-container] {
 @font-face {
   font-family: "Material Symbols Rounded";
   font-style: normal;
-  font-weight: 100 700;
+  font-weight: 400;
   src: url("/assets/fonts/Material_Symbols/MaterialSymbolsRounded.woff2") format("woff2");
   font-display: block;
 }
@@ -90,6 +94,11 @@ body[data-import-notification="visible"] [data-app-scroll-container] {
   --color-line: #d8dde5;
   --color-ink: #17202e;
   --color-muted: #596579;
+  --color-action: #11120d;
+  --color-secondary: #565449;
+  --color-placeholder: #8c8889;
+  --color-control-line: #cfcfd3;
+  --color-control-hover: #f3f4f6;
   --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont,
     "Segoe UI", sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol",
     "Noto Color Emoji";
@@ -111,7 +120,7 @@ body {
   overscroll-behavior-x: none;
 }
 
-/* ── Global Custom Scrollbar ───────────────────────────────────────────────
+/* â”€â”€ Global Custom Scrollbar â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    Standardizes and slims down default browser/OS scrollbars into a sleek,
    modern capsule design that blends cleanly with the KhataSathi UI. */
 * {
@@ -300,12 +309,12 @@ input[type="number"]::-webkit-outer-spin-button {
   flex-shrink: 0;
 }
 
-/* ── selection bar animations ──────────────────────────────────────────────
+/* â”€â”€ selection bar animations â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
    these drive the product-selection toolbar transitions between its
    inline and pinned-to-top states so the change feels smooth rather than
    an abrupt conditional-render swap */
 
-/* entrance: bar slides down + fades in when selection count goes from 0 → 1+ */
+/* entrance: bar slides down + fades in when selection count goes from 0 â†’ 1+ */
 @keyframes selection-bar-enter {
   from {
     opacity: 0;

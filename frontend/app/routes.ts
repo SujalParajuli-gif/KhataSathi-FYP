@@ -7,10 +7,12 @@ export default [
   layout("routes/_app.tsx", [
     index("routes/_app.dashboard.tsx"), // the admin dashboard — the default "/" route
     route("products", "routes/_app.products.tsx"),
+    route("purchases", "routes/_app.purchases.tsx"),
     route("products/imports/:batchId", "routes/_app.products.imports.$batchId.tsx"),
     route("product-lookup", "routes/_app.productLookup.tsx"),
     route("billing", "routes/_app.billing.tsx"), // the cashier's billing/POS page
     route("invoices", "routes/_app.invoices.tsx"),
+    route("manual-bills", "routes/_app.manualBills.tsx"),
     route("documents", "routes/_app.documents.tsx"),
     route("documents/:id/view", "routes/_app.documents.$id.view.tsx"),
     route("bin", "routes/_app.bin.tsx"),

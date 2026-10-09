@@ -48,6 +48,7 @@ import {
   updateOverridePinApi,
   updateBrandApi,
   type BusinessSettings,
+  type TaxCalculationMode,
   type BusinessMode,
   type BusinessModePreflight,
   type CashierPrivilegeRow,
@@ -61,15 +62,18 @@ import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import { getAuthUser } from "~/lib/auth";
 import {
   effectiveStaffDraftRequests,
   isBusinessAccessDraftDirty,
   stageBusinessModeSelection,
 } from "~/lib/settings/businessModeDraft";
+import PaymentAccountsTab from "~/components/settings/PaymentAccountsTab";
 
 type TabKey =
   | "overview"
   | "drawer"
+  | "payment-accounts"
   | "cashier-controls"
   | "brands"
   | "audit"
@@ -892,13 +896,24 @@ function clampPage(n: number, min: number, max: number) {
 // this handles updating business rules (defaults), managing brand lists, reviewing application audit logs, and running database backups
 export default function SettingsPage() {
   const capabilities = useBusinessCapabilities();
+  const isAdmin = getAuthUser()?.role === "admin";
   const { showToast } = useToast();
   const [searchParams, setSearchParams] = useSearchParams();
   const requestedTab = searchParams.get("tab");
-  const tab: TabKey = (requestedTab === "drawer" && capabilities.posEnabled) || requestedTab === "cashier-controls" ||
-    requestedTab === "brands" || requestedTab === "audit" || requestedTab === "backup"
-    ? requestedTab
-    : "overview";
+  const tab: TabKey =
+    requestedTab === "drawer" && capabilities.posEnabled
+      ? "drawer"
+      : requestedTab === "payment-accounts" && isAdmin
+        ? "payment-accounts"
+        : requestedTab === "cashier-controls"
+          ? "cashier-controls"
+          : requestedTab === "brands"
+            ? "brands"
+            : requestedTab === "audit"
+              ? "audit"
+              : requestedTab === "backup"
+                ? "backup"
+                : "overview";
   function setTab(nextTab: TabKey) {
     setSearchParams((current) => {
       const next = new URLSearchParams(current);
@@ -1051,6 +1066,13 @@ export default function SettingsPage() {
     String(INITIAL_DEFAULTS.draftRequestExpiryMinutes),
   );
   const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
+  const [defaultBillingChannel, setDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
+  const [savedDefaultBillingChannel, setSavedDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
+  const [billingChannelBusy, setBillingChannelBusy] = useState(false);
+  const [businessTaxMode, setBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
+  const [savedBusinessTaxMode, setSavedBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
+  const [businessTaxModeBusy, setBusinessTaxModeBusy] = useState(false);
+  const [businessTaxModeError, setBusinessTaxModeError] = useState("");
   const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false); // confirmation dialog before saving business defaults
   const [defaultsShowErrors, setDefaultsShowErrors] = useState(false);
   const [defaultsBusy, setDefaultsBusy] = useState(false);
@@ -1284,6 +1306,12 @@ export default function SettingsPage() {
           defaultsDraft.draftRequestExpiryMinutes,
         );
         setSavedDefaults(normalizedSettings);
+        const taxMode = settingsData.value?.taxCalculationMode ?? "UNKNOWN";
+        const channel = settingsData.value?.defaultBillingChannel === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+        setDefaultBillingChannel(channel);
+        setSavedDefaultBillingChannel(channel);
+        setBusinessTaxMode(taxMode);
+        setSavedBusinessTaxMode(taxMode);
         if (settingsData.value?.businessMode) {
           setModeDraft(settingsData.value.businessMode);
         }
@@ -2010,6 +2038,43 @@ export default function SettingsPage() {
     }
   }
 
+  async function handleSaveBillingChannel(newChannel: "MANUAL_EXTERNAL" | null) {
+    try {
+      setBillingChannelBusy(true);
+      const updated = await updateBusinessSettingsApi({ defaultBillingChannel: newChannel });
+      const saved = updated.defaultBillingChannel === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+      setDefaultBillingChannel(saved);
+      setSavedDefaultBillingChannel(saved);
+      showToast("success", "Default billing channel updated.");
+      await refreshSettingsData();
+    } catch (error: any) {
+      showToast("danger", error?.response?.data?.error || error?.message || "Failed to update default billing channel.");
+    } finally {
+      setBillingChannelBusy(false);
+    }
+  }
+
+  async function saveBusinessTaxMode() {
+    if (!isAdmin || !settingsTabLoadedAtRef.current.has("overview")) return;
+    if (businessTaxMode === savedBusinessTaxMode) return;
+    try {
+      setBusinessTaxModeBusy(true);
+      setBusinessTaxModeError("");
+      const updated = await updateBusinessSettingsApi({ taxCalculationMode: businessTaxMode });
+      const saved = updated.taxCalculationMode ?? "UNKNOWN";
+      setBusinessTaxMode(saved);
+      setSavedBusinessTaxMode(saved);
+      showToast("success", "Business tax status updated.");
+      await refreshSettingsData();
+    } catch (error: any) {
+      const message = error?.response?.data?.error || error?.message || "Business tax status could not be saved.";
+      setBusinessTaxModeError(message);
+      showToast("danger", message);
+    } finally {
+      setBusinessTaxModeBusy(false);
+    }
+  }
+
   async function refreshDrawerData() {
     const [current, history] = await Promise.all([
       getCurrentCashDrawerApi(),
@@ -2371,6 +2436,9 @@ export default function SettingsPage() {
     ...(capabilities.posEnabled
       ? [{ key: "drawer" as TabKey, label: "Cash Drawer" }]
       : []),
+    ...(isAdmin
+      ? [{ key: "payment-accounts" as TabKey, label: "Payment Accounts" }]
+      : []),
     { key: "cashier-controls", label: "Role Permissions" },
     { key: "brands", label: "Brands" },
     { key: "audit", label: "Audit & Security" },
@@ -2395,7 +2463,8 @@ export default function SettingsPage() {
 
   useEffect(() => {
     if (tab === "drawer" && !capabilities.posEnabled) setTab("overview");
-  }, [capabilities.posEnabled, tab]);
+    if (tab === "payment-accounts" && !isAdmin) setTab("overview");
+  }, [capabilities.posEnabled, isAdmin, tab]);
 
   const tabTitles: Record<TabKey, { title: string; subtitle: string }> = {
     overview: {
@@ -2403,6 +2472,10 @@ export default function SettingsPage() {
       subtitle: "System-wide operational defaults.",
     },
     drawer: { title: "Cash Drawer", subtitle: "Manage sessions and history." },
+    "payment-accounts": {
+      title: "Payment Accounts",
+      subtitle: "Static receiving QR codes & payment accounts.",
+    },
     "cashier-controls": {
       title: "Role Permissions",
       subtitle: "Role permissions and security controls.",
@@ -2697,6 +2770,39 @@ export default function SettingsPage() {
                 </p>
               </div>
 
+              {/* Default Billing Channel Section */}
+              <div className="mt-4 rounded-[14px] border border-slate-200 bg-white p-4 shadow-sm sm:p-5">
+                <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h3 className="text-[15px] font-bold text-slate-900">
+                        Default Billing Channel
+                      </h3>
+                      <span className="rounded-full bg-indigo-50 px-2.5 py-0.5 text-[11px] font-semibold text-indigo-700 border border-indigo-200">
+                        Sales Mode
+                      </span>
+                    </div>
+                    <p className="mt-1 text-[12px] text-slate-500">
+                      Choose whether new sales default to standard register checkout or physical manual paper-bill recording.
+                    </p>
+                  </div>
+
+                  <div className="flex items-center gap-2">
+                    <ProjectSelect
+                      value={defaultBillingChannel || "DEFAULT"}
+                      onChange={(e) => {
+                        const next = e.target.value === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
+                        handleSaveBillingChannel(next);
+                      }}
+                      disabled={billingChannelBusy || !isAdmin}
+                    >
+                      <option value="DEFAULT">Standard POS Register</option>
+                      <option value="MANUAL_EXTERNAL">Manual External Paper Bill</option>
+                    </ProjectSelect>
+                  </div>
+                </div>
+              </div>
+
               {/* Dynamic Staged Access Migration Panel */}
               {accessDirty ? (
                 <div
@@ -2901,6 +3007,51 @@ export default function SettingsPage() {
                   </span>
                 </div>
               )}
+            </div>
+
+            <div className="rounded-[16px] border border-amber-200 bg-amber-50/60 p-5 shadow-2xs">
+              <div className="mb-3 flex items-center gap-2.5">
+                <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-white text-amber-700">
+                  <Icon name="receipt_long" sizePx={17} />
+                </div>
+                <h2 className="text-[16px] font-semibold text-[#11120D]">Business VAT status</h2>
+              </div>
+              <p className="mb-3 max-w-3xl text-[12.5px] leading-relaxed text-slate-700">
+                Record the verified seller status. Product prices are VAT-exclusive when registered. This setting does not calculate or add tax to sales yet.
+              </p>
+              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+                <label className="flex-1 text-[12px] font-semibold text-slate-700" htmlFor="business-tax-mode">
+                  Tax configuration
+                  <ProjectSelect aria-label="Tax configuration"
+                    id="business-tax-mode"
+                    value={businessTaxMode}
+                    onChange={(event) => {
+                      setBusinessTaxMode(event.target.value as TaxCalculationMode);
+                      setBusinessTaxModeError("");
+                    }}
+                    disabled={!isAdmin || businessTaxModeBusy || !settingsTabLoadedAtRef.current.has("overview")}
+                    className="mt-1 block h-11 w-full rounded-lg border border-slate-300 bg-white px-3 text-sm text-slate-900 disabled:cursor-not-allowed disabled:bg-slate-100"
+                  >
+                    <option value="UNKNOWN">Not configured — keep tax status unknown</option>
+                    <option value="NO_VAT">Verified not VAT registered</option>
+                    <option value="VAT_EXCLUSIVE">VAT registered — prices exclude VAT</option>
+                  </ProjectSelect>
+                </label>
+                {isAdmin ? (
+                  <button
+                    type="button"
+                    onClick={() => void saveBusinessTaxMode()}
+                    disabled={businessTaxModeBusy || businessTaxMode === savedBusinessTaxMode || !settingsTabLoadedAtRef.current.has("overview")}
+                    className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <Icon name="save" sizePx={16} />
+                    {businessTaxModeBusy ? "Saving…" : "Save tax status"}
+                  </button>
+                ) : (
+                  <span className="text-xs font-semibold text-slate-600">Only an administrator can change this setting.</span>
+                )}
+              </div>
+              {businessTaxModeError ? <p className="mt-2 text-sm font-semibold text-rose-700" role="alert">{businessTaxModeError}</p> : null}
             </div>
 
             <div className="rounded-[16px] border border-[#D8DBE0] bg-white p-5 shadow-2xs">
@@ -3306,6 +3457,10 @@ export default function SettingsPage() {
               </div>
             </div>
           </section>
+        ) : null}
+
+        {tab === "payment-accounts" && isAdmin ? (
+          <PaymentAccountsTab />
         ) : null}
 
         {tab === "cashier-controls" ? (

@@ -1,6 +1,18 @@
 import { Router } from "express";
 import multer from "multer";
 import { restock, adjust, lowStock, stockTransactions, receiveBatch, receiveBatches, receiveBatchDetail } from "./controller";
+import {
+  getSuppliersHandler,
+  createSupplierHandler,
+  updateSupplierHandler,
+  deactivateSupplierHandler,
+  listPurchasesHandler,
+  createPurchaseReceiptHandler,
+  getPurchaseDetailHandler,
+  createPurchaseInstallmentHandler,
+  attachPurchaseDocumentsHandler,
+  voidPurchaseInstallmentHandler,
+} from "./purchaseController";
 import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
 import { getTempUploadDir } from "../documents/service";
@@ -65,5 +77,19 @@ router.get("/receive-batches/:id", requireRole("ADMIN", "MANAGER"), receiveBatch
 router.post("/adjust", requireRole("ADMIN", "MANAGER"), adjust); // owner and managers can manually adjust stock (up or down)
 router.get("/low-stock", lowStock); // any authenticated user can view products with low stock
 router.get("/transactions", stockTransactions); // viewing the stock transaction history
+
+// Financial purchase & supplier management (ADMIN & MANAGER only)
+router.get("/suppliers", requireRole("ADMIN", "MANAGER"), getSuppliersHandler);
+router.post("/suppliers", requireRole("ADMIN", "MANAGER"), createSupplierHandler);
+router.patch("/suppliers/:id", requireRole("ADMIN", "MANAGER"), updateSupplierHandler);
+router.post("/suppliers/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivateSupplierHandler);
+
+router.get("/purchases", requireRole("ADMIN", "MANAGER"), listPurchasesHandler);
+router.post("/purchases", requireRole("ADMIN", "MANAGER"), createPurchaseReceiptHandler);
+router.get("/purchases/:id", requireRole("ADMIN", "MANAGER"), getPurchaseDetailHandler);
+router.post("/purchases/:id/installments", requireRole("ADMIN", "MANAGER"), createPurchaseInstallmentHandler);
+router.post("/purchases/:id/attachments", requireRole("ADMIN", "MANAGER"), attachPurchaseDocumentsHandler);
+
+router.post("/purchase-installments/:id/void", requireRole("ADMIN", "MANAGER"), voidPurchaseInstallmentHandler);
 
 export default router;

@@ -52,7 +52,17 @@ export type BusinessSettings = {
     returnWindowDays: number;
     parkedBillExpiryHours: number;
     draftRequestExpiryMinutes: number;
+    businessName?: string | null;
+    legalName?: string | null;
+    panNo?: string | null;
+    businessAddress?: string | null;
+    businessPhone?: string | null;
+    taxCalculationMode?: TaxCalculationMode;
+    defaultBillingChannel?: "MANUAL_EXTERNAL" | "IRD_ELECTRONIC" | null;
 };
+
+export type TaxCalculationMode = "UNKNOWN" | "NO_VAT" | "VAT_EXCLUSIVE";
+export type ProductTaxCategory = "UNSPECIFIED" | "STANDARD_VAT" | "VAT_EXEMPT";
 
 export type BusinessMode = "CATALOG_ONLY" | "INVENTORY_ONLY" | "FULL_POS";
 
@@ -467,6 +477,17 @@ export async function getProductsByIdsApi(
     return res.data;
 }
 
+export async function getCatalogProductsByIdsApi(
+    ids: string[],
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get("/api/products/catalog-lookup", {
+        params: { ids: [...new Set(ids)].join(",") },
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
 export async function getProductByCodeApi(
     code: string,
     options?: { signal?: AbortSignal },
@@ -490,6 +511,15 @@ export async function updateProductApi(id: string, data: any) {
     const res = await api.put(`/api/products/${id}`, data);
     invalidateProductReferenceCache();
     return res.data;
+}
+
+export async function updateProductTaxCategoryApi(
+    id: string,
+    taxCategory: ProductTaxCategory,
+) {
+    const res = await api.patch(`/api/products/${id}/tax-category`, { taxCategory });
+    invalidateProductReferenceCache();
+    return res.data as { id: string; taxCategory: ProductTaxCategory };
 }
 
 // soft-deleting a product by marking it as inactive
@@ -1248,9 +1278,53 @@ export async function listCustomersApi(
     return res.data;
 }
 
+export type CustomerLookupItem = {
+    id: string;
+    name: string;
+    phone: string | null;
+    email: string | null;
+    panNo: string | null;
+    address: string | null;
+    isActive: boolean;
+    loyaltyPercent: number | null;
+    wholesalePercent: number | null;
+};
+
+export type CustomerLookupResponse = {
+    items: CustomerLookupItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+};
+
+export async function lookupCustomersApi(
+    params: { q?: string; match?: "search" | "pan"; page?: number; pageSize?: number },
+    options?: { signal?: AbortSignal },
+): Promise<CustomerLookupResponse> {
+    const res = await api.get<CustomerLookupResponse>("/api/customers/lookup", {
+        params,
+        signal: options?.signal,
+    });
+    return res.data;
+}
+
 // creating a new customer with name and optional phone, email, and discount percentages
 export async function createCustomerApi(data: { name: string; phone?: string; email?: string; loyaltyPercent?: number; wholesalePercent?: number }) {
     const res = await api.post("/api/customers", data);
+    return res.data;
+}
+
+export type QuickCustomerInput = {
+    name: string;
+    phone?: string;
+    email?: string;
+    panNo?: string;
+    address?: string;
+};
+
+export async function createQuickCustomerApi(data: QuickCustomerInput) {
+    const res = await api.post("/api/customers/quick", data);
     return res.data;
 }
 
@@ -1348,6 +1422,154 @@ export async function updateCustomerApi(id: string, data: { name?: string; phone
 }
 
 // deactivating a customer (soft delete)
+
+export type CustomerProductPurchaseHistoryItem = {
+    id: string;
+    invoiceId: string;
+    invoiceNo: string;
+    invoiceDate: string;
+    productId: string;
+    productName: string;
+    productSku: string | null;
+    displayProduct?: {
+        name: string | null;
+        sku: string | null;
+        source: "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT";
+    };
+    qty: number;
+    appliedUnitPrice: number;
+};
+
+export type PurchaseHistoryReturnEntry = {
+    returnItemId: string;
+    returnRequestId: string;
+    status: "PENDING" | "APPROVED" | "REJECTED" | "REVERSED";
+    qtyReturned: number;
+    unitPrice: number;
+    lineTotal: number;
+    reason: string;
+    createdAt: string | null;
+};
+
+export type PurchaseHistoryReturnSummary = {
+    approvedQty: number;
+    pendingQty: number;
+    rejectedQty: number;
+    reversedQty: number;
+    hasReturns: boolean;
+    entries: PurchaseHistoryReturnEntry[];
+};
+
+export type PurchaseHistorySupersededBy = {
+    creditNoteNo: string;
+    replacementInvoiceId: string;
+    replacementInvoiceNo: string | null;
+    createdAt: string | null;
+    reason: string | null;
+};
+
+export type PurchaseHistoryReplaces = {
+    creditNoteNo: string;
+    originalInvoiceId: string;
+    originalInvoiceNo: string | null;
+    createdAt: string | null;
+    reason: string | null;
+};
+
+export type PurchaseHistoryExternalReference = {
+    billingChannel: string | null;
+    externalDocumentType: string | null;
+    externalBillNo: string | null;
+    externalBillDate: string | null;
+    billRecordStatus: string | null;
+    isRecorded: boolean;
+};
+
+export type CustomerPurchaseHistoryItem = {
+    id: string;
+    invoiceId: string;
+    invoiceNo: string;
+    invoiceDate: string;
+    productId: string;
+    productName: string;
+    productSku: string | null;
+    displayProduct?: {
+        name: string | null;
+        sku: string | null;
+        source: "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT";
+    };
+    qty: number;
+    appliedUnitPrice: number;
+    state?: "ELIGIBLE" | "SUPERSEDED" | "CANCELLED";
+    lineTotal?: number;
+    originalUnitPrice?: number | null;
+    overrideUnitPrice?: number | null;
+    overrideReason?: string | null;
+    returnedQty?: number;
+    returnSummary?: PurchaseHistoryReturnSummary;
+    supersededBy?: PurchaseHistorySupersededBy | null;
+    replaces?: PurchaseHistoryReplaces | null;
+    externalReference?: PurchaseHistoryExternalReference;
+    invoiceStatus?: "DRAFT" | "FINALIZED";
+    isCancelled?: boolean;
+    cancelledAt?: string | null;
+};
+
+export async function getCustomerProductHistoryApi(
+    customerId: string,
+    productIds: string[],
+    options?: { signal?: AbortSignal },
+) {
+    const res = await api.get<{ history: CustomerProductPurchaseHistoryItem[] }>(
+        `/api/customers/${encodeURIComponent(customerId)}/product-history`,
+        {
+            params: { productIds: productIds.join(",") },
+            signal: options?.signal,
+        },
+    );
+    return res.data;
+}
+
+export type CustomerPurchaseHistoryState =
+    | "eligible"
+    | "all"
+    | "cancelled"
+    | "superseded"
+    | "returned";
+
+export type CustomerPurchaseHistoryParams = {
+    productId?: string;
+    q?: string;
+    from?: string;
+    to?: string;
+    state?: CustomerPurchaseHistoryState;
+    page?: number;
+    pageSize?: number;
+};
+
+export type CustomerPurchaseHistoryResponse = {
+    items: CustomerPurchaseHistoryItem[];
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+};
+
+export async function getCustomerPurchaseHistoryApi(
+    customerId: string,
+    params: CustomerPurchaseHistoryParams,
+    options?: { signal?: AbortSignal },
+): Promise<CustomerPurchaseHistoryResponse> {
+    const res = await api.get<CustomerPurchaseHistoryResponse>(
+        `/api/customers/${encodeURIComponent(customerId)}/purchase-history`,
+        {
+            params,
+            signal: options?.signal,
+        },
+    );
+    return res.data;
+}
+
 export async function deactivateCustomerApi(id: string) {
     const res = await api.patch(`/api/customers/${id}/deactivate`);
     return res.data;
@@ -1364,6 +1586,7 @@ export async function createInvoiceApi(customerId?: string) {
 export type CheckoutInvoiceInput = {
     operationKey: string;
     draftInvoiceId?: string;
+    draftRequestId?: string;
     customerId?: string;
     discountAmount?: number;
     overridePin?: string;
@@ -1380,13 +1603,27 @@ export type CheckoutInvoiceInput = {
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
+        receivingAccountId?: string;
+        receivingAccountVersion?: number;
+        manualReceiptConfirmed?: boolean;
     };
     payments?: Array<{
         method: "CASH" | "ESEWA" | "FONEPAY" | "BANK_TRANSFER" | "NONE";
         amount?: number;
         reference?: string;
         tenderedAmount?: number;
+        receivingAccountId?: string;
+        receivingAccountVersion?: number;
+        manualReceiptConfirmed?: boolean;
     }>;
+    confirmation?: {
+        items: Array<{
+            productId: string;
+            qty: number;
+            appliedUnitPrice: number;
+        }>;
+        payableTotal: number;
+    } | null;
 };
 
 export async function checkoutInvoiceApi(data: CheckoutInvoiceInput) {
@@ -1514,7 +1751,7 @@ export async function listInvoicesApi(
 
 // fetching a single invoice with all its items and payment details
 export async function getInvoiceApi(id: string) {
-    const res = await api.get(`/api/invoices/${id}`);
+    const res = await api.get(`/api/invoices/${encodeURIComponent(id)}`);
     return res.data;
 }
 
@@ -1550,12 +1787,41 @@ export async function cancelInvoiceApi(invoiceId: string) {
 
 // --- Payment endpoints ---
 
-// recording a payment against an invoice (cash, eSewa, etc.)
+export type GatewayDisplayResponse = {
+    esewa: {
+        environment: "SANDBOX" | "UNVERIFIED";
+        label: string;
+    };
+};
+
+export async function getPaymentGatewayDisplayApi(
+    options?: { signal?: AbortSignal },
+): Promise<GatewayDisplayResponse> {
+    const res = await api.get<GatewayDisplayResponse>(
+        "/api/payments/gateways/display",
+        { signal: options?.signal },
+    );
+    return res.data;
+}
+
+export type AddInvoicePaymentInput = {
+    method: string;
+    amount: number;
+    status?: string;
+    reference?: string;
+    manualOperationKey?: string;
+    receivingAccountId?: string;
+    receivingAccountVersion?: number;
+    manualReceiptConfirmed?: boolean;
+    overridePin?: string;
+};
+
+// recording a payment against an invoice (cash, eSewa, manual receipt, etc.)
 export async function addPaymentApi(
     invoiceId: string,
-    data: { method: string; amount: number; status?: string; reference?: string }
+    data: AddInvoicePaymentInput,
 ) {
-    const res = await api.post(`/api/invoices/${invoiceId}/payments`, data);
+    const res = await api.post(`/api/invoices/${encodeURIComponent(invoiceId)}/payments`, data);
     return res.data;
 }
 
@@ -2157,14 +2423,6 @@ export async function rejectDraftRequestApi(id: string, note?: string | null) {
     return res.data;
 }
 
-export async function completeDraftRequestApi(id: string, invoiceId: string) {
-    const res = await api.patch<{ request: BillingDraftRequest }>(
-        `/api/draft-requests/${id}/complete`,
-        { invoiceId },
-    );
-    return res.data;
-}
-
 export async function resolveAcceptedDraftRequestApi(
     id: string,
     data: { action: "RETURN_TO_QUEUE" | "CANCEL"; reason: string },
@@ -2341,7 +2599,7 @@ export async function uploadProductImageApi(productId: string, file: File) {
 // --- Document Storage endpoints ---
 
 // the shape of document types the system supports
-export type DocumentType = "STOCK_BILL" | "PRODUCT_IMPORT" | "RETURN_PROOF" | "PAYMENT_PROOF" | "DISCOUNT_PROOF" | "GENERAL";
+export type DocumentType = "STOCK_BILL" | "PRODUCT_IMPORT" | "RETURN_PROOF" | "PAYMENT_PROOF" | "DISCOUNT_PROOF" | "GENERAL" | "PURCHASE_BILL";
 export type DocumentVisibility = "ALL_AUTHENTICATED" | "ADMIN_MANAGER" | "ADMIN_ONLY";
 
 // the shape of a document record from the backend

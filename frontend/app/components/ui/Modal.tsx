@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import Icon from "~/components/ui/Icon";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
@@ -23,6 +23,9 @@ type ModalFrameProps = {
   compact?: boolean;
   mobileFullScreen?: boolean;
   mobileBottomSheet?: boolean;
+  desktopAnchored?: boolean;
+  desktopPositionClass?: string;
+  anchorRef?: React.RefObject<HTMLElement | null>;
   drawer?: boolean;
   layer?: "modal" | "critical";
   dialogClassName?: string;
@@ -44,6 +47,9 @@ export function ModalFrame({
   compact = false,
   mobileFullScreen = false,
   mobileBottomSheet = false,
+  desktopAnchored = false,
+  desktopPositionClass,
+  anchorRef,
   drawer = false,
   layer = "modal",
   dialogClassName,
@@ -56,6 +62,43 @@ export function ModalFrame({
   onCloseRef.current = onClose;
   const titleId = useId();
   const descriptionId = useId();
+  const [anchorStyle, setAnchorStyle] = useState<React.CSSProperties | null>(null);
+
+  useEffect(() => {
+    if (!open || !desktopAnchored) {
+      setAnchorStyle(null);
+      return undefined;
+    }
+    const updatePosition = () => {
+      const el = anchorRef?.current;
+      if (!el) return;
+      const rect = el.getBoundingClientRect();
+      if (typeof window !== "undefined" && window.innerWidth >= 1024) {
+        const top = Math.max(16, Math.min(window.innerHeight - 480, rect.top));
+        const right = Math.max(16, window.innerWidth - rect.left + 12);
+        const maxHeight = Math.max(200, window.innerHeight - top - 16);
+        setAnchorStyle({
+          position: "absolute",
+          top: `${top}px`,
+          right: `${right}px`,
+          maxHeight: `${maxHeight}px`,
+          bottom: "auto",
+          left: "auto",
+        });
+      } else {
+        setAnchorStyle(null);
+      }
+    };
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [open, anchorRef, desktopAnchored]);
 
   useEffect(() => {
     if (!open) return undefined;
@@ -79,7 +122,7 @@ export function ModalFrame({
     }
 
     function handleDialogKeys(event: KeyboardEvent) {
-      if (!isTopDialog()) return;
+      if (event.defaultPrevented || !isTopDialog()) return;
       if (event.key === "Escape") {
         event.preventDefault();
         onCloseRef.current();
@@ -132,14 +175,23 @@ export function ModalFrame({
         className="absolute inset-0 bg-slate-950/45 backdrop-blur-sm"
       />
 
-      <div className={cn(
-        "absolute inset-0 flex justify-center",
-        drawer
-          ? "items-end p-0 sm:items-stretch sm:justify-end"
-          : mobileFullScreen || mobileBottomSheet
-          ? "items-end p-0 lg:items-center lg:p-4"
-          : "items-center p-2 sm:p-4",
-      )}>
+      <div
+        style={anchorStyle || undefined}
+        className={cn(
+          anchorStyle ? "absolute flex" : "absolute inset-0 flex",
+          anchorStyle
+            ? "items-start justify-start p-0"
+            : desktopPositionClass
+            ? desktopPositionClass
+            : desktopAnchored
+            ? (mobileBottomSheet ? "items-end justify-center p-0 lg:items-start lg:justify-start lg:pt-24 lg:pl-[240px] lg:p-6" : "items-center justify-start lg:pl-[240px] p-6")
+            : drawer
+            ? "items-end justify-center p-0 sm:items-stretch sm:justify-end"
+            : mobileFullScreen || mobileBottomSheet
+            ? "items-end justify-center p-0 lg:items-center lg:justify-center lg:p-4"
+            : "items-center justify-center p-2 sm:p-4",
+        )}
+      >
         <div
           ref={dialogRef}
           role="dialog"
@@ -148,9 +200,10 @@ export function ModalFrame({
           aria-describedby={description ? descriptionId : undefined}
           data-modal-frame="true"
           tabIndex={-1}
+          style={anchorStyle?.maxHeight ? { maxHeight: anchorStyle.maxHeight } : undefined}
           className={cn(
             "relative flex w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
-            drawer ? "h-[92dvh] max-h-[92dvh] rounded-t-[20px] sm:h-dvh sm:max-h-dvh sm:rounded-none" : "max-h-[calc(100dvh-16px)] sm:max-h-[calc(100dvh-32px)]",
+            anchorStyle ? "max-h-full" : drawer ? "h-[92dvh] max-h-[92dvh] rounded-t-[20px] sm:h-dvh sm:max-h-dvh sm:rounded-none" : "max-h-[calc(100dvh-16px)] sm:max-h-[calc(100dvh-32px)]",
             drawer ? "" : mobileFullScreen
               ? cn("flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border", !dialogClassName?.includes("h-") && "lg:h-auto")
               : mobileBottomSheet
@@ -373,6 +426,7 @@ type SuccessDialogProps = {
   onClose: () => void;
   actionLabel?: string;
   secondaryAction?: ReactNode;
+  children?: ReactNode;
 };
 
 // success dialog — shown after a successful operation like invoice finalization or payment confirmation
@@ -383,6 +437,7 @@ export function SuccessDialog({
   onClose,
   actionLabel = "Done",
   secondaryAction,
+  children,
 }: SuccessDialogProps) {
   return (
     <ModalFrame
@@ -409,6 +464,8 @@ export function SuccessDialog({
             {message}
           </div>
         </div>
+
+        {children}
       </div>
 
     </ModalFrame>

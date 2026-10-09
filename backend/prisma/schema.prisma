@@ -32,6 +32,18 @@ enum ProductAvailabilityStatus {
   COMING_SOON
 }
 
+enum TaxCalculationMode {
+  UNKNOWN
+  NO_VAT
+  VAT_EXCLUSIVE
+}
+
+enum ProductTaxCategory {
+  UNSPECIFIED
+  STANDARD_VAT
+  VAT_EXEMPT
+}
+
 enum ProductImportComparisonStatus {
   READY_NEW
   EXACT_DUPLICATE
@@ -83,6 +95,11 @@ enum PaymentStatusInvoice {
   PARTIALLY_PAID
   PAID
   CANCELLED
+}
+
+enum PaymentReceivingConfirmationMode {
+  MANUAL_RECEIPT
+  DISPLAY_ONLY
 }
 
 enum ReturnReason {
@@ -141,6 +158,33 @@ enum DocumentType {
   PAYMENT_PROOF
   DISCOUNT_PROOF
   GENERAL
+  SALE_BILL
+  PURCHASE_BILL
+}
+
+enum BillingChannel {
+  MANUAL_EXTERNAL
+  IRD_ELECTRONIC
+}
+
+enum ExternalDocumentType {
+  PAN_INVOICE
+  VAT_TAX_INVOICE
+  ABBREVIATED_TAX_INVOICE
+  OTHER_MANUAL_SALES_DOCUMENT
+}
+
+enum BillRecordStatus {
+  PENDING
+  RECORDED
+  VERIFIED
+  MISSING
+}
+
+enum SaleRecoveryStatus {
+  UNRESOLVED
+  ATTACHED
+  ARCHIVED
 }
 
 enum DocumentVisibility {
@@ -226,6 +270,11 @@ model User {
   productSearchSelections     ProductSearchSelection[]
   authSessions                AuthSession[]
   checkoutOperations          CheckoutOperation[]
+  paymentAccountsCreated      PaymentReceivingAccount[]    @relation("PaymentAccountCreator")
+  paymentAccountsUpdated      PaymentReceivingAccount[]    @relation("PaymentAccountUpdater")
+  paymentQrAssetsCreated      PaymentReceivingQrAsset[]    @relation("PaymentQrAssetCreator")
+  createdSupplierPayments     SupplierPayment[]            @relation("SupplierPaymentCreator")
+  voidedSupplierPayments      SupplierPayment[]            @relation("SupplierPaymentVoider")
 
   @@index([role, isActive, lastPresenceAt])
 }
@@ -289,6 +338,7 @@ model Product {
   sourceCitation                   String?
   sellingPriceStatus               SellingPriceStatus @default(READY)
   availabilityStatus               ProductAvailabilityStatus @default(CATALOG_LISTED)
+  taxCategory                      ProductTaxCategory         @default(UNSPECIFIED)
   retailPrice                      Float?
   wholesalePrice                   Float?
   wholesaleQtyThreshold            Float    @default(1)
@@ -313,6 +363,7 @@ model Product {
   searchDocument              ProductSearchDocument?
   searchSelections            ProductSearchSelection[]
   matchedImportRows           ProductImportRow[]             @relation("MatchedImportProduct")
+  purchaseBatchItems          StockReceiveBatchItem[]
 
   @@index([barcode])
   @@index([sku])
@@ -428,6 +479,9 @@ model Customer {
   createdAt        DateTime @default(now())
   updatedAt        DateTime @updatedAt
 
+  panNo   String?
+  address String?  @db.Text
+
   createdBy        User?                     @relation("CustomerCreator", fields: [createdById], references: [id])
   invoices         Invoice[]
   discountRequests CustomerDiscountRequest[] @relation("CustomerDiscountRequestApprovedCustomer")
@@ -499,9 +553,18 @@ model Invoice {
   paidTotal              Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
-  parkedLabel            String?
-  parkedAt               DateTime?
-  createdAt              DateTime             @default(now())
+  parkedLabel                String?
+  parkedAt                   DateTime?
+  customerNameSnapshot       String?
+  customerPanSnapshot        String?
+  customerAddressSnapshot    String?              @db.Text
+  customerSnapshotCapturedAt DateTime?
+  billingChannel             BillingChannel?
+  externalDocumentType       ExternalDocumentType?
+  externalBillNo             String?              @db.VarChar(100)
+  externalBillDate           DateTime?            @db.Date
+  billRecordStatus           BillRecordStatus?
+  createdAt                  DateTime             @default(now())
   finalizedAt            DateTime?
   cancelledAt            DateTime?
   deletedAt              DateTime?
@@ -519,6 +582,8 @@ model Invoice {
   checkoutOperation       CheckoutOperation?
 
   @@index([status, parkedAt])
+  @@index([status, billingChannel, billRecordStatus, cancelledAt, deletedAt, finalizedAt, id], map: "Invoice_manual_bill_queue_idx")
+  @@index([externalDocumentType, externalBillNo, externalBillDate], map: "Invoice_external_reference_idx")
 }
 
 model CheckoutOperation {
@@ -592,6 +657,13 @@ model BusinessSettings {
   draftRequestExpiryMinutes    Int          @default(30)
   overridePinHash              String?
   overridePinUpdatedAt         DateTime?
+  businessName                 String?
+  legalName                    String?
+  panNo                        String?
+  businessAddress              String?      @db.Text
+  businessPhone                String?
+  taxCalculationMode           TaxCalculationMode @default(UNKNOWN)
+  defaultBillingChannel        BillingChannel?
   createdAt                    DateTime     @default(now())
   updatedAt                    DateTime     @updatedAt
 }
@@ -614,8 +686,12 @@ model InvoiceItem {
   overrideReason    String?   @db.Text
   overrideById      String?
   overrideAt        DateTime?
-  lineTotal         Float
-  createdAt         DateTime  @default(now())
+  lineTotal           Float
+  productNameSnapshot String?
+  productSkuSnapshot  String?
+  costAtSale          Float?
+  snapshotCapturedAt  DateTime?
+  createdAt           DateTime  @default(now())
 
   invoice     Invoice      @relation(fields: [invoiceId], references: [id])
   product     Product      @relation(fields: [productId], references: [id])
@@ -788,17 +864,23 @@ model Payment {
   reference       String?
   transactionUuid String?       @unique
   returnRequestId String?
-  createdById     String
-  voidedAt        DateTime?
-  voidedById      String?
-  createdAt       DateTime      @default(now())
+  createdById                  String
+  voidedAt                     DateTime?
+  voidedById                   String?
+  receivingAccountId           String?                       @db.VarChar(191)
+  receivingDestinationSnapshot Json?
+  manualOperationKey           String?                       @unique @db.VarChar(120)
+  manualPayloadHash            String?                       @db.Char(64)
+  createdAt                    DateTime                      @default(now())
 
-  invoice       Invoice        @relation(fields: [invoiceId], references: [id])
-  returnRequest ReturnRequest? @relation(fields: [returnRequestId], references: [id])
-  createdBy     User           @relation("PaymentCreator", fields: [createdById], references: [id])
-  voidedBy      User?          @relation("PaymentVoider", fields: [voidedById], references: [id])
+  invoice          Invoice                  @relation(fields: [invoiceId], references: [id])
+  returnRequest    ReturnRequest?           @relation(fields: [returnRequestId], references: [id])
+  createdBy        User                     @relation("PaymentCreator", fields: [createdById], references: [id])
+  voidedBy         User?                    @relation("PaymentVoider", fields: [voidedById], references: [id])
+  receivingAccount PaymentReceivingAccount? @relation("PaymentReceivingDestination", fields: [receivingAccountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([returnRequestId])
+  @@index([receivingAccountId])
 }
 
 model CashDrawer {
@@ -996,16 +1078,92 @@ model StockReceiveBatch {
   billDate     DateTime?
   billAmount   Float?
   remarks      String?   @db.Text
+  supplierId   String?
+  payable      Decimal?  @db.Decimal(20, 2)
+  postedAt     DateTime?
+  operationKey String?   @unique @db.VarChar(120)
+  payloadHash  String?   @db.Char(64)
   createdById  String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   createdBy    User               @relation(fields: [createdById], references: [id])
+  supplier     Supplier?               @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   transactions StockTransaction[]
+  items        StockReceiveBatchItem[]
+  payments     SupplierPayment[]
 
   @@index([supplierName])
   @@index([billDate])
   @@index([createdById])
+  @@index([supplierId])
+  @@index([postedAt])
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String
+  contact   String?
+  phone     String?
+  panNo     String?
+  address   String?  @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  batches StockReceiveBatch[]
+
+  @@index([name])
+  @@index([phone])
+  @@index([isActive])
+}
+
+model StockReceiveBatchItem {
+  id                  String   @id @default(cuid())
+  batchId             String
+  productId           String
+  lineOrder           Int
+  productNameSnapshot String
+  productSkuSnapshot  String
+  saleUnitSnapshot    String
+  inputUnit           String
+  inputQty            Decimal  @db.Decimal(18, 3)
+  conversionFactor    Decimal  @db.Decimal(18, 6)
+  stockQty            Decimal  @db.Decimal(18, 3)
+  unitAcquisitionCost Decimal  @db.Decimal(20, 6)
+  lineAmount          Decimal  @db.Decimal(20, 2)
+  createdAt           DateTime @default(now())
+
+  batch   StockReceiveBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  product Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, lineOrder])
+  @@index([batchId])
+  @@index([productId])
+}
+
+model SupplierPayment {
+  id           String    @id @default(cuid())
+  batchId      String
+  operationKey String    @unique @db.VarChar(120)
+  payloadHash  String    @db.Char(64)
+  amount       Decimal   @db.Decimal(20, 2)
+  method       String    @db.VarChar(30)
+  reference    String?   @db.VarChar(120)
+  paidAt       DateTime
+  createdById  String
+  createdAt    DateTime  @default(now())
+  voidedAt     DateTime?
+  voidedById   String?
+  voidReason   String?   @db.Text
+
+  batch     StockReceiveBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  createdBy User              @relation("SupplierPaymentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  voidedBy  User?             @relation("SupplierPaymentVoider", fields: [voidedById], references: [id], onDelete: Restrict)
+
+  @@index([batchId, createdAt])
+  @@index([createdById])
+  @@index([voidedById])
 }
 
 model AuditLog {
@@ -1052,10 +1210,14 @@ model Document {
   deletedById  String?
   deleteReason String?   @db.Text
   purgeAfter   DateTime?
+  saleRecoveryStatus           SaleRecoveryStatus?
+  recoveryCheckoutOperationKey String?             @unique @db.VarChar(120)
+  recoveryCheckoutPayloadHash  String?             @db.Char(64)
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 
   @@index([documentType, createdAt])
+  @@index([documentType, saleRecoveryStatus, createdAt, id], map: "Document_sales_review_idx")
   @@index([linkedEntityType, linkedEntityId])
   @@index([visibility])
   @@index([title])
@@ -1083,4 +1245,54 @@ model SoftDeleteRecord {
   @@index([entityType, purgeAfter])
   @@index([deletedById])
   @@index([purgedAt])
+}
+
+model PaymentReceivingAccount {
+  id                  String                           @id @db.VarChar(191)
+  providerLabel       String                           @db.VarChar(120)
+  accountHolder       String                           @db.VarChar(120)
+  accountIdentifier   String?                          @db.VarChar(120)
+  settlementMethod    PaymentMethod?
+  confirmationMode    PaymentReceivingConfirmationMode
+  enabled             Boolean                          @default(false)
+  sortOrder           Int                              @default(0)
+  version             Int                              @default(1)
+  creationPayloadHash String                           @db.Char(64)
+  activeQrAssetId     String?                          @unique @db.VarChar(191)
+  createdById         String                           @db.VarChar(191)
+  updatedById         String                           @db.VarChar(191)
+  createdAt           DateTime                         @default(now())
+  updatedAt           DateTime                         @updatedAt
+
+  createdBy     User                     @relation("PaymentAccountCreator", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  updatedBy     User                     @relation("PaymentAccountUpdater", fields: [updatedById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  activeQrAsset PaymentReceivingQrAsset? @relation("PaymentAccountActiveQr", fields: [activeQrAssetId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  assets        PaymentReceivingQrAsset[] @relation("PaymentAccountAssets")
+  payments      Payment[]                @relation("PaymentReceivingDestination")
+
+  @@index([enabled, sortOrder, id])
+}
+
+model PaymentReceivingQrAsset {
+  id                         String   @id @db.VarChar(191)
+  accountId                  String   @db.VarChar(191)
+  publicationExpectedVersion Int
+  storedPath                 String   @db.VarChar(191)
+  fileName                   String   @db.VarChar(191)
+  thumbnailFileName          String   @db.VarChar(191)
+  mimeType                   String   @db.VarChar(32)
+  sizeBytes                  Int
+  thumbnailSizeBytes         Int
+  width                      Int
+  height                     Int
+  checksum                   String   @db.Char(64)
+  sourceChecksum             String   @db.Char(64)
+  createdById                String   @db.VarChar(191)
+  createdAt                  DateTime @default(now())
+
+  account   PaymentReceivingAccount  @relation("PaymentAccountAssets", fields: [accountId], references: [id], onDelete: Restrict, onUpdate: Cascade)
+  activeFor PaymentReceivingAccount? @relation("PaymentAccountActiveQr")
+  createdBy User                     @relation("PaymentQrAssetCreator", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
+
+  @@index([accountId])
 }

@@ -8,6 +8,14 @@ export type PaymentMethodLabel =
   | "Mixed"
   | "None";
 
+export type FrontendIdentitySource =
+  | "CAPTURED"
+  | "LEGACY_LIVE_FALLBACK"
+  | "LEGACY_UNAVAILABLE"
+  | "DRAFT_CURRENT"
+  | "COMPATIBILITY_UNVERIFIED"
+  | "UNRESOLVED";
+
 // the shape of each item inside an invoice — used for the invoice detail modal
 export type InvoiceItemSummary = {
   id: string;
@@ -15,6 +23,7 @@ export type InvoiceItemSummary = {
   name: string;
   sku?: string;
   barcode?: string;
+  identitySource: FrontendIdentitySource;
   qty: number;
   unitPrice: number;
   originalUnitPrice?: number;
@@ -24,6 +33,21 @@ export type InvoiceItemSummary = {
   overrideAt?: string;
   remainingReturnableQty?: number;
   lineTotal: number;
+};
+
+export type ReceivingDestinationSnapshotV1 = {
+  schemaVersion: 1;
+  accountId: string;
+  accountVersion: number;
+  providerLabel: string;
+  accountHolder: string;
+  accountIdentifier: string | null;
+  settlementMethod: "FONEPAY" | "BANK_TRANSFER";
+  confirmationMode: "MANUAL_RECEIPT";
+  qrAssetId: string;
+  qrChecksum: string;
+  confirmedById: string;
+  confirmedAt: string;
 };
 
 // the shape of each payment recorded against an invoice
@@ -36,6 +60,8 @@ export type InvoicePaymentSummary = {
   cashTendered?: number;
   changeAmount?: number;
   reference?: string;
+  receivingAccountId?: string | null;
+  receivingDestinationSnapshot?: ReceivingDestinationSnapshotV1 | null;
   createdAt: string;
   createdByName?: string;
 };
@@ -66,7 +92,10 @@ export type AppInvoice = {
   cashierId?: string;
   customerId?: string | null;
   customerName: string;
-  customerSubtitle: string; // e.g., "Wholesale customer | 9841234567"
+  customerSubtitle: string; // e.g., "Current customer information: Wholesale customer | 9841234567"
+  customerIdentitySource: FrontendIdentitySource;
+  customerPanNo: string | null;
+  customerAddress: string | null;
   cashierName: string;
   createdAt: string;
   createdDateLabel: string; // formatted date like "Apr 18, 2026"
@@ -87,11 +116,117 @@ export type AppInvoice = {
   cancelledAt?: string;
   cancelledByName?: string;
   cancelledByRole?: string;
+  billingChannel?: string | null;
+  manualBillRecord?: any;
 };
 
+export function cleanDisplayString(value: unknown): string | null {
+  if (typeof value !== "string") return null;
+  if (value.trim().length === 0) return null;
+  return value;
+}
+
+export function isValidBackendIdentitySource(
+  source: unknown,
+): source is "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT" {
+  return (
+    source === "CAPTURED" ||
+    source === "LEGACY_LIVE_FALLBACK" ||
+    source === "LEGACY_UNAVAILABLE" ||
+    source === "DRAFT_CURRENT"
+  );
+}
+
+export function getIdentitySourceLabel(source: FrontendIdentitySource): string {
+  switch (source) {
+    case "CAPTURED":
+      return "Captured at sale";
+    case "LEGACY_LIVE_FALLBACK":
+      return "Legacy identity — current labels";
+    case "LEGACY_UNAVAILABLE":
+      return "Historical identity unavailable";
+    case "DRAFT_CURRENT":
+      return "Current draft identity";
+    case "COMPATIBILITY_UNVERIFIED":
+      return "Historical identity unverified";
+    case "UNRESOLVED":
+    default:
+      return "Identity unavailable";
+  }
+}
+
+export type PrintBusinessIdentity = {
+  displayName: string;
+  legalName: string | null;
+  panNo: string | null;
+  address: string | null;
+  phone: string | null;
+};
+
+export function resolvePrintBusinessIdentity(settings?: {
+  businessName?: string | null;
+  legalName?: string | null;
+  panNo?: string | null;
+  businessAddress?: string | null;
+  businessPhone?: string | null;
+} | null): PrintBusinessIdentity {
+  const cleanBusinessName = cleanDisplayString(settings?.businessName);
+  const cleanLegalName = cleanDisplayString(settings?.legalName);
+  const cleanPanNo = cleanDisplayString(settings?.panNo);
+  const cleanAddress = cleanDisplayString(settings?.businessAddress);
+  const cleanPhone = cleanDisplayString(settings?.businessPhone);
+
+  const displayName = cleanBusinessName || cleanLegalName || "KhataSathi";
+  const legalName =
+    cleanLegalName && cleanLegalName !== displayName ? cleanLegalName : null;
+
+  return {
+    displayName,
+    legalName,
+    panNo: cleanPanNo,
+    address: cleanAddress,
+    phone: cleanPhone,
+  };
+}
+
+export function getInvoiceItemProvenanceNotice(
+  items: InvoiceItemSummary[],
+): string | null {
+  if (!items || items.length === 0) return null;
+  let hasLegacy = false;
+  let hasUnavailable = false;
+  let hasCompatibility = false;
+
+  for (const item of items) {
+    if (item.identitySource === "LEGACY_LIVE_FALLBACK") {
+      hasLegacy = true;
+    } else if (
+      item.identitySource === "LEGACY_UNAVAILABLE" ||
+      item.identitySource === "UNRESOLVED"
+    ) {
+      hasUnavailable = true;
+    } else if (item.identitySource === "COMPATIBILITY_UNVERIFIED") {
+      hasCompatibility = true;
+    }
+  }
+
+  if (hasLegacy) {
+    return "Contains items with current catalog labels";
+  }
+  if (hasUnavailable) {
+    return "Contains items with unavailable historical identity";
+  }
+  if (hasCompatibility) {
+    return "Contains items with unverified historical identity";
+  }
+  return null;
+}
+
 // building a descriptive subtitle for the customer — shows wholesale/loyalty status and contact info
-function buildCustomerSubtitle(rawCustomer: any) {
-  if (!rawCustomer) return "Walk-in customer";
+export function buildCustomerSubtitle(rawCustomer: any, isRegistered = false): string {
+  if (!rawCustomer) {
+    return isRegistered ? "" : "Walk-in customer";
+  }
 
   const parts: string[] = [];
   if (Number(rawCustomer.wholesalePercent || 0) > 0) {
@@ -105,7 +240,12 @@ function buildCustomerSubtitle(rawCustomer: any) {
     parts.push(String(contact));
   }
 
-  return parts.join(" | ") || "Walk-in customer";
+  if (parts.length === 0) {
+    return isRegistered ? "" : "Walk-in customer";
+  }
+
+  const joined = parts.join(" | ");
+  return `Current customer information: ${joined}`;
 }
 
 // --
@@ -222,6 +362,124 @@ export function getInvoiceReference(invoice: Pick<AppInvoice, "payments">) {
   return ref;
 }
 
+const UUID_REGEX =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+const SHA256_REGEX = /^[0-9a-fA-F]{64}$/;
+const HTML_TAG_PATTERN = /<[^>]*>/;
+const CONTROL_CHAR_PATTERN = /[\x00-\x1F\x7F]/;
+
+export function parseReceivingDestinationSnapshot(
+  raw: unknown,
+): ReceivingDestinationSnapshotV1 | null {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return null;
+  }
+  const obj = raw as Record<string, unknown>;
+  if (obj.schemaVersion !== 1) {
+    return null;
+  }
+  if (
+    typeof obj.accountId !== "string" ||
+    !UUID_REGEX.test(obj.accountId.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.accountVersion !== "number" ||
+    !Number.isInteger(obj.accountVersion) ||
+    !Number.isFinite(obj.accountVersion) ||
+    obj.accountVersion <= 0
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.providerLabel !== "string" ||
+    obj.providerLabel.trim().length === 0 ||
+    obj.providerLabel.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.providerLabel) ||
+    HTML_TAG_PATTERN.test(obj.providerLabel)
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.accountHolder !== "string" ||
+    obj.accountHolder.trim().length === 0 ||
+    obj.accountHolder.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.accountHolder) ||
+    HTML_TAG_PATTERN.test(obj.accountHolder)
+  ) {
+    return null;
+  }
+  if (!("accountIdentifier" in obj)) {
+    return null;
+  }
+  let accountIdentifier: string | null = null;
+  if (obj.accountIdentifier !== null) {
+    if (
+      typeof obj.accountIdentifier !== "string" ||
+      obj.accountIdentifier.trim().length === 0 ||
+      obj.accountIdentifier.length > 120 ||
+      CONTROL_CHAR_PATTERN.test(obj.accountIdentifier) ||
+      HTML_TAG_PATTERN.test(obj.accountIdentifier)
+    ) {
+      return null;
+    }
+    accountIdentifier = obj.accountIdentifier.trim();
+  }
+  if (
+    obj.settlementMethod !== "FONEPAY" &&
+    obj.settlementMethod !== "BANK_TRANSFER"
+  ) {
+    return null;
+  }
+  if (obj.confirmationMode !== "MANUAL_RECEIPT") {
+    return null;
+  }
+  if (
+    typeof obj.qrAssetId !== "string" ||
+    !UUID_REGEX.test(obj.qrAssetId.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.qrChecksum !== "string" ||
+    !SHA256_REGEX.test(obj.qrChecksum.trim())
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.confirmedById !== "string" ||
+    obj.confirmedById.trim().length === 0 ||
+    obj.confirmedById.length > 120 ||
+    CONTROL_CHAR_PATTERN.test(obj.confirmedById) ||
+    HTML_TAG_PATTERN.test(obj.confirmedById)
+  ) {
+    return null;
+  }
+  if (
+    typeof obj.confirmedAt !== "string" ||
+    obj.confirmedAt.trim().length === 0 ||
+    isNaN(Date.parse(obj.confirmedAt))
+  ) {
+    return null;
+  }
+
+  return {
+    schemaVersion: 1,
+    accountId: obj.accountId.trim(),
+    accountVersion: obj.accountVersion,
+    providerLabel: obj.providerLabel.trim(),
+    accountHolder: obj.accountHolder.trim(),
+    accountIdentifier,
+    settlementMethod: obj.settlementMethod,
+    confirmationMode: "MANUAL_RECEIPT",
+    qrAssetId: obj.qrAssetId.trim(),
+    qrChecksum: obj.qrChecksum.trim().toLowerCase(),
+    confirmedById: obj.confirmedById.trim(),
+    confirmedAt: obj.confirmedAt.trim(),
+  };
+}
+
 // --
 
 // the main normalization function — converts a raw API invoice response into our AppInvoice format
@@ -248,6 +506,63 @@ export function normalizeInvoice(raw: any): AppInvoice {
     }
   }
 
+  const rawCustomerId =
+    raw.customerId !== undefined
+      ? raw.customerId
+      : raw.customer?.id !== undefined
+        ? raw.customer.id
+        : null;
+  const isRegistered =
+    rawCustomerId !== null &&
+    rawCustomerId !== undefined &&
+    String(rawCustomerId).trim().length > 0;
+  const isInvoiceDraft = String(raw.status || "").toUpperCase() === "DRAFT";
+
+  let customerIdentitySource: FrontendIdentitySource;
+  let customerName: string;
+  let customerPanNo: string | null = null;
+  let customerAddress: string | null = null;
+
+  if (!("displayCustomer" in raw)) {
+    if (isInvoiceDraft) {
+      customerIdentitySource = "DRAFT_CURRENT";
+      customerName =
+        cleanDisplayString(raw.customer?.name) ||
+        (isRegistered ? "Unknown customer" : "Walk-in");
+    } else {
+      customerIdentitySource = "COMPATIBILITY_UNVERIFIED";
+      const legacyName =
+        cleanDisplayString(raw.customer?.name) ||
+        cleanDisplayString(raw.customerName);
+      customerName =
+        legacyName || (isRegistered ? "Unknown customer" : "Walk-in");
+    }
+  } else {
+    const dc = raw.displayCustomer;
+    if (
+      dc === null ||
+      typeof dc !== "object" ||
+      !isValidBackendIdentitySource(dc.source)
+    ) {
+      customerIdentitySource = "UNRESOLVED";
+      customerName = isRegistered ? "Unknown customer" : "Walk-in";
+    } else {
+      customerIdentitySource = dc.source;
+      const cleanName = cleanDisplayString(dc.name);
+      customerName =
+        cleanName !== null
+          ? cleanName
+          : isRegistered
+            ? "Unknown customer"
+            : "Walk-in";
+
+      if (customerIdentitySource === "CAPTURED") {
+        customerPanNo = cleanDisplayString(dc.panNo);
+        customerAddress = cleanDisplayString(dc.address);
+      }
+    }
+  }
+
   // normalizing each invoice item — handles different field name patterns from the API
   const items: InvoiceItemSummary[] = (raw.items || []).map((item: any) => {
     const qty = Number(item.qty || 0);
@@ -257,12 +572,57 @@ export function normalizeInvoice(raw: any): AppInvoice {
     const alreadyReturned = alreadyReturnedByItemId.get(itemId) || 0;
     const remainingReturnableQty = Math.max(0, qty - alreadyReturned);
 
+    let identitySource: FrontendIdentitySource;
+    let name: string;
+    let sku: string | undefined = undefined;
+
+    if (!("displayProduct" in item)) {
+      if (isInvoiceDraft) {
+        identitySource = "DRAFT_CURRENT";
+        name =
+          cleanDisplayString(item.product?.name) ||
+          cleanDisplayString(item.name) ||
+          "Unknown item";
+        sku =
+          cleanDisplayString(item.product?.sku) ||
+          cleanDisplayString(item.sku) ||
+          undefined;
+      } else {
+        identitySource = "COMPATIBILITY_UNVERIFIED";
+        name =
+          cleanDisplayString(item.product?.name) ||
+          cleanDisplayString(item.name) ||
+          "Unknown item";
+        sku =
+          cleanDisplayString(item.product?.sku) ||
+          cleanDisplayString(item.sku) ||
+          undefined;
+      }
+    } else {
+      const dp = item.displayProduct;
+      if (
+        dp === null ||
+        typeof dp !== "object" ||
+        !isValidBackendIdentitySource(dp.source)
+      ) {
+        identitySource = "UNRESOLVED";
+        name = "Unknown item";
+        sku = undefined;
+      } else {
+        identitySource = dp.source;
+        name = cleanDisplayString(dp.name) || "Unknown item";
+        const cleanSku = cleanDisplayString(dp.sku);
+        sku = cleanSku !== null ? cleanSku : undefined;
+      }
+    }
+
     return {
       id: itemId,
       productId: item.productId || item.product?.id || undefined,
-      name: item.product?.name || item.name || "Unknown item",
-      sku: item.product?.sku || undefined,
-      barcode: item.product?.barcode || undefined,
+      name,
+      sku,
+      barcode: item.product?.barcode || item.barcode || undefined,
+      identitySource,
       qty,
       unitPrice: Number(item.appliedUnitPrice || item.unitPrice || 0),
       originalUnitPrice:
@@ -300,6 +660,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
         ? undefined
         : Number(payment.changeAmount || 0),
     reference: payment.reference || undefined,
+    receivingAccountId: payment.receivingAccountId || undefined,
+    receivingDestinationSnapshot: parseReceivingDestinationSnapshot(payment.receivingDestinationSnapshot),
     createdAt: String(payment.createdAt || createdAt),
     createdByName: payment.createdBy?.name || undefined,
   }));
@@ -378,9 +740,12 @@ export function normalizeInvoice(raw: any): AppInvoice {
     id: raw.id,
     invoiceNo: raw.invoiceNo || raw.id,
     cashierId: raw.cashier?.id || raw.cashierId || undefined,
-    customerId: raw.customer?.id || raw.customerId || null,
-    customerName: raw.customer?.name || "Walk-in",
-    customerSubtitle: buildCustomerSubtitle(raw.customer),
+    customerId: rawCustomerId,
+    customerName,
+    customerSubtitle: buildCustomerSubtitle(raw.customer, isRegistered),
+    customerIdentitySource,
+    customerPanNo,
+    customerAddress,
     cashierName: raw.cashier?.name || "Unknown cashier",
     createdAt,
     createdDateLabel: formatDateLabel(createdAt),
@@ -401,7 +766,22 @@ export function normalizeInvoice(raw: any): AppInvoice {
     cancelledAt: raw.cancelledAt || undefined,
     cancelledByName: raw.cancelledBy?.name || undefined,
     cancelledByRole: raw.cancelledBy?.role || undefined,
+    billingChannel: raw.billingChannel || undefined,
+    manualBillRecord: raw.manualBillRecord || undefined,
   };
+}
+
+// The price-history preview shares the invoice display and old-response policy.
+export function normalizePurchaseHistoryProduct(item: {
+  productId: string;
+  productName: string;
+  productSku: string | null;
+  displayProduct?: unknown;
+}) {
+  return normalizeInvoice({
+    status: "FINALIZED",
+    items: [{ ...item, name: item.productName, sku: item.productSku }],
+  }).items[0];
 }
 
 // opening the printable invoice view in a new browser tab

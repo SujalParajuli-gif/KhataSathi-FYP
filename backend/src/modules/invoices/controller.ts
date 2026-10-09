@@ -86,6 +86,7 @@ export async function checkout(req: Request, res: Response) {
     const result = await invoiceService.checkoutInvoice(req.user!.id, {
       operationKey: body.operationKey,
       draftInvoiceId: body.draftInvoiceId,
+      draftRequestId: body.draftRequestId,
       customerId: body.customerId,
       items: body.items,
       discountAmount: body.discountAmount,
@@ -93,11 +94,27 @@ export async function checkout(req: Request, res: Response) {
       notes: body.notes,
       payment: body.payment,
       payments: body.payments,
+      confirmation: body.confirmation,
     });
 
     res.status(201).json(result);
   } catch (err: any) {
     if (sendStockConflict(res, err)) return;
+
+    if (err instanceof invoiceService.CheckoutReviewConflictError) {
+      res.status(409).json({
+        error: err.message,
+        code: err.code,
+        reason: err.reason,
+        details: err.details,
+      });
+      return;
+    }
+
+    if ([403, 404, 409].includes(err.statusCode)) {
+      res.status(err.statusCode).json({ error: err.message });
+      return;
+    }
 
     if (err.message.includes("Checkout operation")) {
       res.status(409).json({

@@ -44,6 +44,23 @@ export interface ProductFilters {
     photoStatus?: "all" | "with_photo" | "without_photo";
 }
 
+export const PRODUCT_TAX_CATEGORIES = [
+    "UNSPECIFIED",
+    "STANDARD_VAT",
+    "VAT_EXEMPT",
+] as const;
+export type ProductTaxCategoryValue = (typeof PRODUCT_TAX_CATEGORIES)[number];
+
+export class ProductTaxCategoryMutationError extends Error {
+    code: "FORBIDDEN" | "INVALID_TAX_CATEGORY";
+
+    constructor(code: "FORBIDDEN" | "INVALID_TAX_CATEGORY", message: string) {
+        super(message);
+        this.name = "ProductTaxCategoryMutationError";
+        this.code = code;
+    }
+}
+
 type ProductDeleteReference = {
     label: string;
     count: number;
@@ -316,6 +333,65 @@ export async function getProductByBarcode(barcode: string) {
         include: { brand: { select: { id: true, name: true } } },
     });
     return product ? withAvailableStock(applyBusinessThresholds(product, settings)) : product;
+}
+
+export async function updateProductTaxCategory(
+    id: string,
+    taxCategory: unknown,
+    actor: { id: string; role?: string },
+) {
+    if (actor.role !== "ADMIN") {
+        throw new ProductTaxCategoryMutationError(
+            "FORBIDDEN",
+            "Only an administrator can change a product tax category.",
+        );
+    }
+    if (
+        typeof taxCategory !== "string" ||
+        !PRODUCT_TAX_CATEGORIES.includes(taxCategory as ProductTaxCategoryValue)
+    ) {
+        throw new ProductTaxCategoryMutationError(
+            "INVALID_TAX_CATEGORY",
+            "Tax category must be UNSPECIFIED, STANDARD_VAT, or VAT_EXEMPT.",
+        );
+    }
+
+    return prisma.$transaction(async (tx) => {
+        const before = await tx.product.findUnique({
+            where: { id },
+            select: { id: true, name: true, sku: true, taxCategory: true },
+        });
+        if (!before) {
+            const error: any = new Error("Product not found");
+            error.code = "P2025";
+            throw error;
+        }
+
+        const updated = await tx.product.update({
+            where: { id },
+            data: { taxCategory: taxCategory as ProductTaxCategoryValue },
+            include: { brand: { select: { id: true, name: true } } },
+        });
+
+        if (before.taxCategory !== updated.taxCategory) {
+            await tx.auditLog.create({
+                data: {
+                    actorId: actor.id,
+                    action: "PRODUCT_TAX_CATEGORY_CHANGED",
+                    entityType: "Product",
+                    entityId: updated.id,
+                    meta: {
+                        productName: updated.name,
+                        sku: updated.sku,
+                        before: before.taxCategory,
+                        after: updated.taxCategory,
+                    },
+                },
+            });
+        }
+
+        return updated;
+    });
 }
 
 function withAvailableStock<T extends { stock: number; reservedStock?: number | null }>(

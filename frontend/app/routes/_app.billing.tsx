@@ -5,8 +5,10 @@ import React, {
   useRef,
   useState,
 } from "react";
+import { Link, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
 import ProjectSelect from "~/components/ui/ProjectSelect";
+import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import { useToast } from "~/components/ui/Toast";
 import {
   ConfirmDialog,
@@ -18,16 +20,22 @@ import {
   getMyCashierPrivilegesApi,
   getProductByCodeApi,
   getProductsByIdsApi,
+  getInvoiceApi,
   listProductsApi,
   checkoutInvoiceApi,
   listCustomersApi,
+  lookupCustomersApi,
+  getCustomerProductHistoryApi,
+  getPaymentGatewayDisplayApi,
+  type CustomerProductPurchaseHistoryItem,
+  type GatewayDisplayResponse,
+  createQuickCustomerApi,
   authorizePriceOverrideApi,
   discardParkedDraftApi,
   listParkedDraftsApi,
   parkInvoiceDraftApi,
   resumeParkedDraftApi,
   acceptDraftRequestApi,
-  completeDraftRequestApi,
   getDraftRequestApi,
   listDraftRequestsApi,
   markDraftRequestViewedApi,
@@ -38,12 +46,36 @@ import {
   type CheckoutInvoiceInput,
   type DraftRequestReviewItem,
 } from "~/lib/api/endpoints";
+import {
+  getManualBillRecord,
+  recordManualBillReference,
+  type ExpectedManualBillRecord,
+  type ExternalDocumentType,
+  type ManualBillRecord,
+} from "~/lib/api/manualBills";
+import BillingWorksheetModal from "~/components/billing/BillingWorksheetModal";
+import BillingCalculatorModal from "~/components/billing/BillingCalculatorModal";
+import BillingCustomerHistoryModal from "~/components/billing/BillingCustomerHistoryModal";
+import BillingCompactHistoryOverlay from "~/components/billing/BillingCompactHistoryOverlay";
+import CashierQrGalleryModal from "~/components/billing/CashierQrGalleryModal";
+import SavedSalePaymentFollowup from "~/components/billing/SavedSalePaymentFollowup";
+import {
+  getEnabledPaymentAccountsApi,
+  type EnabledPaymentAccountDto,
+} from "~/lib/api/paymentAccounts";
 import { submitEsewaForm } from "~/lib/esewa";
 import { getAuthUser } from "~/lib/auth";
-import { openInvoicePrint, openInvoiceReceiptPrint } from "~/lib/invoices";
+import { getIdentitySourceLabel, normalizePurchaseHistoryProduct, openInvoicePrint, openInvoiceReceiptPrint, parseReceivingDestinationSnapshot, type ReceivingDestinationSnapshotV1 } from "~/lib/invoices";
 import { isRateLimitError } from "~/lib/api/client";
 import { useRateLimitRecovery } from "~/lib/api/useRateLimitRecovery";
 import { focusInvalidField } from "~/lib/forms/focusInvalidField";
+import {
+  resolvePendingCheckoutSnapshot,
+  deriveCandidateCheckoutState,
+  computeReviewFingerprint,
+  isQuantityStepCompliant,
+  type ReviewedCheckoutCandidate,
+} from "~/lib/billingCheckout";
 
 const PRODUCT_REFRESH_INTERVAL_MS = 120_000; // refreshing the product catalog every 2 minutes to prevent stale stock and prices while keeping request volume low
 const LAST_INVOICE_PRINT_STORAGE_KEY = "khatasathi:lastInvoicePrintId";
@@ -363,15 +395,19 @@ function readStoredBillingViewSize(): BillingViewSize {
     : "100";
 }
 
-type PaymentMethod = "Cash" | "Fonepay" | "eSewa" | "Split";
+type PaymentMethod = "Cash" | "Fonepay" | "eSewa" | "Split" | "Bank Transfer";
 type PaymentStatus = "Paid" | "Partial" | "Unpaid";
 type PendingBillingConfirm = "checkout" | "clear-cart" | "park-cart" | null;
 type SplitPaymentDraft = {
   id: string;
-  method: "CASH" | "FONEPAY" | "ESEWA";
+  method: "CASH" | "FONEPAY" | "ESEWA" | "BANK_TRANSFER";
   amount: string;
   tenderedAmount: string;
   reference?: string;
+  receivingAccountId?: string;
+  receivingAccountVersion?: number;
+  receivingAccountLabel?: string;
+  manualReceiptConfirmed?: boolean;
 };
 type StockConflictReason =
   | "NOT_FOUND"
@@ -392,9 +428,20 @@ type Customer = {
   name: string;
   phone: string;
   email?: string;
+  panNo?: string | null;
+  address?: string | null;
+  isActive?: boolean;
   isLoyalty: boolean;
   loyaltyPercent?: number;
   wholesalePercent?: number;
+};
+
+type QuickCustomerDraft = {
+  name: string;
+  phone: string;
+  email: string;
+  panNo: string;
+  address: string;
 };
 
 type Product = {
@@ -495,10 +542,228 @@ type PendingCheckoutSnapshot = {
 };
 
 const BILLING_CART_STORAGE_KEY = "khatasathi_billing_cart";
-const PENDING_DRAFT_COMPLETION_STORAGE_KEY =
-  "khatasathi_pending_draft_completion";
 const DRAFT_REQUEST_NOTICE_ACK_STORAGE_KEY =
   "khatasathi_billing_draft_request_notice_ack";
+const BILLING_PAPER_FOLLOWUP_STORAGE_KEY = "khatasathi_billing_paper_followup_v1";
+const BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX = "khatasathi_billing_paper_followup_v2:";
+const BILLING_PENDING_PAPER_DRAFT_KEY = "khatasathi_billing_pending_paper_draft_v1";
+
+type StoredPaperFollowup = {
+  version: 1;
+  actorId: string;
+  invoiceId: string;
+  invoiceNo?: string;
+  draft: {
+    billNo: string;
+    externalDocumentType: ExternalDocumentType;
+    externalBillDate: string;
+  };
+  expected?: ExpectedManualBillRecord | null;
+  duplicateOverrideReason?: string;
+  error?: string;
+  savedAt: string;
+  expiresAt: string;
+};
+
+type StoredPendingPaperDraft = {
+  version: 1;
+  actorId: string;
+  operationKey: string;
+  draft: {
+    billNo: string;
+    externalDocumentType: ExternalDocumentType;
+    externalBillDate: string;
+    choice: "RECORD_AFTER_SAVE" | "LATER";
+  };
+  savedAt: string;
+  expiresAt: string;
+};
+
+function parseStoredPaperFollowup(raw: string | null, actorId: string): StoredPaperFollowup | null {
+  try {
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      typeof parsed.actorId !== "string" ||
+      !parsed.actorId.trim() ||
+      typeof parsed.invoiceId !== "string" ||
+      !parsed.invoiceId.trim() ||
+      typeof parsed.savedAt !== "string" ||
+      isNaN(Date.parse(parsed.savedAt)) ||
+      typeof parsed.expiresAt !== "string" ||
+      isNaN(Date.parse(parsed.expiresAt)) ||
+      !parsed.draft ||
+      typeof parsed.draft !== "object" ||
+      typeof parsed.draft.billNo !== "string" ||
+      !parsed.draft.billNo.trim() ||
+      !["PAN_INVOICE", "VAT_TAX_INVOICE", "ABBREVIATED_TAX_INVOICE", "OTHER_MANUAL_SALES_DOCUMENT"].includes(parsed.draft.externalDocumentType) ||
+      typeof parsed.draft.externalBillDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.draft.externalBillDate) ||
+      isNaN(Date.parse(parsed.draft.externalBillDate))
+    ) {
+      return null;
+    }
+    if (actorId && parsed.actorId !== actorId) {
+      return null;
+    }
+    return parsed as StoredPaperFollowup;
+  } catch {
+    return null;
+  }
+}
+
+function paperFollowupStorageKey(actorId: string, invoiceId: string) {
+  return `${BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX}${encodeURIComponent(actorId)}:${encodeURIComponent(invoiceId)}`;
+}
+
+function readStoredPaperFollowup(actorId: string, invoiceId?: string): StoredPaperFollowup | null {
+  if (typeof window === "undefined" || !actorId) return null;
+  try {
+    const storage = window.sessionStorage;
+    const legacy = parseStoredPaperFollowup(storage.getItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY), actorId);
+    if (invoiceId) {
+      const stored = parseStoredPaperFollowup(storage.getItem(paperFollowupStorageKey(actorId, invoiceId)), actorId);
+      return stored?.invoiceId === invoiceId ? stored : legacy?.invoiceId === invoiceId ? legacy : null;
+    }
+    const pending: StoredPaperFollowup[] = [];
+    const actorPrefix = `${BILLING_PAPER_FOLLOWUP_STORAGE_PREFIX}${encodeURIComponent(actorId)}:`;
+    for (let index = 0; index < storage.length; index++) {
+      const key = storage.key(index);
+      if (!key?.startsWith(actorPrefix)) continue;
+      const stored = parseStoredPaperFollowup(storage.getItem(key), actorId);
+      if (stored && key === paperFollowupStorageKey(actorId, stored.invoiceId)) pending.push(stored);
+    }
+    if (legacy && !pending.some((stored) => stored.invoiceId === legacy.invoiceId)) pending.push(legacy);
+    // Recover one at a time, oldest first. Other invoices remain independently durable.
+    return pending.sort((a, b) => a.savedAt.localeCompare(b.savedAt) || a.invoiceId.localeCompare(b.invoiceId))[0] || null;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPaperFollowup(
+  data: Omit<StoredPaperFollowup, "savedAt" | "expiresAt" | "version">,
+): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const now = Date.now();
+    const expiresAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    const payload: StoredPaperFollowup = {
+      ...data,
+      version: 1,
+      savedAt: new Date(now).toISOString(),
+      expiresAt,
+    };
+    window.sessionStorage.setItem(
+      paperFollowupStorageKey(data.actorId, data.invoiceId),
+      JSON.stringify(payload),
+    );
+    // Upgrade this invoice's legacy slot only after its replacement is durable.
+    const legacy = parseStoredPaperFollowup(window.sessionStorage.getItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY), data.actorId);
+    if (legacy?.invoiceId === data.invoiceId) {
+      window.sessionStorage.removeItem(BILLING_PAPER_FOLLOWUP_STORAGE_KEY);
+    }
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStoredPaperFollowup(
+  invoiceId: string,
+  draft: StoredPaperFollowup["draft"],
+  reconciledIntent: StoredPaperFollowup | null,
+) {
+  if (typeof window === "undefined" || !reconciledIntent) return;
+  try {
+    const current = readStoredPaperFollowup(reconciledIntent.actorId, invoiceId);
+    if (JSON.stringify(current) !== JSON.stringify(reconciledIntent)) return;
+    if (
+      current?.invoiceId !== invoiceId ||
+      current.draft.billNo !== draft.billNo ||
+      current.draft.externalDocumentType !== draft.externalDocumentType ||
+      current.draft.externalBillDate !== draft.externalBillDate
+    ) return;
+    window.sessionStorage.removeItem(paperFollowupStorageKey(reconciledIntent.actorId, invoiceId));
+  } catch {}
+}
+
+function readStoredPendingPaperDraft(
+  operationKey: string,
+  actorId?: string,
+): StoredPendingPaperDraft | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = window.sessionStorage.getItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw);
+    if (
+      !parsed ||
+      typeof parsed !== "object" ||
+      parsed.version !== 1 ||
+      typeof parsed.actorId !== "string" ||
+      !parsed.actorId.trim() ||
+      typeof parsed.operationKey !== "string" ||
+      parsed.operationKey !== operationKey ||
+      typeof parsed.savedAt !== "string" ||
+      isNaN(Date.parse(parsed.savedAt)) ||
+      typeof parsed.expiresAt !== "string" ||
+      isNaN(Date.parse(parsed.expiresAt)) ||
+      new Date(parsed.expiresAt).getTime() <= Date.now() ||
+      !parsed.draft ||
+      typeof parsed.draft !== "object" ||
+      typeof parsed.draft.billNo !== "string" ||
+      !parsed.draft.billNo.trim() ||
+      !["PAN_INVOICE", "VAT_TAX_INVOICE", "ABBREVIATED_TAX_INVOICE", "OTHER_MANUAL_SALES_DOCUMENT"].includes(parsed.draft.externalDocumentType) ||
+      typeof parsed.draft.externalBillDate !== "string" ||
+      !/^\d{4}-\d{2}-\d{2}$/.test(parsed.draft.externalBillDate) ||
+      isNaN(Date.parse(parsed.draft.externalBillDate)) ||
+      !["RECORD_AFTER_SAVE", "LATER"].includes(parsed.draft.choice)
+    ) {
+      return null;
+    }
+    if (actorId && parsed.actorId !== actorId) {
+      return null;
+    }
+    return parsed as StoredPendingPaperDraft;
+  } catch {
+    return null;
+  }
+}
+
+function writeStoredPendingPaperDraft(
+  data: Omit<StoredPendingPaperDraft, "version" | "savedAt" | "expiresAt">,
+): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    const now = Date.now();
+    const expiresAt = new Date(now + 24 * 60 * 60 * 1000).toISOString();
+    window.sessionStorage.setItem(
+      BILLING_PENDING_PAPER_DRAFT_KEY,
+      JSON.stringify({ ...data, version: 1, savedAt: new Date(now).toISOString(), expiresAt }),
+    );
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function clearStoredPendingPaperDraft(operationKey?: string) {
+  if (typeof window === "undefined") return;
+  try {
+    if (!operationKey) {
+      window.sessionStorage.removeItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+      return;
+    }
+    const current = readStoredPendingPaperDraft(operationKey);
+    if (current && current.operationKey === operationKey) {
+      window.sessionStorage.removeItem(BILLING_PENDING_PAPER_DRAFT_KEY);
+    }
+  } catch {}
+}
 
 function cn(...xs: Array<string | false | null | undefined>) {
   return xs.filter(Boolean).join(" ");
@@ -628,22 +893,6 @@ function writeStoredBillingCart(
 function clearStoredBillingCart() {
   if (typeof window === "undefined") return;
   window.localStorage.removeItem(BILLING_CART_STORAGE_KEY);
-}
-
-function savePendingDraftCompletion(
-  draftRequestId: string,
-  invoiceId: string,
-) {
-  if (typeof window === "undefined") return;
-  window.localStorage.setItem(
-    PENDING_DRAFT_COMPLETION_STORAGE_KEY,
-    JSON.stringify({ draftRequestId, invoiceId }),
-  );
-}
-
-function clearPendingDraftCompletion() {
-  if (typeof window === "undefined") return;
-  window.localStorage.removeItem(PENDING_DRAFT_COMPLETION_STORAGE_KEY);
 }
 
 function isDraftRequestNoticeAcknowledged(
@@ -1148,7 +1397,75 @@ export default function BillingPage() {
       return BILLING_VIEW_SIZE_OPTIONS[nextIndex];
     });
   }
+  const [searchParams] = useSearchParams();
+  const [isWorksheetOpen, setIsWorksheetOpen] = useState(false);
+  const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
+  const [isCompactHistoryOpen, setIsCompactHistoryOpen] = useState(false);
+  const [isDetailedHistoryOpen, setIsDetailedHistoryOpen] = useState(false);
+  const [customerLookupLoading, setCustomerLookupLoading] = useState(false);
+  const [customerLookupResults, setCustomerLookupResults] = useState<Customer[]>([]);
+  const [customerLookupTotal, setCustomerLookupTotal] = useState(0);
+  const [customerLookupError, setCustomerLookupError] = useState<string | null>(null);
+  const [customerPanConflictWarning, setCustomerPanConflictWarning] = useState<string | null>(null);
+  const [customerPanConflictMatches, setCustomerPanConflictMatches] = useState<Customer[]>([]);
+  const [customerPanConflictPage, setCustomerPanConflictPage] = useState(1);
+  const [customerPanConflictTotal, setCustomerPanConflictTotal] = useState(0);
+  const [customerPanConflictServerTotal, setCustomerPanConflictServerTotal] = useState(0);
+  const [customerPanConflictError, setCustomerPanConflictError] = useState<string | null>(null);
+  const [customerPanConflictLoading, setCustomerPanConflictLoading] = useState(false);
+  const [gatewayDisplay, setGatewayDisplay] = useState<GatewayDisplayResponse | null>(null);
+  const [paperDraftBillNo, setPaperDraftBillNo] = useState("");
+  const [paperDraftDocumentType, setPaperDraftDocumentType] = useState<ExternalDocumentType>("PAN_INVOICE");
+  const [paperDraftBillDate, setPaperDraftBillDate] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [paperDraftChoice, setPaperDraftChoice] = useState<"RECORD_AFTER_SAVE" | "LATER">("RECORD_AFTER_SAVE");
+  const [fonepayConfirmed, setFonepayConfirmed] = useState(false);
+  const [storageLimitationWarning, setStorageLimitationWarning] = useState<string | null>(null);
+  const [manualPaymentInvoiceId, setManualPaymentInvoiceId] = useState<string | null>(null);
+  const [savedSaleResult, setSavedSaleResult] = useState<{
+    invoiceId: string;
+    invoiceNo?: string;
+    total: number;
+    effectivePaidAmount: number;
+    balanceDue: number;
+    paymentMethod: PaymentMethod | string;
+    paymentStatus: PaymentStatus;
+    pendingGatewayAmount?: number;
+    paperRecorded?: boolean;
+    paperBillNo?: string;
+    receivingDestinations?: ReceivingDestinationSnapshotV1[];
+  } | null>(null);
+  const [paperFollowup, setPaperFollowup] = useState<{
+    status: "NONE" | "SUCCESS" | "FAILED_RETRYABLE" | "PENDING";
+    invoiceId?: string;
+    invoiceNo?: string;
+    error?: string;
+    draft?: {
+      billNo: string;
+      externalDocumentType: ExternalDocumentType;
+      externalBillDate: string;
+    };
+    expected?: ExpectedManualBillRecord | null;
+    conflictRecord?: ManualBillRecord | null;
+    duplicateRequired?: boolean;
+    duplicateOverrideReason?: string;
+  }>({ status: "NONE" });
+  const [paperFollowupBusy, setPaperFollowupBusy] = useState(false);
+  const [isBannerEditing, setIsBannerEditing] = useState(false);
   const [customers, setCustomers] = useState<Customer[]>([]); // full customer list available for billing selection
+  const [quickCustomerDraft, setQuickCustomerDraft] = useState<QuickCustomerDraft>(
+    { name: "", phone: "", email: "", panNo: "", address: "" },
+  );
+  const [quickCustomerOpen, setQuickCustomerOpen] = useState(false);
+  const [quickCustomerPanAck, setQuickCustomerPanAck] = useState(false);
+  const [quickCustomerBusy, setQuickCustomerBusy] = useState(false);
+  const [quickCustomerError, setQuickCustomerError] = useState("");
+  const quickCustomerBusyRef = useRef(false);
+  const checkoutReviewBusyRef = useRef(false);
+  const checkoutInputRevisionRef = useRef(0);
+  const prevPanToCheckRef = useRef("");
+  const currentUserRef = useRef(currentUser);
+  currentUserRef.current = currentUser;
+  const compactHistoryTriggerRef = useRef<HTMLButtonElement | null>(null);
   const [products, setProducts] = useState<Product[]>([]); // active product list loaded for cart and search
   const [loading, setLoading] = useState(true); // tracks whether the initial data fetch is still running
   const [submitting, setSubmitting] = useState(false); // blocks repeated invoice creation while checkout is running
@@ -1262,6 +1579,9 @@ export default function BillingPage() {
       name: c.name,
       phone: c.phone || "",
       email: c.email,
+      panNo: c.panNo || c.panNumber || null,
+      address: c.address || null,
+      isActive: c.isActive !== false,
       isLoyalty: (c.loyaltyPercent || 0) > 0,
       loyaltyPercent: c.loyaltyPercent,
       wholesalePercent: c.wholesalePercent,
@@ -1367,36 +1687,8 @@ export default function BillingPage() {
     };
   }, [isCashier, loadIncomingRequests]);
 
-  useEffect(() => {
-    if (!isCashier || typeof window === "undefined") return;
-    const raw = window.localStorage.getItem(
-      PENDING_DRAFT_COMPLETION_STORAGE_KEY,
-    );
-    if (!raw) return;
-    try {
-      const pending = JSON.parse(raw) as {
-        draftRequestId?: string;
-        invoiceId?: string;
-      };
-      if (!pending.draftRequestId || !pending.invoiceId) {
-        clearPendingDraftCompletion();
-        return;
-      }
-      void completeDraftRequestApi(
-        pending.draftRequestId,
-        pending.invoiceId,
-      )
-        .then(() => {
-          clearPendingDraftCompletion();
-          void loadIncomingRequests();
-        })
-        .catch(() => {
-          // Keep the recovery record. A later Billing visit will retry it.
-        });
-    } catch {
-      clearPendingDraftCompletion();
-    }
-  }, [isCashier, loadIncomingRequests]);
+  // Keep legacy pending-completion evidence for manual reconciliation. It cannot
+  // prove checkout origin and must never trigger an automatic association.
 
   // fetching products and customers when the page first loads
   // we use Promise.allSettled so one failing API call does not block the other from completing
@@ -1439,7 +1731,30 @@ export default function BillingPage() {
       }
     }
     void load();
-    return () => controller.abort();
+
+    function refreshCustomersOnFocus() {
+      if (document.visibilityState === "visible") {
+        void listCustomersApi(true)
+          .then((custData) => {
+            if (custData) {
+              const raw = Array.isArray(custData)
+                ? custData
+                : custData.customers || [];
+              setCustomers(mapRawCustomers(raw));
+            }
+          })
+          .catch(() => {});
+      }
+    }
+
+    window.addEventListener("focus", refreshCustomersOnFocus);
+    document.addEventListener("visibilitychange", refreshCustomersOnFocus);
+
+    return () => {
+      controller.abort();
+      window.removeEventListener("focus", refreshCustomersOnFocus);
+      document.removeEventListener("visibilitychange", refreshCustomersOnFocus);
+    };
   }, [mapRawCustomers, normalizeParkedDraft, rateLimitRecoveryKey]);
 
   const [skuInput, setSkuInput] = useState(""); // scanner/manual barcode input
@@ -1466,8 +1781,15 @@ export default function BillingPage() {
     string | null
   >(null); // accepted staff request currently loaded into the billing cart
   const [cart, setCart] = useState<CartLine[]>([]); // raw cart lines before product details and pricing are joined in
+  const [customerHistory, setCustomerHistory] = useState<CustomerProductPurchaseHistoryItem[]>([]);
+  const [customerHistoryLoading, setCustomerHistoryLoading] = useState(false);
+  const [customerHistoryError, setCustomerHistoryError] = useState<string | null>(null);
   const [pendingCheckout, setPendingCheckout] =
     useState<PendingCheckoutSnapshot | null>(null);
+  const pendingCheckoutRef = useRef<PendingCheckoutSnapshot | null>(null);
+  pendingCheckoutRef.current = pendingCheckout;
+  const [reviewedCandidate, setReviewedCandidate] =
+    useState<ReviewedCheckoutCandidate | null>(null);
   const [priceOverrideTargetId, setPriceOverrideTargetId] = useState<
     string | null
   >(null);
@@ -1476,13 +1798,35 @@ export default function BillingPage() {
   const [priceOverrideDraftPin, setPriceOverrideDraftPin] = useState("");
   const [priceOverrideError, setPriceOverrideError] = useState("");
   const [priceOverrideBusy, setPriceOverrideBusy] = useState(false);
+  const [isQrGalleryOpen, setIsQrGalleryOpen] = useState(false);
+  const [enabledPaymentAccounts, setEnabledPaymentAccounts] = useState<EnabledPaymentAccountDto[]>([]);
+  const [enabledAccountsLoading, setEnabledAccountsLoading] = useState(false);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>("Cash"); // current payment method selected in the modal
   const [paymentStatus, setPaymentStatus] = useState<PaymentStatus>("Paid"); // current paid/partial/unpaid selection
   const [paidAmount, setPaidAmount] = useState<string>(""); // manual partial payment amount typed by the cashier
   const [cashTendered, setCashTendered] = useState<string>(""); // cash received from customer, used to calculate change
   const [fonepayReference, setFonepayReference] = useState<string>(""); // manual Fonepay reference/remarks recorded with the invoice payment
+  const [bankTransferReference, setBankTransferReference] = useState<string>("");
+  const [receivingAccountId, setReceivingAccountId] = useState<string>("");
+  const [receivingAccountVersion, setReceivingAccountVersion] = useState<number | null>(null);
+  const [receivingAccountLabel, setReceivingAccountLabel] = useState<string>("");
+  const [manualReceiptConfirmed, setManualReceiptConfirmed] = useState<boolean>(false);
   const [splitCashAmount, setSplitCashAmount] = useState<string>(""); // cash portion when the bill is split between cash and eSewa
   const [splitPayments, setSplitPayments] = useState<SplitPaymentDraft[]>([]);
+
+  const loadEnabledPaymentAccounts = useCallback(async (options?: { force?: boolean; signal?: AbortSignal }) => {
+    setEnabledAccountsLoading(true);
+    try {
+      const list = await getEnabledPaymentAccountsApi({ signal: options?.signal });
+      const safeList = Array.isArray(list) ? list : [];
+      setEnabledPaymentAccounts(safeList);
+      return safeList;
+    } catch {
+      return [];
+    } finally {
+      setEnabledAccountsLoading(false);
+    }
+  }, []);
   const [invoiceNote, setInvoiceNote] = useState("");
   const [paymentError, setPaymentError] = useState(""); // payment modal validation message
   const [billingError, setBillingError] = useState(""); // main billing error shown above the cart or form
@@ -1502,6 +1846,57 @@ export default function BillingPage() {
   const pendingCartFocusProductIdRef = useRef<string | null>(null);
   const scannerLookupBusyRef = useRef(false);
   const cartAlertMessage = billingError || cartIssueMessage;
+
+  async function handleQuickCustomerSubmit(
+    event: React.FormEvent<HTMLFormElement>,
+  ) {
+    event.preventDefault();
+    if (quickCustomerBusyRef.current) return;
+    quickCustomerBusyRef.current = true;
+    setQuickCustomerBusy(true);
+    setQuickCustomerError("");
+    try {
+      const created = await createQuickCustomerApi({
+        name: quickCustomerDraft.name,
+        ...(quickCustomerDraft.phone.trim()
+          ? { phone: quickCustomerDraft.phone }
+          : {}),
+        ...(quickCustomerDraft.email.trim()
+          ? { email: quickCustomerDraft.email }
+          : {}),
+        ...(quickCustomerDraft.panNo.trim()
+          ? { panNo: quickCustomerDraft.panNo }
+          : {}),
+        ...(quickCustomerDraft.address.trim()
+          ? { address: quickCustomerDraft.address }
+          : {}),
+      });
+      const customer = mapRawCustomers([created])[0];
+      setCustomers((current) => [
+        ...current.filter((item) => item.id !== customer.id),
+        customer,
+      ]);
+      setSelectedCustomerId(customer.id);
+      setCustomerSearchOpen(false);
+      setCustomerQuery("");
+      setQuickCustomerOpen(false);
+      setQuickCustomerDraft({
+        name: "",
+        phone: "",
+        email: "",
+        panNo: "",
+        address: "",
+      });
+      showToast("success", "Customer added and selected.");
+    } catch (error: any) {
+      setQuickCustomerError(
+        error?.response?.data?.error || "Could not add customer. Your entries are still here; check them and try again.",
+      );
+    } finally {
+      quickCustomerBusyRef.current = false;
+      setQuickCustomerBusy(false);
+    }
+  }
 
   const visibleParkedDrafts = useMemo(() => {
     if (!activeDraftInvoiceId) return parkedDrafts;
@@ -1580,10 +1975,41 @@ export default function BillingPage() {
   );
 
   // finding the selected customer object once here keeps discount and label logic simple below
-  const selectedCustomer = useMemo(
-    () => customers.find((c) => c.id === selectedCustomerId) || null,
-    [selectedCustomerId, customers],
-  );
+  const selectedCustomer = useMemo(() => {
+    if (!selectedCustomerId) return null;
+    const inList = customers.find((c) => c.id === selectedCustomerId);
+    if (inList) return inList;
+    const inLookup = customerLookupResults.find((c) => c.id === selectedCustomerId);
+    return inLookup || null;
+  }, [selectedCustomerId, customers, customerLookupResults]);
+
+  function handleSelectCustomer(customer: Customer | null) {
+    if (!customer) {
+      setSelectedCustomerId(null);
+      setReviewedCandidate(null);
+      return;
+    }
+    setCustomers((prev) => {
+      const idx = prev.findIndex((c) => c.id === customer.id);
+      if (idx >= 0) {
+        const next = [...prev];
+        next[idx] = { ...next[idx], ...customer };
+        return next;
+      }
+      return [customer, ...prev];
+    });
+    setSelectedCustomerId(customer.id);
+    setReviewedCandidate(null);
+  }
+
+  const handleCloseCompactHistory = useCallback(() => {
+    setIsCompactHistoryOpen(false);
+  }, []);
+
+  const handleOpenDetailedHistoryFromCompact = useCallback(() => {
+    setIsCompactHistoryOpen(false);
+    setIsDetailedHistoryOpen(true);
+  }, []);
 
   const customerMode = getCustomerDiscountMode(selectedCustomer); // quick label for whether this customer uses loyalty, wholesale, or no special rate
   const subtotalDiscountMeta = useMemo(
@@ -1591,13 +2017,349 @@ export default function BillingPage() {
     [selectedCustomer],
   );
 
+  useEffect(() => {
+    getPaymentGatewayDisplayApi()
+      .then((res) => {
+        if (res) setGatewayDisplay(res);
+      })
+      .catch(() => {});
+  }, []);
+
+  useEffect(() => {
+    const resumeId = searchParams.get("resumePaperInvoiceId");
+    if (!currentUser?.id) return;
+    const stored = readStoredPaperFollowup(currentUser.id, resumeId || undefined);
+    const invoiceIdToCheck = resumeId || stored?.invoiceId;
+
+    if (!invoiceIdToCheck) {
+      setPaperFollowup({ status: "NONE" });
+      return;
+    }
+
+    const matchingStored =
+      resumeId && stored && stored.invoiceId === resumeId
+        ? stored
+        : !resumeId
+          ? stored
+          : null;
+
+    let cancelled = false;
+    Promise.allSettled([
+      getManualBillRecord(invoiceIdToCheck),
+      getInvoiceApi(invoiceIdToCheck),
+    ]).then(([recordResult, invoiceResult]) => {
+      if (cancelled) return;
+      if (getAuthUser()?.id !== currentUser.id) return;
+      // A newer stored intent must not be replaced by this reconciliation read.
+      if (matchingStored && JSON.stringify(readStoredPaperFollowup(currentUser.id, invoiceIdToCheck)) !== JSON.stringify(matchingStored)) return;
+      const existing =
+        recordResult.status === "fulfilled" ? recordResult.value : null;
+      const invoiceData =
+        invoiceResult.status === "fulfilled"
+          ? ((invoiceResult.value as any)?.invoice || invoiceResult.value)
+          : null;
+
+      const isRecorded =
+        existing &&
+        (existing.billRecordStatus === "RECORDED" ||
+          existing.billRecordStatus === "VERIFIED");
+
+      if (invoiceData && invoiceData.id) {
+        const paymentsList: any[] = Array.isArray(invoiceData.payments) ? invoiceData.payments : [];
+        const successfulPayments = paymentsList.filter(
+          (p: any) => p.status === "SUCCESS" || p.status === "COMPLETED" || (!p.status && p.method),
+        );
+        const pendingPayments = paymentsList.filter(
+          (p: any) => p.status === "PENDING" || p.status === "INITIATED" || p.status === "IN_PROGRESS",
+        );
+        const pendingGatewayAmount = pendingPayments.reduce(
+          (sum: number, p: any) => sum + Number(p.amount || 0),
+          0,
+        );
+
+        let derivedMethod = (invoiceData.paymentMethod as string) || "";
+        if (!derivedMethod && paymentsList.length > 0) {
+          const uniqueMethods = Array.from(new Set(paymentsList.map((p: any) => p.method).filter(Boolean)));
+          if (uniqueMethods.length === 1) {
+            derivedMethod = uniqueMethods[0];
+          } else if (uniqueMethods.length > 1) {
+            derivedMethod = `Split (${uniqueMethods.join(" + ")})`;
+          }
+        }
+        if (!derivedMethod) {
+          derivedMethod = "Cash";
+        }
+
+        const netTotal = Number(invoiceData.netTotal ?? invoiceData.total ?? 0);
+        const paidTotal = Number(
+          invoiceData.paidTotal ??
+          successfulPayments.reduce((sum: number, p: any) => sum + Number(p.amount || 0), 0),
+        );
+        const balDue = Math.max(0, netTotal - paidTotal);
+
+        const derivedStatus: PaymentStatus =
+          (invoiceData.paymentStatus as PaymentStatus) ||
+          (paidTotal >= netTotal && netTotal > 0 ? "Paid" : paidTotal > 0 ? "Partial" : "Unpaid");
+
+        setLastCreatedInvoiceId(invoiceData.id);
+        setSavedSaleResult({
+          invoiceId: invoiceData.id,
+          invoiceNo: invoiceData.invoiceNo,
+          total: netTotal,
+          effectivePaidAmount: paidTotal,
+          balanceDue: balDue,
+          paymentMethod: derivedMethod,
+          paymentStatus: derivedStatus,
+          pendingGatewayAmount: pendingGatewayAmount > 0 ? pendingGatewayAmount : undefined,
+          paperRecorded: Boolean(isRecorded),
+          paperBillNo: existing?.externalBillNo || matchingStored?.draft?.billNo,
+          receivingDestinations: successfulPayments.map((p: any) => parseReceivingDestinationSnapshot(p.receivingDestinationSnapshot)).filter((snapshot): snapshot is ReceivingDestinationSnapshotV1 => snapshot !== null),
+        });
+        if (resumeId) {
+          setShowSuccess(true);
+        }
+      }
+
+      if (matchingStored) {
+        // A recorded tuple alone cannot acknowledge a lost reference response:
+        // replay the original expected intent through the audited endpoint.
+        setPaperFollowup({
+          status: matchingStored.error ? "FAILED_RETRYABLE" : "PENDING",
+          invoiceId: matchingStored.invoiceId,
+          invoiceNo: matchingStored.invoiceNo || invoiceData?.invoiceNo,
+          error: matchingStored.error,
+          draft: matchingStored.draft,
+          expected: matchingStored.expected,
+          duplicateOverrideReason: matchingStored.duplicateOverrideReason,
+        });
+      } else if (existing) {
+        if (isRecorded && existing.externalBillNo) {
+          setPaperFollowup({
+            status: "SUCCESS",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo: existing.invoiceNo || invoiceData?.invoiceNo,
+            draft: {
+              billNo: existing.externalBillNo,
+              externalDocumentType:
+                existing.externalDocumentType || "PAN_INVOICE",
+              externalBillDate: existing.externalBillDate
+                ? new Date(existing.externalBillDate).toLocaleDateString("en-CA")
+                : new Date().toLocaleDateString("en-CA"),
+            },
+          });
+        } else {
+          // No stored intent: establish a new follow-up from authoritative state.
+          const expected: ExpectedManualBillRecord = {
+            billingChannel: existing.billingChannel,
+            externalDocumentType: existing.externalDocumentType,
+            externalBillNo: existing.externalBillNo,
+            externalBillDate: existing.externalBillDate,
+            billRecordStatus: existing.billRecordStatus,
+          };
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo:
+              existing.invoiceNo ||
+              invoiceData?.invoiceNo,
+            draft: {
+              billNo: existing.externalBillNo || "",
+              externalDocumentType:
+                existing.externalDocumentType || "PAN_INVOICE",
+              externalBillDate: existing.externalBillDate
+                ? new Date(existing.externalBillDate).toLocaleDateString("en-CA")
+                : new Date().toLocaleDateString("en-CA"),
+            },
+            expected,
+          });
+        }
+      } else {
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId: invoiceIdToCheck,
+            invoiceNo: invoiceData?.invoiceNo,
+            error: "Unable to reach server to fetch manual bill record.",
+            draft: {
+              billNo: "",
+              externalDocumentType: "PAN_INVOICE",
+              externalBillDate: new Date().toLocaleDateString("en-CA"),
+            },
+            expected: null,
+          });
+      }
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [searchParams, currentUser?.id]);
+
+  useEffect(() => {
+    const query = customerQuery.trim();
+    if (query.length < 2) {
+      setCustomerLookupResults([]);
+      setCustomerLookupTotal(0);
+      setCustomerLookupLoading(false);
+      setCustomerLookupError(null);
+      return undefined;
+    }
+
+    const controller = new AbortController();
+    setCustomerLookupLoading(true);
+    setCustomerLookupError(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const res = await lookupCustomersApi(
+          { q: query, pageSize: 12 },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const mapped = mapRawCustomers(res.items || []);
+        setCustomerLookupResults(mapped);
+        setCustomerLookupTotal(res.total || 0);
+        setCustomerLookupError(null);
+      } catch (err: any) {
+        if (!controller.signal.aborted) {
+          setCustomerLookupResults([]);
+          setCustomerLookupTotal(0);
+          setCustomerLookupError(
+            "Customer lookup service unavailable. Please check connection.",
+          );
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setCustomerLookupLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customerQuery, mapRawCustomers]);
+
+  // Comprehensive PAN Conflict Check for search query, quick-create, or selected customer
+  useEffect(() => {
+    const panToCheck = (
+      (quickCustomerOpen && quickCustomerDraft.panNo.trim())
+        ? quickCustomerDraft.panNo.trim()
+        : (isCustomerSearchOpen && /^\d{3,}$/.test(customerQuery.trim().replace(/\s+/g, "")))
+          ? customerQuery.trim().replace(/\s+/g, "")
+          : (selectedCustomer?.panNo?.trim() || "")
+    ).replace(/\s+/g, "");
+
+    if (!panToCheck || panToCheck.length < 3) {
+      prevPanToCheckRef.current = "";
+      setCustomerPanConflictWarning(null);
+      setCustomerPanConflictMatches([]);
+      setCustomerPanConflictTotal(0);
+      setCustomerPanConflictServerTotal(0);
+      setCustomerPanConflictError(null);
+      setCustomerPanConflictLoading(false);
+      return undefined;
+    }
+
+    const panTargetKey = `${quickCustomerOpen ? "quick" : isCustomerSearchOpen ? "search" : "selected"}:${selectedCustomerId || ""}:${panToCheck}`;
+    let pageToFetch = customerPanConflictPage;
+    if (prevPanToCheckRef.current !== panTargetKey) {
+      prevPanToCheckRef.current = panTargetKey;
+      pageToFetch = 1;
+      setCustomerPanConflictPage(1);
+    }
+
+    const controller = new AbortController();
+    setCustomerPanConflictLoading(true);
+    setCustomerPanConflictError(null);
+
+    const timer = window.setTimeout(async () => {
+      try {
+        const panRes = await lookupCustomersApi(
+          { q: panToCheck, match: "pan", page: pageToFetch, pageSize: 20 },
+          { signal: controller.signal },
+        );
+        if (controller.signal.aborted) return;
+
+        const rawItems = panRes.items || [];
+        const mappedMatches = mapRawCustomers(rawItems);
+        const isSelfMatch = !quickCustomerOpen && Boolean(
+          selectedCustomerId && (
+            rawItems.some((i) => i.id === selectedCustomerId) ||
+            (selectedCustomer && selectedCustomer.id === selectedCustomerId && selectedCustomer.panNo?.replace(/\s+/g, "") === panToCheck)
+          ),
+        );
+        const conflicts = quickCustomerOpen
+          ? mappedMatches
+          : mappedMatches.filter((item) => item.id !== selectedCustomerId);
+
+        const serverTotal = typeof panRes.total === "number" ? panRes.total : rawItems.length;
+        const reportedTotal = Math.max(0, serverTotal - (isSelfMatch ? 1 : 0));
+
+        setCustomerPanConflictMatches(conflicts);
+        setCustomerPanConflictTotal(reportedTotal);
+        setCustomerPanConflictServerTotal(serverTotal);
+        setCustomerPanConflictError(null);
+
+        if (conflicts.length > 0 || reportedTotal > 0) {
+          if (conflicts.length === 1 && reportedTotal === 1) {
+            const m = conflicts[0];
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" is registered to customer "${m.name}" (${m.phone || "No phone"})${!m.isActive ? " [INACTIVE]" : ""}.`,
+            );
+          } else if (conflicts.length > 0) {
+            const names = conflicts
+              .slice(0, 3)
+              .map(
+                (m) =>
+                  `"${m.name}" (${m.phone || "No phone"})${!m.isActive ? " [INACTIVE]" : ""}`,
+              )
+              .join(", ");
+            const extra = reportedTotal > 3 ? ` and ${reportedTotal - 3} more` : "";
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" matches ${reportedTotal} customer(s): ${names}${extra}.`,
+            );
+          } else {
+            setCustomerPanConflictWarning(
+              `PAN "${panToCheck}" matches ${reportedTotal} customer(s) across other pages.`,
+            );
+          }
+        } else {
+          setCustomerPanConflictWarning(null);
+        }
+      } catch {
+        if (!controller.signal.aborted) {
+          setCustomerPanConflictWarning(
+            "Unable to verify PAN conflicts (lookup service unavailable).",
+          );
+          setCustomerPanConflictError(
+            "Unable to verify PAN conflicts (lookup service unavailable).",
+          );
+          setCustomerPanConflictMatches([]);
+          setCustomerPanConflictTotal(0);
+          setCustomerPanConflictServerTotal(0);
+        }
+      } finally {
+        if (!controller.signal.aborted) {
+          setCustomerPanConflictLoading(false);
+        }
+      }
+    }, 250);
+
+    return () => {
+      window.clearTimeout(timer);
+      controller.abort();
+    };
+  }, [customerQuery, quickCustomerDraft.panNo, quickCustomerOpen, selectedCustomer?.panNo, selectedCustomerId, isCustomerSearchOpen, customerPanConflictPage, mapRawCustomers]);
+
   // filtering the customer list based on the search query
   // we wrap this in useMemo so it only recalculates when the query or customers change
   const customerListFiltered = useMemo(() => {
     const s = customerQuery.trim().toLowerCase();
     if (!s) return customers;
     return customers.filter((c) =>
-      (c.name + " " + c.phone).toLowerCase().includes(s),
+      (c.name + " " + c.phone + " " + (c.panNo || "")).toLowerCase().includes(s),
     );
   }, [customers, customerQuery]);
 
@@ -1608,11 +2370,25 @@ export default function BillingPage() {
     if (selectedCustomerId) {
       opts.push({ type: "CLEAR" });
     }
-    customerListFiltered.forEach((c) =>
-      opts.push({ type: "CUSTOMER", customer: c }),
-    );
+    const seen = new Set<string>();
+    customerListFiltered.forEach((c) => {
+      seen.add(c.id);
+      opts.push({ type: "CUSTOMER", customer: c });
+    });
+    customerLookupResults.forEach((c) => {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        opts.push({ type: "CUSTOMER", customer: c });
+      }
+    });
+    customerPanConflictMatches.forEach((c) => {
+      if (!seen.has(c.id)) {
+        seen.add(c.id);
+        opts.push({ type: "CUSTOMER", customer: c });
+      }
+    });
     return opts;
-  }, [selectedCustomerId, customerListFiltered]);
+  }, [selectedCustomerId, customerListFiltered, customerLookupResults, customerPanConflictMatches]);
 
   useEffect(() => {
     setCustomerSearchIndex(0);
@@ -1651,9 +2427,9 @@ export default function BillingPage() {
       const opt = customerOptions[customerSearchIndex];
       if (!opt) return;
       if (opt.type === "CLEAR") {
-        setSelectedCustomerId(null);
+        handleSelectCustomer(null);
       } else {
-        setSelectedCustomerId(opt.customer.id);
+        handleSelectCustomer(opt.customer);
       }
       setCustomerSearchOpen(false);
     }
@@ -1737,6 +2513,74 @@ export default function BillingPage() {
     [products],
   );
 
+  // Ref tracking live checkout inputs across renders
+  const liveCheckoutInputsRef = useRef({
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    discountPercent: subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  });
+  liveCheckoutInputsRef.current = {
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    discountPercent: subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  };
+
+  // Tracking live changes to cart, customer, pricing metadata, or payments for fresh checkout validation
+  useEffect(() => {
+    checkoutInputRevisionRef.current++;
+  }, [
+    cart,
+    selectedCustomerId,
+    selectedCustomer,
+    subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  ]);
+
   // restoring the saved cart once on mount keeps billing work intact even after route changes or refreshes
   useEffect(() => {
     const storedCart = readStoredBillingCart();
@@ -1746,14 +2590,62 @@ export default function BillingPage() {
       setActiveDraftRequestId(storedCart.activeDraftRequestId || null);
       setSelectedCustomerId(storedCart.selectedCustomerId || null);
       setPendingCheckout(storedCart.pendingCheckout || null);
+      if (storedCart.pendingCheckout?.operationKey) {
+        const storedDraft = readStoredPendingPaperDraft(
+          storedCart.pendingCheckout.operationKey,
+          currentUser?.id,
+        );
+        if (storedDraft) {
+          setPaperDraftBillNo(storedDraft.draft.billNo);
+          setPaperDraftDocumentType(storedDraft.draft.externalDocumentType);
+          setPaperDraftBillDate(storedDraft.draft.externalBillDate);
+          setPaperDraftChoice(storedDraft.draft.choice);
+        }
+      }
     }
     setCartPersistenceReady(true);
-  }, []);
+  }, [currentUser?.id]);
 
   const cartProductIds = useMemo(
     () => [...new Set(cart.map((line) => line.productId).filter(Boolean))],
     [cart],
   );
+
+  useEffect(() => {
+    if (!selectedCustomerId || cartProductIds.length === 0) {
+      setCustomerHistory([]);
+      setCustomerHistoryLoading(false);
+      setCustomerHistoryError(null);
+      return;
+    }
+
+    const controller = new AbortController();
+    setCustomerHistory([]);
+    setCustomerHistoryLoading(true);
+    setCustomerHistoryError(null);
+
+    const boundedProductIds = cartProductIds.slice(0, 20);
+
+    getCustomerProductHistoryApi(selectedCustomerId, boundedProductIds, {
+      signal: controller.signal,
+    })
+      .then((data) => {
+        if (controller.signal.aborted) return;
+        setCustomerHistory(data.history || []);
+        setCustomerHistoryLoading(false);
+        setCustomerHistoryError(null);
+      })
+      .catch((err) => {
+        if (controller.signal.aborted) return;
+        setCustomerHistory([]);
+        setCustomerHistoryLoading(false);
+        setCustomerHistoryError("Unable to load recent purchase history");
+      });
+
+    return () => {
+      controller.abort();
+    };
+  }, [selectedCustomerId, cartProductIds]);
 
   // Restored and resumed carts may contain products that are not in the small
   // search cache yet. Hydrate just those rows in one focused request.
@@ -1793,46 +2685,6 @@ export default function BillingPage() {
     };
   }, [cartProductIds, fetchProductsByIds, mapRawProducts, mergeProducts]);
 
-  // once the latest product catalog is available, we reconcile the restored cart against active products and current stock
-  useEffect(() => {
-    if (products.length === 0 || cart.length === 0) return;
-
-    const normalizedCart = cart
-      .map((line) => {
-        const product = productsById.get(line.productId);
-        if (
-          !product ||
-          !product.active ||
-          product.stock <= 0 ||
-          product.stock < getProductMinQty(product)
-        ) {
-          return null;
-        }
-
-        const qty = normalizeProductCartQty(product, line.qty);
-        return {
-          ...line,
-          productId: line.productId,
-          qty,
-        };
-      })
-      .filter(Boolean) as CartLine[];
-
-    const cartChanged =
-      normalizedCart.length !== cart.length ||
-      normalizedCart.some(
-        (line, index) =>
-          line.productId !== cart[index]?.productId ||
-          line.qty !== cart[index]?.qty ||
-          line.overrideUnitPrice !== cart[index]?.overrideUnitPrice ||
-          line.overrideReason !== cart[index]?.overrideReason,
-      );
-
-    if (cartChanged) {
-      setCart(normalizedCart);
-    }
-  }, [cart, products, productsById]);
-
   // Persisting the cart on every cart change makes route changes safe while still clearing storage when the cart is emptied
   useEffect(() => {
     if (selectedCartRowIndex >= cart.length) {
@@ -1864,51 +2716,137 @@ export default function BillingPage() {
     selectedCustomerId,
   ]);
 
+  const reviewFingerprint = useMemo(() => {
+    return computeReviewFingerprint({
+      cart,
+      productsById,
+      selectedCustomerId,
+      selectedCustomer,
+      discountPercent: subtotalDiscountMeta.percent,
+      paymentMethod,
+      paymentStatus,
+      paidAmount,
+      cashTendered,
+      fonepayReference,
+      bankTransferReference,
+      receivingAccountId,
+      receivingAccountVersion,
+      receivingAccountLabel,
+      manualReceiptConfirmed,
+      splitPayments,
+      activeDraftInvoiceId,
+      activeDraftRequestId,
+      invoiceNote,
+    });
+  }, [
+    cart,
+    productsById,
+    selectedCustomerId,
+    selectedCustomer,
+    subtotalDiscountMeta.percent,
+    paymentMethod,
+    paymentStatus,
+    paidAmount,
+    cashTendered,
+    fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountVersion,
+    receivingAccountLabel,
+    manualReceiptConfirmed,
+    splitPayments,
+    activeDraftInvoiceId,
+    activeDraftRequestId,
+    invoiceNote,
+  ]);
+
+  useEffect(() => {
+    if (
+      reviewedCandidate &&
+      reviewedCandidate.fingerprint &&
+      reviewedCandidate.fingerprint !== reviewFingerprint
+    ) {
+      setReviewedCandidate(null);
+      if (pendingBillingConfirm === "checkout" && !pendingCheckout) {
+        setPendingBillingConfirm(null);
+      }
+    }
+  }, [reviewFingerprint, reviewedCandidate, pendingBillingConfirm, pendingCheckout]);
+
   // joining cart lines with product data here is what gives us unit price, pricing mode, and line totals for each row
   const cartRows = useMemo(() => {
-    return cart
-      .map((line) => {
-        const p = productsById.get(line.productId);
-        if (!p) return null;
-        const useWholesalePrice = shouldUseQuantityWholesalePrice(
-          selectedCustomer,
-          p,
-          line.qty,
-        );
-        const baseUnitPrice = useWholesalePrice
-          ? p.wholesalePrice
-          : p.retailPrice;
-        const overrideUnitPrice =
-          line.overrideUnitPrice !== undefined &&
-          Number.isFinite(line.overrideUnitPrice) &&
-          line.overrideUnitPrice > 0
-            ? line.overrideUnitPrice
-            : undefined;
-        const unit = overrideUnitPrice ?? baseUnitPrice;
+    return cart.map((line) => {
+      const p = productsById.get(line.productId);
+      if (!p) {
         return {
           ...line,
-          product: p,
-          unitPrice: unit,
-          baseUnitPrice,
-          overrideUnitPrice,
+          product: {
+            id: line.productId,
+            name: "Product unavailable",
+            sku: "",
+            barcode: "",
+            stock: 0,
+            reservedStock: 0,
+            retailPrice: 0,
+            wholesalePrice: 0,
+            wholesaleEligible: false,
+            unit: "PIECE" as const,
+            active: false,
+            quantityStep: 1,
+          } as unknown as Product,
+          isUnresolved: true,
+          unresolvedReason: "UNAVAILABLE" as const,
+          unitPrice: line.overrideUnitPrice ?? 0,
+          baseUnitPrice: 0,
+          overrideUnitPrice: line.overrideUnitPrice,
           overrideReason: line.overrideReason,
           overrideAuthorizationToken: line.overrideAuthorizationToken,
-          priceType: useWholesalePrice ? "Wholesale" : "Retail",
-          lineTotal: unit * line.qty,
+          priceType: "Retail" as const,
+          lineTotal: (line.overrideUnitPrice ?? 0) * line.qty,
         };
-      })
-      .filter(Boolean) as Array<{
-      productId: string;
-      qty: number;
-      product: Product;
-      unitPrice: number;
-      baseUnitPrice: number;
-      overrideUnitPrice?: number;
-      overrideReason?: string;
-      overrideAuthorizationToken?: string;
-      priceType: "Wholesale" | "Retail";
-      lineTotal: number;
-    }>;
+      }
+      const useWholesalePrice = shouldUseQuantityWholesalePrice(
+        selectedCustomer,
+        p,
+        line.qty,
+      );
+      const baseUnitPrice = useWholesalePrice
+        ? p.wholesalePrice
+        : p.retailPrice;
+      const overrideUnitPrice =
+        line.overrideUnitPrice !== undefined &&
+        Number.isFinite(line.overrideUnitPrice) &&
+        line.overrideUnitPrice > 0
+          ? line.overrideUnitPrice
+          : undefined;
+      const unit = overrideUnitPrice ?? baseUnitPrice;
+
+      const isInactive = !p.active;
+      const isInsufficientStock = line.qty > p.stock;
+      const isInvalidStep = !isQuantityStepCompliant(line.qty, p.quantityStep);
+      const isUnresolved = isInactive || isInsufficientStock || isInvalidStep;
+      const unresolvedReason = isInactive
+        ? ("INACTIVE" as const)
+        : isInsufficientStock
+          ? ("INSUFFICIENT_STOCK" as const)
+          : isInvalidStep
+            ? ("INVALID_STEP" as const)
+            : null;
+
+      return {
+        ...line,
+        product: p,
+        isUnresolved,
+        unresolvedReason,
+        unitPrice: unit,
+        baseUnitPrice,
+        overrideUnitPrice,
+        overrideReason: line.overrideReason,
+        overrideAuthorizationToken: line.overrideAuthorizationToken,
+        priceType: useWholesalePrice ? ("Wholesale" as const) : ("Retail" as const),
+        lineTotal: unit * line.qty,
+      };
+    });
   }, [cart, productsById, selectedCustomer]);
 
   const subTotal = cartRows.reduce((a, r) => a + r.lineTotal, 0); // total before any customer-level subtotal discount is applied
@@ -2060,7 +2998,13 @@ export default function BillingPage() {
           .filter((payment) => payment.method === "FONEPAY")
           .reduce((sum, payment) => sum + payment.amountNum, 0)
       : 0;
-  const splitDigitalAmount = splitEsewaAmount + splitFonepayAmount;
+  const splitBankTransferAmount =
+    normalizedSplitPayments.length > 0
+      ? normalizedSplitPayments
+          .filter((payment) => payment.method === "BANK_TRANSFER")
+          .reduce((sum, payment) => sum + payment.amountNum, 0)
+      : 0;
+  const splitDigitalAmount = splitEsewaAmount + splitFonepayAmount + splitBankTransferAmount;
   const splitBalance = Math.round((payableTotal - splitTotal) * 100) / 100;
 
   // payment status controls the real paid amount:
@@ -2104,6 +3048,8 @@ export default function BillingPage() {
           ? "Partial payment"
           : paymentMethod === "Fonepay"
             ? "Fonepay collection"
+            : paymentMethod === "Bank Transfer"
+            ? "Bank Transfer collection"
             : paymentMethod === "eSewa"
             ? "eSewa collection"
             : cashShort > 0
@@ -2120,6 +3066,8 @@ export default function BillingPage() {
           ? `Balance due ${formatNpr(balanceDue)}.`
           : paymentMethod === "Fonepay"
             ? `Collect ${formatNpr(payableTotal)} by Fonepay.`
+            : paymentMethod === "Bank Transfer"
+            ? `Collect ${formatNpr(payableTotal)} by Bank Transfer.`
             : paymentMethod === "eSewa"
             ? `Collect ${formatNpr(payableTotal)} online.`
             : cashShort > 0
@@ -2132,6 +3080,8 @@ export default function BillingPage() {
       ? "success"
       : paymentMethod === "Fonepay" && paymentStatus === "Paid"
         ? "fonepay"
+      : paymentMethod === "Bank Transfer" && paymentStatus === "Paid"
+        ? "bank_transfer"
       : paymentMethod === "eSewa" && paymentStatus === "Paid"
         ? "esewa"
         : paymentStatus === "Partial" ||
@@ -2141,7 +3091,28 @@ export default function BillingPage() {
           ? "warning"
           : "info";
 
-  const canConfirm = cartRows.length > 0 && !submitting && !stockRefreshBusy; // final guard for whether checkout can run right now
+  const hasUnresolvedCartLines = useMemo(() => {
+    return cartRows.some(
+      (row) =>
+        Boolean((row as any).isUnresolved) ||
+        !row.product ||
+        !row.product.active ||
+        row.product.stock <= 0 ||
+        row.qty > row.product.stock ||
+        !isQuantityStepCompliant(row.qty, row.product.quantityStep),
+    );
+  }, [cartRows]);
+
+  const canConfirm = pendingCheckout
+    ? !submitting
+    : cartRows.length > 0 &&
+      !hasUnresolvedCartLines &&
+      !submitting &&
+      !stockRefreshBusy &&
+      !parkedBusy &&
+      !draftRequestBusy &&
+      paperFollowup.status !== "FAILED_RETRYABLE" &&
+      paperFollowup.status !== "PENDING"; // final guard for whether checkout can run right now
   const hasBillDraft =
     cartRows.length > 0 || !!selectedCustomer || !!skuInput || !!productQuery;
 
@@ -2159,6 +3130,12 @@ export default function BillingPage() {
     unitPrice: number;
     overrideReason?: string;
   }) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before modifying price overrides.",
+      );
+      return;
+    }
     if (!canUsePriceOverride) {
       showToast(
         "danger",
@@ -2191,6 +3168,12 @@ export default function BillingPage() {
   }
 
   async function applyPriceOverride() {
+    if (pendingCheckout) {
+      setPriceOverrideError(
+        "A submitted checkout is pending recovery. Complete retry before modifying price overrides.",
+      );
+      return;
+    }
     if (!priceOverrideTargetId) return;
 
     const price = Math.round(Number(priceOverrideDraftPrice) * 100) / 100;
@@ -2265,6 +3248,12 @@ export default function BillingPage() {
   }
 
   function clearPriceOverride(productId: string) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before modifying price overrides.",
+      );
+      return;
+    }
     setCart((current) =>
       current.map((line) => {
         if (line.productId !== productId) return line;
@@ -2396,6 +3385,12 @@ export default function BillingPage() {
 
   // this adds one product into the cart while checking stock, active status, and current quantity first
   function addToCart(productId: string, qty = 1, explicitProduct?: Product) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before adding items.",
+      );
+      return;
+    }
     const product = explicitProduct || productsById.get(productId);
     // this handles when the product is inactive or missing from the lookup table
     if (!product || !product.active) {
@@ -2455,6 +3450,12 @@ export default function BillingPage() {
   // this changes the quantity of an item already in the cart
   // and validates that we don't exceed the available stock
   function changeQty(productId: string, val: number) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing quantity.",
+      );
+      return;
+    }
     const product = productsById.get(productId);
     const maxQty = Math.max(getProductMinQty(product), product?.stock || 1);
     if (product && val > product.stock) {
@@ -2489,6 +3490,12 @@ export default function BillingPage() {
   }
 
   function removeLine(productId: string) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before removing items.",
+      );
+      return;
+    }
     setCart((prev) => prev.filter((x) => x.productId !== productId));
     clearCartIssue();
     if (priceOverrideTargetId === productId) closePriceOverride();
@@ -2498,6 +3505,12 @@ export default function BillingPage() {
   }
 
   function applyStockConflictSuggestion(conflict: StockConflict) {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing items.",
+      );
+      return;
+    }
     if (conflict.availableStock <= 0) {
       removeLine(conflict.productId);
       return;
@@ -2529,6 +3542,12 @@ export default function BillingPage() {
   }
 
   function applyAllStockConflictSuggestions() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Please retry checkout or resolve before changing items.",
+      );
+      return;
+    }
     const conflictsByProductId = new Map(
       stockConflicts.map((conflict) => [conflict.productId, conflict]),
     );
@@ -2651,10 +3670,14 @@ export default function BillingPage() {
 
   // we use this to clear all current cart data when a transaction finishes or is cancelled manually
   // the stored cart is cleared here too so the next visit starts fresh on purpose
-  function resetBill() {
-    clearStoredBillingCart();
+  function resetBill(options?: { forceClearPending?: boolean; preserveStorageWarning?: boolean }) {
+    if (pendingCheckoutRef.current && !options?.forceClearPending) {
+      writeStoredBillingCart([], null, null, null, pendingCheckoutRef.current);
+    } else {
+      clearStoredBillingCart();
+      setPendingCheckout(null);
+    }
     setCart([]);
-    setPendingCheckout(null);
     setActiveDraftInvoiceId(null);
     setActiveDraftRequestId(null);
     setSelectedCustomerId(null);
@@ -2663,6 +3686,11 @@ export default function BillingPage() {
     setPaidAmount("");
     setCashTendered("");
     setFonepayReference("");
+    setBankTransferReference("");
+    setReceivingAccountId("");
+    setReceivingAccountVersion(null);
+    setReceivingAccountLabel("");
+    setManualReceiptConfirmed(false);
     setSplitCashAmount("");
     setSplitPayments([]);
     setInvoiceNote("");
@@ -2679,15 +3707,30 @@ export default function BillingPage() {
     setShowPaymentModal(false);
     setPendingBillingConfirm(null);
     setShowEsewaQr(true);
+    setPaperDraftBillNo("");
+    setPaperDraftDocumentType("PAN_INVOICE");
+    setPaperDraftBillDate(new Date().toLocaleDateString("en-CA"));
+    setPaperDraftChoice("RECORD_AFTER_SAVE");
+    setFonepayConfirmed(false);
+    if (!options?.preserveStorageWarning) {
+      setStorageLimitationWarning(null);
+    }
     skuRef.current?.focus();
   }
 
   function requestResetBill() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Retry checkout to recover the bill, or resolve it before clearing.",
+      );
+      return;
+    }
     if (!hasBillDraft) return;
     setPendingBillingConfirm("clear-cart");
   }
 
   function confirmResetBill() {
+    if (pendingCheckoutRef.current || pendingCheckout) return;
     if (activeDraftRequestId) {
       const linkedRequest = incomingRequests.find(
         (request) => request.id === activeDraftRequestId,
@@ -2702,10 +3745,16 @@ export default function BillingPage() {
       setAcceptedResolutionError("");
       return;
     }
-    resetBill();
+    resetBill({ forceClearPending: true });
   }
 
   function requestParkBill() {
+    if (pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before parking.",
+      );
+      return;
+    }
     if (cart.length === 0) {
       setBillingError("Add at least one item before parking this bill.");
       return;
@@ -2846,6 +3895,12 @@ export default function BillingPage() {
   async function resolveAcceptedRequest(
     action: "RETURN_TO_QUEUE" | "CANCEL",
   ) {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before resolving staff requests.",
+      );
+      return;
+    }
     if (!acceptedResolution || draftRequestBusy) return;
     const reason = acceptedResolutionReason.trim();
     if (reason.length < 3) {
@@ -2864,6 +3919,9 @@ export default function BillingPage() {
         acceptedResolution.requestId,
         { action, reason },
       );
+      if (pendingCheckoutRef.current) {
+        return;
+      }
       if (
         acceptedResolution.clearCartAfter ||
         activeDraftRequestId === acceptedResolution.requestId
@@ -2894,6 +3952,13 @@ export default function BillingPage() {
   }
 
   async function reviewAndLoadIncomingRequest() {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      showToast(
+        "warning",
+        "A submitted checkout is pending recovery. Complete retry before switching requests.",
+      );
+      return;
+    }
     if (!selectedIncomingRequest || draftRequestBusy) return;
     if (activeDraftRequestId) {
       showToast(
@@ -2966,9 +4031,26 @@ export default function BillingPage() {
         if (!parked) return;
       }
 
+      if (pendingCheckoutRef.current) {
+        showToast(
+          "warning",
+          "A submitted checkout is pending recovery. Complete retry before switching requests.",
+        );
+        return;
+      }
+
       const accepted = isAlreadyAccepted
         ? request
         : (await acceptDraftRequestApi(request.id, reviewItems)).request;
+
+      if (pendingCheckoutRef.current) {
+        showToast(
+          "warning",
+          "A submitted checkout is pending recovery. Complete retry before switching requests.",
+        );
+        return;
+      }
+
       const acceptedLines = (accepted.items || [])
         .filter((item) => item.reviewStatus !== "REJECTED")
         .map((item) => ({
@@ -3043,6 +4125,15 @@ export default function BillingPage() {
   }
 
   async function loadResumedParkedDraft(resumed: ParkedDraft) {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      setParkedError(
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.",
+      );
+      setBillingError(
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.",
+      );
+      return;
+    }
     const nextCart = (resumed.items || [])
       .map((item) => ({
         productId: item.productId,
@@ -3075,6 +4166,13 @@ export default function BillingPage() {
   }
 
   async function parkCurrentBill(kind: "manual" | "auto" = "manual") {
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      const message =
+        "A submitted checkout is pending recovery. Complete retry before parking.";
+      setParkedError(message);
+      setBillingError(message);
+      return null;
+    }
     if (cart.length === 0) {
       setParkedError("Add at least one item before parking this bill.");
       return null;
@@ -3102,6 +4200,9 @@ export default function BillingPage() {
           qty: line.qty,
         })),
       });
+      if (pendingCheckoutRef.current) {
+        return normalizeParkedDraft(parked);
+      }
       resetBill();
       await loadParkedDrafts();
       showToast(
@@ -3134,6 +4235,13 @@ export default function BillingPage() {
 
   async function resumeParkedBill(draft: ParkedDraft) {
     if (parkedBusy) return;
+    if (pendingCheckoutRef.current || pendingCheckout) {
+      const message =
+        "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+      setParkedError(message);
+      setBillingError(message);
+      return;
+    }
 
     setParkedBusy(true);
     setParkedError("");
@@ -3145,9 +4253,24 @@ export default function BillingPage() {
         if (!parked) return;
       }
 
+      if (pendingCheckoutRef.current) {
+        const message =
+          "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+        setParkedError(message);
+        setBillingError(message);
+        return;
+      }
+
       const resumed = normalizeParkedDraft(
         await resumeParkedDraftApi(draft.id),
       );
+      if (pendingCheckoutRef.current) {
+        const message =
+          "A submitted checkout is pending recovery. Complete retry before resuming another bill.";
+        setParkedError(message);
+        setBillingError(message);
+        return;
+      }
       if ((resumed.staleWarnings || []).length > 0) {
         setPendingStaleResume(resumed);
         setShowParkedBills(false);
@@ -3211,9 +4334,21 @@ export default function BillingPage() {
   }
 
   function openPaymentFlow(nextMethod?: PaymentMethod) {
+    if (pendingCheckout) {
+      setPendingBillingConfirm("checkout");
+      return;
+    }
     // this handles when someone tries to open payment without any cart lines
     if (cartRows.length === 0) {
       setBillingError("Add at least one product before opening payment.");
+      return;
+    }
+    if (!canConfirm) {
+      if (hasUnresolvedCartLines) {
+        showCartIssue(
+          "Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.",
+        );
+      }
       return;
     }
     // when a shortcut button passes a payment method, we switch the modal into that method before opening it
@@ -3288,7 +4423,7 @@ export default function BillingPage() {
 
       if (normalizedSplitPayments.every((row) => row.method !== "CASH")) {
         setPaymentError(
-          "Use eSewa or Fonepay when the full invoice amount is online.",
+          "Use eSewa, Fonepay, or Bank Transfer when the full invoice amount is non-cash.",
         );
         return false;
       }
@@ -3298,6 +4433,30 @@ export default function BillingPage() {
       );
       if (missingFonepayReference) {
         setPaymentError("Enter the Fonepay reference for the split payment.");
+        return false;
+      }
+
+      const missingBankTransferReference = normalizedSplitPayments.find(
+        (row) => row.method === "BANK_TRANSFER" && !row.reference?.trim(),
+      );
+      if (missingBankTransferReference) {
+        setPaymentError("Enter the Bank Transfer reference for the split payment.");
+        return false;
+      }
+
+      if (normalizedSplitPayments.some((row) => row.method === "FONEPAY") && !fonepayConfirmed) {
+        setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
+        return false;
+      }
+
+      const unconfirmedSplitManual = normalizedSplitPayments.find(
+        (row) =>
+          (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+          row.receivingAccountId &&
+          !row.manualReceiptConfirmed,
+      );
+      if (unconfirmedSplitManual) {
+        setPaymentError("Please confirm that you checked the receiving account and received the funds for all linked split rows.");
         return false;
       }
 
@@ -3319,6 +4478,25 @@ export default function BillingPage() {
     if (paymentMethod === "Fonepay" && paymentStatus !== "Unpaid") {
       if (!fonepayReference.trim()) {
         setPaymentError("Enter the Fonepay reference or remarks.");
+        return false;
+      }
+      if (!fonepayConfirmed) {
+        setPaymentError("Please confirm that the Fonepay merchant payment confirmation was verified.");
+        return false;
+      }
+      if (receivingAccountId && !manualReceiptConfirmed) {
+        setPaymentError("Please confirm that you checked this receiving account and received the funds.");
+        return false;
+      }
+    }
+
+    if (paymentMethod === "Bank Transfer" && paymentStatus !== "Unpaid") {
+      if (!bankTransferReference.trim()) {
+        setPaymentError("Enter the Bank Transfer reference or remarks.");
+        return false;
+      }
+      if (receivingAccountId && !manualReceiptConfirmed) {
+        setPaymentError("Please confirm that you checked this receiving account and received the funds.");
         return false;
       }
     }
@@ -3422,11 +4600,26 @@ export default function BillingPage() {
       current.map((payment) => {
         if (payment.id !== id) return payment;
         const next = { ...payment, ...patch };
-        if (patch.method === "ESEWA" || patch.method === "FONEPAY") {
+        if (patch.method === "ESEWA" || patch.method === "FONEPAY" || patch.method === "BANK_TRANSFER") {
           next.tenderedAmount = "";
         }
-        if (patch.method && patch.method !== "FONEPAY") {
+        if (patch.method && patch.method !== "FONEPAY" && patch.method !== "BANK_TRANSFER") {
           next.reference = "";
+          next.receivingAccountId = undefined;
+          next.receivingAccountVersion = undefined;
+          next.receivingAccountLabel = undefined;
+          next.manualReceiptConfirmed = false;
+        }
+        if (
+          patch.amount !== undefined ||
+          patch.method !== undefined ||
+          patch.reference !== undefined ||
+          patch.receivingAccountId !== undefined ||
+          patch.receivingAccountVersion !== undefined
+        ) {
+          if (patch.manualReceiptConfirmed === undefined) {
+            next.manualReceiptConfirmed = false;
+          }
         }
         return next;
       }),
@@ -3451,30 +4644,224 @@ export default function BillingPage() {
   }
 
   async function requestCheckoutConfirm() {
-    if (pendingCheckout) {
-      setPendingBillingConfirm("checkout");
-      return;
-    }
-    if (!canConfirm) return;
-    if (!validatePaymentBeforeConfirm()) return;
-
-    setStockConflicts([]);
-    setStockRefreshBusy(true);
+    if (checkoutReviewBusyRef.current) return;
+    checkoutReviewBusyRef.current = true;
     try {
-      const latestProducts = await refreshProductsForCheckout();
-      const conflicts = buildStockConflictsFromCart(cart, latestProducts);
-      if (conflicts.length > 0) {
-        showStockConflicts(conflicts);
+      if (pendingCheckout) {
+        setPendingBillingConfirm("checkout");
         return;
       }
+      if (!canConfirm) {
+        if (hasUnresolvedCartLines) {
+          setPaymentError("Some cart items are unresolved, inactive, or have insufficient stock. Please resolve them before checkout.");
+        } else if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
+          setPaymentError(
+            "There is an outstanding paper bill reference for invoice " +
+              (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
+              ". Please retry or dismiss it before confirming checkout.",
+          );
+        }
+        return;
+      }
+      if (!validatePaymentBeforeConfirm()) return;
 
-      setPendingBillingConfirm("checkout");
-    } catch {
-      setPaymentError(
-        "Could not refresh product stock. Check connection and try again.",
-      );
+      const initialActor = getAuthUser();
+      const startRevision = checkoutInputRevisionRef.current;
+      const startFingerprint = computeReviewFingerprint(liveCheckoutInputsRef.current);
+
+      // Refresh and verify payment receiving account metadata when destination is linked
+      const liveBeforeReceiving = liveCheckoutInputsRef.current;
+      const hasLinkedReceivingSelections =
+        ((liveBeforeReceiving.paymentMethod === "Fonepay" || liveBeforeReceiving.paymentMethod === "Bank Transfer") &&
+          liveBeforeReceiving.paymentStatus !== "Unpaid" &&
+          Boolean(liveBeforeReceiving.receivingAccountId)) ||
+        (liveBeforeReceiving.paymentMethod === "Split" &&
+          liveBeforeReceiving.splitPayments.some(
+            (row) =>
+              (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+              Boolean(row.receivingAccountId),
+          ));
+
+      if (hasLinkedReceivingSelections) {
+        try {
+          const freshAccounts = await getEnabledPaymentAccountsApi();
+          const currentActor = getAuthUser();
+          if (
+            !currentActor ||
+            currentActor.id !== initialActor?.id ||
+            currentActor.role !== initialActor?.role
+          ) {
+            setPaymentError("Cashier session changed during review. Please review and confirm again.");
+            return;
+          }
+
+          if (
+            checkoutInputRevisionRef.current !== startRevision ||
+            computeReviewFingerprint(liveCheckoutInputsRef.current) !== startFingerprint
+          ) {
+            setPaymentError(
+              "Cart, customer, or payment details changed during receiving account verification. Please review and confirm again.",
+            );
+            return;
+          }
+
+          const freshList = Array.isArray(freshAccounts) ? freshAccounts : [];
+          setEnabledPaymentAccounts(freshList);
+
+          const liveInputs = liveCheckoutInputsRef.current;
+          if (
+            (liveInputs.paymentMethod === "Fonepay" || liveInputs.paymentMethod === "Bank Transfer") &&
+            liveInputs.paymentStatus !== "Unpaid" &&
+            liveInputs.receivingAccountId
+          ) {
+            const matching = freshList.find((acc) => acc.id === liveInputs.receivingAccountId);
+            const requiredMethod = liveInputs.paymentMethod === "Fonepay" ? "FONEPAY" : "BANK_TRANSFER";
+            const isCompatible =
+              matching &&
+              matching.supportedSettlement === true &&
+              matching.confirmationMode === "MANUAL_RECEIPT" &&
+              matching.settlementMethod === requiredMethod;
+            const isVersionCurrent = matching && matching.version === liveInputs.receivingAccountVersion;
+
+            if (!matching || !isCompatible || !isVersionCurrent) {
+              setManualReceiptConfirmed(false);
+              setReviewedCandidate(null);
+              setPaymentError(
+                "The selected receiving account was updated or is no longer available. Please select a receiving account and re-verify receipt.",
+              );
+              return;
+            }
+          }
+
+          if (liveInputs.paymentMethod === "Split") {
+            let splitStale = false;
+            for (const row of liveInputs.splitPayments) {
+              if (
+                (row.method === "FONEPAY" || row.method === "BANK_TRANSFER") &&
+                row.receivingAccountId
+              ) {
+                const matching = freshList.find((acc) => acc.id === row.receivingAccountId);
+                const isCompatible =
+                  matching &&
+                  matching.supportedSettlement === true &&
+                  matching.confirmationMode === "MANUAL_RECEIPT" &&
+                  matching.settlementMethod === row.method;
+                const isVersionCurrent = matching && matching.version === row.receivingAccountVersion;
+
+                if (!matching || !isCompatible || !isVersionCurrent) {
+                  splitStale = true;
+                  break;
+                }
+              }
+            }
+
+            if (splitStale) {
+              setSplitPayments((current) =>
+                current.map((row) => ({
+                  ...row,
+                  manualReceiptConfirmed: false,
+                })),
+              );
+              setReviewedCandidate(null);
+              setPaymentError(
+                "One or more selected receiving accounts were updated or are no longer available. Please review split destinations and re-verify receipt.",
+              );
+              return;
+            }
+          }
+        } catch {
+          setPaymentError(
+            "Could not verify payment receiving accounts. Check connection and try again.",
+          );
+          return;
+        }
+      }
+
+      setStockConflicts([]);
+      setStockRefreshBusy(true);
+      try {
+        const latestProducts = await refreshProductsForCheckout();
+        const postStockActor = getAuthUser();
+        if (
+          !postStockActor ||
+          postStockActor.id !== initialActor?.id ||
+          postStockActor.role !== initialActor?.role
+        ) {
+          setPaymentError("Cashier session changed during catalog refresh. Please review and confirm again.");
+          return;
+        }
+
+        const latestProductsById = new Map(latestProducts.map((p) => [p.id, p]));
+
+        if (
+          checkoutInputRevisionRef.current !== startRevision ||
+          computeReviewFingerprint({ ...liveCheckoutInputsRef.current, productsById }) !== startFingerprint
+        ) {
+          setPaymentError(
+            "Cart, customer, or payment details changed during catalog refresh. Please review and confirm again.",
+          );
+          return;
+        }
+        const liveCurrent = liveCheckoutInputsRef.current;
+        const conflicts = buildStockConflictsFromCart(liveCurrent.cart, latestProducts);
+        if (conflicts.length > 0) {
+          showStockConflicts(conflicts);
+          return;
+        }
+
+        const effectivePaidStr =
+          liveCurrent.paymentStatus === "Paid"
+            ? (liveCurrent.paidAmount.trim() || String(payableTotal))
+            : liveCurrent.paidAmount;
+
+        const result = deriveCandidateCheckoutState({
+          cart: liveCurrent.cart,
+          latestProductsById,
+          selectedCustomer: liveCurrent.selectedCustomer,
+          subtotalDiscountPercent: liveCurrent.discountPercent,
+          paymentMethod: liveCurrent.paymentMethod,
+          paymentStatus: liveCurrent.paymentStatus,
+          paidAmountStr: effectivePaidStr,
+          cashTenderedStr: liveCurrent.cashTendered,
+          fonepayReference: liveCurrent.fonepayReference,
+          bankTransferReference: liveCurrent.bankTransferReference,
+          receivingAccountId: liveCurrent.receivingAccountId || undefined,
+          receivingAccountVersion: liveCurrent.receivingAccountVersion ?? undefined,
+          receivingAccountLabel: liveCurrent.receivingAccountLabel || undefined,
+          manualReceiptConfirmed: liveCurrent.manualReceiptConfirmed || undefined,
+          splitPayments: liveCurrent.splitPayments,
+          splitCashAmountStr: splitCashAmount,
+          activeDraftInvoiceId: liveCurrent.activeDraftInvoiceId,
+          activeDraftRequestId: liveCurrent.activeDraftRequestId,
+          selectedCustomerId: liveCurrent.selectedCustomerId,
+          invoiceNote: liveCurrent.invoiceNote,
+          shouldUseQuantityWholesalePrice,
+        });
+
+        if (!result.success) {
+          setPaymentError(result.error);
+          return;
+        }
+
+        const candidateFingerprint = computeReviewFingerprint({
+          ...liveCheckoutInputsRef.current,
+          productsById: latestProductsById,
+        });
+
+        setReviewedCandidate({
+          ...result.candidate,
+          fingerprint: candidateFingerprint,
+        });
+        setPendingBillingConfirm("checkout");
+      } catch {
+        setPaymentError(
+          "Could not refresh product stock. Check connection and try again.",
+        );
+      } finally {
+        setStockRefreshBusy(false);
+      }
     } finally {
-      setStockRefreshBusy(false);
+      checkoutReviewBusyRef.current = false;
     }
   }
 
@@ -3482,66 +4869,66 @@ export default function BillingPage() {
     // stopping here prevents double submits and blocks invalid partial payment states
     if (!pendingCheckout && !canConfirm) return;
     if (!pendingCheckout && !validatePaymentBeforeConfirm()) return;
+    if (!pendingCheckout && !reviewedCandidate) return;
+
+    if (paperFollowup.status === "FAILED_RETRYABLE" || paperFollowup.status === "PENDING") {
+      setBillingError(
+        "There is an outstanding paper bill reference for invoice " +
+          (paperFollowup.invoiceNo || paperFollowup.invoiceId) +
+          ". Please retry or dismiss it before confirming checkout.",
+      );
+      return;
+    }
+
+    if (!pendingCheckout) {
+      const currentLiveFingerprint = computeReviewFingerprint({
+        ...liveCheckoutInputsRef.current,
+        productsById: new Map(products.map((p) => [p.id, p])),
+      });
+
+      if (reviewedCandidate?.fingerprint !== currentLiveFingerprint) {
+        setBillingError(
+          "Cart, customer, or payment details changed since review. Please review and confirm again.",
+        );
+        setReviewedCandidate(null);
+        setPendingBillingConfirm(null);
+        return;
+      }
+    }
+
     setPendingBillingConfirm(null);
     setSubmitting(true);
 
     try {
-      const checkoutPayments =
-        paymentMethod === "Split"
-          ? normalizedSplitPayments.map((payment) => ({
-              method: payment.method,
-              amount: payment.amountNum,
-              reference:
-                payment.method === "FONEPAY"
-                  ? payment.reference?.trim()
-                  : undefined,
-              tenderedAmount:
-                payment.method === "CASH" ? payment.tenderedNum : undefined,
-            }))
-          : paymentStatus !== "Unpaid" && effectivePaidAmount > 0
-            ? [
-                {
-                  method: (
-                    paymentMethod === "eSewa"
-                      ? "ESEWA"
-                      : paymentMethod === "Fonepay"
-                        ? "FONEPAY"
-                        : "CASH"
-                  ) as
-                    | "CASH"
-                    | "FONEPAY"
-                    | "ESEWA",
-                  amount: effectivePaidAmount,
-                  reference:
-                    paymentMethod === "Fonepay"
-                      ? fonepayReference.trim()
-                      : undefined,
-                  tenderedAmount:
-                    paymentMethod === "Cash" && paymentStatus === "Paid"
-                      ? cashTenderedNum
-                      : undefined,
-                },
-              ]
-            : [];
+      const checkoutPayload: PendingCheckoutPayload = pendingCheckout
+        ? pendingCheckout.payload
+        : {
+            draftInvoiceId: reviewedCandidate!.draftInvoiceId,
+            customerId: reviewedCandidate!.customerId,
+            draftRequestId: reviewedCandidate!.draftRequestId,
+            notes: reviewedCandidate!.notes,
+            items: reviewedCandidate!.items.map((line) => ({
+              productId: line.productId,
+              qty: line.qty,
+              overrideUnitPrice: line.overrideUnitPrice,
+              overrideReason: line.overrideReason,
+              overrideAuthorizationToken: line.overrideAuthorizationToken,
+            })),
+            payments: reviewedCandidate!.payments,
+            confirmation: reviewedCandidate!.confirmation,
+          };
 
-      const currentPayload: PendingCheckoutPayload = {
-        draftInvoiceId: activeDraftInvoiceId || undefined,
-        customerId: selectedCustomerId || undefined,
-        notes: invoiceNote.trim() || undefined,
-        items: cartRows.map((line) => ({
-          productId: line.productId,
-          qty: line.qty,
-          overrideUnitPrice: line.overrideUnitPrice,
-          overrideReason: line.overrideReason,
-          overrideAuthorizationToken: line.overrideAuthorizationToken,
-        })),
-        payments: checkoutPayments,
-      };
-      const checkoutSnapshot = pendingCheckout || {
-        operationKey: createCheckoutOperationKey(),
-        payload: currentPayload,
-        activeDraftRequestId,
-      };
+      const candidateDraftRequestId =
+        reviewedCandidate !== null && reviewedCandidate !== undefined
+          ? (reviewedCandidate.draftRequestId || null)
+          : activeDraftRequestId;
+
+      const checkoutSnapshot = resolvePendingCheckoutSnapshot(
+        pendingCheckout,
+        createCheckoutOperationKey(),
+        checkoutPayload,
+        candidateDraftRequestId,
+      );
 
       if (!pendingCheckout) {
         setPendingCheckout(checkoutSnapshot);
@@ -3552,6 +4939,21 @@ export default function BillingPage() {
           activeDraftRequestId,
           checkoutSnapshot,
         );
+        if (paperDraftBillNo.trim()) {
+          const ok = writeStoredPendingPaperDraft({
+            actorId: currentUser?.id || "unknown",
+            operationKey: checkoutSnapshot.operationKey,
+            draft: {
+              billNo: paperDraftBillNo.trim(),
+              externalDocumentType: paperDraftDocumentType,
+              externalBillDate: paperDraftBillDate,
+              choice: paperDraftChoice,
+            },
+          });
+          if (!ok) {
+            setStorageLimitationWarning("Browser storage is full or restricted. Unsaved paper drafts may not survive page reload.");
+          }
+        }
       }
 
       // The key and exact non-secret payload survive a lost response and reload.
@@ -3561,6 +4963,7 @@ export default function BillingPage() {
       });
 
       const invoiceId = result?.invoice?.id;
+      const invoiceNo = result?.invoice?.invoiceNo;
       if (invoiceId) {
         setLastCreatedInvoiceId(invoiceId);
         window.sessionStorage.setItem(
@@ -3569,39 +4972,313 @@ export default function BillingPage() {
         );
       }
 
-      // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
-      if (result?.esewaPaymentIntent) {
-        if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
-          savePendingDraftCompletion(checkoutSnapshot.activeDraftRequestId, invoiceId);
+      let paperRecordedSuccessfully = false;
+      const initialLiveUser = getAuthUser();
+      const initialActorId = initialLiveUser?.id || currentUser?.id || "unknown";
+      const pendingStoredPaper = readStoredPendingPaperDraft(checkoutSnapshot.operationKey, initialActorId);
+      const effectivePaperBillNo = paperDraftBillNo.trim() || pendingStoredPaper?.draft?.billNo?.trim() || "";
+      const effectivePaperDocType = paperDraftBillNo.trim() ? paperDraftDocumentType : (pendingStoredPaper?.draft?.externalDocumentType || paperDraftDocumentType);
+      const effectivePaperBillDate = paperDraftBillNo.trim() ? paperDraftBillDate : (pendingStoredPaper?.draft?.externalBillDate || paperDraftBillDate);
+      const effectivePaperChoice = paperDraftBillNo.trim() ? paperDraftChoice : (pendingStoredPaper?.draft?.choice || paperDraftChoice);
+      const hasPaperDraft = Boolean(effectivePaperBillNo);
+
+      if (hasPaperDraft && invoiceId) {
+        const paperDraftToRecord = {
+          billNo: effectivePaperBillNo,
+          externalDocumentType: effectivePaperDocType,
+          externalBillDate: effectivePaperBillDate,
+        };
+        const ok = writeStoredPaperFollowup({
+          actorId: initialActorId,
+          invoiceId,
+          invoiceNo,
+          draft: paperDraftToRecord,
+          expected: null,
+        });
+        if (!ok) {
+          setStorageLimitationWarning(
+            "Browser storage is full or restricted. Outstanding paper followup may not survive page reload.",
+          );
         }
-        submitEsewaForm(result.esewaPaymentIntent);
-        return;
+        clearStoredPendingPaperDraft(checkoutSnapshot.operationKey);
+
+        setPaperFollowup({
+          status: "PENDING",
+          invoiceId,
+          invoiceNo,
+          draft: paperDraftToRecord,
+          expected: null,
+        });
+
+        if (effectivePaperChoice === "RECORD_AFTER_SAVE") {
+          let initialExpected: ExpectedManualBillRecord | null = null;
+          try {
+            const existing = await getManualBillRecord(invoiceId);
+            const liveUserAfterRead = getAuthUser();
+            if ((liveUserAfterRead?.id || "unknown") !== initialActorId) return;
+            const currentSlotAfterRead = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotAfterRead &&
+              (currentSlotAfterRead.invoiceId !== invoiceId ||
+                currentSlotAfterRead.actorId !== initialActorId ||
+                currentSlotAfterRead.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotAfterRead.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotAfterRead.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+
+            initialExpected = {
+              billingChannel: existing.billingChannel,
+              externalDocumentType: existing.externalDocumentType,
+              externalBillNo: existing.externalBillNo,
+              externalBillDate: existing.externalBillDate,
+              billRecordStatus: existing.billRecordStatus,
+            };
+          } catch {
+            const liveUserCatch = getAuthUser();
+            if ((liveUserCatch?.id || "unknown") !== initialActorId) return;
+            const currentSlotCatch = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotCatch &&
+              (currentSlotCatch.invoiceId !== invoiceId ||
+                currentSlotCatch.actorId !== initialActorId ||
+                currentSlotCatch.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotCatch.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotCatch.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+            setPaperFollowup((current) => {
+              if (
+                current.invoiceId &&
+                (current.invoiceId !== invoiceId ||
+                  (current.draft &&
+                    (current.draft.billNo !== paperDraftToRecord.billNo ||
+                      current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                      current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+              ) {
+                return current;
+              }
+              return {
+                status: "FAILED_RETRYABLE",
+                invoiceId,
+                invoiceNo,
+                error:
+                  "Unable to reach server to fetch current manual bill record before recording.",
+                draft: paperDraftToRecord,
+                expected: null,
+              };
+            });
+            const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              !rawStored ||
+              (rawStored.invoiceId === invoiceId &&
+                rawStored.actorId === initialActorId &&
+                rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate)
+            ) {
+              writeStoredPaperFollowup({
+                actorId: initialActorId,
+                invoiceId,
+                invoiceNo,
+                draft: paperDraftToRecord,
+                expected: null,
+                error:
+                  "Unable to reach server to fetch current manual bill record before recording.",
+              });
+            }
+            showToast(
+              "warning",
+              "Invoice finalized, but paper bill reference needs attention.",
+            );
+          }
+
+          if (initialExpected) {
+            const liveUserBeforeWrite = getAuthUser();
+            if ((liveUserBeforeWrite?.id || "unknown") !== initialActorId) return;
+            const currentSlotBeforeWrite = readStoredPaperFollowup(initialActorId, invoiceId);
+            if (
+              currentSlotBeforeWrite &&
+              (currentSlotBeforeWrite.invoiceId !== invoiceId ||
+                currentSlotBeforeWrite.actorId !== initialActorId ||
+                currentSlotBeforeWrite.draft?.billNo !== paperDraftToRecord.billNo ||
+                currentSlotBeforeWrite.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                currentSlotBeforeWrite.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+            ) {
+              return;
+            }
+
+            writeStoredPaperFollowup({
+              actorId: initialActorId,
+              invoiceId,
+              invoiceNo,
+              draft: paperDraftToRecord,
+              expected: initialExpected,
+            });
+            const submittedIntent = readStoredPaperFollowup(initialActorId, invoiceId);
+
+            try {
+              await recordManualBillReference(invoiceId, {
+                reference: {
+                  billNo: paperDraftToRecord.billNo,
+                  externalDocumentType: paperDraftToRecord.externalDocumentType,
+                  externalBillDate: paperDraftToRecord.externalBillDate,
+                },
+                expected: initialExpected,
+              });
+
+              const liveUserAfterWrite = getAuthUser();
+              if ((liveUserAfterWrite?.id || "unknown") !== initialActorId) return;
+              if (JSON.stringify(readStoredPaperFollowup(initialActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+
+              paperRecordedSuccessfully = true;
+              setPaperFollowup((current) => {
+                if (
+                  current.invoiceId &&
+                  (current.invoiceId !== invoiceId ||
+                    (current.draft &&
+                      (current.draft.billNo !== paperDraftToRecord.billNo ||
+                        current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                        current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+                ) {
+                  return current;
+                }
+                return {
+                  status: "SUCCESS",
+                  invoiceId,
+                  invoiceNo,
+                  draft: paperDraftToRecord,
+                };
+              });
+              const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                rawStored &&
+                rawStored.invoiceId === invoiceId &&
+                rawStored.actorId === initialActorId &&
+                rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate
+              ) {
+                clearStoredPaperFollowup(invoiceId, paperDraftToRecord, submittedIntent);
+              }
+            } catch (followupErr: any) {
+              const liveUserCatch = getAuthUser();
+              if ((liveUserCatch?.id || "unknown") !== initialActorId) return;
+              if (JSON.stringify(readStoredPaperFollowup(initialActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+              const currentSlotCatch = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                currentSlotCatch &&
+                (currentSlotCatch.invoiceId !== invoiceId ||
+                  currentSlotCatch.actorId !== initialActorId ||
+                  currentSlotCatch.draft?.billNo !== paperDraftToRecord.billNo ||
+                  currentSlotCatch.draft?.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                  currentSlotCatch.draft?.externalBillDate !== paperDraftToRecord.externalBillDate)
+              ) {
+                return;
+              }
+
+              const errCode = followupErr?.response?.data?.code;
+              const errorMsg =
+                followupErr?.response?.data?.error ||
+                "Paper bill reference could not be saved. You can retry below.";
+              const isReviewer =
+                liveUserCatch?.role === "admin" || liveUserCatch?.role === "manager";
+              const isDuplicate =
+                errCode === "DUPLICATE_REVIEW_REQUIRED" ||
+                errCode === "DUPLICATE_PAPER_BILL";
+              const isStale = errCode === "STALE_RECORD_CONFLICT";
+
+              setPaperFollowup((current) => {
+                if (
+                  current.invoiceId &&
+                  (current.invoiceId !== invoiceId ||
+                    (current.draft &&
+                      (current.draft.billNo !== paperDraftToRecord.billNo ||
+                        current.draft.externalDocumentType !== paperDraftToRecord.externalDocumentType ||
+                        current.draft.externalBillDate !== paperDraftToRecord.externalBillDate)))
+                ) {
+                  return current;
+                }
+                return {
+                  status: "FAILED_RETRYABLE",
+                  invoiceId,
+                  invoiceNo,
+                  error:
+                    isDuplicate && !isReviewer
+                      ? "Duplicate paper bill number. Only managers or administrators can approve duplicate paper bills."
+                      : errorMsg,
+                  draft: paperDraftToRecord,
+                  expected: initialExpected,
+                  conflictRecord: isStale
+                    ? followupErr?.response?.data?.currentRecord || null
+                    : null,
+                  duplicateRequired: isDuplicate && isReviewer,
+                };
+              });
+              const rawStored = readStoredPaperFollowup(initialActorId, invoiceId);
+              if (
+                !rawStored ||
+                (rawStored.invoiceId === invoiceId &&
+                  rawStored.actorId === initialActorId &&
+                  rawStored.draft?.billNo === paperDraftToRecord.billNo &&
+                  rawStored.draft?.externalDocumentType === paperDraftToRecord.externalDocumentType &&
+                  rawStored.draft?.externalBillDate === paperDraftToRecord.externalBillDate)
+              ) {
+                writeStoredPaperFollowup({
+                  actorId: initialActorId,
+                  invoiceId,
+                  invoiceNo,
+                  draft: paperDraftToRecord,
+                  expected: initialExpected,
+                  error: errorMsg,
+                });
+              }
+              showToast(
+                "warning",
+                "Invoice finalized, but paper bill reference needs attention.",
+              );
+            }
+          }
+        } else if (effectivePaperChoice === "LATER") {
+          setPaperFollowup({
+            status: "PENDING",
+            invoiceId,
+            invoiceNo,
+            draft: paperDraftToRecord,
+          });
+        }
+      } else {
+        clearStoredPendingPaperDraft(checkoutSnapshot.operationKey);
       }
 
-      if (invoiceId && checkoutSnapshot.activeDraftRequestId) {
-        try {
-          await completeDraftRequestApi(
-            checkoutSnapshot.activeDraftRequestId,
-            invoiceId,
-          );
-          clearPendingDraftCompletion();
-          await loadIncomingRequests();
-        } catch {
-          savePendingDraftCompletion(
-            checkoutSnapshot.activeDraftRequestId,
-            invoiceId,
-          );
-          showToast(
-            "warning",
-            "The invoice was finalized, but request status synchronization is pending and will retry automatically.",
-          );
-        }
+      // when eSewa is chosen, the backend returns a signed payment intent — we redirect to the gateway
+      if (result?.esewaPaymentIntent) {
+        setPendingCheckout(null);
+        resetBill({ preserveStorageWarning: true });
+        submitEsewaForm(result.esewaPaymentIntent);
+        return;
       }
 
       // clearing the draft only after the full invoice flow succeeds avoids losing the cart on failure
       setShowPaymentModal(false);
       setPriceOverrideDraftPin("");
-      resetBill();
+      setReviewedCandidate(null);
+      setPendingCheckout(null);
+      setSavedSaleResult({
+        invoiceId: invoiceId || "",
+        invoiceNo: invoiceNo || result?.invoice?.invoiceNo,
+        total: result?.invoice?.netTotal ?? payableTotal,
+        effectivePaidAmount: result?.invoice?.paidTotal ?? effectivePaidAmount,
+        balanceDue: (result?.invoice?.netTotal ?? payableTotal) - (result?.invoice?.paidTotal ?? effectivePaidAmount),
+        paymentMethod,
+        paymentStatus: result?.invoice?.paymentStatus ?? paymentStatus,
+        paperRecorded: paperRecordedSuccessfully,
+        paperBillNo: paperDraftBillNo.trim() || undefined,
+        receivingDestinations: (result?.invoice?.payments || []).filter((p: any) => p.status === "SUCCESS" && p.kind !== "REFUND").map((p: any) => parseReceivingDestinationSnapshot(p.receivingDestinationSnapshot)).filter(Boolean),
+      });
+      resetBill({ preserveStorageWarning: true });
       setShowSuccess(true);
       try {
         await loadParkedDrafts();
@@ -3614,8 +5291,34 @@ export default function BillingPage() {
     } catch (err: any) {
       console.error("Billing confirm error:", err);
       const responseData = err?.response?.data;
-      if (responseData?.code === "STOCK_CONFLICT") {
+      const responseCode = responseData?.code;
+
+      if (responseCode === "CHECKOUT_REVIEW_REQUIRED") {
         setPendingCheckout(null);
+        setReviewedCandidate(null);
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          null,
+        );
+        const paperGuidance = paperDraftBillNo.trim()
+          ? ` Note: Paper bill "${paperDraftBillNo.trim()}" was prepared. Because bill totals changed, please void or revise the physical paper bill before finalizing.`
+          : "";
+        setBillingError(
+          (responseData?.error ||
+            "Items, prices, or payable total changed since review. Please review the updated bill and confirm again.") + paperGuidance,
+        );
+        try {
+          await refreshProductsForCheckout();
+        } catch {}
+        return;
+      }
+
+      if (responseCode === "STOCK_CONFLICT") {
+        setPendingCheckout(null);
+        setReviewedCandidate(null);
         writeStoredBillingCart(
           cart,
           activeDraftInvoiceId,
@@ -3626,6 +5329,12 @@ export default function BillingPage() {
         const conflicts = normalizeApiStockConflicts(responseData.conflicts);
         if (conflicts.length > 0) {
           showStockConflicts(conflicts);
+          const paperGuidance = paperDraftBillNo.trim()
+            ? ` Note: Paper bill "${paperDraftBillNo.trim()}" was prepared. Because available stock changed, please void or revise the physical paper bill before finalizing.`
+            : "";
+          if (paperGuidance) {
+            setBillingError(paperGuidance);
+          }
           try {
             await refreshProductsForCheckout();
           } catch {
@@ -3635,10 +5344,39 @@ export default function BillingPage() {
         }
       }
 
-      const responseStatus = Number(err?.response?.status || 0);
-      if (responseStatus >= 400 && responseStatus < 500) {
+      if (
+        responseCode === "RECEIVING_ACCOUNT_CHANGED" ||
+        responseCode === "RECEIVING_ACCOUNT_VERSION_MISMATCH" ||
+        responseCode === "RECEIVING_ACCOUNT_INACTIVE" ||
+        responseCode === "RECEIVING_ACCOUNT_NOT_FOUND" ||
+        responseCode === "RECEIVING_ACCOUNT_METHOD_UNSUPPORTED"
+      ) {
         setPendingCheckout(null);
+        setReviewedCandidate(null);
+        setManualReceiptConfirmed(false);
+        setSplitPayments((current) =>
+          current.map((row) => ({
+            ...row,
+            manualReceiptConfirmed: false,
+          })),
+        );
+        writeStoredBillingCart(
+          cart,
+          activeDraftInvoiceId,
+          selectedCustomerId,
+          activeDraftRequestId,
+          null,
+        );
+        setBillingError(
+          responseData?.error ||
+            "The receiving account configuration changed on the server. Please select the account again, verify receipt, and confirm checkout.",
+        );
+        try {
+          await loadEnabledPaymentAccounts({ force: true });
+        } catch {}
+        return;
       }
+
       setBillingError(
         responseData?.error ||
           "Checkout outcome is unknown. Your bill is saved; retry to recover the same invoice.",
@@ -3646,6 +5384,224 @@ export default function BillingPage() {
     } finally {
       // re-enabling billing actions whether checkout succeeded or failed
       setSubmitting(false);
+    }
+  }
+
+  async function handleRetryPaperFollowup() {
+    if (
+      !paperFollowup.invoiceId ||
+      !paperFollowup.draft?.billNo ||
+      paperFollowupBusy
+    ) {
+      return;
+    }
+    setPaperFollowupBusy(true);
+    const invoiceId = paperFollowup.invoiceId;
+    const draft = paperFollowup.draft;
+    const initialLiveUser = getAuthUser();
+    const retryActorId = initialLiveUser?.id || currentUser?.id || "unknown";
+    const startingIntent = readStoredPaperFollowup(retryActorId, invoiceId);
+    const duplicateOverrideReason = paperFollowup.duplicateOverrideReason?.trim() || undefined;
+    let expectedToUse: ExpectedManualBillRecord | undefined | null = paperFollowup.expected;
+    let submittedIntent: StoredPaperFollowup | null = null;
+    try {
+      if (initialLiveUser?.id !== currentUser?.id) return;
+      if (startingIntent && (startingIntent.actorId !== retryActorId || startingIntent.invoiceId !== invoiceId)) return;
+      // Retain original expected intent across retries; only fetch if expected was not yet established
+      if (!expectedToUse) {
+        let existing: ManualBillRecord | null = null;
+        try {
+          existing = await getManualBillRecord(invoiceId);
+        } catch {
+          const liveUser = getAuthUser();
+          if ((liveUser?.id || "unknown") !== retryActorId) return;
+          setPaperFollowup((current) => {
+            if (current.invoiceId !== invoiceId) return current;
+            return {
+              ...current,
+              error: "Unable to reach server to read current manual bill record. Retry suspended.",
+            };
+          });
+          return;
+        }
+
+        const liveUserAfterRead = getAuthUser();
+        if ((liveUserAfterRead?.id || "unknown") !== retryActorId) return;
+        const currentSlotAfterRead = readStoredPaperFollowup(retryActorId, invoiceId);
+        if (
+          currentSlotAfterRead &&
+          (currentSlotAfterRead.invoiceId !== invoiceId ||
+            currentSlotAfterRead.actorId !== retryActorId ||
+            currentSlotAfterRead.draft?.billNo !== draft.billNo ||
+            currentSlotAfterRead.draft?.externalDocumentType !== draft.externalDocumentType ||
+            currentSlotAfterRead.draft?.externalBillDate !== draft.externalBillDate)
+        ) {
+          return;
+        }
+
+        if (!existing) {
+          const liveUserNoRecord = getAuthUser();
+          if ((liveUserNoRecord?.id || "unknown") !== retryActorId) return;
+          setPaperFollowup((current) => {
+            if (current.invoiceId !== invoiceId) return current;
+            return {
+              ...current,
+              error: "Unable to read manual bill record for this invoice.",
+            };
+          });
+          return;
+        }
+        expectedToUse = {
+          billingChannel: existing.billingChannel,
+          externalDocumentType: existing.externalDocumentType,
+          externalBillNo: existing.externalBillNo,
+          externalBillDate: existing.externalBillDate,
+          billRecordStatus: existing.billRecordStatus,
+        };
+      }
+
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(startingIntent)) return;
+      // Persist the exact retry payload before the request can commit or lose its response.
+      const stored = writeStoredPaperFollowup({
+        actorId: retryActorId,
+        invoiceId,
+        invoiceNo: paperFollowup.invoiceNo,
+        draft,
+        expected: expectedToUse,
+        duplicateOverrideReason,
+      });
+      if (!stored) {
+        setStorageLimitationWarning("Browser storage is full or restricted. Outstanding paper followup may not survive page reload.");
+      }
+      submittedIntent = readStoredPaperFollowup(retryActorId, invoiceId);
+
+      // Verify live actor and slot before issuing reference write
+      const liveUserBeforeWrite = getAuthUser();
+      if ((liveUserBeforeWrite?.id || "unknown") !== retryActorId) return;
+      const currentSlotBeforeWrite = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        currentSlotBeforeWrite &&
+        (currentSlotBeforeWrite.invoiceId !== invoiceId ||
+          currentSlotBeforeWrite.actorId !== retryActorId ||
+          currentSlotBeforeWrite.draft?.billNo !== draft.billNo ||
+          currentSlotBeforeWrite.draft?.externalDocumentType !== draft.externalDocumentType ||
+          currentSlotBeforeWrite.draft?.externalBillDate !== draft.externalBillDate)
+      ) {
+        return;
+      }
+
+      await recordManualBillReference(invoiceId, {
+        reference: {
+          billNo: draft.billNo,
+          externalDocumentType: draft.externalDocumentType,
+          externalBillDate: draft.externalBillDate,
+        },
+        expected: expectedToUse,
+        ...(duplicateOverrideReason
+          ? {
+              duplicateOverrideReason,
+            }
+          : {}),
+      });
+
+      const liveUserAfterWrite = getAuthUser();
+      if ((liveUserAfterWrite?.id || "unknown") !== retryActorId) return;
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+
+      setPaperFollowup((current) => {
+        if (
+          current.invoiceId !== invoiceId ||
+          current.draft?.billNo !== draft.billNo ||
+          current.draft?.externalDocumentType !== draft.externalDocumentType ||
+          current.draft?.externalBillDate !== draft.externalBillDate
+        ) {
+          return current;
+        }
+        return {
+          status: "SUCCESS",
+          invoiceId: current.invoiceId,
+          invoiceNo: current.invoiceNo,
+          draft: current.draft,
+        };
+      });
+      const rawStored = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        rawStored &&
+        rawStored.invoiceId === invoiceId &&
+        rawStored.actorId === retryActorId &&
+        rawStored.draft?.billNo === draft.billNo &&
+        rawStored.draft?.externalDocumentType === draft.externalDocumentType &&
+        rawStored.draft?.externalBillDate === draft.externalBillDate
+      ) {
+        clearStoredPaperFollowup(invoiceId, draft, submittedIntent);
+      }
+      setIsBannerEditing(false);
+      showToast("success", "Manual bill reference recorded successfully.");
+    } catch (err: any) {
+      const liveUserCatch = getAuthUser();
+      if ((liveUserCatch?.id || "unknown") !== retryActorId) return;
+      if (JSON.stringify(readStoredPaperFollowup(retryActorId, invoiceId)) !== JSON.stringify(submittedIntent)) return;
+      const errCode = err?.response?.data?.code;
+      const errorMsg =
+        err?.response?.data?.error ||
+        "Retry failed. Check the details or permissions.";
+      const isReviewer =
+        liveUserCatch?.role === "admin" || liveUserCatch?.role === "manager";
+      const isDuplicate =
+        errCode === "DUPLICATE_REVIEW_REQUIRED" ||
+        errCode === "DUPLICATE_PAPER_BILL";
+      const isStale = errCode === "STALE_RECORD_CONFLICT";
+
+      setPaperFollowup((current) => {
+        if (
+          current.invoiceId !== invoiceId ||
+          current.draft?.billNo !== draft.billNo ||
+          current.draft?.externalDocumentType !== draft.externalDocumentType ||
+          current.draft?.externalBillDate !== draft.externalBillDate
+        ) {
+          return current;
+        }
+        return {
+          ...current,
+          status: "FAILED_RETRYABLE",
+          error:
+            isDuplicate && !isReviewer
+              ? "Duplicate paper bill number. Only managers or administrators can approve duplicate paper bills."
+              : errorMsg,
+          expected: expectedToUse,
+          conflictRecord: isStale
+            ? err?.response?.data?.currentRecord || null
+            : null,
+          duplicateRequired: isDuplicate && isReviewer,
+        };
+      });
+      const rawStored = readStoredPaperFollowup(retryActorId, invoiceId);
+      if (
+        !rawStored ||
+        (rawStored.invoiceId === invoiceId &&
+          rawStored.actorId === retryActorId &&
+          rawStored.draft?.billNo === draft.billNo &&
+          rawStored.draft?.externalDocumentType === draft.externalDocumentType &&
+          rawStored.draft?.externalBillDate === draft.externalBillDate)
+      ) {
+        const ok = writeStoredPaperFollowup({
+          actorId: retryActorId,
+          invoiceId,
+          invoiceNo: paperFollowup.invoiceNo,
+          draft,
+          expected: expectedToUse,
+          duplicateOverrideReason,
+          error: errorMsg,
+        });
+        if (!ok) {
+          setStorageLimitationWarning(
+            "Browser storage is full or restricted. Outstanding paper followup may not survive page reload.",
+          );
+        }
+      }
+      showToast("danger", errorMsg);
+    } finally {
+      setPaperFollowupBusy(false);
     }
   }
 
@@ -3724,6 +5680,62 @@ export default function BillingPage() {
       };
     }
 
+    if (pendingCheckout) {
+      const p = pendingCheckout.payload as any;
+      const pItems = Array.isArray(p.items) ? p.items : [];
+      const pPayable =
+        p.confirmation?.payableTotal ??
+        (typeof p.payableTotal === "number" ? p.payableTotal : undefined);
+      return {
+        title: "Retry submitted checkout?",
+        message:
+          "This bill was previously submitted and its outcome was interrupted. Confirming will recover the existing invoice without creating duplicate transactions.",
+        confirmLabel: "Retry Submission",
+        tone: "primary" as const,
+        icon: "sync",
+        onConfirm: confirmCheckout,
+        details: (
+          <div className="space-y-2">
+            <div className="flex items-center justify-between gap-3">
+              <span>Items</span>
+              <span className="font-extrabold text-slate-900">
+                {pItems.length} line(s), {formatQty(pItems.reduce((s: number, i: any) => s + (Number(i.qty) || 0), 0))} total qty
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Payable total</span>
+              <span className="font-extrabold text-slate-900">
+                {pPayable !== undefined
+                  ? formatNpr(pPayable)
+                  : "Not recorded (legacy submission)"}
+              </span>
+            </div>
+            <div className="flex items-center justify-between gap-3">
+              <span>Operation Key</span>
+              <span className="font-mono text-[11px] font-extrabold text-slate-600 truncate max-w-[180px]">
+                {pendingCheckout.operationKey}
+              </span>
+            </div>
+          </div>
+        ),
+      };
+    }
+
+    const disp = reviewedCandidate?.display;
+    const dispCustomer = disp?.customerName ?? (selectedCustomer ? selectedCustomer.name : "Walk-in Customer");
+    const dispTotal = disp?.payableTotal ?? payableTotal;
+    const dispCollect = disp?.effectivePaidAmount ?? (paymentMethod === "Split" ? splitCashNum : effectivePaidAmount);
+    const dispMethod = disp?.paymentMethod ?? (paymentStatus === "Unpaid" ? "None" : paymentMethod);
+    const dispEsewa = disp?.splitEsewaAmount ?? splitEsewaAmount;
+    const dispFonepay = disp?.splitFonepayAmount ?? splitFonepayAmount;
+    const dispFonepayRef = disp?.fonepayReference ?? (fonepayReference.trim() || undefined);
+    const dispBankTransfer = disp?.splitBankTransferAmount ?? splitBankTransferAmount;
+    const dispBankTransferRef = disp?.bankTransferReference ?? (bankTransferReference.trim() || undefined);
+    const dispReceivingAccountLabel = disp?.receivingAccountLabel ?? receivingAccountLabel;
+    const dispReceivingAccountId = disp?.receivingAccountId ?? receivingAccountId;
+    const dispChange = disp?.changeDue ?? changeDue;
+    const dispBalance = disp?.balanceDue ?? balanceDue;
+
     return {
       title:
         paymentMethod === "Split"
@@ -3732,6 +5744,8 @@ export default function BillingPage() {
             ? "Create unpaid invoice?"
             : paymentMethod === "Fonepay"
               ? "Confirm Fonepay payment?"
+            : paymentMethod === "Bank Transfer"
+              ? "Confirm Bank Transfer?"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa?"
               : "Finalize this invoice?",
@@ -3742,6 +5756,8 @@ export default function BillingPage() {
             ? "This will create the invoice without recording a payment."
             : paymentMethod === "Fonepay"
               ? "This will finalize the invoice and record this Fonepay reference."
+            : paymentMethod === "Bank Transfer"
+              ? "This will finalize the invoice and record this Bank Transfer reference."
             : paymentMethod === "eSewa"
               ? "KhataSathi will create the invoice and send this payment to eSewa."
               : "This will finalize the invoice and record the selected payment immediately.",
@@ -3752,9 +5768,11 @@ export default function BillingPage() {
             ? "Create Invoice"
             : paymentMethod === "Fonepay"
               ? "Confirm Fonepay"
+            : paymentMethod === "Bank Transfer"
+              ? "Confirm Bank Transfer"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa"
-              : `Confirm ${formatNpr(effectivePaidAmount)}`,
+              : `Confirm ${formatNpr(dispCollect)}`,
       tone: "primary" as const,
       icon:
         paymentMethod === "Split"
@@ -3763,6 +5781,8 @@ export default function BillingPage() {
             ? "receipt_long"
             : paymentMethod === "Fonepay"
               ? "qr_code_2"
+            : paymentMethod === "Bank Transfer"
+              ? "account_balance"
             : paymentMethod === "eSewa"
               ? "qr_code_2"
               : "payments",
@@ -3772,65 +5792,87 @@ export default function BillingPage() {
           <div className="flex items-center justify-between gap-3">
             <span>Customer</span>
             <span className="font-extrabold text-slate-900">
-              {selectedCustomer ? selectedCustomer.name : "Walk-in Customer"}
+              {dispCustomer}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Invoice total</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(payableTotal)}
+              {formatNpr(dispTotal)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Collect now</span>
             <span className="font-extrabold text-slate-900">
-              {paymentMethod === "Split"
-                ? formatNpr(splitCashNum)
-                : formatNpr(effectivePaidAmount)}
+              {formatNpr(dispCollect)}
             </span>
           </div>
           {paymentMethod === "Split" ? (
             <div className="flex items-center justify-between gap-3">
               <span>eSewa amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(splitEsewaAmount)}
+                {formatNpr(dispEsewa)}
               </span>
             </div>
           ) : null}
-          {paymentMethod === "Split" && splitFonepayAmount > 0 ? (
+          {paymentMethod === "Split" && dispFonepay > 0 ? (
             <div className="flex items-center justify-between gap-3">
               <span>Fonepay amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(splitFonepayAmount)}
+                {formatNpr(dispFonepay)}
               </span>
             </div>
           ) : null}
-          {paymentMethod === "Fonepay" && fonepayReference.trim() ? (
+          {paymentMethod === "Split" && dispBankTransfer > 0 ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Bank Transfer amount</span>
+              <span className="font-extrabold text-slate-900">
+                {formatNpr(dispBankTransfer)}
+              </span>
+            </div>
+          ) : null}
+          {paymentMethod === "Fonepay" && dispFonepayRef ? (
             <div className="flex items-center justify-between gap-3">
               <span>Reference</span>
               <span className="max-w-[220px] truncate font-extrabold text-slate-900">
-                {fonepayReference.trim()}
+                {dispFonepayRef}
               </span>
             </div>
           ) : null}
-          {changeDue > 0 ? (
+          {paymentMethod === "Bank Transfer" && dispBankTransferRef ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Reference</span>
+              <span className="max-w-[220px] truncate font-extrabold text-slate-900">
+                {dispBankTransferRef}
+              </span>
+            </div>
+          ) : null}
+          {(paymentMethod === "Fonepay" || paymentMethod === "Bank Transfer") && paymentStatus !== "Unpaid" ? (
+            <div className="flex items-center justify-between gap-3">
+              <span>Receiving Destination</span>
+              <span className="max-w-[220px] truncate font-extrabold text-slate-900">
+                {dispReceivingAccountId ? (dispReceivingAccountLabel || "Recorded account") : "Not recorded"}
+              </span>
+            </div>
+          ) : null}
+          {dispChange > 0 ? (
             <div className="flex items-center justify-between gap-3">
               <span>Change due</span>
               <span className="font-extrabold text-emerald-700">
-                {formatNpr(changeDue)}
+                {formatNpr(dispChange)}
               </span>
             </div>
           ) : null}
           <div className="flex items-center justify-between gap-3">
             <span>Due after bill</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(balanceDue)}
+              {formatNpr(dispBalance)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Method</span>
             <span className="font-extrabold text-slate-900">
-              {paymentStatus === "Unpaid" ? "None" : paymentMethod}
+              {dispMethod}
             </span>
           </div>
         </div>
@@ -3845,11 +5887,16 @@ export default function BillingPage() {
     paymentMethod,
     paymentStatus,
     pendingBillingConfirm,
+    reviewedCandidate,
     selectedCustomer,
     splitCashNum,
     splitEsewaAmount,
     splitFonepayAmount,
+    splitBankTransferAmount,
     fonepayReference,
+    bankTransferReference,
+    receivingAccountId,
+    receivingAccountLabel,
   ]);
 
   // setting up global hotkeys (F2, F3, F4, F5, F6, F9, Enter) so the cashier can work fully via keyboard
@@ -3861,6 +5908,19 @@ export default function BillingPage() {
     }
 
     function onKeyDown(e: KeyboardEvent) {
+      if (e.defaultPrevented) return;
+
+      // Overlay keyboard isolation: When any modal or tool overlay is open, suppress global billing shortcuts
+      if (
+        isWorksheetOpen ||
+        isCalculatorOpen ||
+        isDetailedHistoryOpen ||
+        isCompactHistoryOpen ||
+        Boolean(typeof document !== "undefined" && document.querySelector('[data-modal-frame="true"]'))
+      ) {
+        return;
+      }
+
       const isFKey = /^F[2-9]$/.test(e.key);
       const isTyping = isTypingTarget(e.target);
 
@@ -4129,6 +6189,10 @@ export default function BillingPage() {
     selectedCartRowIndex,
     priceOverrideTargetId,
     payableTotal,
+    isWorksheetOpen,
+    isCalculatorOpen,
+    isDetailedHistoryOpen,
+    isCompactHistoryOpen,
   ]);
 
   if (loading) {
@@ -4355,6 +6419,37 @@ export default function BillingPage() {
             </div>
             <button
               type="button"
+              id="billing-calculator-trigger"
+              onClick={() => setIsCalculatorOpen(true)}
+              title="Open scratchpad calculator (Alt+C)"
+              className={billingView.topButton}
+            >
+              <Icon name="calculate" className="text-[16px]" />
+              Calculator
+            </button>
+            <button
+              type="button"
+              id="billing-worksheet-trigger"
+              onClick={() => setIsWorksheetOpen(true)}
+              disabled={cartRows.length === 0}
+              title={
+                cartRows.length > 0
+                  ? "View sales worksheet preview"
+                  : "Add items to cart to view worksheet"
+              }
+              className={cn(
+                billingView.topButton,
+                cartRows.length > 0
+                  ? "border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100"
+                  : "",
+              )}
+            >
+              <Icon name="receipt" className="text-[16px]" />
+              Worksheet
+              {cartRows.length > 0 ? ` (${cartRows.length})` : ""}
+            </button>
+            <button
+              type="button"
               onClick={() =>
                 lastCreatedInvoiceId && openInvoicePrint(lastCreatedInvoiceId)
               }
@@ -4368,6 +6463,20 @@ export default function BillingPage() {
             >
               <Icon name="print" className="text-[16px]" />
               Reprint Last
+            </button>
+            <button
+              type="button"
+              id="billing-qr-gallery-trigger"
+              aria-label="Store Payment QRs Gallery"
+              onClick={() => {
+                setIsQrGalleryOpen(true);
+                void loadEnabledPaymentAccounts();
+              }}
+              title="Open store payment QR codes gallery"
+              className={billingView.topButton}
+            >
+              <Icon name="qr_code_scanner" className="text-[16px]" />
+              QRs
             </button>
             <button
               type="button"
@@ -4576,11 +6685,11 @@ export default function BillingPage() {
                         </div>
 
                         <div className="min-w-0">
-                          <div className={billingView.rowMain}>
+                          <div className={cn(billingView.rowMain, row.isUnresolved && "text-rose-700")}>
                             {row.product.name}
                           </div>
                           <div className={billingView.rowSub}>
-                            SKU: {row.product.sku}{" "}
+                            SKU: {row.product.sku || "N/A"}{" "}
                             <span className="mx-1 text-[#8C8889]">/</span>{" "}
                             Brand: {row.product.brand || "N/A"}
                           </div>
@@ -4589,30 +6698,63 @@ export default function BillingPage() {
                               Reason: {row.overrideReason}
                             </div>
                           )}
+                          {row.unresolvedReason === "UNAVAILABLE" && (
+                            <div className="truncate text-[10px] font-bold text-rose-600 mt-0.5">
+                              Item missing from catalog
+                            </div>
+                          )}
                         </div>
 
                         <div className="text-right text-[13px]">
-                          <span
-                            className={`font-mono font-extrabold ${low ? "text-[#EA580C]" : "text-[#11120d]"}`}
-                          >
-                            {formatQtyWithUnit(
-                              row.product.stock,
-                              row.product.saleUnit,
-                            )}
-                          </span>
-                          {low && (
-                            <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
-                              Low Stock
-                            </div>
+                          {row.unresolvedReason === "UNAVAILABLE" ? (
+                            <span className="font-mono font-bold text-rose-600">—</span>
+                          ) : (
+                            <>
+                              <span
+                                className={`font-mono font-extrabold ${row.qty > row.product.stock ? "text-rose-600" : low ? "text-[#EA580C]" : "text-[#11120d]"}`}
+                              >
+                                {formatQtyWithUnit(
+                                  row.product.stock,
+                                  row.product.saleUnit,
+                                )}
+                              </span>
+                              {row.qty > row.product.stock ? (
+                                <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
+                                  Short {formatQty(row.qty - row.product.stock)}
+                                </div>
+                              ) : low ? (
+                                <div className="text-[10px] font-bold text-amber-500 uppercase mt-0.5">
+                                  Low Stock
+                                </div>
+                              ) : null}
+                            </>
                           )}
                         </div>
 
                         <div className="text-right flex flex-col items-end">
                           <div className="font-mono text-[14px] font-extrabold text-[#11120d]">
-                            {formatNpr(row.unitPrice)}
+                            {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
+                              ? "—"
+                              : formatNpr(row.unitPrice)}
                           </div>
                           <div className="flex gap-1 mt-1">
-                            {row.overrideUnitPrice !== undefined ? (
+                            {row.unresolvedReason === "UNAVAILABLE" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Unavailable
+                              </span>
+                            ) : row.unresolvedReason === "INACTIVE" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Inactive
+                              </span>
+                            ) : row.unresolvedReason === "INSUFFICIENT_STOCK" ? (
+                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
+                                Stock Short
+                              </span>
+                            ) : row.unresolvedReason === "INVALID_STEP" ? (
+                              <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
+                                Step {row.product.quantityStep}
+                              </span>
+                            ) : row.overrideUnitPrice !== undefined ? (
                               <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
                                 Override
                               </span>
@@ -4692,7 +6834,9 @@ export default function BillingPage() {
                         </div>
 
                         <div className="text-right font-mono text-[14px] font-extrabold text-[#11120d]">
-                          {formatNpr(row.lineTotal)}
+                          {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
+                            ? "—"
+                            : formatNpr(row.lineTotal)}
                         </div>
 
                         <div
@@ -4806,7 +6950,7 @@ export default function BillingPage() {
                       <div className="flex h-[40px] w-[40px] items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]">
                         <Icon name="person" className="text-[19px]" />
                       </div>
-                      <div className="min-w-0">
+                      <div className="min-w-0 flex-1">
                         <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
                           Customer
                         </div>
@@ -4815,6 +6959,35 @@ export default function BillingPage() {
                             ? selectedCustomer.name
                             : "Walk-in Customer"}
                         </div>
+                        {selectedCustomer ? (
+                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-[#565449]">
+                            {selectedCustomer.phone ? (
+                              <span>{selectedCustomer.phone}</span>
+                            ) : null}
+                            {selectedCustomer.panNo ? (
+                              <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[10px] font-mono font-extrabold text-slate-800">
+                                PAN: {selectedCustomer.panNo}
+                              </span>
+                            ) : (
+                              <span
+                                title="Cashier cannot edit customer PAN. Request manager update if needed."
+                                className="rounded bg-amber-50 px-1.5 py-0.2 text-[10px] font-extrabold text-amber-700"
+                              >
+                                No PAN (Manager Update)
+                              </span>
+                            )}
+                          </div>
+                        ) : null}
+                        {selectedCustomer?.panNo && customerPanConflictMatches.length > 0 ? (
+                          <div className="mt-1 flex items-center justify-between rounded-[7px] border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-900">
+                            <span className="font-bold">
+                              PAN registered to {customerPanConflictMatches.length} other profile(s)
+                            </span>
+                            <span className="text-[9px] font-extrabold text-amber-700 underline">
+                              Review in search
+                            </span>
+                          </div>
+                        ) : null}
                       </div>
                     </button>
                     <button
@@ -4841,17 +7014,125 @@ export default function BillingPage() {
                     </button>
                   </div>
 
+                  {selectedCustomer ? (
+                    <div className="mt-2 flex items-center gap-2 border-t border-[#F3F4F6] pt-2">
+                      <button
+                        ref={compactHistoryTriggerRef}
+                        type="button"
+                        onClick={() => setIsCompactHistoryOpen((prev) => !prev)}
+                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
+                        title="Toggle recent cart item history"
+                      >
+                        <Icon name="schedule" className="text-[14px]" />
+                        Recent Items
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => setIsDetailedHistoryOpen(true)}
+                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
+                        title="Open full searchable purchase history"
+                      >
+                        <Icon name="history" className="text-[14px]" />
+                        Full History
+                      </button>
+                    </div>
+                  ) : null}
+
                   {isCustomerSearchOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-30 mt-2 rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
+                    <div className="absolute left-0 right-0 top-full z-30 mt-2 max-h-[min(70vh,520px)] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
                       <Input
                         value={customerQuery}
-                        onChange={setCustomerQuery}
+                        onChange={(val) => {
+                          setCustomerQuery(val);
+                          setCustomerPanConflictPage(1);
+                        }}
                         onKeyDown={handleCustomerSearchKeyDown}
-                        placeholder="Find customer..."
+                        placeholder="Find by name, phone, or 9-digit PAN..."
                         autoFocus
                         leftIcon="search"
                         className="mb-2"
                       />
+
+                      {(customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) ? (
+                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900 space-y-1.5">
+                          <div className="flex items-center gap-1 font-bold">
+                            <Icon name="warning" className="text-[14px] text-amber-600" />
+                            <span>Registered PAN Matches ({customerPanConflictTotal || customerPanConflictMatches.length})</span>
+                          </div>
+                          {customerPanConflictWarning ? (
+                            <div className="text-[11px]">{customerPanConflictWarning}</div>
+                          ) : null}
+                          {customerPanConflictMatches.length > 0 ? (
+                            <div className="max-h-[120px] overflow-y-auto space-y-1 pt-1">
+                              {customerPanConflictMatches.map((m) => (
+                                <div key={m.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
+                                  <div className="min-w-0">
+                                    <div className="font-bold text-[#11120D] truncate">
+                                      {m.name} {!m.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
+                                    </div>
+                                    <div className="text-[10px] text-slate-500">
+                                      {m.phone || "No phone"} {m.panNo ? `· PAN: ${m.panNo}` : ""}
+                                    </div>
+                                  </div>
+                                  <button
+                                    type="button"
+                                    onClick={() => {
+                                      handleSelectCustomer(m);
+                                      setCustomerSearchOpen(false);
+                                    }}
+                                    className="shrink-0 rounded bg-amber-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-amber-700"
+                                  >
+                                    Select Profile
+                                  </button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : (
+                            <div className="text-[11px] text-amber-800 italic pt-1">
+                              No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
+                            </div>
+                          )}
+                          {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
+                            <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
+                              <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
+                              <div className="flex gap-1">
+                                <button
+                                  type="button"
+                                  disabled={customerPanConflictPage <= 1}
+                                  onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
+                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                >
+                                  Prev
+                                </button>
+                                <button
+                                  type="button"
+                                  disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
+                                  onClick={() => setCustomerPanConflictPage((p) => p + 1)}
+                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                >
+                                  Next
+                                </button>
+                              </div>
+                            </div>
+                          ) : null}
+                        </div>
+                      ) : customerPanConflictWarning ? (
+                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                          <div className="flex items-center gap-1 font-bold">
+                            <Icon name="warning" className="text-[14px] text-amber-600" />
+                            <span>Registered PAN Notice</span>
+                          </div>
+                          <div className="mt-0.5">{customerPanConflictWarning}</div>
+                        </div>
+                      ) : null}
+
+                      {customerLookupLoading ? (
+                        <div className="flex items-center gap-2 px-2 py-1 text-[11px] font-bold text-[#565449]">
+                          <Icon name="sync" className="animate-spin text-[14px]" />
+                          <span>Searching server directory...</span>
+                        </div>
+                      ) : null}
+
                       <div className="max-h-[240px] overflow-y-auto space-y-1">
                         {customerOptions.map((opt, index) => {
                           const selected = index === customerSearchIndex;
@@ -4864,7 +7145,7 @@ export default function BillingPage() {
                                 }}
                                 type="button"
                                 onClick={() => {
-                                  setSelectedCustomerId(null);
+                                  handleSelectCustomer(null);
                                   setCustomerSearchOpen(false);
                                 }}
                                 className={`flex w-full items-center justify-between rounded-[8px] px-3 py-2 text-left text-[13px] font-semibold text-rose-600 transition ${selected ? "bg-rose-100" : "hover:bg-rose-50"}`}
@@ -4882,26 +7163,220 @@ export default function BillingPage() {
                               }}
                               type="button"
                               onClick={() => {
-                                setSelectedCustomerId(c.id);
+                                handleSelectCustomer(c);
                                 setCustomerSearchOpen(false);
                               }}
                               className={`flex w-full items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px] transition ${selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
                             >
-                              <span className="font-extrabold text-[#000000]">
-                                {c.name}
-                              </span>
-                              <span className="font-medium text-[#8C8889]">
-                                {c.phone}
-                              </span>
+                              <div className="min-w-0">
+                                <div className="font-extrabold text-[#000000]">
+                                  {c.name}
+                                </div>
+                                {c.address ? (
+                                  <div className="truncate text-[10px] text-[#8C8889]">
+                                    {c.address}
+                                  </div>
+                                ) : null}
+                              </div>
+                              <div className="flex items-center gap-2 text-right">
+                                {c.panNo ? (
+                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-extrabold text-slate-700">
+                                    PAN {c.panNo}
+                                  </span>
+                                ) : null}
+                                <span className="font-medium text-[#8C8889]">
+                                  {c.phone}
+                                </span>
+                              </div>
                             </button>
                           );
                         })}
-                        {customerOptions.length === 0 && (
+                        {customerOptions.length === 0 && !customerLookupLoading && (
                           <div className="text-center text-[12px] text-[#8C8889] py-2">
-                            No results
+                            No customers found
                           </div>
                         )}
                       </div>
+                      {currentUser &&
+                      ["admin", "manager", "cashier"].includes(
+                        currentUser.role,
+                      ) ? (
+                        <div className="mt-3 border-t border-[#E5E7EB] pt-3">
+                          {!quickCustomerOpen ? (
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setQuickCustomerError("");
+                                setCustomerPanConflictPage(1);
+                                setQuickCustomerPanAck(false);
+                                setQuickCustomerOpen(true);
+                              }}
+                              className="w-full rounded-[9px] border border-dashed border-[#9CA3AF] px-3 py-2 text-left text-[12px] font-bold text-[#374151] hover:bg-[#F8FAFC] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2563EB]"
+                            >
+                              + Add a customer
+                            </button>
+                          ) : (
+                            <form
+                              onSubmit={handleQuickCustomerSubmit}
+                              className="space-y-2"
+                              onKeyDown={(event) => event.stopPropagation()}
+                            >
+                              <div className="text-[12px] font-extrabold text-[#111827]">
+                                Add a customer
+                              </div>
+                              {([
+                                ["name", "Name", true],
+                                ["phone", "Phone (optional)", false],
+                                ["email", "Email (optional)", false],
+                                ["panNo", "PAN (optional)", false],
+                                ["address", "Address (optional)", false],
+                              ] as const).map(([field, label, required]) => (
+                                <label
+                                  key={field}
+                                  className="block text-[11px] font-semibold text-[#4B5563]"
+                                >
+                                  {label}
+                                  <input
+                                    autoFocus={field === "name"}
+                                    aria-label={label}
+                                    required={required}
+                                    value={quickCustomerDraft[field]}
+                                    onChange={(event) => {
+                                      const val = event.target.value;
+                                      setQuickCustomerDraft((draft) => ({
+                                        ...draft,
+                                        [field]: val,
+                                      }));
+                                      if (field === "panNo") {
+                                        setCustomerPanConflictPage(1);
+                                        setQuickCustomerPanAck(false);
+                                      }
+                                    }}
+                                    className="mt-1 block min-h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[13px] text-[#111827] outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#BFDBFE]"
+                                  />
+                                </label>
+                              ))}
+                              {((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) && quickCustomerDraft.panNo.trim()) ? (
+                                <div className="rounded-[8px] border border-amber-300 bg-amber-50 p-2.5 text-[11px] text-amber-900 space-y-1.5">
+                                  <div className="flex items-center gap-1 font-bold">
+                                    <Icon name="warning" className="text-[14px] text-amber-600" />
+                                    <span>PAN already registered to existing profile(s):</span>
+                                  </div>
+                                  {customerPanConflictMatches.length > 0 ? (
+                                    <div className="max-h-[140px] overflow-y-auto space-y-1">
+                                      {customerPanConflictMatches.map((match) => (
+                                        <div key={match.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
+                                          <div className="min-w-0">
+                                            <div className="font-bold text-[#111827] truncate">
+                                              {match.name} {!match.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
+                                            </div>
+                                            <div className="text-[10px] text-slate-500">
+                                              {match.phone || "No phone"} {match.panNo ? `· PAN: ${match.panNo}` : ""}
+                                            </div>
+                                          </div>
+                                          <button
+                                            type="button"
+                                            onClick={() => {
+                                              handleSelectCustomer(match);
+                                              setQuickCustomerOpen(false);
+                                              setCustomerSearchOpen(false);
+                                              setQuickCustomerDraft({ name: "", phone: "", email: "", panNo: "", address: "" });
+                                              setQuickCustomerPanAck(false);
+                                            }}
+                                            className="shrink-0 rounded bg-amber-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-700"
+                                          >
+                                            Select Instead
+                                          </button>
+                                        </div>
+                                      ))}
+                                    </div>
+                                  ) : (
+                                    <div className="text-[11px] text-amber-800 italic pt-1">
+                                      No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
+                                    </div>
+                                  )}
+                                  {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
+                                    <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
+                                      <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
+                                      <div className="flex gap-1">
+                                        <button
+                                          type="button"
+                                          disabled={customerPanConflictPage <= 1}
+                                          onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
+                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                        >
+                                          Prev
+                                        </button>
+                                        <button
+                                          type="button"
+                                          disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
+                                          onClick={() => setCustomerPanConflictPage((p) => p + 1)}
+                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
+                                        >
+                                          Next
+                                        </button>
+                                      </div>
+                                    </div>
+                                  ) : null}
+                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-amber-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={quickCustomerPanAck}
+                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
+                                    />
+                                    <span>Proceed creating new customer profile with duplicate PAN</span>
+                                  </label>
+                                </div>
+                              ) : null}
+                              {customerPanConflictError && quickCustomerDraft.panNo.trim() ? (
+                                <div className="rounded-[8px] border border-rose-300 bg-rose-50 p-2.5 text-[11px] text-rose-900 space-y-1.5">
+                                  <div className="flex items-center gap-1 font-bold">
+                                    <Icon name="warning" className="text-[14px] text-rose-600" />
+                                    <span>{customerPanConflictError}</span>
+                                  </div>
+                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-rose-800">
+                                    <input
+                                      type="checkbox"
+                                      checked={quickCustomerPanAck}
+                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
+                                    />
+                                    <span>Proceed creating customer profile without online PAN verification</span>
+                                  </label>
+                                </div>
+                              ) : null}
+                              {quickCustomerError ? (
+                                <div
+                                  role="alert"
+                                  className="text-[12px] font-semibold text-rose-700"
+                                >
+                                  {quickCustomerError}
+                                </div>
+                              ) : null}
+                              <div className="flex gap-2 pt-1">
+                                <button
+                                  type="button"
+                                  disabled={quickCustomerBusy}
+                                  onClick={() => {
+                                    setQuickCustomerOpen(false);
+                                    setQuickCustomerError("");
+                                    setQuickCustomerPanAck(false);
+                                  }}
+                                  className="min-h-[36px] flex-1 rounded-[8px] border border-[#CFCFD3] px-3 text-[12px] font-bold text-[#374151] disabled:opacity-50"
+                                >
+                                  Cancel
+                                </button>
+                                <button
+                                  type="submit"
+                                  disabled={quickCustomerBusy || (Boolean(quickCustomerDraft.panNo.trim()) && ((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0 || Boolean(customerPanConflictError)) && !quickCustomerPanAck))}
+                                  className="min-h-[36px] flex-1 rounded-[8px] bg-[#1D4ED8] px-3 text-[12px] font-bold text-white hover:bg-[#1E40AF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D4ED8] disabled:cursor-wait disabled:opacity-50"
+                                >
+                                  {quickCustomerBusy ? "Adding…" : "Add customer"}
+                                </button>
+                              </div>
+                            </form>
+                          )}
+                        </div>
+                      ) : null}
                     </div>
                   ) : null}
 
@@ -4921,6 +7396,14 @@ export default function BillingPage() {
                             Wholesale {selectedCustomer.wholesalePercent}%
                           </span>
                         )}
+                        {customerPanConflictMatches.length > 0 && selectedCustomer.panNo && (
+                          <span
+                            title={customerPanConflictWarning || "PAN registered to multiple customer profiles"}
+                            className="rounded-[8px] bg-amber-100 text-amber-900 px-2 py-1 text-[11px] font-extrabold"
+                          >
+                            ⚠️ PAN Shared
+                          </span>
+                        )}
                       </>
                     ) : (
                       <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
@@ -4934,6 +7417,102 @@ export default function BillingPage() {
                     )}
                   </div>
                 </div>
+
+                {/* Customer Purchase History (Advisory Context) */}
+                {selectedCustomer && cart.length > 0 && (
+                  <div className="rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3 text-[12px]">
+                    <div className="flex items-center justify-between gap-2 border-b border-[#E5E7EB] pb-2 mb-2">
+                      <div className="flex items-center gap-1.5 font-extrabold text-[#111827]">
+                        <Icon name="history" className="text-[16px] text-[#2563EB]" />
+                        <span>Recent Cart Purchases</span>
+                      </div>
+                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-700 uppercase tracking-wide">
+                        Advisory
+                      </span>
+                    </div>
+
+                    {cartProductIds.length > 20 ? (
+                      <div className="mb-2 text-[11px] font-semibold text-slate-600">
+                        Showing history for the first 20 of {cartProductIds.length} cart products.
+                      </div>
+                    ) : null}
+
+                    {customerHistoryLoading ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
+                        Loading purchase history…
+                      </div>
+                    ) : customerHistoryError ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-amber-700">
+                        {customerHistoryError}
+                      </div>
+                    ) : customerHistory.length === 0 ? (
+                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
+                        {cartProductIds.length > 20
+                          ? "No previous purchases recorded for the 20 products checked."
+                          : "No previous purchases recorded for items in this cart."}
+                      </div>
+                    ) : (
+                      <div className="max-h-[160px] overflow-y-auto space-y-2 pr-1">
+                        {customerHistory.map((item) => {
+                          const product = normalizePurchaseHistoryProduct(item);
+                          const trimmedInvoiceId = typeof item.invoiceId === "string" ? item.invoiceId.trim() : "";
+                          let invoiceHref: string | null = null;
+                          if (trimmedInvoiceId && !/[\u0000-\u001f\u007f]/.test(trimmedInvoiceId)) {
+                            try {
+                              invoiceHref = `/invoices?invoiceId=${encodeURIComponent(trimmedInvoiceId)}`;
+                            } catch {
+                              // A malformed Unicode ID cannot be encoded as a URL value.
+                            }
+                          }
+                          return (
+                          <div
+                            key={item.id}
+                            className="rounded-[8px] border border-[#E2E8F0] bg-white p-2 text-[11px] shadow-xs"
+                          >
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="min-w-0 font-bold text-[#1E293B] truncate">
+                                {product.name}
+                              </div>
+                              <div className="shrink-0 font-mono font-extrabold text-[#0F172A]">
+                                {formatNpr(item.appliedUnitPrice)}
+                              </div>
+                            </div>
+                            <div className="mt-1 text-[10px] text-slate-500">
+                              {getIdentitySourceLabel(product.identitySource)}
+                            </div>
+                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 font-medium">
+                              <span>
+                                Qty: {item.qty} ·{" "}
+                                {invoiceHref ? (
+                                  <Link
+                                    to={invoiceHref}
+                                    className="font-semibold text-blue-700 underline hover:text-blue-900"
+                                    aria-label={`View invoice ${item.invoiceNo || trimmedInvoiceId}`}
+                                  >
+                                    Inv #{item.invoiceNo || trimmedInvoiceId}
+                                  </Link>
+                                ) : (
+                                  <>Inv #{item.invoiceNo || "—"}</>
+                                )}
+                              </span>
+                              <span>
+                                {new Date(item.invoiceDate).toLocaleDateString(undefined, {
+                                  month: "short",
+                                  day: "numeric",
+                                  year: "numeric",
+                                })}
+                              </span>
+                            </div>
+                          </div>
+                          );
+                        })}
+                      </div>
+                    )}
+                    <div className="mt-2 text-[10px] text-slate-500 italic">
+                      Historical prices are reference context only and do not modify current billing rates.
+                    </div>
+                  </div>
+                )}
 
                 {/* Bill Summary */}
                 <div
@@ -5108,17 +7687,19 @@ export default function BillingPage() {
                   disabled={!canConfirm}
                   onClick={() => openPaymentFlow()}
                   title={
-                    canConfirm
-                      ? "Open payment"
-                      : "Add at least one item to bill before payment"
+                    pendingCheckout
+                      ? "Retry or recover submitted checkout"
+                      : canConfirm
+                        ? "Open payment"
+                        : "Add at least one item to bill before payment"
                   }
                   className={cn(
                     "flex w-full items-center justify-center gap-2 rounded-[14px] bg-[#11120d] font-extrabold text-white transition hover:bg-[#000000] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
                     billingView.payButton,
                   )}
                 >
-                  <Icon name="payment" className="text-[20px]" /> PAY NOW (Shift
-                  + Enter)
+                  <Icon name={pendingCheckout ? "sync" : "payment"} className="text-[20px]" />{" "}
+                  {pendingCheckout ? "RECOVER CHECKOUT (Shift + Enter)" : "PAY NOW (Shift + Enter)"}
                 </button>
 
                 <div className="grid grid-cols-2 gap-3">
@@ -5355,10 +7936,23 @@ export default function BillingPage() {
             {/* Left: Inputs */}
             <div className="space-y-[12px]">
               <div>
-                <div className="mb-[8px] text-[14px] font-extrabold text-[#000000]">
-                  Payment Method
+                <div className="mb-[8px] flex items-center justify-between">
+                  <div className="text-[14px] font-extrabold text-[#000000]">
+                    Payment Method
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setIsQrGalleryOpen(true);
+                      void loadEnabledPaymentAccounts();
+                    }}
+                    className="inline-flex items-center gap-1.5 rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 py-1 text-[11px] font-bold text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000]"
+                  >
+                    <Icon name="qr_code_scanner" className="text-[14px]" />
+                    <span>QR Gallery</span>
+                  </button>
                 </div>
-                <div className="grid grid-cols-4 gap-3">
+                <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5">
                   <button
                     type="button"
                     onClick={() => {
@@ -5383,6 +7977,7 @@ export default function BillingPage() {
                       setPaymentMethod("Fonepay");
                       setShowEsewaQr(false);
                       setPaymentError("");
+                      void loadEnabledPaymentAccounts();
                     }}
                     className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Fonepay" ? "border-[#E11D48] bg-[#FFF7F8]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
                   >
@@ -5430,11 +8025,34 @@ export default function BillingPage() {
                   <button
                     type="button"
                     onClick={() => {
+                      setPaymentMethod("Bank Transfer");
+                      setShowEsewaQr(false);
+                      setPaymentError("");
+                      void loadEnabledPaymentAccounts();
+                    }}
+                    className={`relative flex h-[58px] flex-col items-center justify-center gap-1 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Bank Transfer" ? "border-[#2F67D8] bg-[#F8FBFF]" : "border-[#CFCFD3] hover:bg-[#F3F4F6]"}`}
+                  >
+                    <Icon name="account_balance" className="text-[22px] text-[#2F67D8]" />
+                    <span
+                      className={`text-[12px] font-extrabold ${paymentMethod === "Bank Transfer" ? "text-[#334155]" : "text-[#565449]"}`}
+                    >
+                      Bank Transfer
+                    </span>
+                    {paymentMethod === "Bank Transfer" && (
+                      <div className="absolute -top-1.5 -right-1.5 h-4 w-4 rounded-full bg-[#2F67D8] flex items-center justify-center text-white">
+                        <Icon name="check" className="text-[12px]" />
+                      </div>
+                    )}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
                       setPaymentMethod("Split");
                       setPaymentStatus("Paid");
                       setShowEsewaQr(true);
                       setPaymentError("");
                       ensureDefaultSplitPayments();
+                      void loadEnabledPaymentAccounts();
                     }}
                     className={`relative flex h-[58px] items-center justify-center gap-2 rounded-[12px] border bg-[#FFFFFF] transition ${paymentMethod === "Split" ? "border-[#2F67D8] bg-[#F8FBFF] text-[#2F67D8]" : "border-[#CFCFD3] text-[#565449] hover:bg-[#F3F4F6]"}`}
                   >
@@ -5480,19 +8098,178 @@ export default function BillingPage() {
               )}
 
               {paymentMethod === "Fonepay" && paymentStatus !== "Unpaid" ? (
-                <Input
-                  label="Fonepay reference / remarks"
-                  value={fonepayReference}
-                  onChange={(v) => {
-                    setFonepayReference(v.slice(0, 160));
-                    setPaymentError("");
-                    setBillingError("");
-                  }}
-                  placeholder="Transaction ID, payer phone, or cashier note"
-                  leftIcon="receipt_long"
-                  invalid={!!paymentError && !fonepayReference.trim()}
-                  helperText="Required for manual Fonepay collection and invoice history."
-                />
+                <div className="space-y-3">
+                  <Input
+                    label="Fonepay reference / remarks"
+                    value={fonepayReference}
+                    onChange={(v) => {
+                      setFonepayReference(v.slice(0, 160));
+                      setManualReceiptConfirmed(false);
+                      setReviewedCandidate(null);
+                      setPaymentError("");
+                      setBillingError("");
+                    }}
+                    placeholder="Transaction ID, payer phone, or cashier note"
+                    leftIcon="receipt_long"
+                    invalid={!!paymentError && !fonepayReference.trim()}
+                    helperText="Required for manual Fonepay collection and invoice history."
+                  />
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-[#565449]">
+                      Store Receiving Destination (Optional)
+                    </label>
+                    <ProjectSelect
+                      value={receivingAccountId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const selected = enabledPaymentAccounts.find(
+                          (a) =>
+                            a.id === val &&
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "FONEPAY",
+                        );
+                        setReceivingAccountId(val);
+                        setReceivingAccountVersion(selected?.version ?? null);
+                        setReceivingAccountLabel(selected?.providerLabel ?? "");
+                        setManualReceiptConfirmed(false);
+                        setReviewedCandidate(null);
+                        setPaymentError("");
+                      }}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="">Receiving destination not recorded</option>
+                      {enabledPaymentAccounts
+                        .filter(
+                          (a) =>
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "FONEPAY",
+                        )
+                        .map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Manual Fonepay"})
+                          </option>
+                        ))}
+                    </ProjectSelect>
+                  </div>
+                  {receivingAccountId ? (
+                    <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={manualReceiptConfirmed}
+                        onChange={(e) => {
+                          setManualReceiptConfirmed(e.target.checked);
+                          setReviewedCandidate(null);
+                          setPaymentError("");
+                        }}
+                        className="h-4 w-4 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                      />
+                      <span>
+                        I checked this receiving account and received NPR{" "}
+                        {formatNpr(
+                          paymentStatus === "Paid"
+                            ? payableTotal
+                            : Number(paidAmount) || 0,
+                        )}
+                      </span>
+                    </label>
+                  ) : null}
+                  <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                    <input
+                      type="checkbox"
+                      checked={fonepayConfirmed}
+                      onChange={(e) => {
+                        setFonepayConfirmed(e.target.checked);
+                        setReviewedCandidate(null);
+                        setPaymentError("");
+                      }}
+                      className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
+                    />
+                    <span>I have verified the Fonepay merchant SMS / app payment confirmation</span>
+                  </label>
+                </div>
+              ) : null}
+
+              {paymentMethod === "Bank Transfer" && paymentStatus !== "Unpaid" ? (
+                <div className="space-y-3">
+                  <Input
+                    label="Bank transfer reference / remarks"
+                    value={bankTransferReference}
+                    onChange={(v) => {
+                      setBankTransferReference(v.slice(0, 160));
+                      setManualReceiptConfirmed(false);
+                      setReviewedCandidate(null);
+                      setPaymentError("");
+                      setBillingError("");
+                    }}
+                    placeholder="Voucher no., transfer remarks, or bank branch"
+                    leftIcon="account_balance"
+                    invalid={!!paymentError && !bankTransferReference.trim()}
+                    helperText="Required for bank transfer settlement and invoice history."
+                  />
+                  <div className="space-y-1">
+                    <label className="block text-[11px] font-bold text-[#565449]">
+                      Store Receiving Destination (Optional)
+                    </label>
+                    <ProjectSelect
+                      value={receivingAccountId}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const selected = enabledPaymentAccounts.find(
+                          (a) =>
+                            a.id === val &&
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "BANK_TRANSFER",
+                        );
+                        setReceivingAccountId(val);
+                        setReceivingAccountVersion(selected?.version ?? null);
+                        setReceivingAccountLabel(selected?.providerLabel ?? "");
+                        setManualReceiptConfirmed(false);
+                        setReviewedCandidate(null);
+                        setPaymentError("");
+                      }}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="">Receiving destination not recorded</option>
+                      {enabledPaymentAccounts
+                        .filter(
+                          (a) =>
+                            a.supportedSettlement === true &&
+                            a.confirmationMode === "MANUAL_RECEIPT" &&
+                            a.settlementMethod === "BANK_TRANSFER",
+                        )
+                        .map((acc) => (
+                          <option key={acc.id} value={acc.id}>
+                            {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Bank Account"})
+                          </option>
+                        ))}
+                    </ProjectSelect>
+                  </div>
+                  {receivingAccountId ? (
+                    <label className="flex items-center gap-2 pt-1 text-[12px] font-bold text-slate-700 cursor-pointer">
+                      <input
+                        type="checkbox"
+                        checked={manualReceiptConfirmed}
+                        onChange={(e) => {
+                          setManualReceiptConfirmed(e.target.checked);
+                          setReviewedCandidate(null);
+                          setPaymentError("");
+                        }}
+                        className="h-4 w-4 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                      />
+                      <span>
+                        I checked this receiving account and received NPR{" "}
+                        {formatNpr(
+                          paymentStatus === "Paid"
+                            ? payableTotal
+                            : Number(paidAmount) || 0,
+                        )}
+                      </span>
+                    </label>
+                  ) : null}
+                </div>
               ) : null}
 
               {paymentMethod === "Split" ? (
@@ -5525,10 +8302,26 @@ export default function BillingPage() {
                           row.method === "CASH"
                             ? Math.max(0, tenderedNum - amountNum)
                             : 0;
+                        const compatibleAccounts =
+                          row.method === "FONEPAY"
+                            ? enabledPaymentAccounts.filter(
+                                (a) =>
+                                  a.supportedSettlement === true &&
+                                  a.confirmationMode === "MANUAL_RECEIPT" &&
+                                  a.settlementMethod === "FONEPAY",
+                              )
+                            : row.method === "BANK_TRANSFER"
+                              ? enabledPaymentAccounts.filter(
+                                  (a) =>
+                                    a.supportedSettlement === true &&
+                                    a.confirmationMode === "MANUAL_RECEIPT" &&
+                                    a.settlementMethod === "BANK_TRANSFER",
+                                )
+                              : [];
                         return (
                           <div
                             key={row.id}
-                            className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[80px_minmax(0,1fr)_minmax(0,1fr)_32px]"
+                            className="grid gap-2 rounded-[10px] border border-[#CFCFD3] bg-white p-2 md:grid-cols-[110px_minmax(0,1fr)_minmax(0,1fr)_32px]"
                           >
                             <ProjectSelect
                               value={row.method}
@@ -5542,6 +8335,7 @@ export default function BillingPage() {
                             >
                               <option value="CASH">Cash</option>
                               <option value="FONEPAY">Fonepay</option>
+                              <option value="BANK_TRANSFER">Bank Transfer</option>
                               <option value="ESEWA">eSewa</option>
                             </ProjectSelect>
                             <input
@@ -5570,7 +8364,7 @@ export default function BillingPage() {
                                 placeholder="Tendered"
                                 className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
                               />
-                            ) : row.method === "FONEPAY" ? (
+                            ) : row.method === "FONEPAY" || row.method === "BANK_TRANSFER" ? (
                               <input
                                 value={row.reference || ""}
                                 onChange={(e) =>
@@ -5578,7 +8372,7 @@ export default function BillingPage() {
                                     reference: e.target.value.slice(0, 160),
                                   })
                                 }
-                                placeholder="Fonepay ref"
+                                placeholder={row.method === "FONEPAY" ? "Fonepay ref" : "Bank ref"}
                                 className="h-[32px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[11px] font-bold outline-none"
                               />
                             ) : (
@@ -5589,11 +8383,60 @@ export default function BillingPage() {
                             <button
                               type="button"
                               onClick={() => removeSplitPayment(row.id)}
+                              aria-label={`Remove ${row.method === "BANK_TRANSFER" ? "Bank transfer" : row.method === "FONEPAY" ? "Fonepay" : row.method === "ESEWA" ? "eSewa" : "Cash"} payment row`}
                               disabled={splitPayments.length <= 1}
                               className="flex h-[32px] items-center justify-center rounded-[8px] border border-[#CFCFD3] bg-white text-[#565449] disabled:opacity-40"
                             >
                               <Icon name="close" className="text-[14px]" />
                             </button>
+                            {(row.method === "FONEPAY" || row.method === "BANK_TRANSFER") ? (
+                              <div className="md:col-span-4 flex flex-col gap-1.5 pt-1 border-t border-slate-100">
+                                <div className="flex items-center gap-2">
+                                  <span className="text-[10px] font-bold text-[#565449] shrink-0">
+                                    Receiving:
+                                  </span>
+                                  <ProjectSelect
+                                    value={row.receivingAccountId || ""}
+                                    onChange={(e) => {
+                                      const val = e.target.value;
+                                      const acc = compatibleAccounts.find((a) => a.id === val);
+                                      updateSplitPayment(row.id, {
+                                        receivingAccountId: val || undefined,
+                                        receivingAccountVersion: acc?.version ?? undefined,
+                                        receivingAccountLabel: acc?.providerLabel ?? undefined,
+                                        manualReceiptConfirmed: false,
+                                      });
+                                    }}
+                                    className="h-[28px] flex-1 text-[10px] font-bold text-[#11120d]"
+                                  >
+                                    <option value="">Receiving destination not recorded</option>
+                                    {compatibleAccounts.map((acc) => (
+                                      <option key={acc.id} value={acc.id}>
+                                        {acc.providerLabel} ({acc.accountIdentifier || acc.accountHolder || "Manual"})
+                                      </option>
+                                    ))}
+                                  </ProjectSelect>
+                                </div>
+                                {row.receivingAccountId ? (
+                                  <label className="flex items-center gap-2 text-[10px] font-bold text-slate-700 cursor-pointer pl-1">
+                                    <input
+                                      type="checkbox"
+                                      checked={Boolean(row.manualReceiptConfirmed)}
+                                      onChange={(e) =>
+                                        updateSplitPayment(row.id, {
+                                          manualReceiptConfirmed: e.target.checked,
+                                        })
+                                      }
+                                      className="h-3.5 w-3.5 rounded border-[#CFCFD3] text-[#2F67D8] focus:ring-[#2F67D8]"
+                                    />
+                                    <span>
+                                      I checked this receiving account and received NPR{" "}
+                                      {formatNpr(Number(row.amount) || 0)}
+                                    </span>
+                                  </label>
+                                ) : null}
+                              </div>
+                            ) : null}
                             {row.method === "CASH" && rowChange > 0 && (
                               <div className="md:col-span-4 text-[10px] font-bold text-[#179B4D]">
                                 Return change {formatNpr(rowChange)} for this
@@ -5604,6 +8447,21 @@ export default function BillingPage() {
                         );
                       })}
                     </div>
+                    {splitPayments.some((row) => row.method === "FONEPAY") ? (
+                      <label className="flex items-center gap-2 pt-2 text-[11px] font-bold text-slate-700 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={fonepayConfirmed}
+                          onChange={(e) => {
+                            setFonepayConfirmed(e.target.checked);
+                            setReviewedCandidate(null);
+                            setPaymentError("");
+                          }}
+                          className="h-4 w-4 rounded border-[#CFCFD3] text-[#E11D48] focus:ring-[#E11D48]"
+                        />
+                        <span>I have verified the Fonepay merchant payment notification</span>
+                      </label>
+                    ) : null}
                     <div className="mt-2 flex flex-wrap gap-2">
                       <button
                         type="button"
@@ -5631,6 +8489,13 @@ export default function BillingPage() {
                         className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449] disabled:opacity-40"
                       >
                         + Fonepay row
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => addSplitPayment("BANK_TRANSFER")}
+                        className="h-[28px] rounded-[8px] border border-[#CFCFD3] bg-white px-2 text-[10px] font-extrabold text-[#565449]"
+                      >
+                        + Bank Transfer row
                       </button>
                     </div>
                   </div>
@@ -5769,6 +8634,129 @@ export default function BillingPage() {
                   className="h-[44px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-medium outline-none transition focus:border-[#11120d]"
                 />
               </div>
+
+              {(paymentMethod === "eSewa" ||
+                splitPayments.some((p) => p.method === "ESEWA")) &&
+              gatewayDisplay?.esewa ? (
+                <div className="rounded-[12px] border border-[#60bb46]/30 bg-[#f2faf0] p-3 text-[12px]">
+                  <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-1.5 font-extrabold text-[#11120d]">
+                      <img
+                        src="/assets/images/esewa/logo.png"
+                        alt="eSewa"
+                        className="h-4 w-4 rounded-full object-contain"
+                      />
+                      <span>eSewa Gateway</span>
+                    </div>
+                    <span
+                      className={cn(
+                        "rounded-full px-2 py-0.5 text-[10px] font-black uppercase",
+                        gatewayDisplay.esewa.environment === "SANDBOX"
+                          ? "bg-amber-100 text-amber-800"
+                          : "bg-emerald-100 text-emerald-800",
+                      )}
+                    >
+                      {gatewayDisplay.esewa.label}
+                    </span>
+                  </div>
+                  {gatewayDisplay.esewa.environment === "SANDBOX" ? (
+                    <div className="mt-1 text-[11px] font-medium text-slate-600">
+                      Demo test environment. Test credentials will be used; no
+                      real funds will be deducted.
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              <div className="rounded-[12px] border border-[#CFCFD3] bg-[#F8FAFC] p-3">
+                <div className="flex items-center justify-between mb-2">
+                  <div className="flex items-center gap-1.5 text-[13px] font-extrabold text-[#11120d]">
+                    <Icon
+                      name="history_edu"
+                      className="text-[17px] text-[#565449]"
+                    />
+                    <span>Paper Bill Reference (Optional)</span>
+                  </div>
+                  <span className="text-[10px] font-bold text-[#8C8889]">
+                    Offline Record
+                  </span>
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Paper Bill / Token No.
+                    </label>
+                    <input
+                      type="text"
+                      value={paperDraftBillNo}
+                      onChange={(e) => setPaperDraftBillNo(e.target.value)}
+                      placeholder="e.g. PB-2080-001"
+                      className="h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[12px] font-bold text-[#11120d] outline-none transition focus:border-[#11120d]"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Document Type
+                    </label>
+                    <ProjectSelect
+                      value={paperDraftDocumentType}
+                      onChange={(e) =>
+                        setPaperDraftDocumentType(
+                          e.target.value as ExternalDocumentType,
+                        )
+                      }
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    >
+                      <option value="PAN_INVOICE">PAN Invoice</option>
+                      <option value="VAT_TAX_INVOICE">VAT Tax Invoice</option>
+                      <option value="ABBREVIATED_TAX_INVOICE">Abbreviated Tax Invoice</option>
+                      <option value="OTHER_MANUAL_SALES_DOCUMENT">Other Manual Sales Document</option>
+                    </ProjectSelect>
+                  </div>
+                  <div>
+                    <label className="block text-[11px] font-bold text-[#565449] mb-1">
+                      Bill Date
+                    </label>
+                    <ProjectDateInput
+                      value={paperDraftBillDate}
+                      onChange={(e) => setPaperDraftBillDate(e.target.value)}
+                      className="h-[36px] w-full text-[12px] font-bold text-[#11120d]"
+                    />
+                  </div>
+                </div>
+                {paperDraftBillNo.trim() ? (
+                  <div className="mt-2 pt-2 border-t border-[#E5E7EB] flex flex-wrap items-center gap-4 text-[11px] font-bold text-[#565449]">
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="paperDraftChoice"
+                        value="RECORD_AFTER_SAVE"
+                        checked={paperDraftChoice === "RECORD_AFTER_SAVE"}
+                        onChange={() =>
+                          setPaperDraftChoice("RECORD_AFTER_SAVE")
+                        }
+                      />
+                      <span>Record immediately on save</span>
+                    </label>
+                    <label className="flex items-center gap-1.5 cursor-pointer">
+                      <input
+                        type="radio"
+                        name="paperDraftChoice"
+                        value="LATER"
+                        checked={paperDraftChoice === "LATER"}
+                        onChange={() => setPaperDraftChoice("LATER")}
+                      />
+                      <span>Save for later follow-up</span>
+                    </label>
+                  </div>
+                ) : null}
+                {storageLimitationWarning ? (
+                  <div className="mt-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                    <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+                    {storageLimitationWarning}
+                  </div>
+                ) : null}
+              </div>
             </div>
 
             {/* Right: Settlement Summary */}
@@ -5817,12 +8805,14 @@ export default function BillingPage() {
                           {formatNpr(splitCashNum)}
                         </span>
                       </div>
-                      <div className="flex justify-between items-center text-[#2F67D8]">
-                        <span>eSewa amount</span>
-                        <span className="font-mono font-bold">
-                          {formatNpr(splitEsewaAmount)}
-                        </span>
-                      </div>
+                      {splitEsewaAmount > 0 ? (
+                        <div className="flex justify-between items-center text-[#2F67D8]">
+                          <span>eSewa (Pending Gateway)</span>
+                          <span className="font-mono font-bold">
+                            {formatNpr(splitEsewaAmount)}
+                          </span>
+                        </div>
+                      ) : null}
                       {splitFonepayAmount > 0 ? (
                         <div className="flex justify-between items-center text-[#2F67D8]">
                           <span>Fonepay amount</span>
@@ -5832,7 +8822,7 @@ export default function BillingPage() {
                         </div>
                       ) : null}
                       <div className="flex justify-between items-center text-[#000000]">
-                        <span>Total collected</span>
+                        <span>Total payment allocation</span>
                         <span className="font-mono font-extrabold">
                           {formatNpr(splitTotal)}
                         </span>
@@ -5848,6 +8838,13 @@ export default function BillingPage() {
                         </div>
                       ) : null}
                     </>
+                  ) : paymentMethod === "eSewa" ? (
+                    <div className="flex justify-between items-center text-[#2F67D8]">
+                      <span>eSewa Pending Allocation</span>
+                      <span className="font-mono font-bold">
+                        {formatNpr(effectivePaidAmount)}
+                      </span>
+                    </div>
                   ) : (
                     <div className="flex justify-between items-center text-[#2F67D8]">
                       <span>Collected</span>
@@ -7246,7 +10243,10 @@ export default function BillingPage() {
         open={showSuccess}
         title="Invoice created successfully"
         message="The invoice has been finalized and recorded in KhataSathi."
-        onClose={() => setShowSuccess(false)}
+        onClose={() => {
+          setShowSuccess(false);
+          setSavedSaleResult(null);
+        }}
         actionLabel="Continue Billing"
         secondaryAction={
           lastCreatedInvoiceId ? (
@@ -7263,9 +10263,350 @@ export default function BillingPage() {
               >
                 Receipt
               </DialogButton>
+              {savedSaleResult && savedSaleResult.balanceDue > 0 ? (
+                <DialogButton onClick={() => {
+                  setShowSuccess(false);
+                  setManualPaymentInvoiceId(savedSaleResult.invoiceId);
+                }} icon="payments">Record Received Payment</DialogButton>
+              ) : null}
+              {savedSaleResult && !savedSaleResult.paperRecorded && !savedSaleResult.paperBillNo ? (
+                <DialogButton
+                  onClick={() => {
+                    setShowSuccess(false);
+                    setPaperFollowup({
+                      status: "PENDING",
+                      invoiceId: lastCreatedInvoiceId,
+                      invoiceNo: savedSaleResult.invoiceNo,
+                      draft: {
+                        billNo: "",
+                        externalDocumentType: "PAN_INVOICE",
+                        externalBillDate: new Date().toLocaleDateString("en-CA"),
+                      },
+                    });
+                  }}
+                  icon="history_edu"
+                >
+                  Record Paper Details
+                </DialogButton>
+              ) : null}
             </div>
           ) : null
         }
+      >
+        {savedSaleResult ? (
+          <div className="my-3 rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] p-3 text-[12px] space-y-1.5">
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Invoice No.</span>
+              <span className="font-mono font-bold text-[#11120D]">{savedSaleResult.invoiceNo || savedSaleResult.invoiceId}</span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Total Amount</span>
+              <span className="font-mono font-bold text-[#11120D]">{formatNpr(savedSaleResult.total)}</span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Collected / Paid</span>
+              <span className="font-mono font-bold text-emerald-700">{formatNpr(savedSaleResult.effectivePaidAmount)}</span>
+            </div>
+            {savedSaleResult.pendingGatewayAmount && savedSaleResult.pendingGatewayAmount > 0 ? (
+              <div className="flex justify-between items-center text-amber-800">
+                <span>Pending Verification (Gateway)</span>
+                <span className="font-mono font-bold">{formatNpr(savedSaleResult.pendingGatewayAmount)}</span>
+              </div>
+            ) : null}
+            {savedSaleResult.balanceDue > 0 ? (
+              <div className="flex justify-between items-center text-amber-800">
+                <span>Balance Due</span>
+                <span className="font-mono font-bold">{formatNpr(savedSaleResult.balanceDue)}</span>
+              </div>
+            ) : null}
+            <div className="flex justify-between items-center text-[#565449] pt-1 border-t border-[#E5E7EB]">
+              <span>Payment Status</span>
+              <span className="font-bold text-[#11120D] uppercase">
+                {savedSaleResult.paymentStatus} ({savedSaleResult.paymentMethod})
+                {savedSaleResult.pendingGatewayAmount && savedSaleResult.pendingGatewayAmount > 0
+                  ? " · PENDING GATEWAY VERIFICATION"
+                  : ""}
+              </span>
+            </div>
+            <div className="flex justify-between items-center text-[#565449]">
+              <span>Paper Reference</span>
+              <span className={cn("font-bold", savedSaleResult.paperRecorded ? "text-emerald-700" : "text-amber-700")}>
+                {savedSaleResult.paperRecorded
+                  ? `Recorded (${savedSaleResult.paperBillNo || "Yes"})`
+                  : "Pending Recording"}
+              </span>
+            </div>
+            {storageLimitationWarning ? (
+              <div className="mt-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
+                <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+                {storageLimitationWarning}
+              </div>
+            ) : null}
+            {savedSaleResult.receivingDestinations?.map((destination, index) => (
+              <div key={`${destination.accountId}-${index}`} className="border-t border-[#cfcfd3] pt-2 text-[#565449]">
+                <span className="font-semibold">Recorded receiving destination: </span>
+                {destination.providerLabel} — {destination.accountHolder} — {destination.accountIdentifier || "No identifier recorded"}
+              </div>
+            ))}
+          </div>
+        ) : null}
+      </SuccessDialog>
+
+      <SavedSalePaymentFollowup
+        actorId={currentUser?.id || ""}
+        invoiceId={manualPaymentInvoiceId}
+        onClose={() => setManualPaymentInvoiceId(null)}
+      />
+
+      <BillingWorksheetModal
+        open={isWorksheetOpen}
+        onClose={() => setIsWorksheetOpen(false)}
+        onContinueToPayment={() => {
+          setIsWorksheetOpen(false);
+          openPaymentFlow();
+        }}
+        onOpenCustomerHistory={() => {
+          setIsWorksheetOpen(false);
+          setIsDetailedHistoryOpen(true);
+        }}
+        items={cartRows.map((r) => ({
+          productId: r.productId,
+          name: r.product.name,
+          sku: r.product.sku,
+          saleUnit: r.product.saleUnit,
+          qty: r.qty,
+          appliedUnitPrice: r.unitPrice,
+          lineTotal: r.lineTotal,
+          overrideUnitPrice: r.overrideUnitPrice,
+          overrideReason: r.overrideReason,
+        }))}
+        customer={selectedCustomer}
+        subTotal={subTotal}
+        discountPercent={subtotalDiscountMeta.percent}
+        discountAmount={subtotalDiscount}
+        payableTotal={payableTotal}
+        formatNpr={formatNpr}
+        formatQtyWithUnit={formatQtyWithUnit}
+      />
+
+      <BillingCalculatorModal
+        open={isCalculatorOpen}
+        onClose={() => setIsCalculatorOpen(false)}
+      />
+
+      {selectedCustomer ? (
+        <BillingCustomerHistoryModal
+          open={isDetailedHistoryOpen}
+          onClose={() => setIsDetailedHistoryOpen(false)}
+          customerId={selectedCustomer.id}
+          customerName={selectedCustomer.name}
+        />
+      ) : null}
+
+      {selectedCustomer && isCompactHistoryOpen ? (
+        <BillingCompactHistoryOverlay
+          open={isCompactHistoryOpen}
+          onClose={handleCloseCompactHistory}
+          onOpenDetailedHistory={handleOpenDetailedHistoryFromCompact}
+          customerName={selectedCustomer.name}
+          historyItems={customerHistory}
+          loading={customerHistoryLoading}
+          error={customerHistoryError}
+          cartItemCount={cartRows.length}
+          anchorRef={compactHistoryTriggerRef}
+        />
+      ) : null}
+
+      {(paperFollowup.status === "FAILED_RETRYABLE" ||
+        paperFollowup.status === "PENDING") && (
+        <div className="fixed bottom-4 right-4 z-40 w-full max-w-lg rounded-xl border border-amber-300 bg-amber-50 p-4 shadow-xl text-[13px] text-amber-900 space-y-3">
+          <div className="flex items-start justify-between gap-2">
+            <div className="flex items-center gap-2 font-bold">
+              <Icon name="warning" className="text-[18px] text-amber-600" />
+              <span>Pending Paper Bill Reference</span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                setPaperFollowup({ status: "NONE" });
+              }}
+              className="text-amber-700 hover:text-amber-900"
+              aria-label="Dismiss paper reference banner"
+            >
+              <Icon name="close" className="text-[16px]" />
+            </button>
+          </div>
+
+          <p className="text-[12px] text-amber-800">
+            Invoice <strong>{paperFollowup.invoiceNo || paperFollowup.invoiceId}</strong> is
+            finalized in the database. Enter and record the manual paper bill details below.
+            {paperFollowup.error ? (
+              <span className="block mt-1 font-semibold text-rose-700">Error: {paperFollowup.error}</span>
+            ) : null}
+          </p>
+
+          {storageLimitationWarning ? (
+            <div className="rounded-[8px] border border-amber-300 bg-amber-100 p-2 text-[11px] font-semibold text-amber-900">
+              <Icon name="warning" className="mr-1 inline text-[13px] text-amber-700" />
+              {storageLimitationWarning}
+            </div>
+          ) : null}
+
+          {paperFollowup.conflictRecord ? (
+            <div className="rounded-lg border border-rose-300 bg-rose-50 p-2.5 text-[11px] text-rose-900 space-y-1.5">
+              <div className="font-bold">Record Conflict: Another operator modified this record on the server.</div>
+              <div>
+                Current Status: <strong>{paperFollowup.conflictRecord.billRecordStatus}</strong> &bull; Bill No: <strong>{paperFollowup.conflictRecord.externalBillNo || "None"}</strong>
+              </div>
+              <button
+                type="button"
+                onClick={() => {
+                  const conf = paperFollowup.conflictRecord!;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    expected: {
+                      billingChannel: conf.billingChannel,
+                      externalDocumentType: conf.externalDocumentType,
+                      externalBillNo: conf.externalBillNo,
+                      externalBillDate: conf.externalBillDate,
+                      billRecordStatus: conf.billRecordStatus,
+                    },
+                    conflictRecord: null,
+                    error: undefined,
+                  }));
+                }}
+                className="rounded bg-rose-700 px-2.5 py-1 text-[11px] font-bold text-white hover:bg-rose-800"
+              >
+                Acknowledge & Update Expected State
+              </button>
+            </div>
+          ) : null}
+
+          {/* Editable paper reference form */}
+          <div className="grid grid-cols-1 sm:grid-cols-3 gap-2 rounded-lg border border-amber-200 bg-white p-2.5">
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Bill Number
+              </label>
+              <input
+                type="text"
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.billNo || ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: val,
+                      externalDocumentType: prev.draft?.externalDocumentType || "PAN_INVOICE",
+                      externalBillDate: prev.draft?.externalBillDate || new Date().toLocaleDateString("en-CA"),
+                    },
+                  }));
+                }}
+                placeholder="e.g. PB-2080-001"
+                className="h-[32px] w-full rounded border border-[#CFCFD3] px-2 text-[12px] font-bold text-[#11120D] outline-none focus:border-[#11120D] disabled:opacity-60"
+              />
+            </div>
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Document Type
+              </label>
+              <ProjectSelect
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.externalDocumentType || "PAN_INVOICE"}
+                onChange={(e) => {
+                  const val = e.target.value as ExternalDocumentType;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: prev.draft?.billNo || "",
+                      externalDocumentType: val,
+                      externalBillDate: prev.draft?.externalBillDate || new Date().toLocaleDateString("en-CA"),
+                    },
+                  }));
+                }}
+                className="h-[32px] w-full text-[11px] font-bold"
+              >
+                <option value="PAN_INVOICE">PAN Invoice</option>
+                <option value="VAT_TAX_INVOICE">VAT Tax Invoice</option>
+                <option value="ABBREVIATED_TAX_INVOICE">Abbreviated Tax Invoice</option>
+                <option value="OTHER_MANUAL_SALES_DOCUMENT">Other Manual Sales Document</option>
+              </ProjectSelect>
+            </div>
+            <div>
+              <label className="block text-[10px] font-extrabold uppercase text-[#565449] mb-0.5">
+                Bill Date
+              </label>
+              <ProjectDateInput
+                disabled={paperFollowupBusy}
+                value={paperFollowup.draft?.externalBillDate || new Date().toLocaleDateString("en-CA")}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    draft: {
+                      billNo: prev.draft?.billNo || "",
+                      externalDocumentType: prev.draft?.externalDocumentType || "PAN_INVOICE",
+                      externalBillDate: val,
+                    },
+                  }));
+                }}
+                className="h-[32px] w-full text-[11px] font-bold"
+              >
+              </ProjectDateInput>
+            </div>
+          </div>
+
+          {paperFollowup.duplicateRequired ? (
+            <div className="space-y-1">
+              <label className="block text-[10px] font-extrabold uppercase text-amber-900">
+                Manager Duplicate Override Reason (Min 2 chars) <span className="text-rose-600">*</span>
+              </label>
+              <input
+                type="text"
+                disabled={paperFollowupBusy}
+                value={paperFollowup.duplicateOverrideReason || ""}
+                onChange={(e) => {
+                  const val = e.target.value;
+                  setPaperFollowup((prev) => ({
+                    ...prev,
+                    duplicateOverrideReason: val,
+                  }));
+                }}
+                placeholder="Required reviewer authorization justification"
+                className="h-[32px] w-full rounded border border-amber-400 bg-white px-2.5 text-[12px] font-semibold outline-none focus:border-amber-700 disabled:opacity-60"
+              />
+            </div>
+          ) : null}
+
+          <div className="flex items-center gap-2 pt-1">
+            <button
+              type="button"
+              disabled={
+                paperFollowupBusy ||
+                !paperFollowup.draft?.billNo?.trim() ||
+                (paperFollowup.duplicateRequired && !(paperFollowup.duplicateOverrideReason?.trim().length && paperFollowup.duplicateOverrideReason.trim().length >= 2))
+              }
+              onClick={handleRetryPaperFollowup}
+              className="rounded-lg bg-amber-600 px-3.5 py-1.5 text-[12px] font-bold text-white hover:bg-amber-700 disabled:opacity-50"
+            >
+              {paperFollowupBusy ? "Saving..." : "Save Paper Reference"}
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setPaperFollowup({ status: "NONE" });
+              }}
+              className="rounded-lg border border-amber-300 bg-white px-3.5 py-1.5 text-[12px] font-bold text-amber-800 hover:bg-amber-50"
+            >
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+      <CashierQrGalleryModal
+        open={isQrGalleryOpen}
+        onClose={() => setIsQrGalleryOpen(false)}
       />
     </>
   );

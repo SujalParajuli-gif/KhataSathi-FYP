@@ -1,11 +1,53 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { ReturnStatus } from "@prisma/client";
+import prisma from "../db/prisma";
 import {
+  addItem,
   buildActiveReturnBlockMessage,
   buildCheckoutPayloadHash,
+  detailInvoiceItemSelect,
+  getInvoice,
+  listParkedDrafts,
+  modifyFinalizedInvoice,
+  parkedDraftInclude,
+  projectReplayInvoiceItem,
+  publicDraftItemSelect,
+  publicInvoiceItemSelect,
+  publicParkedInvoiceItemSelect,
   shouldAssignFinalInvoiceNo,
+  toPublicCheckoutResponse,
+  updateItem,
 } from "../modules/invoices/service";
 import { checkoutBodySchema } from "../modules/invoices/validation";
+import { invalidateBusinessSettingsCache } from "../modules/settings/service";
+
+function mockBusinessSettingsForInvoiceTest() {
+  const originalUpsert = prisma.businessSettings.upsert;
+  invalidateBusinessSettingsCache();
+  (prisma.businessSettings as any).upsert = async () => ({
+    id: 1,
+    businessMode: "FULL_POS",
+    staffDraftRequestsEnabled: true,
+    defaultInitialStock: 30,
+    defaultLowStockThreshold: 5,
+    defaultWholesaleQtyThreshold: 15,
+    loyaltyDiscountPercent: 2,
+    returnWindowDays: 7,
+    parkedBillExpiryHours: 8,
+    draftRequestExpiryMinutes: 30,
+    businessName: null,
+    legalName: null,
+    panNo: null,
+    businessAddress: null,
+    businessPhone: null,
+  });
+  return () => {
+    prisma.businessSettings.upsert = originalUpsert;
+    invalidateBusinessSettingsCache();
+  };
+}
 
 test("buildActiveReturnBlockMessage explains why invoice edits are blocked", () => {
   const message = buildActiveReturnBlockMessage("modify this invoice", "APPROVED");
@@ -50,6 +92,17 @@ test("checkout requires a bounded operation key", () => {
   );
 });
 
+test("ordinary checkout fingerprint retains the exact pre-request JSON encoding", () => {
+  const items = [{ productId: "product", qty: 1 }];
+  const legacyPayload = {
+    draftInvoiceId: null, customerId: null, discountAmount: null, notes: null,
+    items: [{ productId: "product", qty: 1, overrideUnitPrice: null, overrideReason: null }],
+    payments: [],
+  };
+  const legacyHash = createHash("sha256").update(JSON.stringify(legacyPayload)).digest("hex");
+  assert.equal(buildCheckoutPayloadHash({ operationKey: "checkout-operation-123", items }, items, []), legacyHash);
+});
+
 test("checkout fingerprint detects bill changes without persisting PINs", () => {
   const items = [{ productId: "product-1", qty: 2 }];
   const payments = [
@@ -92,5 +145,765 @@ test("checkout fingerprint detects bill changes without persisting PINs", () => 
 
   assert.equal(first, sameBillDifferentPin);
   assert.notEqual(first, changedBill);
+  assert.notEqual(
+    first,
+    buildCheckoutPayloadHash(
+      {
+        operationKey: "checkout-operation-123",
+        draftRequestId: "request-1",
+        items,
+        payments,
+      },
+      items,
+      payments,
+    ),
+  );
   assert.doesNotMatch(first, /1111|9999/);
+});
+
+test("getInvoice query uses explicit detailInvoiceItemSelect and excludes costAtSale", async () => {
+  // 1. Verify publicInvoiceItemSelect definition preserves required public fields and excludes internal fields
+  assert.equal(publicInvoiceItemSelect.id, true);
+  assert.equal(publicInvoiceItemSelect.invoiceId, true);
+  assert.equal(publicInvoiceItemSelect.productId, true);
+  assert.equal(publicInvoiceItemSelect.qty, true);
+  assert.equal(publicInvoiceItemSelect.appliedUnitPrice, true);
+  assert.equal(publicInvoiceItemSelect.originalUnitPrice, true);
+  assert.equal(publicInvoiceItemSelect.overrideUnitPrice, true);
+  assert.equal(publicInvoiceItemSelect.overrideReason, true);
+  assert.equal(publicInvoiceItemSelect.overrideById, true);
+  assert.equal(publicInvoiceItemSelect.overrideAt, true);
+  assert.equal(publicInvoiceItemSelect.lineTotal, true);
+  assert.equal(publicInvoiceItemSelect.createdAt, true);
+  assert.deepEqual(publicInvoiceItemSelect.product.select, {
+    id: true,
+    name: true,
+    sku: true,
+    barcode: true,
+  });
+  assert.equal("costAtSale" in publicInvoiceItemSelect, false);
+
+  // Verify detailInvoiceItemSelect extends publicInvoiceItemSelect with snapshot fields, excluding costAtSale
+  assert.equal(detailInvoiceItemSelect.id, true);
+  assert.equal(detailInvoiceItemSelect.productNameSnapshot, true);
+  assert.equal(detailInvoiceItemSelect.productSkuSnapshot, true);
+  assert.equal(detailInvoiceItemSelect.snapshotCapturedAt, true);
+  assert.equal("costAtSale" in detailInvoiceItemSelect, false);
+
+  // 2. Verify getInvoice passes detailInvoiceItemSelect to Prisma findUnique
+  let capturedArgs: any = null;
+  const originalFindUnique = prisma.invoice.findUnique;
+  try {
+    (prisma.invoice as any).findUnique = async (args: any) => {
+      capturedArgs = args;
+      return {
+        id: "inv-live-1",
+        invoiceNo: "INV-20260930-0001",
+        status: "FINALIZED",
+        customerNameSnapshot: null,
+        customerPanSnapshot: null,
+        customerAddressSnapshot: null,
+        customerSnapshotCapturedAt: null,
+        items: [
+          {
+            id: "item-1",
+            invoiceId: "inv-live-1",
+            productId: "prod-1",
+            qty: 2,
+            appliedUnitPrice: 100,
+            originalUnitPrice: null,
+            overrideUnitPrice: null,
+            overrideReason: null,
+            overrideById: null,
+            overrideAt: null,
+            lineTotal: 200,
+            productNameSnapshot: null,
+            productSkuSnapshot: null,
+            snapshotCapturedAt: null,
+            createdAt: new Date("2026-09-30T10:00:00Z"),
+            product: { id: "prod-1", name: "Mustard Oil 1L", sku: "OIL-001", barcode: null },
+          },
+        ],
+      };
+    };
+
+    const invoice = await getInvoice("inv-live-1");
+    assert.ok(invoice);
+    assert.deepEqual(capturedArgs?.include?.items?.select, detailInvoiceItemSelect);
+    const activeReturnStatuses = capturedArgs.include.returnRequests.where.status.in;
+    assert.deepEqual(activeReturnStatuses, [ReturnStatus.PENDING, ReturnStatus.APPROVED]);
+    assert.ok(activeReturnStatuses.every((status: string) => Object.values(ReturnStatus).includes(status as ReturnStatus)));
+    assert.equal(invoice.items[0].id, "item-1");
+    assert.equal("costAtSale" in invoice.items[0], false);
+    assert.equal(invoice.items[0].displayProduct.name, "Mustard Oil 1L");
+    assert.equal(invoice.items[0].displayProduct.source, "LEGACY_LIVE_FALLBACK");
+
+    // When invoice is not found in database, getInvoice returns null
+    (prisma.invoice as any).findUnique = async () => null;
+    const notFoundResult = await getInvoice("missing-invoice-id");
+    assert.equal(notFoundResult, null);
+  } finally {
+    prisma.invoice.findUnique = originalFindUnique;
+  }
+});
+
+test("stored replay projection excludes unexpected item and product fields via allowlist", () => {
+  const legacyStoredItem = {
+    id: "item-stored-1",
+    invoiceId: "inv-stored-1",
+    productId: "prod-stored-1",
+    qty: 3,
+    appliedUnitPrice: 250,
+    originalUnitPrice: 250,
+    overrideUnitPrice: null,
+    overrideReason: null,
+    overrideById: null,
+    overrideAt: null,
+    lineTotal: 750,
+    createdAt: "2026-05-20T10:00:00.000Z",
+    // unexpected/internal fields that must be scrubbed:
+    costAtSale: 180,
+    supplierCost: 165,
+    inventoryBatchId: "BATCH-99",
+    product: {
+      id: "prod-stored-1",
+      name: "Organic Honey 500g",
+      sku: "HON-500",
+      barcode: "8901234567890",
+      // internal product fields that must be scrubbed:
+      ratePerPiece: 180,
+      vendorSource: "Apiary Direct",
+    },
+  };
+
+  const publicItem = projectReplayInvoiceItem(legacyStoredItem);
+
+  assert.equal(publicItem.id, "item-stored-1");
+  assert.equal(publicItem.qty, 3);
+  assert.equal("costAtSale" in publicItem, false);
+  assert.equal("supplierCost" in publicItem, false);
+  assert.equal("inventoryBatchId" in publicItem, false);
+  assert.equal(publicItem.product?.id, "prod-stored-1");
+  assert.equal(publicItem.product?.name, "Organic Honey 500g");
+  assert.equal("ratePerPiece" in (publicItem.product || {}), false);
+  assert.equal("vendorSource" in (publicItem.product || {}), false);
+});
+
+test("stored replay response preserves existing response fields and valid legacy payloads", () => {
+  // 1. Valid legacy replay item without product or override fields
+  const validLegacyItem = {
+    id: "item-legacy-1",
+    invoiceId: "inv-legacy-1",
+    productId: "prod-legacy-1",
+    qty: 1,
+    appliedUnitPrice: 150,
+    lineTotal: 150,
+    createdAt: "2026-04-10T12:00:00.000Z",
+  };
+  const projectedItem = projectReplayInvoiceItem(validLegacyItem);
+  assert.equal(projectedItem.id, "item-legacy-1");
+  assert.equal(projectedItem.product, undefined);
+  assert.equal(projectedItem.originalUnitPrice, null);
+  assert.equal(projectedItem.overrideUnitPrice, null);
+
+  // Schema-permitted historical row with promotional 0 price or 0 qty is not rejected
+  const zeroPriceItem = projectReplayInvoiceItem({ ...validLegacyItem, appliedUnitPrice: 0, lineTotal: 0 });
+  assert.equal(zeroPriceItem.appliedUnitPrice, 0);
+
+  // 2. Replay envelope preserves custom metadata and payment intent without synthetic defaults
+  const legacyStoredReplayJson = {
+    invoice: {
+      id: "inv-replayed-1",
+      invoiceNo: "INV-20260410-0001",
+      items: [
+        {
+          ...validLegacyItem,
+          costAtSale: 110, // unstripped legacy cost
+        },
+      ],
+    },
+    customMetaField: "legacy-v1",
+    esewaPaymentIntent: { id: "intent-123" },
+  };
+
+  const replayed = toPublicCheckoutResponse(legacyStoredReplayJson);
+  assert.equal("costAtSale" in replayed.invoice!.items[0], false);
+  assert.equal(replayed.customMetaField, "legacy-v1");
+  assert.deepEqual(replayed.esewaPaymentIntent, { id: "intent-123" });
+
+  // 3. Null invoice replay is preserved
+  const nullInvoiceReplay = toPublicCheckoutResponse({ invoice: null });
+  assert.equal(nullInvoiceReplay.invoice, null);
+});
+
+test("stored replay structural validation fails clearly on malformed data without coercing", () => {
+  const baseValid = {
+    id: "item-1",
+    invoiceId: "inv-1",
+    productId: "prod-1",
+    qty: 2,
+    appliedUnitPrice: 100,
+    lineTotal: 200,
+    createdAt: "2026-05-01T00:00:00Z",
+  };
+
+  // Rejects non-object items
+  assert.throws(() => projectReplayInvoiceItem(null), /Replay invoice item must be an object/);
+  assert.throws(() => projectReplayInvoiceItem([]), /Replay invoice item must be an object/);
+
+  // Missing or non-string required identifiers (does not coerce)
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, id: "" }), /missing required string id/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, id: 123 }), /missing required string id/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, invoiceId: undefined }), /missing required string invoiceId/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, productId: null }), /missing required string productId/);
+
+  // Missing or non-numeric required numbers (does not coerce "2" or NaN)
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, qty: "2" }), /missing required numeric qty/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, qty: NaN }), /missing required numeric qty/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, appliedUnitPrice: undefined }), /missing required numeric appliedUnitPrice/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, lineTotal: null }), /missing required numeric lineTotal/);
+
+  // Missing createdAt
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, createdAt: null }), /missing required createdAt/);
+
+  // Malformed product
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, product: "not-an-object" }), /product must be an object or null/);
+  assert.throws(() => projectReplayInvoiceItem({ ...baseValid, product: { id: "p1" } }), /product must include valid id and name/);
+
+  // Replay response envelope malformed structure
+  assert.throws(() => toPublicCheckoutResponse(null), /Checkout response must be an object/);
+  assert.throws(() => toPublicCheckoutResponse({}), /Checkout response must contain an invoice property/);
+  assert.throws(() => toPublicCheckoutResponse({ invoice: { items: "not-an-array" } }), /invoice items must be an array/);
+});
+
+test("draft item mutations use explicit publicDraftItemSelect excluding costAtSale", () => {
+  assert.equal(publicDraftItemSelect.id, true);
+  assert.equal(publicDraftItemSelect.invoiceId, true);
+  assert.equal(publicDraftItemSelect.productId, true);
+  assert.equal(publicDraftItemSelect.qty, true);
+  assert.equal(publicDraftItemSelect.appliedUnitPrice, true);
+  assert.equal(publicDraftItemSelect.originalUnitPrice, true);
+  assert.equal(publicDraftItemSelect.overrideUnitPrice, true);
+  assert.equal(publicDraftItemSelect.overrideReason, true);
+  assert.equal(publicDraftItemSelect.overrideById, true);
+  assert.equal(publicDraftItemSelect.overrideAt, true);
+  assert.equal(publicDraftItemSelect.lineTotal, true);
+  assert.equal(publicDraftItemSelect.createdAt, true);
+  assert.equal("costAtSale" in publicDraftItemSelect, false);
+});
+
+test("addItem and updateItem pass publicDraftItemSelect to Prisma queries", async () => {
+  let capturedCreateArgs: any = null;
+  let capturedUpdateArgs: any = null;
+  const originalTransaction = prisma.$transaction;
+  const restoreSettings = mockBusinessSettingsForInvoiceTest();
+  try {
+    (prisma as any).$transaction = async (callback: any) => {
+      const mockTx = {
+        $queryRaw: async () => [],
+        invoice: {
+          findUnique: async () => ({
+            id: "draft-1",
+            status: "DRAFT",
+            customer: null,
+          }),
+          update: async () => ({}),
+        },
+        product: {
+          findUnique: async () => ({
+            id: "prod-1",
+            name: "Rice 25kg",
+            stock: 50,
+            isActive: true,
+            retailPrice: 1500,
+            wholesalePrice: 1400,
+            wholesaleEligible: true,
+          }),
+        },
+        invoiceItem: {
+          findFirst: async () => null,
+          findUnique: async () => ({
+            id: "item-1",
+            invoiceId: "draft-1",
+            productId: "prod-1",
+            product: {
+              id: "prod-1",
+              name: "Rice 25kg",
+              stock: 50,
+              isActive: true,
+              retailPrice: 1500,
+              wholesalePrice: 1400,
+              wholesaleEligible: true,
+            },
+          }),
+          findMany: async () => [{ lineTotal: 1500 }],
+          create: async (args: any) => {
+            capturedCreateArgs = args;
+            return {
+              id: "item-1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 1,
+              appliedUnitPrice: 1500,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 1500,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+            };
+          },
+          update: async (args: any) => {
+            capturedUpdateArgs = args;
+            return {
+              id: "item-1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 2,
+              appliedUnitPrice: 1500,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 3000,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+            };
+          },
+        },
+      };
+      return callback(mockTx);
+    };
+
+    const item = await addItem("draft-1", "prod-1", 1);
+    assert.ok(item);
+    assert.deepEqual(capturedCreateArgs?.select, publicDraftItemSelect);
+    assert.equal("costAtSale" in item, false);
+
+    const updated = await updateItem("draft-1", "item-1", 2);
+    assert.ok(updated);
+    assert.deepEqual(capturedUpdateArgs?.select, publicDraftItemSelect);
+    assert.equal("costAtSale" in updated, false);
+  } finally {
+    prisma.$transaction = originalTransaction;
+    restoreSettings();
+  }
+});
+
+test("parked invoice queries use explicit publicParkedInvoiceItemSelect excluding costAtSale", async () => {
+  // 1. Verify selection shape
+  assert.equal(publicParkedInvoiceItemSelect.id, true);
+  assert.equal(publicParkedInvoiceItemSelect.invoiceId, true);
+  assert.equal(publicParkedInvoiceItemSelect.productId, true);
+  assert.equal(publicParkedInvoiceItemSelect.qty, true);
+  assert.equal(publicParkedInvoiceItemSelect.appliedUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.originalUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideUnitPrice, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideReason, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideById, true);
+  assert.equal(publicParkedInvoiceItemSelect.overrideAt, true);
+  assert.equal(publicParkedInvoiceItemSelect.lineTotal, true);
+  assert.equal(publicParkedInvoiceItemSelect.createdAt, true);
+  assert.deepEqual(publicParkedInvoiceItemSelect.product.select, {
+    id: true,
+    name: true,
+    sku: true,
+    barcode: true,
+    retailPrice: true,
+    wholesalePrice: true,
+    wholesaleQtyThreshold: true,
+    stock: true,
+    reservedStock: true,
+    isActive: true,
+    imageUrl: true,
+  });
+  assert.equal("costAtSale" in publicParkedInvoiceItemSelect, false);
+
+  // 2. parkedDraftInclude uses publicParkedInvoiceItemSelect
+  assert.deepEqual(parkedDraftInclude.items.select, publicParkedInvoiceItemSelect);
+
+  // 3. listParkedDrafts passes parkedDraftInclude to findMany
+  let capturedFindManyArgs: any = null;
+  const originalFindMany = prisma.invoice.findMany;
+  try {
+    (prisma.invoice as any).findMany = async (args: any) => {
+      capturedFindManyArgs = args;
+      return [
+        {
+          id: "draft-1",
+          invoiceNo: "DRF-20260930-0001",
+          status: "DRAFT",
+          parkedAt: new Date("2026-09-30T10:00:00Z"),
+          items: [
+            {
+              id: "item-p1",
+              invoiceId: "draft-1",
+              productId: "prod-1",
+              qty: 2,
+              appliedUnitPrice: 120,
+              originalUnitPrice: null,
+              overrideUnitPrice: null,
+              overrideReason: null,
+              overrideById: null,
+              overrideAt: null,
+              lineTotal: 240,
+              createdAt: new Date("2026-09-30T10:00:00Z"),
+              product: {
+                id: "prod-1",
+                name: "Mustard Oil 1L",
+                sku: "OIL-001",
+                barcode: null,
+                retailPrice: 120,
+                wholesalePrice: 110,
+                wholesaleQtyThreshold: 5,
+                stock: 20,
+                reservedStock: 2,
+                isActive: true,
+                imageUrl: null,
+              },
+            },
+          ],
+        },
+      ];
+    };
+
+    const drafts = await listParkedDrafts("user-1", "CASHIER");
+    assert.equal(drafts.length, 1);
+    assert.deepEqual(capturedFindManyArgs?.include?.items?.select, publicParkedInvoiceItemSelect);
+    assert.equal(drafts[0].items[0].id, "item-p1");
+    assert.equal("costAtSale" in drafts[0].items[0], false);
+  } finally {
+    prisma.invoice.findMany = originalFindMany;
+  }
+});
+
+test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSelect and creditNote contains no items", async () => {
+  let capturedReplacementQueryArgs: any = null;
+  let capturedCreditNoteCreateArgs: any = null;
+  const originalTransaction = prisma.$transaction;
+  const restoreSettings = mockBusinessSettingsForInvoiceTest();
+  try {
+    (prisma as any).$transaction = async (callback: any) => {
+      const mockTx = {
+        $queryRaw: async () => [],
+        invoice: {
+          findUnique: async (args: any) => {
+            if (args.where?.id === "inv-orig-1") {
+              return {
+                id: "inv-orig-1",
+                invoiceNo: "INV-20260930-0001",
+                status: "FINALIZED",
+                paymentStatus: "PAID",
+                paidTotal: 100,
+                netTotal: 100,
+                items: [],
+                payments: [],
+                customer: null,
+              };
+            }
+            if (args.where?.id === "inv-repl-1" && args.include?.items?.include) {
+              // inside finalizeCheckoutInvoiceTx
+              return {
+                id: "inv-repl-1",
+                invoiceNo: "INV-20260930-0002",
+                status: "DRAFT",
+                items: [
+                  {
+                    id: "item-repl-1",
+                    productId: "prod-1",
+                    qty: 1,
+                    appliedUnitPrice: 100,
+                    lineTotal: 100,
+                    product: {
+                      id: "prod-1",
+                      name: "Sugar 1kg",
+                      stock: 50,
+                      isActive: true,
+                      retailPrice: 100,
+                      wholesalePrice: 90,
+                      wholesaleEligible: true,
+                    },
+                  },
+                ],
+                customer: null,
+              };
+            }
+            // The final replacementInvoice query returned to caller
+            capturedReplacementQueryArgs = args;
+            return {
+              id: "inv-repl-1",
+              invoiceNo: "INV-20260930-0002",
+              items: [
+                {
+                  id: "item-repl-1",
+                  invoiceId: "inv-repl-1",
+                  productId: "prod-1",
+                  qty: 1,
+                  appliedUnitPrice: 100,
+                  originalUnitPrice: null,
+                  overrideUnitPrice: null,
+                  overrideReason: null,
+                  overrideById: null,
+                  overrideAt: null,
+                  lineTotal: 100,
+                  createdAt: new Date("2026-09-30T10:00:00Z"),
+                  product: { id: "prod-1", name: "Sugar 1kg", sku: "SUG-001", barcode: null },
+                },
+              ],
+              payments: [],
+              cashier: { id: "user-1", name: "Cashier", email: "cashier@test.com" },
+              customer: null,
+              cancelledBy: null,
+            };
+          },
+          update: async () => ({
+            id: "inv-repl-1",
+            invoiceNo: "INV-20260930-0002",
+            paymentStatus: "PAID",
+            netTotal: 100,
+          }),
+          create: async () => ({ id: "inv-repl-1", invoiceNo: "INV-20260930-0002" }),
+          findFirst: async () => null,
+        },
+        returnRequest: {
+          findFirst: async () => null,
+        },
+        user: {
+          findUnique: async () => ({ id: "user-1", name: "Admin", role: "ADMIN" }),
+        },
+        creditNoteSequence: {
+          upsert: async () => ({ lastNumber: 1 }),
+        },
+        creditNote: {
+          findFirst: async () => null,
+          create: async (args: any) => {
+            capturedCreditNoteCreateArgs = args;
+            return {
+              id: "cn-1",
+              creditNoteNo: "CN-20260930-0001",
+              reason: "Invoice modified",
+              originalInvoice: { id: "inv-orig-1", invoiceNo: "INV-20260930-0001" },
+              replacementInvoice: { id: "inv-repl-1", invoiceNo: "INV-20260930-0002" },
+              createdBy: { id: "user-1", name: "Admin", role: "ADMIN" },
+            };
+          },
+        },
+        invoiceSequence: {
+          upsert: async () => ({ lastNumber: 2 }),
+        },
+        product: {
+          findMany: async () => [
+            {
+              id: "prod-1",
+              name: "Sugar 1kg",
+              sku: "SUG-001",
+              stock: 50,
+              isActive: true,
+              retailPrice: 100,
+              wholesalePrice: 90,
+              wholesaleEligible: true,
+            },
+          ],
+          update: async () => ({}),
+          updateMany: async () => ({ count: 1 }),
+        },
+        invoiceItem: {
+          findMany: async () => [],
+          create: async () => ({ id: "item-repl-1" }),
+          update: async () => ({}),
+        },
+        stockTransaction: {
+          create: async () => ({}),
+        },
+        payment: {
+          create: async () => ({}),
+        },
+        auditLog: {
+          create: async () => ({}),
+        },
+      };
+      return callback(mockTx);
+    };
+
+    const result = await modifyFinalizedInvoice("inv-orig-1", "user-1", {
+      reason: "Customer changed mind",
+      items: [{ productId: "prod-1", qty: 1 }],
+    });
+
+    assert.ok(result);
+    // 1. Verify replacementInvoice query uses publicInvoiceItemSelect
+    assert.deepEqual(capturedReplacementQueryArgs?.include?.items?.select, publicInvoiceItemSelect);
+    assert.equal("costAtSale" in capturedReplacementQueryArgs.include.items.select, false);
+    assert.ok(result.replacementInvoice);
+    assert.equal("costAtSale" in result.replacementInvoice.items[0], false);
+
+    // 2. Verify creditNote does not include or expose invoice items
+    assert.equal("items" in capturedCreditNoteCreateArgs?.include, false);
+    assert.equal("items" in result.creditNote, false);
+  } finally {
+    prisma.$transaction = originalTransaction;
+    restoreSettings();
+  }
+});
+
+
+test("getInvoice projects public payment DTOs without leaking internal keys, hashes, or storage paths, and strictly validates snapshots", async () => {
+  const originalFindUnique = prisma.invoice.findUnique;
+  try {
+    const validAccountId = "c460cfb9-6232-47ef-a0d4-1a3b5ebfb001";
+    const validAssetId = "d571d0ca-7343-48fa-b1e5-2b4c6fcac002";
+    const validChecksum = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855";
+    const validConfirmedAt = "2026-10-07T12:00:00.000Z";
+
+    const mockInvoiceData = {
+      id: "inv-test-proj-1",
+      invoiceNo: "INV-20261007-0001",
+      status: "FINALIZED",
+      paymentStatus: "PAID",
+      subTotal: 3000,
+      netTotal: 3000,
+      paidTotal: 3000,
+      customerNameSnapshot: "Test Customer",
+      customerPanSnapshot: null,
+      customerAddressSnapshot: null,
+      customerSnapshotCapturedAt: new Date("2026-10-07T10:00:00Z"),
+      items: [
+        {
+          id: "item-1",
+          invoiceId: "inv-test-proj-1",
+          productId: "prod-1",
+          qty: 1,
+          appliedUnitPrice: 3000,
+          originalUnitPrice: 3000,
+          overrideUnitPrice: null,
+          overrideReason: null,
+          overrideById: null,
+          overrideAt: null,
+          lineTotal: 3000,
+          productNameSnapshot: "Test Item",
+          productSkuSnapshot: "SKU-01",
+          snapshotCapturedAt: new Date("2026-10-07T10:00:00Z"),
+          createdAt: new Date("2026-10-07T10:00:00Z"),
+          product: { id: "prod-1", name: "Test Item", sku: "SKU-01", barcode: null },
+        },
+      ],
+      payments: [
+        // Payment 1: Valid payment with complete valid snapshot and internal keys
+        {
+          id: "pay-1",
+          invoiceId: "inv-test-proj-1",
+          method: "FONEPAY",
+          amount: 1500,
+          kind: "CHARGE",
+          status: "SUCCESS",
+          reference: "REF-VALID-1",
+          manualOperationKey: "manual-op-key-123456789012",
+          manualPayloadHash: "hash-secret-123456",
+          receivingAccountId: validAccountId,
+          receivingDestinationSnapshot: {
+            schemaVersion: 1,
+            accountId: validAccountId,
+            accountVersion: 2,
+            providerLabel: "Fonepay Primary",
+            accountHolder: "Store Main",
+            accountIdentifier: "9800112233",
+            settlementMethod: "FONEPAY",
+            confirmationMode: "MANUAL_RECEIPT",
+            qrAssetId: validAssetId,
+            qrChecksum: validChecksum,
+            confirmedById: "cashier-1",
+            confirmedAt: validConfirmedAt,
+            // unexpected / internal properties that must not leak:
+            storagePath: "/var/storage/internal/path.png",
+            rawDbRecord: { someInternal: true },
+          },
+          createdById: "cashier-1",
+          createdAt: new Date("2026-10-07T10:05:00Z"),
+          createdBy: { id: "cashier-1", name: "Cashier One" },
+          // unexpected relation that must not leak:
+          receivingAccount: { id: validAccountId, privateToken: "secret" },
+        },
+        // Payment 2: Payment with malformed snapshot (invalid checksum format and invalid version)
+        {
+          id: "pay-2",
+          invoiceId: "inv-test-proj-1",
+          method: "BANK_TRANSFER",
+          amount: 1500,
+          kind: "CHARGE",
+          status: "SUCCESS",
+          reference: "REF-MALFORMED-1",
+          manualOperationKey: "manual-op-key-999999999999",
+          manualPayloadHash: "hash-secret-999999",
+          receivingAccountId: validAccountId,
+          receivingDestinationSnapshot: {
+            schemaVersion: 1,
+            accountId: "not-a-valid-uuid",
+            accountVersion: -1, // invalid
+            providerLabel: "<script>alert(1)</script>", // invalid HTML
+            accountHolder: "Store Main",
+            accountIdentifier: null,
+            settlementMethod: "BANK_TRANSFER",
+            confirmationMode: "MANUAL_RECEIPT",
+            qrAssetId: validAssetId,
+            qrChecksum: "short-checksum", // not SHA-64
+            confirmedById: "cashier-1",
+            confirmedAt: "not-a-date", // invalid date
+          },
+          createdById: "cashier-1",
+          createdAt: new Date("2026-10-07T10:10:00Z"),
+          createdBy: { id: "cashier-1", name: "Cashier One" },
+        },
+      ],
+      cashier: { id: "cashier-1", name: "Cashier One", email: "cashier@test.com" },
+      customer: null,
+      cancelledBy: null,
+      creditNotesAsOriginal: [],
+      creditNoteAsReplacement: null,
+      returnRequests: [],
+    };
+
+    (prisma.invoice as any).findUnique = async () => structuredClone(mockInvoiceData);
+
+    const invoice = await getInvoice("inv-test-proj-1");
+    assert.ok(invoice);
+    assert.equal(invoice.payments.length, 2);
+
+    const p1 = invoice.payments[0];
+    assert.equal(p1.id, "pay-1");
+    assert.equal(p1.amount, 1500);
+    assert.equal(p1.method, "FONEPAY");
+    assert.equal(p1.receivingAccountId, validAccountId);
+    // Verify no internal operation keys or hashes are exposed
+    assert.equal((p1 as any).manualOperationKey, undefined);
+    assert.equal((p1 as any).manualPayloadHash, undefined);
+    assert.equal((p1 as any).receivingAccount, undefined);
+
+    // Verify valid snapshot is cleanly projected with no extra internal fields
+    assert.ok(p1.receivingDestinationSnapshot);
+    assert.equal(p1.receivingDestinationSnapshot.schemaVersion, 1);
+    assert.equal(p1.receivingDestinationSnapshot.accountId, validAccountId);
+    assert.equal(p1.receivingDestinationSnapshot.accountVersion, 2);
+    assert.equal(p1.receivingDestinationSnapshot.providerLabel, "Fonepay Primary");
+    assert.equal(p1.receivingDestinationSnapshot.accountHolder, "Store Main");
+    assert.equal(p1.receivingDestinationSnapshot.accountIdentifier, "9800112233");
+    assert.equal(p1.receivingDestinationSnapshot.settlementMethod, "FONEPAY");
+    assert.equal(p1.receivingDestinationSnapshot.confirmationMode, "MANUAL_RECEIPT");
+    assert.equal(p1.receivingDestinationSnapshot.qrAssetId, validAssetId);
+    assert.equal(p1.receivingDestinationSnapshot.qrChecksum, validChecksum.toLowerCase());
+    assert.equal(p1.receivingDestinationSnapshot.confirmedById, "cashier-1");
+    assert.equal(p1.receivingDestinationSnapshot.confirmedAt, validConfirmedAt);
+    assert.equal((p1.receivingDestinationSnapshot as any).storagePath, undefined);
+    assert.equal((p1.receivingDestinationSnapshot as any).rawDbRecord, undefined);
+
+    const p2 = invoice.payments[1];
+    assert.equal(p2.id, "pay-2");
+    assert.equal(p2.amount, 1500);
+    // Malformed snapshot is rejected and set to null (never invented or live inferred)
+    assert.equal(p2.receivingDestinationSnapshot, null);
+    assert.equal((p2 as any).manualOperationKey, undefined);
+    assert.equal((p2 as any).manualPayloadHash, undefined);
+  } finally {
+    prisma.invoice.findUnique = originalFindUnique;
+  }
 });

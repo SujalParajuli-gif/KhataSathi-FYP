@@ -5,7 +5,7 @@ import crypto from "crypto";
 import prisma from "../../db/prisma";
 import { logger } from "../../lib/logger";
 import type { CreateDocumentInput, ListDocumentsInput, UpdateDocumentMetadataInput } from "./validation";
-import { detectDocumentFormat, DocumentValidationError, ALLOWED_MIME_TYPES } from "./validation";
+import { detectDocumentFormat, DocumentValidationError, ALLOWED_MIME_TYPES, MAX_FILE_SIZE } from "./validation";
 import type { DocumentType, DocumentVisibility, Prisma } from "@prisma/client";
 import {
   buildDocumentThumbnailFileName,
@@ -22,12 +22,136 @@ import {
   documentStorageRoot,
   documentTempDir,
 } from "../../lib/storageReadiness";
+import {
+  assertNotSaleEvidenceDocument,
+  isSaleEvidenceDocumentType,
+  assertNotPurchaseEvidenceDocument,
+  isPurchaseEvidenceDocumentType,
+  PurchaseEvidenceProtectedError,
+} from "./protection";
+import {
+  type BusinessCapabilities,
+  getBusinessCapabilities,
+} from "../settings/capabilities";
+
+export { DocumentValidationError };
 
 type DocumentProcessingStatus = "PROCESSED" | "UNPROCESSED";
 type ViewerRole = "ADMIN" | "MANAGER" | "CASHIER";
 type DocumentWithUploader = Prisma.DocumentGetPayload<{
   include: { uploadedBy: { select: { id: true; name: true } } };
 }>;
+
+export interface PublicDocument {
+  id: string;
+  documentType: DocumentType;
+  title: string | null;
+  fileName: string;
+  storedFileName?: string;
+  storedPath?: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string | null;
+  thumbnailFileName: string | null;
+  thumbnailSize: number | null;
+  supplierName: string | null;
+  billNumber: string | null;
+  billDate: Date | null;
+  billAmount: number | null;
+  remarks: string | null;
+  linkedEntityType: string | null;
+  linkedEntityId: string | null;
+  visibility: DocumentVisibility;
+  uploadedById: string;
+  createdAt: Date;
+  deletedAt: Date | null;
+  deletedById: string | null;
+  deleteReason: string | null;
+  purgeAfter: Date | null;
+  uploadedBy?: { id: string; name: string };
+  processingStatus?: DocumentProcessingStatus;
+  processingLabel?: string;
+}
+
+export function toPublicDocument<
+  T extends {
+    id: string;
+    documentType: DocumentType;
+    title?: string | null;
+    fileName: string;
+    storedFileName: string;
+    storedPath: string;
+    mimeType: string;
+    fileSize: number;
+    checksum?: string | null;
+    thumbnailFileName?: string | null;
+    thumbnailSize?: number | null;
+    supplierName?: string | null;
+    billNumber?: string | null;
+    billDate?: Date | null;
+    billAmount?: number | null;
+    remarks?: string | null;
+    linkedEntityType?: string | null;
+    linkedEntityId?: string | null;
+    visibility: DocumentVisibility;
+    uploadedById: string;
+    createdAt: Date;
+    deletedAt?: Date | null;
+    deletedById?: string | null;
+    deleteReason?: string | null;
+    purgeAfter?: Date | null;
+    uploadedBy?: { id: string; name: string } | null;
+  }
+>(doc: T, options?: { includeProcessing?: boolean }): PublicDocument {
+  const projected: PublicDocument = {
+    id: doc.id,
+    documentType: doc.documentType,
+    title: doc.title ?? null,
+    fileName: doc.fileName,
+    storedFileName: doc.storedFileName,
+    storedPath: doc.storedPath,
+    mimeType: doc.mimeType,
+    fileSize: doc.fileSize,
+    checksum: doc.checksum ?? null,
+    thumbnailFileName: doc.thumbnailFileName ?? null,
+    thumbnailSize: doc.thumbnailSize ?? null,
+    supplierName: doc.supplierName ?? null,
+    billNumber: doc.billNumber ?? null,
+    billDate: doc.billDate ?? null,
+    billAmount: doc.billAmount ?? null,
+    remarks: doc.remarks ?? null,
+    linkedEntityType: doc.linkedEntityType ?? null,
+    linkedEntityId: doc.linkedEntityId ?? null,
+    visibility: doc.visibility,
+    uploadedById: doc.uploadedById,
+    createdAt: doc.createdAt,
+    deletedAt: doc.deletedAt ?? null,
+    deletedById: doc.deletedById ?? null,
+    deleteReason: doc.deleteReason ?? null,
+    purgeAfter: doc.purgeAfter ?? null,
+  };
+
+  if (doc.documentType === "PURCHASE_BILL") {
+    delete (projected as any).storedFileName;
+    delete (projected as any).storedPath;
+    delete (projected as any).checksum;
+    delete (projected as any).thumbnailFileName;
+  }
+
+  if ("uploadedBy" in doc && doc.uploadedBy) {
+    projected.uploadedBy = {
+      id: doc.uploadedBy.id,
+      name: doc.uploadedBy.name,
+    };
+  }
+
+  if (options?.includeProcessing) {
+    projected.processingStatus = getDocumentProcessingStatus(doc as any);
+    projected.processingLabel = getDocumentProcessingLabel(doc as any);
+  }
+
+  return projected;
+}
 
 function getDocumentProcessingStatus(doc: {
   linkedEntityType: string | null;
@@ -79,7 +203,25 @@ function canRoleViewDocument(
   return visibility === "ALL_AUTHENTICATED";
 }
 
-function defaultDocumentTitle(fileName: string) {
+function buildDocumentConcurrencyPredicate(doc: {
+  id: string;
+  documentType: DocumentType;
+  visibility?: DocumentVisibility;
+  linkedEntityType?: string | null;
+  linkedEntityId?: string | null;
+  deletedAt?: Date | null;
+}) {
+  return {
+    id: doc.id,
+    documentType: doc.documentType,
+    ...(doc.visibility !== undefined ? { visibility: doc.visibility } : {}),
+    ...(doc.linkedEntityType !== undefined ? { linkedEntityType: doc.linkedEntityType } : {}),
+    ...(doc.linkedEntityId !== undefined ? { linkedEntityId: doc.linkedEntityId } : {}),
+    deletedAt: doc.deletedAt ?? null,
+  };
+}
+
+export function defaultDocumentTitle(fileName: string) {
   const extension = path.extname(fileName);
   const baseName = extension ? fileName.slice(0, -extension.length) : fileName;
   return baseName.replace(/[_-]+/g, " ").replace(/\s+/g, " ").trim().slice(0, 160) || "Untitled document";
@@ -238,13 +380,180 @@ export interface UploadedFileInfo {
   verifiedExtension?: string;
 }
 
+export interface PreparedDocumentFile {
+  id: string;
+  documentType: DocumentType;
+  fileName: string;
+  storedFileName: string;
+  storedPath: string;
+  mimeType: string;
+  fileSize: number;
+  checksum: string;
+  thumbnailFileName: string | null;
+  thumbnailSize: number | null;
+}
+
+export async function prepareDocumentFile(
+  file: UploadedFileInfo,
+  id: string,
+  documentType: DocumentType,
+): Promise<PreparedDocumentFile> {
+  assertStorageReady();
+
+  if (!file || !file.path) {
+    throw new DocumentValidationError("File is required");
+  }
+
+  let sourceStat;
+  try {
+    sourceStat = await fs.stat(file.path);
+  } catch {
+    throw new DocumentValidationError(`Cannot access uploaded file: ${file.originalname || "unknown"}`);
+  }
+
+  const actualSize = sourceStat.size;
+
+  if (actualSize <= 0) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File is empty: ${file.originalname}`);
+  }
+
+  if (actualSize > MAX_FILE_SIZE) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File exceeds maximum size: ${file.originalname}`);
+  }
+
+  if (!(ALLOWED_MIME_TYPES as readonly string[]).includes(file.mimetype)) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type not allowed: ${file.originalname}. Allowed: ${ALLOWED_MIME_TYPES.join(", ")}`);
+  }
+
+  const format = await detectDocumentFormat(file.path);
+  if (!format) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type not allowed or content mismatch: ${file.originalname}`);
+  }
+
+  if (format.mimeType !== file.mimetype) {
+    await fs.unlink(file.path).catch(() => {});
+    throw new DocumentValidationError(`File type content mismatch for ${file.originalname}: claimed ${file.mimetype} but found ${format.mimeType}`);
+  }
+
+  const verifiedExtension = format.extension;
+  const verifiedMimeType = format.mimeType;
+  const relativeFolderPath = buildRelativeFolderPath();
+  const storedFileName = buildStoredFileName(id, documentType, verifiedExtension);
+
+  let finalPath: string | null = null;
+  let thumbnailFileName: string | null = null;
+  let thumbnailSize: number | null = null;
+
+  try {
+    finalPath = await moveToFinalPath(file.path, relativeFolderPath, storedFileName);
+    const checksum = await computeChecksum(finalPath);
+
+    if (supportsDocumentThumbnail(verifiedMimeType)) {
+      const candidateFileName = buildDocumentThumbnailFileName(id);
+      const candidatePath = resolveDocumentStoragePath(
+        STORAGE_ROOT,
+        relativeFolderPath,
+        candidateFileName,
+      );
+      if (!candidatePath) {
+        throw new Error("Invalid document thumbnail path");
+      }
+      try {
+        thumbnailSize = await writeDocumentImageThumbnail(finalPath, candidatePath);
+        thumbnailFileName = candidateFileName;
+      } catch (error) {
+        await fs.unlink(candidatePath).catch(() => undefined);
+        logger.warn("Document uploaded without an image thumbnail", {
+          documentId: id,
+          mimeType: verifiedMimeType,
+          error,
+        });
+      }
+    }
+
+    return {
+      id,
+      documentType,
+      fileName: file.originalname,
+      storedFileName,
+      storedPath: relativeFolderPath,
+      mimeType: verifiedMimeType,
+      fileSize: actualSize,
+      checksum,
+      thumbnailFileName,
+      thumbnailSize,
+    };
+  } catch (error) {
+    await fs.unlink(file.path).catch(() => {});
+    if (finalPath) await fs.unlink(finalPath).catch(() => {});
+    if (thumbnailFileName) {
+      await removeFileFromDisk(relativeFolderPath, thumbnailFileName);
+    }
+    throw asStorageUnavailableError(error);
+  }
+}
+
+export async function removePreparedDocumentFiles(file: {
+  storedPath: string;
+  storedFileName: string;
+  thumbnailFileName?: string | null;
+}): Promise<void> {
+  await removeFileFromDisk(file.storedPath, file.storedFileName);
+  if (file.thumbnailFileName) {
+    await removeFileFromDisk(file.storedPath, file.thumbnailFileName);
+  }
+}
+
 // creating document records for one or more uploaded files
 // supports multiple files per upload (e.g. front and back of a bill)
 export async function createDocuments(
   files: UploadedFileInfo[],
   metadata: CreateDocumentInput,
   userId: string,
+  actorContext?:
+    | {
+        role?: string | null;
+        capabilities?: BusinessCapabilities | { inventoryEnabled?: boolean } | null;
+      }
+    | string,
 ): Promise<any[]> {
+  assertNotSaleEvidenceDocument(metadata.documentType);
+
+  if (metadata.documentType === "PURCHASE_BILL") {
+    const role = typeof actorContext === "string" ? actorContext : actorContext?.role;
+    if (role !== "ADMIN" && role !== "MANAGER") {
+      throw new DocumentValidationError(
+        "Explicit ADMIN or MANAGER role is required to upload purchase documents",
+      );
+    }
+
+    let inventoryEnabled: boolean;
+    if (typeof actorContext === "object" && actorContext?.capabilities) {
+      inventoryEnabled = Boolean(actorContext.capabilities.inventoryEnabled);
+    } else {
+      const caps = await getBusinessCapabilities();
+      inventoryEnabled = caps.inventoryEnabled;
+    }
+    if (!inventoryEnabled) {
+      throw new DocumentValidationError(
+        "INVENTORY capability is required to upload purchase documents",
+      );
+    }
+
+    if (metadata.linkedEntityType || metadata.linkedEntityId) {
+      throw new DocumentValidationError(
+        "Purchase documents must be uploaded without entity links",
+      );
+    }
+
+    metadata.visibility =
+      metadata.visibility === "ADMIN_ONLY" ? "ADMIN_ONLY" : "ADMIN_MANAGER";
+  }
+
   assertStorageReady();
 
   // Validate every file before processing any records
@@ -330,11 +639,7 @@ export async function createDocuments(
         include: { uploadedBy: { select: { id: true, name: true } } },
       });
 
-      results.push({
-        ...updated,
-        processingStatus: getDocumentProcessingStatus(updated),
-        processingLabel: getDocumentProcessingLabel(updated),
-      });
+      results.push(toPublicDocument(updated, { includeProcessing: true }));
     } catch (error) {
       // if file move fails, clean up the orphaned DB record
       await prisma.document.delete({ where: { id: doc.id } }).catch(() => {});
@@ -353,7 +658,10 @@ export async function createDocuments(
     await prisma.auditLog.create({
       data: {
         actorId: userId,
-        action: "DOCUMENT_UPLOADED",
+        action:
+          metadata.documentType === "PURCHASE_BILL"
+            ? "PURCHASE_DOCUMENT_UPLOADED"
+            : "DOCUMENT_UPLOADED",
         entityType: "Document",
         entityId: results.map((d) => d.id).join(","),
         meta: {
@@ -375,24 +683,93 @@ export async function createDocuments(
 }
 
 // fetching a single document by ID
-export async function getDocumentById(id: string, viewerRole?: string | null) {
+export async function getDocumentById(
+  id: string,
+  viewerRole?: string | null,
+  context?: {
+    capabilities?: BusinessCapabilities | { inventoryEnabled?: boolean } | null;
+  },
+) {
   const doc = await prisma.document.findFirst({
     where: { id, deletedAt: null },
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
   if (!doc) return null;
+  if (isSaleEvidenceDocumentType(doc.documentType)) return null;
+
+  if (isPurchaseEvidenceDocumentType(doc.documentType)) {
+    if (viewerRole !== "ADMIN" && viewerRole !== "MANAGER") {
+      return null;
+    }
+    if (viewerRole === "MANAGER" && doc.visibility === "ADMIN_ONLY") {
+      return null;
+    }
+    let inventoryEnabled: boolean;
+    if (context && context.capabilities !== undefined) {
+      inventoryEnabled = Boolean(context.capabilities?.inventoryEnabled);
+    } else {
+      const caps = await getBusinessCapabilities().catch(() => ({ inventoryEnabled: false } as BusinessCapabilities));
+      inventoryEnabled = Boolean(caps?.inventoryEnabled);
+    }
+    if (!inventoryEnabled) {
+      return null;
+    }
+  }
+
   if (!canRoleViewDocument(doc.visibility, viewerRole)) return null;
-  return {
-    ...doc,
-    processingStatus: getDocumentProcessingStatus(doc),
-    processingLabel: getDocumentProcessingLabel(doc),
-  };
+  return toPublicDocument(doc, { includeProcessing: true });
+}
+
+export async function getDocumentForFileAccess(
+  id: string,
+  viewerRole?: string | null,
+  context?: {
+    capabilities?: BusinessCapabilities | { inventoryEnabled?: boolean } | null;
+  },
+) {
+  const doc = await prisma.document.findFirst({
+    where: { id, deletedAt: null },
+  });
+  if (!doc) return null;
+  if (isSaleEvidenceDocumentType(doc.documentType)) return null;
+
+  if (isPurchaseEvidenceDocumentType(doc.documentType)) {
+    if (viewerRole !== "ADMIN" && viewerRole !== "MANAGER") {
+      return null;
+    }
+    if (viewerRole === "MANAGER" && doc.visibility === "ADMIN_ONLY") {
+      return null;
+    }
+    let inventoryEnabled: boolean;
+    if (context && context.capabilities !== undefined) {
+      inventoryEnabled = Boolean(context.capabilities?.inventoryEnabled);
+    } else {
+      const caps = await getBusinessCapabilities().catch(() => ({ inventoryEnabled: false } as BusinessCapabilities));
+      inventoryEnabled = Boolean(caps?.inventoryEnabled);
+    }
+    if (!inventoryEnabled) {
+      return null;
+    }
+  }
+
+  if (!canRoleViewDocument(doc.visibility, viewerRole)) return null;
+  return doc;
 }
 
 // listing documents with filters and pagination
-export async function listDocuments(filters: ListDocumentsInput, viewerRole?: string | null) {
+export async function listDocuments(
+  filters: ListDocumentsInput,
+  viewerRole?: string | null,
+  context?: {
+    capabilities?: BusinessCapabilities | { inventoryEnabled?: boolean } | null;
+  },
+) {
   const where: any = { deletedAt: null };
   const and: any[] = [visibilityWhereForRole(viewerRole)];
+
+  const hasAdminOrManager = viewerRole === "ADMIN" || viewerRole === "MANAGER";
+  const hasInventory = Boolean(context?.capabilities?.inventoryEnabled);
+  const canViewPurchase = hasAdminOrManager && hasInventory;
 
   if (filters.q) {
     and.push({
@@ -404,7 +781,19 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
       ],
     });
   }
-  if (filters.documentType) where.documentType = filters.documentType;
+  if (filters.documentType) {
+    if (filters.documentType === ("SALE_BILL" as any)) {
+      where.documentType = { in: [] };
+    } else if (filters.documentType === "PURCHASE_BILL") {
+      where.documentType = canViewPurchase ? "PURCHASE_BILL" : { in: [] };
+    } else {
+      where.documentType = filters.documentType;
+    }
+  } else {
+    where.documentType = canViewPurchase
+      ? { not: "SALE_BILL" }
+      : { notIn: ["SALE_BILL", "PURCHASE_BILL"] };
+  }
   if (filters.visibility) where.visibility = filters.visibility;
   if (filters.supplierName) {
     where.supplierName = { contains: filters.supplierName };
@@ -439,11 +828,7 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
   ]);
 
   return {
-    documents: documents.map((doc) => ({
-      ...doc,
-      processingStatus: getDocumentProcessingStatus(doc),
-      processingLabel: getDocumentProcessingLabel(doc),
-    })),
+    documents: documents.map((doc) => toPublicDocument(doc, { includeProcessing: true })),
     total,
     page: filters.page,
     pageSize: filters.pageSize,
@@ -452,15 +837,17 @@ export async function listDocuments(filters: ListDocumentsInput, viewerRole?: st
 }
 
 // resolving the absolute file path for download/preview
-export function getDocumentFilePath(doc: { storedPath: string; storedFileName: string }) {
+export function getDocumentFilePath(doc: { storedPath?: string; storedFileName?: string }) {
+  if (!doc.storedPath || !doc.storedFileName) throw new Error("Document storage reference unavailable");
   return resolveDocumentFileSafe(doc.storedPath, doc.storedFileName);
 }
 
 export function getDocumentThumbnailFilePath(doc: {
-  storedPath: string;
+  storedPath?: string;
   thumbnailFileName: string | null;
 }) {
   if (!doc.thumbnailFileName) return null;
+  if (!doc.storedPath) throw new Error("Document storage reference unavailable");
   return resolveDocumentFileSafe(doc.storedPath, doc.thumbnailFileName);
 }
 
@@ -469,21 +856,27 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
   const doc = await prisma.document.findFirst({ where: { id, deletedAt: null } });
   if (!doc) throw new Error("Document not found");
   if (!canRoleViewDocument(doc.visibility, viewerRole)) throw new Error("Document not found");
+  if (doc.documentType === "PURCHASE_BILL" && !(await getDocumentById(id, viewerRole))) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(doc);
+  assertNotPurchaseEvidenceDocument(doc);
 
   const purgeAfter = new Date();
   purgeAfter.setDate(purgeAfter.getDate() + 30);
 
-  await prisma.$transaction([
-    prisma.document.update({
-      where: { id },
+  await prisma.$transaction(async (tx) => {
+    const updateRes = await tx.document.updateMany({
+      where: buildDocumentConcurrencyPredicate(doc),
       data: {
         deletedAt: new Date(),
         deletedById: userId,
         purgeAfter,
         deleteReason: "Deleted from document storage",
       },
-    }),
-    prisma.softDeleteRecord.create({
+    });
+    if (updateRes.count !== 1) {
+      throw new Error("Document was concurrently modified, claimed, or deleted");
+    }
+    await tx.softDeleteRecord.create({
       data: {
         entityType: "Document",
         entityId: id,
@@ -503,8 +896,8 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
           visibility: doc.visibility,
         },
       },
-    }),
-  ]);
+    });
+  });
 
   // audit log for the deletion
   await prisma.auditLog.create({
@@ -525,30 +918,45 @@ export async function deleteDocument(id: string, userId: string, viewerRole?: st
     logger.error("Document delete audit log error", err);
   });
 
-  return doc;
+  return toPublicDocument(doc);
 }
 
 export async function updateDocumentVisibility(
   id: string,
   visibility: DocumentVisibility,
   userId: string,
+  viewerRole?: string | null,
 ) {
   const existing = await prisma.document.findFirst({
     where: { id, deletedAt: null },
   });
   if (!existing) throw new Error("Document not found");
+  if (viewerRole && (!canRoleViewDocument(existing.visibility, viewerRole)
+      || (existing.documentType === "PURCHASE_BILL" && !(await getDocumentById(id, viewerRole))))) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(existing);
+  assertNotPurchaseEvidenceDocument(existing);
   if (existing.visibility === visibility) {
     return {
-      document: existing,
+      document: toPublicDocument(existing, { includeProcessing: true }),
       changed: false,
     };
   }
 
-  const document = await prisma.document.update({
-    where: { id },
+  const updateRes = await prisma.document.updateMany({
+    where: buildDocumentConcurrencyPredicate(existing),
     data: { visibility },
+  });
+  if (updateRes && typeof updateRes === "object" && "count" in updateRes && updateRes.count === 0) {
+    throw new Error("Document was concurrently modified, claimed, or deleted");
+  }
+
+  const document = await prisma.document.findUnique({
+    where: { id },
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
+  if (!document) {
+    throw new Error("Document not found after visibility update");
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -567,11 +975,7 @@ export async function updateDocumentVisibility(
   });
 
   return {
-    document: {
-      ...document,
-      processingStatus: getDocumentProcessingStatus(document),
-      processingLabel: getDocumentProcessingLabel(document),
-    },
+    document: toPublicDocument(document, { includeProcessing: true }),
     changed: true,
   };
 }
@@ -603,12 +1007,21 @@ export async function updateDocumentMetadata(
   id: string,
   input: UpdateDocumentMetadataInput,
   userId: string,
+  viewerRole?: string | null,
 ) {
   const existing = await prisma.document.findFirst({
     where: { id, deletedAt: null },
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
   if (!existing) throw new Error("Document not found");
+  if (viewerRole && (!canRoleViewDocument(existing.visibility, viewerRole)
+      || (existing.documentType === "PURCHASE_BILL" && !(await getDocumentById(id, viewerRole))))) throw new Error("Document not found");
+  assertNotSaleEvidenceDocument(existing);
+  assertNotPurchaseEvidenceDocument(existing);
+  if (input.documentType) {
+    assertNotSaleEvidenceDocument(input.documentType);
+    assertNotPurchaseEvidenceDocument(input.documentType);
+  }
 
   const supplierName = cleanNullableText(input.supplierName);
   const title = input.title?.trim();
@@ -651,21 +1064,27 @@ export async function updateDocumentMetadata(
 
   if (changedFields.length === 0) {
     return {
-      document: {
-        ...existing,
-        processingStatus: getDocumentProcessingStatus(existing),
-        processingLabel: getDocumentProcessingLabel(existing),
-      },
+      document: toPublicDocument(existing, { includeProcessing: true }),
       changed: false,
       changedFields,
     };
   }
 
-  const document = await prisma.document.update({
-    where: { id },
+  const updateRes = await prisma.document.updateMany({
+    where: buildDocumentConcurrencyPredicate(existing),
     data,
+  });
+  if (updateRes && typeof updateRes === "object" && "count" in updateRes && updateRes.count === 0) {
+    throw new Error("Document was concurrently modified, claimed, or deleted");
+  }
+
+  const document = await prisma.document.findUnique({
+    where: { id },
     include: { uploadedBy: { select: { id: true, name: true } } },
   });
+  if (!document) {
+    throw new Error("Document not found after metadata update");
+  }
 
   await prisma.auditLog.create({
     data: {
@@ -700,11 +1119,7 @@ export async function updateDocumentMetadata(
   });
 
   return {
-    document: {
-      ...document,
-      processingStatus: getDocumentProcessingStatus(document),
-      processingLabel: getDocumentProcessingLabel(document),
-    },
+    document: toPublicDocument(document, { includeProcessing: true }),
     changed: true,
     changedFields,
   };
@@ -716,6 +1131,8 @@ export async function assertDocumentsCanLinkToEntity(input: {
   linkedEntityType: string;
   viewerRole?: string | null;
 }) {
+  assertNotSaleEvidenceDocument(input.documentType);
+  assertNotPurchaseEvidenceDocument(input.documentType);
   const uniqueIds = Array.from(new Set(input.documentIds.map((id) => id.trim()).filter(Boolean)));
   if (uniqueIds.length === 0) return [];
 
@@ -734,6 +1151,8 @@ export async function assertDocumentsCanLinkToEntity(input: {
     if (!canRoleViewDocument(document.visibility, input.viewerRole)) {
       throw new Error("One or more selected documents are not visible to your role.");
     }
+    assertNotSaleEvidenceDocument(document);
+    assertNotPurchaseEvidenceDocument(document);
     if (document.documentType !== input.documentType) {
       throw new Error(`Only ${input.documentType.replace(/_/g, " ").toLowerCase()} documents can be linked here.`);
     }
@@ -767,8 +1186,15 @@ export async function linkDocumentsToEntity(input: {
     const updated: DocumentWithUploader[] = [];
 
     for (const document of documents) {
-      const next = await tx.document.update({
-        where: { id: document.id },
+      const updateRes = await tx.document.updateMany({
+        where: {
+          id: document.id,
+          documentType: input.documentType,
+          visibility: document.visibility,
+          deletedAt: null,
+          linkedEntityType: null,
+          linkedEntityId: null,
+        },
         data: {
           linkedEntityType: input.linkedEntityType,
           linkedEntityId: input.linkedEntityId,
@@ -778,8 +1204,21 @@ export async function linkDocumentsToEntity(input: {
           billAmount: document.billAmount ?? input.metadata?.billAmount ?? null,
           remarks: document.remarks || input.metadata?.remarks || null,
         },
+      });
+
+      if (updateRes && typeof updateRes === "object" && "count" in updateRes && updateRes.count !== 1) {
+        throw new Error(
+          `Document ${document.id} was concurrently modified, claimed, or deleted`,
+        );
+      }
+
+      const next = await tx.document.findUnique({
+        where: { id: document.id },
         include: { uploadedBy: { select: { id: true, name: true } } },
       });
+      if (!next) {
+        throw new Error(`Document ${document.id} not found after link`);
+      }
       updated.push(next);
     }
 
@@ -801,16 +1240,24 @@ export async function linkDocumentsToEntity(input: {
     return updated;
   });
 
-  return updatedDocuments.map((document) => ({
-    ...document,
-    processingStatus: getDocumentProcessingStatus(document),
-    processingLabel: getDocumentProcessingLabel(document),
-  }));
+  return updatedDocuments.map((document) => toPublicDocument(document, { includeProcessing: true }));
 }
 
 export async function restoreDocument(id: string) {
-  return prisma.document.update({
+  const existing = await prisma.document.findUnique({
     where: { id },
+    select: { id: true, documentType: true },
+  });
+  if (existing) {
+    assertNotSaleEvidenceDocument(existing);
+    assertNotPurchaseEvidenceDocument(existing);
+  }
+  const updateRes = await prisma.document.updateMany({
+    where: {
+      id,
+      deletedAt: { not: null },
+      ...(existing ? { documentType: existing.documentType } : {}),
+    },
     data: {
       deletedAt: null,
       deletedById: null,
@@ -818,17 +1265,34 @@ export async function restoreDocument(id: string) {
       purgeAfter: null,
     },
   });
+  if (updateRes && typeof updateRes === "object" && "count" in updateRes && updateRes.count === 0) {
+    throw new Error("Document was not found in deleted state or modified concurrently");
+  }
+  return prisma.document.findUnique({ where: { id } });
 }
 
 export async function permanentlyDeleteDocument(id: string) {
   const doc = await prisma.document.findUnique({ where: { id } });
   if (!doc) return null;
+  assertNotSaleEvidenceDocument(doc);
+  assertNotPurchaseEvidenceDocument(doc);
+
+  const deleted = await prisma.document.deleteMany({
+    where: {
+      id,
+      documentType: doc.documentType,
+      linkedEntityType: doc.linkedEntityType,
+      linkedEntityId: doc.linkedEntityId,
+    },
+  });
+  if (deleted && typeof deleted === "object" && "count" in deleted && deleted.count === 0) {
+    throw new Error("Document was concurrently modified, claimed, or deleted");
+  }
 
   await removeFileFromDisk(doc.storedPath, doc.storedFileName);
   if (doc.thumbnailFileName) {
     await removeFileFromDisk(doc.storedPath, doc.thumbnailFileName);
   }
-  await prisma.document.delete({ where: { id } });
   return doc;
 }
 

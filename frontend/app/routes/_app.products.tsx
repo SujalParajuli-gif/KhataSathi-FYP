@@ -38,10 +38,12 @@ import {
   receiveStockBatchApi,
   adjustStockApi,
   bulkUpdateProductPricesApi,
+  updateProductTaxCategoryApi,
   type BusinessSettings,
   type DocumentRecord,
   type ImportedProductSummary,
   type ProductImportBatch,
+  type ProductTaxCategory,
   type ProductImportTemplate,
   type ReviewedPdfImportRowPayload,
   type ProductSearchSelectionAction,
@@ -49,7 +51,7 @@ import {
 import {
   bulkSetStatus,
   createProduct,
-  fetchProductsByIds,
+  fetchCatalogProductsByIds,
   fetchProducts,
   fetchProductsMeta,
   getProductDeleteSafety,
@@ -1246,6 +1248,19 @@ export default function ProductsPage() {
     }
   }
 
+  async function handleProductTaxCategoryUpdate(productId: string, taxCategory: ProductTaxCategory) {
+    if (!isAdmin) return;
+    try {
+      await updateProductTaxCategoryApi(productId, taxCategory);
+      setProducts((current) => current.map((product) =>
+        product.id === productId ? { ...product, taxCategory } : product,
+      ));
+      toastMsg("success", "Product tax classification updated.");
+    } catch (error: any) {
+      toastMsg("danger", error?.response?.data?.error || error?.message || "Product tax classification could not be saved.");
+    }
+  }
+
   React.useEffect(() => {
     // cleaning up the last blob preview when the component unmounts or the preview url changes
     return () => revokePreview(productImagePreview);
@@ -1439,7 +1454,7 @@ export default function ProductsPage() {
     let active = true;
     setReturnAfterProductEditSnapshot(undefined);
     setOpeningRequestedEditProduct(true);
-    void fetchProductsByIds([requestedEditProductId], {
+    void fetchCatalogProductsByIds([requestedEditProductId], {
       signal: controller.signal,
     })
       .then(([product]) => {
@@ -2612,7 +2627,7 @@ export default function ProductsPage() {
     let resolvedProducts = selectedProducts;
     try {
       setPriceBusy(true);
-      resolvedProducts = await fetchProductsByIds(selectedIds);
+      resolvedProducts = await fetchCatalogProductsByIds(selectedIds);
       const resolvedIds = new Set(resolvedProducts.map((product) => product.id));
       const unavailableCount = selectedIds.filter((id) => !resolvedIds.has(id)).length;
       if (unavailableCount > 0) {
@@ -3742,7 +3757,7 @@ export default function ProductsPage() {
       if (isFilteredSelection) {
         setInvalidFilteredOverrideId(firstInvalidRow[0]);
         if (!filteredPreviewItems.some((item) => item.productId === firstInvalidRow[0]) && !selectedProductCache[firstInvalidRow[0]]) {
-          void fetchProductsByIds([firstInvalidRow[0]]).then((products) => {
+          void fetchCatalogProductsByIds([firstInvalidRow[0]]).then((products) => {
             if (products[0]) {
               setSelectedProductCache((current) => ({ ...current, [products[0].id]: products[0] }));
             }
@@ -3935,7 +3950,7 @@ export default function ProductsPage() {
       toastMsg("danger", message);
       try {
         if (!isFilteredSelection) {
-          const fresh = await fetchProductsByIds(selectedIds);
+          const fresh = await fetchCatalogProductsByIds(selectedIds);
           const freshIds = new Set(fresh.map((product) => product.id));
           setSelectedProductCache((current) => ({ ...current, ...Object.fromEntries(fresh.map((product) => [product.id, product])) }));
           if (bulkPriceMode === "CALCULATE") {
@@ -4536,6 +4551,7 @@ export default function ProductsPage() {
         onClearFormError={(field) => setFormErrors((current) => ({ ...current, [field]: undefined }))}
         onConfirmDelete={confirmDeleteOne}
         isAdmin={isAdmin}
+        onUpdateProductTaxCategory={handleProductTaxCategoryUpdate}
         deleteSafety={deleteSafety}
         deleteSafetyLoading={deleteSafetyLoading}
         deleteBusy={deleteBusy}
@@ -6980,7 +6996,7 @@ export default function ProductsPage() {
                         <label className="flex items-center gap-1.5 text-[12px] font-semibold text-[#565449]">
                           <span>Rows:</span>
                           <div className="w-auto">
-                            <select
+                            <ProjectSelect aria-label="Rows per page"
                               value={bulkPriceStep2PageSize}
                               onChange={(e) => {
                                 setBulkPriceStep2PageSize(Number(e.target.value));
@@ -6992,7 +7008,7 @@ export default function ProductsPage() {
                               <option value={25}>25</option>
                               <option value={50}>50</option>
                               <option value={100}>100</option>
-                            </select>
+                            </ProjectSelect>
                           </div>
                         </label>
                       </div>
@@ -7543,7 +7559,7 @@ export default function ProductsPage() {
                   if (failedIds.length > 0) {
                     try {
                       setRetryLoading(true);
-                      const failedProducts = await fetchProductsByIds(failedIds);
+                      const failedProducts = await fetchCatalogProductsByIds(failedIds);
                       if (failedProducts.length !== failedIds.length || failedIds.some((id) => !failedProducts.some((product) => product.id === id))) {
                         throw new Error("Not all failed products could be reloaded. The result remains available; check the missing products before retrying.");
                       }

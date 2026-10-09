@@ -7,9 +7,11 @@ import {
 } from "~/components/invoices/InvoiceChips";
 import Icon from "~/components/ui/Icon";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
+import ManualBillSummary from "~/components/manualBills/ManualBillSummary";
 import type { AppInvoice } from "~/lib/invoices";
 import {
   formatNpr,
+  getIdentitySourceLabel,
   openInvoicePrint,
   openInvoiceReceiptPrint,
 } from "~/lib/invoices";
@@ -24,6 +26,8 @@ type Props = {
   onVoidPayment?: (paymentId: string) => void;
   // the payment currently being voided — shows a loading state on that specific button
   voidingPaymentId?: string | null;
+  loading?: boolean;
+  error?: string | null;
 };
 
 // the main invoice detail modal — handles showing everything about a specific invoice
@@ -35,6 +39,8 @@ export default function InvoiceDetailModal({
   extraActions,
   onVoidPayment,
   voidingPaymentId,
+  loading,
+  error,
 }: Props) {
   useBodyScrollLock(open);
 
@@ -50,7 +56,87 @@ export default function InvoiceDetailModal({
     return () => window.removeEventListener("keydown", handleKeyDown);
   }, [open, onClose]);
 
-  if (!open || !invoice || typeof document === "undefined") return null;
+  if (!open || typeof document === "undefined") return null;
+
+  if (loading && !invoice) {
+    return createPortal(
+      <div className="app-modal-layer fixed inset-0">
+        <button
+          type="button"
+          className="absolute inset-0 bg-[rgba(0,0,0,0.3)] backdrop-blur-sm"
+          onClick={onClose}
+          aria-label="Close"
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Loading invoice details"
+          className="absolute left-1/2 top-1/2 flex w-[440px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] p-6 shadow-xl text-center"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-[#EFF6FF] text-[#2F67D8]">
+            <Icon name="refresh" className="animate-spin text-2xl" />
+          </div>
+          <div className="mt-4 text-[16px] font-extrabold text-[#000000]">
+            Loading invoice details…
+          </div>
+          <div className="mt-1 text-[12px] text-[#8C8889]">
+            Fetching the invoice record from the server.
+          </div>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-[40px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-bold text-[#000000] hover:bg-[#F3F4F6]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  if (error && !invoice) {
+    return createPortal(
+      <div className="app-modal-layer fixed inset-0">
+        <button
+          type="button"
+          className="absolute inset-0 bg-[rgba(0,0,0,0.3)] backdrop-blur-sm"
+          onClick={onClose}
+          aria-label="Close"
+        />
+        <div
+          role="dialog"
+          aria-modal="true"
+          aria-label="Invoice load error"
+          className="absolute left-1/2 top-1/2 flex w-[440px] max-w-[94vw] -translate-x-1/2 -translate-y-1/2 flex-col overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] p-6 shadow-xl text-center"
+        >
+          <div className="mx-auto flex h-12 w-12 items-center justify-center rounded-full bg-rose-50 text-rose-600">
+            <Icon name="error_outline" className="text-2xl" />
+          </div>
+          <div className="mt-4 text-[16px] font-extrabold text-[#000000]">
+            Unable to load invoice
+          </div>
+          <div className="mt-1 text-[12px] text-rose-700">
+            {error}
+          </div>
+          <div className="mt-5">
+            <button
+              type="button"
+              onClick={onClose}
+              className="h-[40px] w-full rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-bold text-[#000000] hover:bg-[#F3F4F6]"
+            >
+              Close
+            </button>
+          </div>
+        </div>
+      </div>,
+      document.body,
+    );
+  }
+
+  if (!invoice) return null;
 
   const totalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);
 
@@ -115,17 +201,36 @@ export default function InvoiceDetailModal({
               </div>
             </div>
           </div>
-          <div className="flex items-center gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
+          <div className="flex items-start gap-3 rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
             <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[12px] bg-[#FFFFFF] text-[#2F67D8]">
               <Icon name="person" />
             </div>
-            <div className="min-w-0">
-              <div className="truncate text-[13px] font-extrabold text-[#000000]">
-                {invoice.customerName}
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-1.5">
+                <span className="truncate text-[13px] font-extrabold text-[#000000]">
+                  {invoice.customerName}
+                </span>
+                <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#FFFFFF] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                  {getIdentitySourceLabel(invoice.customerIdentitySource)}
+                </span>
               </div>
-              <div className="truncate text-[12px] font-bold text-[#8C8889]">
-                {invoice.customerSubtitle}
-              </div>
+              {invoice.customerSubtitle ? (
+                <div className="mt-0.5 truncate text-[12px] font-bold text-[#8C8889]">
+                  {invoice.customerSubtitle}
+                </div>
+              ) : null}
+              {invoice.customerPanNo ? (
+                <div className="mt-1 text-[11px] font-semibold text-[#565449]">
+                  <span className="font-extrabold text-[#64748B]">PAN:</span>{" "}
+                  <span className="font-mono">{invoice.customerPanNo}</span>
+                </div>
+              ) : null}
+              {invoice.customerAddress ? (
+                <div className="mt-0.5 truncate text-[11px] font-semibold text-[#565449]">
+                  <span className="font-extrabold text-[#64748B]">Address:</span>{" "}
+                  {invoice.customerAddress}
+                </div>
+              ) : null}
             </div>
           </div>
           <div className="flex items-center gap-3 rounded-[14px] border border-[#2F67D8] bg-[#EFF6FF] p-3">
@@ -169,8 +274,18 @@ export default function InvoiceDetailModal({
                       className="flex items-center justify-between gap-3 rounded-[12px] px-3 py-3 transition hover:bg-[#F3F4F6]"
                     >
                       <div className="min-w-0">
-                        <div className="truncate font-bold text-[#000000]">
-                          {item.name}
+                        <div className="flex flex-wrap items-center gap-1.5">
+                          <span className="truncate font-bold text-[#000000]">
+                            {item.name}
+                          </span>
+                          {item.sku ? (
+                            <span className="font-mono text-[11px] font-semibold text-[#64748B]">
+                              ({item.sku})
+                            </span>
+                          ) : null}
+                          <span className="inline-flex items-center rounded-[6px] border border-[#E5E7EB] bg-[#FFFFFF] px-1.5 py-0.5 text-[10px] font-bold text-[#64748B]">
+                            {getIdentitySourceLabel(item.identitySource)}
+                          </span>
                         </div>
                         <div className="mt-[2px] text-[11px] text-[#8C8889]">
                           {formatNpr(item.unitPrice)} / unit
@@ -336,6 +451,24 @@ export default function InvoiceDetailModal({
               </div>
             ) : null}
 
+            {/* Manual paper bill recording / review section */}
+            {invoice.billingChannel !== "IRD_ELECTRONIC" ? (
+              <div className="overflow-hidden rounded-[16px] border border-[#DADDE3]">
+                <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[12px]">
+                  <div className="flex items-center gap-2 text-[12px] font-extrabold uppercase text-[#565449]">
+                    <Icon name="receipt" className="text-indigo-600" />
+                    Manual Paper Bill Reference
+                  </div>
+                  <span className="rounded-[999px] border border-indigo-200 bg-indigo-50 px-2 py-0.5 text-[10px] font-extrabold text-indigo-700">
+                    Physical Receipt
+                  </span>
+                </div>
+                <div className="p-4">
+                  <ManualBillSummary invoiceId={invoice.id} />
+                </div>
+              </div>
+            ) : null}
+
             {/* payment history list */}
             <div className="overflow-hidden rounded-[16px] border border-[#DADDE3]">
               <div className="flex items-center justify-between border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[12px]">
@@ -420,6 +553,21 @@ export default function InvoiceDetailModal({
                           <div className="mt-[4px] break-all font-semibold text-[#000000]">
                             {payment.reference || "-"}
                           </div>
+                          {payment.receivingDestinationSnapshot ? (
+                            <div className="mt-1.5 rounded-md border border-[#E2E8F0] bg-[#F8FAFC] p-1.5 text-[10px] text-[#334155]">
+                              <div className="font-extrabold text-[#0F172A]">
+                                {payment.receivingDestinationSnapshot.providerLabel} — {payment.receivingDestinationSnapshot.accountHolder}
+                              </div>
+                              <div className="font-mono text-[#64748B]">
+                                {payment.receivingDestinationSnapshot.accountIdentifier ?? "Identifier: None recorded"}
+                              </div>
+                            </div>
+                          ) : payment.method === "Fonepay" || payment.method === "Bank Transfer" ? (
+                            <div className="mt-1.5 text-[10px] font-semibold text-[#8C8889]">
+                              Receiving destination not recorded
+                            </div>
+                          ) : null}
+
                         </div>
                         {/* void button — only shown for successful, non-voided payments when admin */}
                         {onVoidPayment &&

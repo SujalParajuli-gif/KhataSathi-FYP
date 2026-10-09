@@ -13,9 +13,11 @@ import {
   listForPriceLookup,
   getOne,
   getMany,
+  getManyForCatalog,
   getByCode,
   create,
   update,
+  updateTaxCategory,
   deactivate,
   categories,
   importCsv,
@@ -99,6 +101,7 @@ router.get("/", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), list); // l
 router.get("/categories", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), categories); // returning all unique product categories
 router.get("/price-lookup", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), listForPriceLookup); // role-aware catalog used by Product Lookup
 router.get("/lookup", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getMany); // batch refresh for products already in a billing cart
+router.get("/catalog-lookup", requireRole("ADMIN", "MANAGER"), getManyForCatalog); // separately authorized batch refresh for catalog management
 router.get("/lookup-code", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getByCode); // exact scanner lookup by SKU or barcode
 router.post("/search-selections", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), recordSearchSelection); // intentional action on a stabilized search result
 router.get("/import-batches", requireRole("ADMIN", "MANAGER"), listImportBatches); // recent CSV/PDF/image import batches
@@ -145,6 +148,7 @@ router.get("/:id/delete-safety", requireRole("ADMIN", "MANAGER"), deleteSafety);
 router.post("/:id/discard-stock-and-delete", requireRole("ADMIN"), requireBusinessCapability("INVENTORY"), discardStockAndPermanentDelete); // admin-only cleanup for unreferenced products with non-zero stock
 router.delete("/:id", requireRole("ADMIN"), permanentDelete); // admin-only permanent delete for safe mistake records
 router.get("/:id", requireRole("ADMIN", "MANAGER", "CASHIER", "STAFF"), getOne); // fetching a single product with its brand info
+router.patch("/:id/tax-category", requireRole("ADMIN"), updateTaxCategory);
 router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can edit product info
 router.patch("/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivate); // admin and managers can deactivate products
 

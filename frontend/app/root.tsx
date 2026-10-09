@@ -12,6 +12,7 @@ import type { Route } from "./+types/root";
 import "./app.css";
 
 export const links: Route.LinksFunction = () => [
+  { rel: "preload", href: "/assets/fonts/Material_Symbols/MaterialSymbolsRounded.woff2", as: "font", type: "font/woff2", crossOrigin: "anonymous" },
   {
     rel: "preload",
     href: "/assets/fonts/IBM_Plex_Sans/IBMPlexSans-VariableFont_wdth,wght.ttf",

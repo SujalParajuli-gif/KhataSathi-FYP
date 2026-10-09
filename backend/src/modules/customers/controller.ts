@@ -1,5 +1,6 @@
 import { Request, Response } from "express";
 import * as custService from "./service";
+import { parseBusinessDate } from "../../lib/businessDate";
 
 // validating and trimming the customer name — we require it to be a non-empty string
 function parseCustomerName(value: unknown) {
@@ -97,6 +98,8 @@ export async function create(req: Request, res: Response) {
         req.body.wholesalePercent,
         "Wholesale percent",
       ),
+      panNo: custService.parseCustomerPan(req.body.panNo),
+      address: custService.parseCustomerAddress(req.body.address),
       createdById: req.user!.id,
       createdByRole:
         req.user!.role === "ADMIN"
@@ -107,6 +110,10 @@ export async function create(req: Request, res: Response) {
     });
     res.status(201).json(newCust);
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     // checking if the error is a known validation error from our parse functions
     if (
       err.message.includes("Customer name") ||
@@ -121,6 +128,49 @@ export async function create(req: Request, res: Response) {
       return;
     }
     console.error("Create customer error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+const QUICK_CUSTOMER_FIELDS = new Set(["name", "phone", "email", "panNo", "address"]);
+
+export async function createQuick(req: Request, res: Response) {
+  try {
+    const body = req.body && typeof req.body === "object" && !Array.isArray(req.body)
+      ? req.body as Record<string, unknown>
+      : {};
+    const unsupportedField = Object.keys(body).find((field) => !QUICK_CUSTOMER_FIELDS.has(field));
+    if (unsupportedField) {
+      res.status(400).json({ error: `Field '${unsupportedField}' is not allowed for quick customer creation.` });
+      return;
+    }
+
+    const customer = await custService.createCustomer({
+      name: parseCustomerName(body.name),
+      phone: parseOptionalText(body.phone),
+      email: parseOptionalText(body.email),
+      panNo: custService.parseCustomerPan(body.panNo),
+      address: custService.parseCustomerAddress(body.address),
+      loyaltyPercent: 0,
+      wholesalePercent: 0,
+      createdById: req.user!.id,
+      createdByRole: req.user!.role as "ADMIN" | "MANAGER" | "CASHIER",
+    });
+    res.status(201).json(customer);
+  } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
+    if (String(err?.message || "").includes("Customer name")) {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if (err.code === "P2002") {
+      res.status(409).json({ error: "Phone number already exists" });
+      return;
+    }
+    console.error("Quick create customer error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }
@@ -316,10 +366,20 @@ export async function update(req: Request, res: Response) {
     if (body.isActive !== undefined) {
       data.isActive = parseBooleanValue(body.isActive);
     }
+    if (body.panNo !== undefined) {
+      data.panNo = custService.parseCustomerPan(body.panNo);
+    }
+    if (body.address !== undefined) {
+      data.address = custService.parseCustomerAddress(body.address);
+    }
 
     const customer = await custService.updateCustomer(String(req.params.id), data);
     res.json(customer);
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
     if (
       err.message.includes("Customer name") ||
       err.message.includes("percent")
@@ -402,6 +462,292 @@ export async function deactivate(req: Request, res: Response) {
       return;
     }
     console.error("Deactivate customer error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+function parseProductIds(queryParam: unknown): string[] {
+  const values = Array.isArray(queryParam) ? queryParam : [queryParam];
+  if (values.some((value) => typeof value !== "string")) {
+    throw new custService.CustomerValidationError("productIds", "Product IDs must be strings.");
+  }
+  const rawList = (values as string[]).flatMap((value) => value.split(","));
+  if (rawList.some((id) => id.trim().length > 191 || /[\s,]/.test(id.trim()))) {
+    throw new custService.CustomerValidationError("productIds", "Invalid product ID.");
+  }
+  const unique = Array.from(
+    new Set(rawList.map((id) => id.trim()).filter((id) => id.length > 0)),
+  );
+  return unique;
+}
+
+export async function getProductPurchaseHistory(req: Request, res: Response) {
+  try {
+    const rawCustomerId = req.params.customerId ?? req.params.id;
+    if (typeof rawCustomerId !== "string" || !rawCustomerId.trim()) {
+      res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+    const customerId = rawCustomerId.trim();
+    if (customerId.length > 191) {
+      res.status(400).json({ error: "Customer ID cannot exceed 191 characters." });
+      return;
+    }
+
+    const queryInput = req.query.productIds !== undefined ? req.query.productIds : req.query.products;
+    if (queryInput === undefined || queryInput === null || queryInput === "") {
+      res.status(400).json({ error: "At least one product ID is required." });
+      return;
+    }
+
+    const productIds = parseProductIds(queryInput);
+    if (productIds.length === 0) {
+      res.status(400).json({ error: "At least one valid product ID is required." });
+      return;
+    }
+
+    if (productIds.length > 20) {
+      res.status(400).json({
+        error: "Cannot query history for more than 20 products at a time.",
+      });
+      return;
+    }
+
+    const history = await custService.getCustomerProductPurchaseHistory(
+      customerId,
+      productIds,
+    );
+    res.json({ history });
+  } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) {
+      res.status(400).json({ error: err.message, field: err.field });
+      return;
+    }
+    if (String(err?.message || "").includes("Customer not found")) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    console.error("Get customer product history error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function lookupCustomers(req: Request, res: Response) {
+  try {
+    if (req.query.q !== undefined && typeof req.query.q !== "string") {
+      res.status(400).json({ error: "Search query 'q' must be a string." });
+      return;
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q.length > 191) {
+      res.status(400).json({ error: "Search query cannot exceed 191 characters." });
+      return;
+    }
+
+    if (
+      req.query.match !== undefined &&
+      (typeof req.query.match !== "string" ||
+        (req.query.match !== "search" && req.query.match !== "pan"))
+    ) {
+      res.status(400).json({ error: "Match mode must be 'search' or 'pan'." });
+      return;
+    }
+    const match = (req.query.match as "search" | "pan") || "search";
+
+    if (match === "pan" && !q) {
+      res.status(400).json({ error: "Query 'q' is required when match is 'pan'." });
+      return;
+    }
+
+    let page = 1;
+    if (req.query.page !== undefined) {
+      if (typeof req.query.page !== "string" || !/^\d+$/.test(req.query.page.trim())) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      const parsedPage = Number(req.query.page.trim());
+      if (!Number.isInteger(parsedPage) || parsedPage < 1 || parsedPage > 1000) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      page = parsedPage;
+    }
+
+    let pageSize = 20;
+    if (req.query.pageSize !== undefined) {
+      if (typeof req.query.pageSize !== "string" || !/^\d+$/.test(req.query.pageSize.trim())) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 20." });
+        return;
+      }
+      const parsedSize = Number(req.query.pageSize.trim());
+      if (!Number.isInteger(parsedSize) || parsedSize < 1 || parsedSize > 20) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 20." });
+        return;
+      }
+      pageSize = parsedSize;
+    }
+
+    const result = await custService.lookupCustomers({
+      q,
+      match,
+      page,
+      pageSize,
+    });
+    res.json(result);
+  } catch (err) {
+    console.error("Lookup customers error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getCustomerPurchaseHistory(req: Request, res: Response) {
+  try {
+    const rawCustomerId = req.params.customerId ?? req.params.id;
+    if (typeof rawCustomerId !== "string" || !rawCustomerId.trim()) {
+      res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+    const customerId = rawCustomerId.trim();
+    if (customerId.length > 191) {
+      res.status(400).json({ error: "Customer ID cannot exceed 191 characters." });
+      return;
+    }
+
+    let productId: string | undefined;
+    if (req.query.productId !== undefined) {
+      if (typeof req.query.productId !== "string") {
+        res.status(400).json({ error: "Product ID must be a string." });
+        return;
+      }
+      const trimmed = req.query.productId.trim();
+      if (!trimmed || trimmed.length > 191 || /[\s,]/.test(trimmed)) {
+        res.status(400).json({ error: "Invalid product ID." });
+        return;
+      }
+      productId = trimmed;
+    }
+
+    if (req.query.q !== undefined && typeof req.query.q !== "string") {
+      res.status(400).json({ error: "Search query 'q' must be a string." });
+      return;
+    }
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    if (q.length > 191) {
+      res.status(400).json({ error: "Search query cannot exceed 191 characters." });
+      return;
+    }
+
+    let page = 1;
+    if (req.query.page !== undefined) {
+      if (typeof req.query.page !== "string" || !/^\d+$/.test(req.query.page.trim())) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      const parsedPage = Number(req.query.page.trim());
+      if (!Number.isInteger(parsedPage) || parsedPage < 1 || parsedPage > 1000) {
+        res.status(400).json({ error: "Page must be an integer between 1 and 1000." });
+        return;
+      }
+      page = parsedPage;
+    }
+
+    let pageSize = 20;
+    if (req.query.pageSize !== undefined) {
+      if (typeof req.query.pageSize !== "string" || !/^\d+$/.test(req.query.pageSize.trim())) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 50." });
+        return;
+      }
+      const parsedSize = Number(req.query.pageSize.trim());
+      if (!Number.isInteger(parsedSize) || parsedSize < 1 || parsedSize > 50) {
+        res.status(400).json({ error: "Page size must be an integer between 1 and 50." });
+        return;
+      }
+      pageSize = parsedSize;
+    }
+
+    let from: string | undefined;
+    if (req.query.from !== undefined) {
+      if (typeof req.query.from !== "string") {
+        res.status(400).json({ error: "Date 'from' must be a string." });
+        return;
+      }
+      const trimmedFrom = req.query.from.trim();
+      if (!trimmedFrom) {
+        res.status(400).json({ error: "Date 'from' cannot be empty." });
+        return;
+      }
+      try {
+        parseBusinessDate(trimmedFrom, "from");
+        from = trimmedFrom;
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'from' date." });
+        return;
+      }
+    }
+
+    let to: string | undefined;
+    if (req.query.to !== undefined) {
+      if (typeof req.query.to !== "string") {
+        res.status(400).json({ error: "Date 'to' must be a string." });
+        return;
+      }
+      const trimmedTo = req.query.to.trim();
+      if (!trimmedTo) {
+        res.status(400).json({ error: "Date 'to' cannot be empty." });
+        return;
+      }
+      try {
+        parseBusinessDate(trimmedTo, "to");
+        to = trimmedTo;
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'to' date." });
+        return;
+      }
+    }
+
+    if (from && to) {
+      const fromDate = parseBusinessDate(from, "from");
+      const toDate = parseBusinessDate(to, "to");
+      if (fromDate.getTime() > toDate.getTime()) {
+        res.status(400).json({ error: "The 'from' date cannot be after the 'to' date." });
+        return;
+      }
+    }
+
+    let state: "eligible" | "all" | "cancelled" | "superseded" | "returned" = "eligible";
+    if (req.query.state !== undefined) {
+      if (typeof req.query.state !== "string") {
+        res.status(400).json({ error: "State must be a string." });
+        return;
+      }
+      const normalizedState = req.query.state.trim().toLowerCase();
+      const validStates = ["eligible", "all", "cancelled", "superseded", "returned"] as const;
+      if (!validStates.includes(normalizedState as any)) {
+        res.status(400).json({
+          error: "Invalid state filter. Allowed values: eligible, all, cancelled, superseded, returned.",
+        });
+        return;
+      }
+      state = normalizedState as typeof state;
+    }
+
+    const result = await custService.getCustomerPurchaseHistory({
+      customerId,
+      productId,
+      q,
+      from,
+      to,
+      state,
+      page,
+      pageSize,
+    });
+    res.json(result);
+  } catch (err: any) {
+    if (String(err?.message || "").includes("Customer not found")) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    console.error("Get customer purchase history error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

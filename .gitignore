@@ -79,7 +79,16 @@ frontend/build/server/
 # repository hygiene
 *.md
 !README.md
+
+# Local AI workflow stays outside product publication.
+/AGENTS.md
+/GEMINI.md
 /.agents/
+/docs/engineering/
+/ThingsforAI/
+/tools/ks*
+/ks-*.cmd
+
 /document-storage/
 /scripts/
 /deploy/production.env.example
@@ -102,3 +111,7 @@ frontend/build/server/
 /backend/src/scripts/importSupplierProducts.ts
 /backend/src/scripts/prepareApprovedNeutralRateCatalog.ts
 /backend/src/scripts/remediateArchivedUserPhones.ts
+
+# Python generated files
+__pycache__/
+*.py[cod]

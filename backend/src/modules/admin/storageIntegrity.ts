@@ -11,7 +11,9 @@ export type StorageOwnerType =
   | "PROFILE_IMAGE"
   | "DOCUMENT_ORIGINAL"
   | "DOCUMENT_THUMBNAIL"
-  | "PRODUCT_IMPORT_SOURCE";
+  | "PRODUCT_IMPORT_SOURCE"
+  | "PAYMENT_ACCOUNT_QR"
+  | "PAYMENT_ACCOUNT_QR_THUMBNAIL";
 
 export type StorageReference = {
   storage: StorageArea;
@@ -294,7 +296,7 @@ export async function scanStorageIntegrity(input: {
 }
 
 export async function buildStorageIntegrityReport() {
-  const [products, users, documents, importBatches] = await Promise.all([
+  const [products, users, documents, importBatches, qrAssets] = await Promise.all([
     prisma.product.findMany({
       select: { id: true, name: true, sku: true, isActive: true, imageUrl: true, thumbnailUrl: true },
     }),
@@ -320,6 +322,22 @@ export async function buildStorageIntegrityReport() {
         sourceStoredPath: true,
         sourceStoredFileName: true,
         deletedAt: true,
+      },
+    }),
+    prisma.paymentReceivingQrAsset.findMany({
+      select: {
+        id: true,
+        fileName: true,
+        thumbnailFileName: true,
+        storedPath: true,
+        account: {
+          select: {
+            id: true,
+            providerLabel: true,
+            accountHolder: true,
+            enabled: true,
+          },
+        },
       },
     }),
   ]);
@@ -404,6 +422,32 @@ export async function buildStorageIntegrityReport() {
       ownerDeleted: Boolean(batch.deletedAt),
       relativePath: sourcePath,
     });
+  }
+
+  for (const qrAsset of qrAssets) {
+    const ownerLabel = `${qrAsset.account.providerLabel} - ${qrAsset.account.accountHolder} (QR)`;
+    const originalPath = documentRelativePath(qrAsset.storedPath, qrAsset.fileName);
+    if (originalPath) {
+      references.push({
+        storage: "DOCUMENTS",
+        ownerType: "PAYMENT_ACCOUNT_QR",
+        ownerId: qrAsset.id,
+        ownerLabel,
+        ownerInactive: !qrAsset.account.enabled,
+        relativePath: originalPath,
+      });
+    }
+    const thumbnailPath = documentRelativePath(qrAsset.storedPath, qrAsset.thumbnailFileName);
+    if (thumbnailPath) {
+      references.push({
+        storage: "DOCUMENTS",
+        ownerType: "PAYMENT_ACCOUNT_QR_THUMBNAIL",
+        ownerId: qrAsset.id,
+        ownerLabel,
+        ownerInactive: !qrAsset.account.enabled,
+        relativePath: thumbnailPath,
+      });
+    }
   }
 
   return scanStorageIntegrity({

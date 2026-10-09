@@ -10,6 +10,11 @@ import {
   DocumentValidationError,
 } from "./validation";
 import { StorageUnavailableError } from "../../lib/storageReadiness";
+import {
+  SaleEvidenceProtectedError,
+  PurchaseEvidenceProtectedError,
+} from "./protection";
+import { getBusinessCapabilities } from "../settings/capabilities";
 
 // uploading one or more document files with metadata
 export async function uploadDocuments(req: Request, res: Response) {
@@ -47,10 +52,19 @@ export async function uploadDocuments(req: Request, res: Response) {
       path: f.path,
     }));
 
+    const capabilities =
+      res.locals?.businessCapabilities ||
+      (await getBusinessCapabilities().catch(() => null));
+    const actorContext = {
+      role: req.user?.role,
+      capabilities,
+    };
+
     const documents = await documentService.createDocuments(
       uploadedFiles,
       parseResult.data,
       req.user!.id,
+      actorContext,
     );
 
     res.status(201).json({ documents });
@@ -63,6 +77,16 @@ export async function uploadDocuments(req: Request, res: Response) {
 
     if (err instanceof StorageUnavailableError) {
       res.status(503).json({ code: err.code, error: err.message });
+      return;
+    }
+
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
+
+    if (err instanceof PurchaseEvidenceProtectedError || err?.code === "PURCHASE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "PURCHASE_EVIDENCE_PROTECTED", error: err.message });
       return;
     }
 
@@ -88,7 +112,14 @@ export async function listDocuments(req: Request, res: Response) {
       return;
     }
 
-    const result = await documentService.listDocuments(parseResult.data, req.user!.role);
+    const capabilities =
+      res.locals?.businessCapabilities ||
+      (await getBusinessCapabilities().catch(() => null));
+    const result = await documentService.listDocuments(
+      parseResult.data,
+      req.user?.role,
+      { capabilities },
+    );
     res.json(result);
   } catch (err) {
     console.error("List documents error:", err);
@@ -99,7 +130,14 @@ export async function listDocuments(req: Request, res: Response) {
 // fetching a single document's metadata
 export async function getDocument(req: Request, res: Response) {
   try {
-    const doc = await documentService.getDocumentById(String(req.params.id), req.user!.role);
+    const capabilities =
+      res.locals?.businessCapabilities ||
+      (await getBusinessCapabilities().catch(() => null));
+    const doc = await documentService.getDocumentById(
+      String(req.params.id),
+      req.user?.role,
+      { capabilities },
+    );
     if (!doc) {
       res.status(404).json({ error: "Document not found" });
       return;
@@ -114,7 +152,14 @@ export async function getDocument(req: Request, res: Response) {
 // downloading or previewing the actual document file
 export async function getDocumentFile(req: Request, res: Response) {
   try {
-    const doc = await documentService.getDocumentById(String(req.params.id), req.user!.role);
+    const capabilities =
+      res.locals?.businessCapabilities ||
+      (await getBusinessCapabilities().catch(() => null));
+    const doc = await documentService.getDocumentForFileAccess(
+      String(req.params.id),
+      req.user?.role,
+      { capabilities },
+    );
     if (!doc) {
       res.status(404).json({ error: "Document not found" });
       return;
@@ -147,7 +192,14 @@ export async function getDocumentFile(req: Request, res: Response) {
 // exposing the original file or bypassing document visibility rules.
 export async function getDocumentThumbnail(req: Request, res: Response) {
   try {
-    const doc = await documentService.getDocumentById(String(req.params.id), req.user!.role);
+    const capabilities =
+      res.locals?.businessCapabilities ||
+      (await getBusinessCapabilities().catch(() => null));
+    const doc = await documentService.getDocumentForFileAccess(
+      String(req.params.id),
+      req.user?.role,
+      { capabilities },
+    );
     if (!doc) {
       res.status(404).json({ error: "Document not found" });
       return;
@@ -175,6 +227,14 @@ export async function deleteDocumentHandler(req: Request, res: Response) {
     const deleted = await documentService.deleteDocument(String(req.params.id), req.user!.id, req.user!.role);
     res.json({ message: "Document moved to Bin", document: deleted });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
+    if (err instanceof PurchaseEvidenceProtectedError || err?.code === "PURCHASE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "PURCHASE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;
@@ -199,6 +259,7 @@ export async function updateDocumentVisibilityHandler(req: Request, res: Respons
       String(req.params.id),
       parseResult.data.visibility,
       req.user!.id,
+      req.user!.role,
     );
 
     res.json({
@@ -208,6 +269,14 @@ export async function updateDocumentVisibilityHandler(req: Request, res: Respons
         : "Document already has this visibility",
     });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
+    if (err instanceof PurchaseEvidenceProtectedError || err?.code === "PURCHASE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "PURCHASE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;
@@ -232,6 +301,7 @@ export async function updateDocumentMetadataHandler(req: Request, res: Response)
       String(req.params.id),
       parseResult.data,
       req.user!.id,
+      req.user!.role,
     );
 
     res.json({
@@ -241,6 +311,14 @@ export async function updateDocumentMetadataHandler(req: Request, res: Response)
         : "Document details already match",
     });
   } catch (err: any) {
+    if (err instanceof SaleEvidenceProtectedError || err?.code === "SALE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "SALE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
+    if (err instanceof PurchaseEvidenceProtectedError || err?.code === "PURCHASE_EVIDENCE_PROTECTED") {
+      res.status(409).json({ code: err.code || "PURCHASE_EVIDENCE_PROTECTED", error: err.message });
+      return;
+    }
     if (err.message?.includes("not found")) {
       res.status(404).json({ error: err.message });
       return;

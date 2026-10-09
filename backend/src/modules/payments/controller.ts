@@ -1,13 +1,15 @@
 import { Request, Response } from "express";
 import { getPaymentGateway } from "./gateways";
+import { getEsewaConfig } from "./esewa";
 import {
   SUPPORTED_PAYMENT_METHODS,
   type SupportedPaymentMethod,
 } from "./service";
 import * as paymentService from "./service";
 import { formatZodIssues } from "../../lib/requestValidation";
-import { voidPaymentBodySchema } from "./validation";
+import { addPaymentBodySchema, voidPaymentBodySchema } from "./validation";
 import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
+import { ZodError } from "zod";
 
 function sendTransactionConflict(res: Response, err: unknown) {
   if (!(err instanceof FinancialTransactionConflictError)) return false;
@@ -32,49 +34,41 @@ function parsePositiveAmount(value: unknown) {
   return normalized;
 }
 
-// recording a manual payment against an invoice (cash, card, etc.)
+// recording a manual payment against an invoice (cash, fonepay, bank transfer, etc.)
 // the payment amount is added to the invoice's paidTotal and the paymentStatus is updated accordingly
 export async function addPayment(req: Request, res: Response) {
   try {
     const invoiceId = String(req.params.id);
-    const { method, amount, status, reference } = req.body;
-
-    // validating that the payment method is provided
-    if (!method) {
-      res.status(400).json({ error: "method is required" });
-      return;
-    }
-
-    // checking that the method is one of the supported types (CASH, CARD, ESEWA, BANK_TRANSFER)
-    if (!SUPPORTED_PAYMENT_METHODS.includes(method as SupportedPaymentMethod)) {
-      res.status(400).json({
-        error: `method must be one of: ${SUPPORTED_PAYMENT_METHODS.join(", ")}`,
-      });
-      return;
-    }
-
-    // validating the payment status — defaults to SUCCESS for manual entries
-    const validStatuses = ["PENDING", "SUCCESS", "FAILED"];
-    const paymentStatus = status || "SUCCESS";
-    if (!validStatuses.includes(paymentStatus)) {
-      res.status(400).json({
-        error: `status must be one of: ${validStatuses.join(", ")}`,
-      });
-      return;
-    }
+    const parsed = addPaymentBodySchema.parse(req.body);
 
     const payment = await paymentService.addPayment(
       invoiceId,
-      method as SupportedPaymentMethod,
-      parsePositiveAmount(amount),
-      paymentStatus,
+      parsed.method as SupportedPaymentMethod,
+      parsed.amount,
+      parsed.status || "SUCCESS",
       req.user!.id,
-      reference,
+      parsed.reference || undefined,
+      {
+        manualOperationKey: parsed.manualOperationKey,
+        receivingAccountId: parsed.receivingAccountId,
+        receivingAccountVersion: parsed.receivingAccountVersion,
+        manualReceiptConfirmed: parsed.manualReceiptConfirmed,
+      },
     );
 
     res.status(201).json(payment);
   } catch (err: any) {
+    if (err instanceof ZodError) {
+      res.status(400).json({ error: "Validation failed", issues: formatZodIssues(err) });
+      return;
+    }
     if (sendTransactionConflict(res, err)) return;
+
+    if (err.statusCode && err.statusCode !== 500) {
+      res.status(err.statusCode).json({ error: err.message, code: err.code });
+      return;
+    }
+
     // checking for various business rule violations
     if (
       err.message.includes("amount") ||
@@ -84,9 +78,13 @@ export async function addPayment(req: Request, res: Response) {
       err.message.includes("cancelled") ||
       err.message.includes("draft") ||
       err.message.includes("greater than zero") ||
-      err.message.includes("Zero-total")
+      err.message.includes("Zero-total") ||
+      err.message.includes("required") ||
+      err.message.includes("supported") ||
+      err.message.includes("Receiving destination") ||
+      err.message.includes("Manual operation key")
     ) {
-      res.status(400).json({ error: err.message });
+      res.status(400).json({ error: err.message, code: err.code });
       return;
     }
     console.error("Add payment error:", err);
@@ -221,6 +219,48 @@ export async function voidPayment(req: Request, res: Response) {
       return;
     }
     console.error("Void payment error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getGatewayDisplay(_req: Request, res: Response) {
+  try {
+    const config = getEsewaConfig();
+    let environment: "SANDBOX" | "UNVERIFIED" = "UNVERIFIED";
+    let label = "eSewa (Unverified Config)";
+
+    try {
+      const formUrl = new URL(config.formUrl);
+      const statusUrl = new URL(config.statusCheckUrl);
+
+      const isKnownFormHost =
+        formUrl.protocol === "https:" &&
+        (formUrl.hostname === "rc-epay.esewa.com.np" ||
+          formUrl.hostname === "rc.esewa.com.np" ||
+          formUrl.hostname === "uat.esewa.com.np");
+
+      const isKnownStatusHost =
+        statusUrl.protocol === "https:" &&
+        (statusUrl.hostname === "uat.esewa.com.np" ||
+          statusUrl.hostname === "rc.esewa.com.np" ||
+          statusUrl.hostname === "rc-epay.esewa.com.np");
+
+      if (isKnownFormHost && isKnownStatusHost) {
+        environment = "SANDBOX";
+        label = "eSewa Sandbox / Test";
+      }
+    } catch {
+      // malformed URLs remain UNVERIFIED
+    }
+
+    res.json({
+      esewa: {
+        environment,
+        label,
+      },
+    });
+  } catch (err) {
+    console.error("Get gateway display error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

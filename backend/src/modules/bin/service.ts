@@ -1,5 +1,11 @@
 import prisma from "../../db/prisma";
 import { permanentlyDeleteDocument, restoreDocument } from "../documents/service";
+import {
+  isSaleEvidenceSnapshot,
+  SaleEvidenceProtectedError,
+  isPurchaseEvidenceSnapshot,
+  PurchaseEvidenceProtectedError,
+} from "../documents/protection";
 import { removeImportSource } from "../products/importSourceStorage";
 
 async function removeStoredBatchSource(batchId: string) {
@@ -71,6 +77,12 @@ export async function restoreBinRecord(id: string, actorId: string) {
   if (!record) throw new Error("Bin record not found");
 
   if (record.entityType === "Document") {
+    if (isSaleEvidenceSnapshot(record.entitySnapshot)) {
+      throw new SaleEvidenceProtectedError();
+    }
+    if (isPurchaseEvidenceSnapshot(record.entitySnapshot)) {
+      throw new PurchaseEvidenceProtectedError();
+    }
     await restoreDocument(record.entityId);
   } else if (record.entityType === "ProductImportBatch") {
     await prisma.productImportBatch.update({
@@ -112,6 +124,12 @@ export async function permanentlyDeleteBinRecord(id: string, actorId: string) {
   if (!record) throw new Error("Bin record not found");
 
   if (record.entityType === "Document") {
+    if (isSaleEvidenceSnapshot(record.entitySnapshot)) {
+      throw new SaleEvidenceProtectedError();
+    }
+    if (isPurchaseEvidenceSnapshot(record.entitySnapshot)) {
+      throw new PurchaseEvidenceProtectedError();
+    }
     await permanentlyDeleteDocument(record.entityId);
   } else if (record.entityType === "ProductImportBatch") {
     await removeStoredBatchSource(record.entityId);
@@ -146,18 +164,9 @@ export async function permanentlyDeleteBinRecord(id: string, actorId: string) {
 }
 
 export async function runDueBinPurge(now = new Date()) {
-  const dueRecords = await prisma.softDeleteRecord.findMany({
-    where: {
-      purgedAt: null,
-      purgeAfter: { lte: now },
-      entityType: { in: AUTO_PURGE_ENTITY_TYPES },
-    },
-    orderBy: { purgeAfter: "asc" },
-    take: 100,
-  });
-
   const result = {
     documents: 0,
+    protectedDocuments: 0,
     productImportBatches: 0,
     alerts: 0,
     failed: 0,
@@ -169,35 +178,96 @@ export async function runDueBinPurge(now = new Date()) {
     }>,
   };
 
-  for (const record of dueRecords) {
-    try {
-      if (record.entityType === "Document") {
-        await permanentlyDeleteDocument(record.entityId);
-        await prisma.softDeleteRecord.update({
-          where: { id: record.id },
-          data: { purgedAt: new Date() },
-        });
-        result.documents += 1;
-      } else if (record.entityType === "ProductImportBatch") {
-        await removeStoredBatchSource(record.entityId);
-        await prisma.$transaction([
-          prisma.productImportRow.deleteMany({ where: { batchId: record.entityId } }),
-          prisma.productImportBatch.deleteMany({ where: { id: record.entityId } }),
-          prisma.softDeleteRecord.update({
+  const MAX_DESTRUCTIVE_ATTEMPTS = 100;
+  const PAGE_SIZE = 100;
+  let destructiveAttempts = 0;
+  let cursorId: string | null = null;
+
+  while (destructiveAttempts < MAX_DESTRUCTIVE_ATTEMPTS) {
+    const queryArgs: any = {
+      where: {
+        purgedAt: null,
+        purgeAfter: { lte: now },
+        entityType: { in: AUTO_PURGE_ENTITY_TYPES },
+      },
+      orderBy: [{ purgeAfter: "asc" }, { id: "asc" }],
+      take: PAGE_SIZE,
+    };
+
+    if (cursorId) {
+      queryArgs.cursor = { id: cursorId };
+      queryArgs.skip = 1;
+    }
+
+    const dueRecords = await prisma.softDeleteRecord.findMany(queryArgs);
+    if (dueRecords.length === 0) {
+      break;
+    }
+
+    for (const record of dueRecords) {
+      cursorId = record.id;
+      try {
+        if (record.entityType === "Document") {
+          if (
+            isSaleEvidenceSnapshot(record.entitySnapshot) ||
+            isPurchaseEvidenceSnapshot(record.entitySnapshot)
+          ) {
+            result.protectedDocuments += 1;
+            continue;
+          }
+
+          try {
+            await permanentlyDeleteDocument(record.entityId);
+          } catch (docError: any) {
+            if (
+              docError instanceof SaleEvidenceProtectedError ||
+              docError?.code === "SALE_EVIDENCE_PROTECTED" ||
+              docError instanceof PurchaseEvidenceProtectedError ||
+              docError?.code === "PURCHASE_EVIDENCE_PROTECTED"
+            ) {
+              result.protectedDocuments += 1;
+              continue;
+            }
+            throw docError;
+          }
+
+          await prisma.softDeleteRecord.update({
             where: { id: record.id },
             data: { purgedAt: new Date() },
-          }),
-        ]);
-        result.productImportBatches += 1;
+          });
+          result.documents += 1;
+          destructiveAttempts += 1;
+        } else if (record.entityType === "ProductImportBatch") {
+          await removeStoredBatchSource(record.entityId);
+          await prisma.$transaction([
+            prisma.productImportRow.deleteMany({ where: { batchId: record.entityId } }),
+            prisma.productImportBatch.deleteMany({ where: { id: record.entityId } }),
+            prisma.softDeleteRecord.update({
+              where: { id: record.id },
+              data: { purgedAt: new Date() },
+            }),
+          ]);
+          result.productImportBatches += 1;
+          destructiveAttempts += 1;
+        }
+      } catch (error: any) {
+        destructiveAttempts += 1;
+        result.failed += 1;
+        result.failures.push({
+          recordId: record.id,
+          entityType: record.entityType,
+          entityId: record.entityId,
+          message: error?.message || "Auto purge failed",
+        });
       }
-    } catch (error: any) {
-      result.failed += 1;
-      result.failures.push({
-        recordId: record.id,
-        entityType: record.entityType,
-        entityId: record.entityId,
-        message: error?.message || "Auto purge failed",
-      });
+
+      if (destructiveAttempts >= MAX_DESTRUCTIVE_ATTEMPTS) {
+        break;
+      }
+    }
+
+    if (dueRecords.length < PAGE_SIZE) {
+      break;
     }
   }
 
@@ -227,6 +297,7 @@ export async function runDueBinPurge(now = new Date()) {
           meta: {
             ranAt: now.toISOString(),
             purgedDocuments: result.documents,
+            protectedDocuments: result.protectedDocuments,
             purgedProductImportBatches: result.productImportBatches,
             purgedAlerts: result.alerts,
             failedCount: result.failed,
