@@ -1,6 +1,11 @@
 import prisma from "../../db/prisma";
 import { permanentlyDeleteDocument, restoreDocument } from "../documents/service";
-import { isSaleEvidenceSnapshot, SaleEvidenceProtectedError } from "../documents/protection";
+import {
+  isSaleEvidenceSnapshot,
+  SaleEvidenceProtectedError,
+  isPurchaseEvidenceSnapshot,
+  PurchaseEvidenceProtectedError,
+} from "../documents/protection";
 import { removeImportSource } from "../products/importSourceStorage";
 
 async function removeStoredBatchSource(batchId: string) {
@@ -75,6 +80,9 @@ export async function restoreBinRecord(id: string, actorId: string) {
     if (isSaleEvidenceSnapshot(record.entitySnapshot)) {
       throw new SaleEvidenceProtectedError();
     }
+    if (isPurchaseEvidenceSnapshot(record.entitySnapshot)) {
+      throw new PurchaseEvidenceProtectedError();
+    }
     await restoreDocument(record.entityId);
   } else if (record.entityType === "ProductImportBatch") {
     await prisma.productImportBatch.update({
@@ -118,6 +126,9 @@ export async function permanentlyDeleteBinRecord(id: string, actorId: string) {
   if (record.entityType === "Document") {
     if (isSaleEvidenceSnapshot(record.entitySnapshot)) {
       throw new SaleEvidenceProtectedError();
+    }
+    if (isPurchaseEvidenceSnapshot(record.entitySnapshot)) {
+      throw new PurchaseEvidenceProtectedError();
     }
     await permanentlyDeleteDocument(record.entityId);
   } else if (record.entityType === "ProductImportBatch") {
@@ -197,7 +208,10 @@ export async function runDueBinPurge(now = new Date()) {
       cursorId = record.id;
       try {
         if (record.entityType === "Document") {
-          if (isSaleEvidenceSnapshot(record.entitySnapshot)) {
+          if (
+            isSaleEvidenceSnapshot(record.entitySnapshot) ||
+            isPurchaseEvidenceSnapshot(record.entitySnapshot)
+          ) {
             result.protectedDocuments += 1;
             continue;
           }
@@ -207,7 +221,9 @@ export async function runDueBinPurge(now = new Date()) {
           } catch (docError: any) {
             if (
               docError instanceof SaleEvidenceProtectedError ||
-              docError?.code === "SALE_EVIDENCE_PROTECTED"
+              docError?.code === "SALE_EVIDENCE_PROTECTED" ||
+              docError instanceof PurchaseEvidenceProtectedError ||
+              docError?.code === "PURCHASE_EVIDENCE_PROTECTED"
             ) {
               result.protectedDocuments += 1;
               continue;

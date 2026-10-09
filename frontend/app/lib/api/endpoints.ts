@@ -2599,7 +2599,7 @@ export async function uploadProductImageApi(productId: string, file: File) {
 // --- Document Storage endpoints ---
 
 // the shape of document types the system supports
-export type DocumentType = "STOCK_BILL" | "PRODUCT_IMPORT" | "RETURN_PROOF" | "PAYMENT_PROOF" | "DISCOUNT_PROOF" | "GENERAL";
+export type DocumentType = "STOCK_BILL" | "PRODUCT_IMPORT" | "RETURN_PROOF" | "PAYMENT_PROOF" | "DISCOUNT_PROOF" | "GENERAL" | "PURCHASE_BILL";
 export type DocumentVisibility = "ALL_AUTHENTICATED" | "ADMIN_MANAGER" | "ADMIN_ONLY";
 
 // the shape of a document record from the backend

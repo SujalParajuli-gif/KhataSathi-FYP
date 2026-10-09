@@ -35,7 +35,8 @@ test("categorized history combines search, action, actor, and Nepal business dat
     from: "2026-09-22", to: "2026-09-22",
   }));
   assert.equal(capturedWhere.actorId, "staff-1");
-  assert.equal(capturedWhere.AND.length, 8);
+  assert.deepEqual(capturedWhere.AND[4], { action: { not: { startsWith: "PURCHASE_" } } });
+  assert.equal(capturedWhere.AND.length, 9);
   assert.deepEqual(capturedWhere.AND[0], {
     action: { not: { startsWith: "SALE_RECOVERY_" } },
   });
@@ -44,8 +45,8 @@ test("categorized history combines search, action, actor, and Nepal business dat
   });
   assert.deepEqual(capturedWhere.AND[1], { action: { not: { startsWith: "SALE_EVIDENCE_" } } });
   assert.deepEqual(capturedWhere.AND[2], { action: { not: { startsWith: "SALES_EVIDENCE_" } } });
-  assert.deepEqual(capturedWhere.AND[4], { action: { not: { equals: "MANUAL_BILL_ATTACHED" } } });
-  assert.deepEqual(capturedWhere.AND[5], {
+  assert.deepEqual(capturedWhere.AND[5], { action: { not: { equals: "MANUAL_BILL_ATTACHED" } } });
+  assert.deepEqual(capturedWhere.AND[6], {
     OR: [
       {
         action: {
@@ -61,10 +62,10 @@ test("categorized history combines search, action, actor, and Nepal business dat
       { entityType: { in: ["Product", "Brand"] } },
     ],
   });
-  assert.deepEqual(capturedWhere.AND[6], {
+  assert.deepEqual(capturedWhere.AND[7], {
     action: { contains: "PRICE" },
   });
-  assert.deepEqual(capturedWhere.AND[7], {
+  assert.deepEqual(capturedWhere.AND[8], {
     OR: [
       { action: { contains: "Jar" } },
       { entityType: { contains: "Jar" } },
@@ -100,6 +101,7 @@ test("listAuditLogs excludes restricted proof and PAYMENT_ACCOUNT_ audit actions
     { action: { not: { startsWith: "SALE_EVIDENCE_" } } },
     { action: { not: { startsWith: "SALES_EVIDENCE_" } } },
     { action: { not: { startsWith: "PAYMENT_ACCOUNT_" } } },
+    { action: { not: { startsWith: "PURCHASE_" } } },
     { action: { not: { equals: "MANUAL_BILL_ATTACHED" } } },
   ]);
 });

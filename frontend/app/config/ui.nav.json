@@ -113,6 +113,14 @@
                 ]
             },
             {
+                "key": "purchases",
+                "label": "Purchases",
+                "pageTitle": "Purchases",
+                "icon": "inventory_2",
+                "to": "/purchases",
+                "roles": ["admin", "manager"]
+            },
+            {
                 "key": "products",
                 "label": "Products",
                 "pageTitle": "Products",

@@ -376,7 +376,7 @@ test("generic /api/documents list excludes every SALE_BILL for all roles, even w
 
     // Default generic list
     await listDocuments({ page: 1, pageSize: 20 }, "ADMIN");
-    assert.deepEqual(capturedWhere.documentType, { not: "SALE_BILL" });
+    assert.deepEqual(capturedWhere.documentType, { notIn: ["SALE_BILL", "PURCHASE_BILL"] });
 
     // Explicit generic list with standard type
     await listDocuments({ page: 1, pageSize: 20, documentType: "STOCK_BILL" }, "ADMIN");
@@ -536,6 +536,7 @@ test("HTTP router access matrix: covers collection, detail, file, thumbnail, que
         if (key === "OR") return value.some((clause: any) => matchesWhere(row, clause));
         if (value && typeof value === "object") {
           if ("not" in value && row[key] === value.not) return false;
+          if ("notIn" in value && value.notIn.includes(row[key])) return false;
           if ("in" in value && !value.in.includes(row[key])) return false;
           if ("contains" in value && !String(row[key] ?? "").includes(value.contains)) return false;
           return true;

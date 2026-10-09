@@ -147,14 +147,25 @@ test("updateDocumentVisibility and updateDocumentMetadata protect no-change and 
   const auditDelegate = prisma.auditLog as any;
 
   const originalFindFirst = documentDelegate.findFirst;
+  const originalFindUnique = documentDelegate.findUnique;
   const originalUpdate = documentDelegate.update;
+  const originalUpdateMany = documentDelegate.updateMany;
   const originalAuditCreate = auditDelegate.create;
 
   const mockRow = buildFullDbRow();
+  let currentRow = { ...mockRow };
 
   try {
-    documentDelegate.findFirst = async () => mockRow;
-    documentDelegate.update = async ({ data }: any) => ({ ...mockRow, ...data });
+    documentDelegate.findFirst = async () => currentRow;
+    documentDelegate.findUnique = async () => currentRow;
+    documentDelegate.updateMany = async ({ data }: any) => {
+      currentRow = { ...currentRow, ...data };
+      return { count: 1 };
+    };
+    documentDelegate.update = async ({ data }: any) => {
+      currentRow = { ...currentRow, ...data };
+      return currentRow;
+    };
     auditDelegate.create = async () => ({ id: "audit-1" });
 
     // Visibility: no-change branch
@@ -204,6 +215,8 @@ test("updateDocumentVisibility and updateDocumentMetadata protect no-change and 
     assert.equal(metaChanged.document.title, "Updated Delivery Note Title");
   } finally {
     documentDelegate.findFirst = originalFindFirst;
+    documentDelegate.findUnique = originalFindUnique;
+    documentDelegate.updateMany = originalUpdateMany;
     documentDelegate.update = originalUpdate;
     auditDelegate.create = originalAuditCreate;
   }
@@ -213,6 +226,7 @@ test("deleteDocument masks recovery fields and preserves raw delete response sha
   const documentDelegate = prisma.document as any;
   const auditDelegate = prisma.auditLog as any;
   const originalFindFirst = documentDelegate.findFirst;
+  const originalUpdateMany = documentDelegate.updateMany;
   const originalTransaction = prisma.$transaction;
   const originalAuditCreate = auditDelegate.create;
 
@@ -220,7 +234,8 @@ test("deleteDocument masks recovery fields and preserves raw delete response sha
 
   try {
     documentDelegate.findFirst = async () => mockRow;
-    prisma.$transaction = (async (ops: any) => ops) as any;
+    documentDelegate.updateMany = async () => ({ count: 1 });
+    prisma.$transaction = (async (ops: any) => [{ count: 1 }, {}]) as any;
     auditDelegate.create = async () => ({ id: "audit-1" });
 
     const deleted = await deleteDocument("doc-sentinel-123", "admin-1", "ADMIN");
@@ -232,6 +247,7 @@ test("deleteDocument masks recovery fields and preserves raw delete response sha
     assert.equal(deleted.fileName, "delivery_note.pdf");
   } finally {
     documentDelegate.findFirst = originalFindFirst;
+    documentDelegate.updateMany = originalUpdateMany;
     prisma.$transaction = originalTransaction;
     auditDelegate.create = originalAuditCreate;
   }

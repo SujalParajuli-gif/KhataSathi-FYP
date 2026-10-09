@@ -107,6 +107,7 @@ test("runDueBinPurge retains SALE_BILL evidence (snapshot & live), purges safe r
     update: prisma.softDeleteRecord.update,
     docFindUnique: prisma.document.findUnique,
     docDelete: prisma.document.delete,
+    docDeleteMany: prisma.document.deleteMany,
     rowDeleteMany: prisma.productImportRow.deleteMany,
     batchFindUnique: prisma.productImportBatch.findUnique,
     batchDeleteMany: prisma.productImportBatch.deleteMany,
@@ -195,6 +196,7 @@ test("runDueBinPurge retains SALE_BILL evidence (snapshot & live), purges safe r
   };
 
   (prisma.document as any).delete = async () => ({});
+  (prisma.document as any).deleteMany = async () => ({ count: 1 });
   (prisma.softDeleteRecord as any).update = async ({ where }: any) => {
     updatedRecordIds.push(where.id);
     return {};
@@ -233,6 +235,7 @@ test("runDueBinPurge retains SALE_BILL evidence (snapshot & live), purges safe r
     (prisma.softDeleteRecord as any).update = originals.update;
     (prisma.document as any).findUnique = originals.docFindUnique;
     (prisma.document as any).delete = originals.docDelete;
+    (prisma.document as any).deleteMany = originals.docDeleteMany;
     (prisma.productImportRow as any).deleteMany = originals.rowDeleteMany;
     (prisma.productImportBatch as any).findUnique = originals.batchFindUnique;
     (prisma.productImportBatch as any).deleteMany = originals.batchDeleteMany;

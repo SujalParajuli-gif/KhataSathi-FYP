@@ -159,6 +159,7 @@ enum DocumentType {
   DISCOUNT_PROOF
   GENERAL
   SALE_BILL
+  PURCHASE_BILL
 }
 
 enum BillingChannel {
@@ -272,6 +273,8 @@ model User {
   paymentAccountsCreated      PaymentReceivingAccount[]    @relation("PaymentAccountCreator")
   paymentAccountsUpdated      PaymentReceivingAccount[]    @relation("PaymentAccountUpdater")
   paymentQrAssetsCreated      PaymentReceivingQrAsset[]    @relation("PaymentQrAssetCreator")
+  createdSupplierPayments     SupplierPayment[]            @relation("SupplierPaymentCreator")
+  voidedSupplierPayments      SupplierPayment[]            @relation("SupplierPaymentVoider")
 
   @@index([role, isActive, lastPresenceAt])
 }
@@ -360,6 +363,7 @@ model Product {
   searchDocument              ProductSearchDocument?
   searchSelections            ProductSearchSelection[]
   matchedImportRows           ProductImportRow[]             @relation("MatchedImportProduct")
+  purchaseBatchItems          StockReceiveBatchItem[]
 
   @@index([barcode])
   @@index([sku])
@@ -1074,16 +1078,92 @@ model StockReceiveBatch {
   billDate     DateTime?
   billAmount   Float?
   remarks      String?   @db.Text
+  supplierId   String?
+  payable      Decimal?  @db.Decimal(20, 2)
+  postedAt     DateTime?
+  operationKey String?   @unique @db.VarChar(120)
+  payloadHash  String?   @db.Char(64)
   createdById  String
   createdAt    DateTime  @default(now())
   updatedAt    DateTime  @updatedAt
 
   createdBy    User               @relation(fields: [createdById], references: [id])
+  supplier     Supplier?               @relation(fields: [supplierId], references: [id], onDelete: Restrict)
   transactions StockTransaction[]
+  items        StockReceiveBatchItem[]
+  payments     SupplierPayment[]
 
   @@index([supplierName])
   @@index([billDate])
   @@index([createdById])
+  @@index([supplierId])
+  @@index([postedAt])
+}
+
+model Supplier {
+  id        String   @id @default(cuid())
+  name      String
+  contact   String?
+  phone     String?
+  panNo     String?
+  address   String?  @db.Text
+  isActive  Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  batches StockReceiveBatch[]
+
+  @@index([name])
+  @@index([phone])
+  @@index([isActive])
+}
+
+model StockReceiveBatchItem {
+  id                  String   @id @default(cuid())
+  batchId             String
+  productId           String
+  lineOrder           Int
+  productNameSnapshot String
+  productSkuSnapshot  String
+  saleUnitSnapshot    String
+  inputUnit           String
+  inputQty            Decimal  @db.Decimal(18, 3)
+  conversionFactor    Decimal  @db.Decimal(18, 6)
+  stockQty            Decimal  @db.Decimal(18, 3)
+  unitAcquisitionCost Decimal  @db.Decimal(20, 6)
+  lineAmount          Decimal  @db.Decimal(20, 2)
+  createdAt           DateTime @default(now())
+
+  batch   StockReceiveBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  product Product           @relation(fields: [productId], references: [id], onDelete: Restrict)
+
+  @@unique([batchId, lineOrder])
+  @@index([batchId])
+  @@index([productId])
+}
+
+model SupplierPayment {
+  id           String    @id @default(cuid())
+  batchId      String
+  operationKey String    @unique @db.VarChar(120)
+  payloadHash  String    @db.Char(64)
+  amount       Decimal   @db.Decimal(20, 2)
+  method       String    @db.VarChar(30)
+  reference    String?   @db.VarChar(120)
+  paidAt       DateTime
+  createdById  String
+  createdAt    DateTime  @default(now())
+  voidedAt     DateTime?
+  voidedById   String?
+  voidReason   String?   @db.Text
+
+  batch     StockReceiveBatch @relation(fields: [batchId], references: [id], onDelete: Restrict)
+  createdBy User              @relation("SupplierPaymentCreator", fields: [createdById], references: [id], onDelete: Restrict)
+  voidedBy  User?             @relation("SupplierPaymentVoider", fields: [voidedById], references: [id], onDelete: Restrict)
+
+  @@index([batchId, createdAt])
+  @@index([createdById])
+  @@index([voidedById])
 }
 
 model AuditLog {

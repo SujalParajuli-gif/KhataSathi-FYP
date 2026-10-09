@@ -50,6 +50,7 @@ export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
     "/",
     "/analytics",
     "/products",
+    "/purchases",
     "/product-lookup",
     "/discounts",
     "/history",
@@ -84,6 +85,7 @@ export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
     "/",
     "/analytics",
     "/products",
+    "/purchases",
     "/billing",
     "/product-lookup",
     "/discounts",
@@ -158,6 +160,7 @@ export function hasCapabilityRouteAccess(
   pathname: string,
   capabilities: BusinessCapabilities,
 ) {
+  if (matchesAllowedRoute(pathname, "/purchases")) return capabilities.inventoryEnabled;
   if (matchesRouteGroup(pathname, POS_ROUTES)) return capabilities.posEnabled;
   if (matchesAllowedRoute(pathname, "/staff-requests")) {
     return capabilities.staffDraftRequestsEnabled;

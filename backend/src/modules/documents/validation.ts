@@ -8,6 +8,7 @@ export const DOCUMENT_TYPES = [
   "PAYMENT_PROOF",
   "DISCOUNT_PROOF",
   "GENERAL",
+  "PURCHASE_BILL",
 ] as const;
 
 export const DOCUMENT_VISIBILITIES = [

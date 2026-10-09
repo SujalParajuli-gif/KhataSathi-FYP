@@ -3,6 +3,14 @@ import {
     applyBusinessThresholds,
     getBusinessSettings,
 } from "../settings/service";
+import {
+    postFinancialPurchaseReceipt,
+    FinancialPurchaseReceiptInput,
+    FinancialPurchaseLineInput,
+} from "./purchases";
+
+export * from "./purchases";
+export * from "./purchaseValidation";
 
 export type ReceiveStockLineInput = {
     productId: string;
@@ -10,13 +18,20 @@ export type ReceiveStockLineInput = {
 };
 
 export type ReceiveStockBatchInput = {
-    supplierName: string;
+    supplierName?: string;
+    supplierId?: string;
     billNumber?: string;
     billDate?: string;
     billAmount?: number;
     remarks?: string;
     reason?: string;
-    lines: ReceiveStockLineInput[];
+    lines?: ReceiveStockLineInput[];
+    // Financial purchase extensions
+    isFinancial?: boolean;
+    payable?: string | number;
+    operationKey?: string;
+    financialLines?: FinancialPurchaseLineInput[];
+    documentIds?: string[];
 };
 
 type ProductLookup = {
@@ -96,9 +111,63 @@ export async function restockProduct(
     return applyBusinessThresholds(updatedProduct, settings);
 }
 
+function stripFinancialAuthorityScalars<T extends Record<string, any> | null | undefined>(batch: T): T {
+    if (!batch) return batch;
+    const {
+        supplierId: _supplierId,
+        payable: _payable,
+        postedAt: _postedAt,
+        operationKey: _operationKey,
+        payloadHash: _payloadHash,
+        ...legacyBatch
+    } = batch;
+    return legacyBatch as T;
+}
+
 // manually adjusting stock — the delta can be positive (adding) or negative (removing)
 // we use this for corrections like damaged goods, counting errors, or manual fixes
-export async function receiveStockBatch(input: ReceiveStockBatchInput, userId: string) {
+export async function receiveStockBatch(
+    input: ReceiveStockBatchInput,
+    userId: string,
+    actorRole?: string
+) {
+    // Explicit financial purchase branch
+    if (input.isFinancial || (input.supplierId && input.payable !== undefined && input.operationKey)) {
+        if (!actorRole) {
+            throw new Error(
+                "Explicit ADMIN or MANAGER actor role is required for financial purchase receipt"
+            );
+        }
+        if (!input.supplierId) {
+            throw new Error("Supplier ID is required for financial purchase receipt");
+        }
+        if (input.payable === undefined || input.payable === null) {
+            throw new Error("Payable amount is required for financial purchase receipt");
+        }
+        if (!input.operationKey) {
+            throw new Error("Operation key is required for financial purchase receipt");
+        }
+        const linesToPost = input.financialLines || (input.lines as any);
+        if (!linesToPost || !Array.isArray(linesToPost) || linesToPost.length === 0) {
+            throw new Error("At least one purchase receipt line is required");
+        }
+        return postFinancialPurchaseReceipt(
+            {
+                supplierId: input.supplierId,
+                billNumber: input.billNumber,
+                billDate: input.billDate,
+                remarks: input.remarks,
+                reason: input.reason,
+                payable: input.payable,
+                operationKey: input.operationKey,
+                lines: linesToPost,
+                documentIds: input.documentIds,
+            },
+            userId,
+            actorRole
+        );
+    }
+
     const supplierName = String(input.supplierName || "").trim();
     if (!supplierName) throw new Error("Supplier name is required");
 
@@ -247,7 +316,7 @@ export async function receiveStockBatch(input: ReceiveStockBatchInput, userId: s
                 orderBy: { createdAt: "asc" },
             },
         },
-    });
+    }).then((b) => stripFinancialAuthorityScalars(b));
 }
 
 export async function getStockReceiveBatchById(id: string) {
@@ -278,7 +347,7 @@ export async function getStockReceiveBatchById(id: string) {
     const historyItems = Array.isArray((auditLog?.meta as any)?.items)
         ? (auditLog?.meta as any).items
         : [];
-    return { ...batch, historyItems };
+    return { ...stripFinancialAuthorityScalars(batch), historyItems };
 }
 
 export async function recordStockReceiveBillUploadFailure(input: {
@@ -469,7 +538,7 @@ export async function getStockReceiveBatches(filters?: {
     ]);
 
     return {
-        batches,
+        batches: batches.map((b) => stripFinancialAuthorityScalars(b)),
         total,
         page,
         pageSize,

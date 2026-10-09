@@ -706,11 +706,16 @@ test("six generic document types retain permitted metadata/visibility/delete beh
 
   const originalFindFirst = documentDelegate.findFirst;
   const originalUpdate = documentDelegate.update;
+  const originalUpdateMany = documentDelegate.updateMany;
+  const originalFindUnique = documentDelegate.findUnique;
   const originalAuditCreate = auditDelegate.create;
   const originalTx = prisma.$transaction;
 
   try {
-    prisma.$transaction = (async (ops: any) => ops) as any;
+    prisma.$transaction = (async (ops: any) => typeof ops === "function" ? ops({
+      document: { updateMany: async () => ({ count: 1 }) },
+      softDeleteRecord: { create: async () => ({ id: "owned-bin-fixture" }) },
+    }) : ops) as any;
     auditDelegate.create = async () => ({ id: "audit-1" });
 
     for (const docType of genericTypes) {
@@ -742,7 +747,14 @@ test("six generic document types retain permitted metadata/visibility/delete beh
         purgeAfter: null,
       };
 
-      documentDelegate.findFirst = async () => mockDoc;
+      let currentDoc = { ...mockDoc };
+      documentDelegate.findFirst = async () => currentDoc;
+      documentDelegate.findUnique = async () => currentDoc;
+      documentDelegate.updateMany = async ({ where, data }: any) => {
+        assert.equal(where.documentType, docType);
+        currentDoc = { ...currentDoc, ...data };
+        return { count: 1 };
+      };
       documentDelegate.update = async ({ data }: any) => ({ ...mockDoc, ...data });
 
       // Visibility update succeeds
@@ -760,6 +772,8 @@ test("six generic document types retain permitted metadata/visibility/delete beh
   } finally {
     documentDelegate.findFirst = originalFindFirst;
     documentDelegate.update = originalUpdate;
+    documentDelegate.updateMany = originalUpdateMany;
+    documentDelegate.findUnique = originalFindUnique;
     auditDelegate.create = originalAuditCreate;
     prisma.$transaction = originalTx;
   }
