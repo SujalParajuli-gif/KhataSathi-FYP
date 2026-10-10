@@ -14,6 +14,7 @@ from tools.ks_supervisor.toolbox import (
     mission_guard, record_cycle, role_instructions, source_identity, verify_source,
 )
 from tools.ks_supervisor.types import ExecutionMode, Role, TaskContract
+from tools.ks_supervisor.repo import run_git
 
 
 class MissionTests(BaseSupervisorTestCase):
@@ -199,6 +200,133 @@ class MissionTests(BaseSupervisorTestCase):
         (self.repo_root / "README.md").write_text("changed after acceptance")
         with self.assertRaisesRegex(ValueError, "changed after closeout"):
             finish_mission(self.config, mission["mission_id"], ["README.md"], "TASK-2A-003", "Next")
+
+    def no_commit_fixture(self):
+        # Workflow state is ignored, as in the real repository, and never committed.
+        with (self.repo_root / ".git/info/exclude").open("a") as stream:
+            stream.write("\ndocs/engineering/ai/\ndocs/engineering/IMPLEMENTATION_CHECKPOINT.md\n")
+        mission = begin_mission(self.config)
+        self.write_task(task_id=self.task_id, status="ACCEPTED")
+        self.write_checkpoint(current_task=self.task_id, task_status="ACCEPTED")
+        (self.config.reports_dir / f"{self.task_id}-implementation.md").write_text("Status: COMPLETE\n")
+        (self.config.reviews_dir / f"{self.task_id}-review.md").write_text("Decision: APPROVED\nRemaining blockers: NONE\n")
+        record_cycle(self.config, self.task_id, "closeout", "ACCEPTED", mission_id=mission["mission_id"])
+        return mission
+
+    def test_no_commit_cli_seals_and_successor_preserves_history(self):
+        mission = self.no_commit_fixture()
+        handle = mission["mission_id"]
+        # Capture all current ledger bytes via the existing ledger API.
+        from tools.ks_supervisor.toolbox import CycleLedger
+        ledger = CycleLedger(self.config, handle).path
+        before = ledger.read_bytes()
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["--repo", str(self.repo_root), "mission", "finish", "--mission", handle,
+                         "--no-commit", "--next-task", "TASK-NEXT", "--next-title", "Next", "--json"])
+        self.assertEqual(code, 0, output.getvalue())
+        result = json.loads(output.getvalue())
+        self.assertEqual(result["commit"], {"status": "NOT APPLICABLE", "sha": None})
+        self.assertEqual(result["completion_head"], mission["initial_head"])
+        self.assertFalse(result["next_task"]["started"])
+        sealed = (self.config.runtime_dir / "v3/missions" / (handle + ".json")).read_bytes()
+        fresh = begin_mission(self.config)
+        self.assertIsNone(fresh["task_id"])
+        self.assertNotEqual(handle, fresh["mission_id"])
+        self.assertEqual(CycleLedger(self.config).budget("TASK-NEXT")["cycles_used"], 0)
+        self.assertEqual(ledger.read_bytes(), before)
+        self.assertEqual((self.config.runtime_dir / "v3/missions" / (handle + ".json")).read_bytes(), sealed)
+        with self.assertRaises(ValueError):
+            mission_guard(self.config, handle, self.task_id)
+
+    def test_no_commit_requires_explicit_mode_and_empty_scope(self):
+        mission = self.no_commit_fixture()
+        for kwargs in ({}, {"no_commit": True, "accepted_files": ["README.md"]}):
+            files = kwargs.pop("accepted_files", [])
+            with self.assertRaises(ValueError):
+                finish_mission(self.config, mission["mission_id"], files, **kwargs)
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            code = main(["--repo", str(self.repo_root), "mission", "begin", "--no-commit", "--json"])
+        self.assertEqual(code, 1)
+        self.assertIn("only valid", output.getvalue())
+
+    def test_no_commit_rejects_dirty_staged_changed_head_branch_task_and_budget(self):
+        mission = self.no_commit_fixture()
+        info = inspect_repository(self.config)
+        variants = ({"dirty_paths": ["backend/src/new.ts"]}, {"dirty_paths": ["unrelated.txt"]},
+                    {"staged_paths": ["README.md"]}, {"head": "a" * 40},
+                    {"branch": "main"}, {"active_task": "TASK-NEXT"},
+                    {"derived_state": "ACTIVATION_BOUNDARY_OLD_WORKFLOW"},
+                    {"budget": {"status": "HUMAN_INPUT_REQUIRED", "reason": "Login required"}})
+        for change in variants:
+            with self.subTest(change=change), patch("tools.ks_supervisor.toolbox.inspect_repository", return_value={**info, **change}):
+                with self.assertRaises(ValueError):
+                    finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+        self.assertEqual(mission_guard(self.config, mission["mission_id"], self.task_id)["status"], "ACTIVE")
+
+    def test_no_commit_rejects_missing_or_stale_physical_authority(self):
+        mission = self.no_commit_fixture()
+        for path, bad in ((self.config.tasks_dir / f"{self.task_id}.md", "Status: READY\n"),
+                          (self.config.reviews_dir / f"{self.task_id}-review.md", "Decision: FIX REQUIRED\nRemaining blockers: B-1\n"),
+                          (self.config.reports_dir / f"{self.task_id}-implementation.md", "Status: PARTIAL\n")):
+            # write_task uses a descriptive suffix; resolve the contract explicitly.
+            if path.parent == self.config.tasks_dir:
+                from tools.ks_supervisor.state import find_task_file
+                path = find_task_file(self.config.tasks_dir, self.task_id)
+            original = path.read_bytes()
+            path.write_text(bad)
+            with self.assertRaises(ValueError):
+                finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+            path.write_bytes(original)
+        report = self.config.reports_dir / f"{self.task_id}-implementation.md"
+        report.write_text("Status: COMPLETE\nChanged after closeout\n")
+        with self.assertRaisesRegex(ValueError, "changed after closeout"):
+            finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+
+    def test_no_commit_rejects_actual_staged_changes_even_with_fresh_closeout(self):
+        mission = self.no_commit_fixture()
+        (self.repo_root / "README.md").write_text("new unreviewed content")
+        run_git(self.repo_root, "add", "README.md")
+        record_cycle(self.config, self.task_id, "closeout", "ACCEPTED", mission_id=mission["mission_id"])
+        with self.assertRaisesRegex(ValueError, "clean worktree/index"):
+            finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+        self.assertEqual(mission_guard(self.config, mission["mission_id"], self.task_id)["status"], "ACTIVE")
+
+    def test_no_commit_requires_recorded_closeout(self):
+        mission = self.no_commit_fixture()
+        from tools.ks_supervisor.toolbox import CycleLedger
+        # Mock absent closeout facts; preserve the actual ledger.
+        with patch.object(CycleLedger, "records", return_value=[]):
+            with self.assertRaisesRegex(ValueError, "recorded closeout"):
+                finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+
+    def test_no_commit_succession_rejects_changed_evidence_and_content(self):
+        mission = self.no_commit_fixture()
+        finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+        report = self.config.reports_dir / f"{self.task_id}-implementation.md"
+        report.write_text("Status: COMPLETE\nNew unreviewed section\n")
+        with self.assertRaisesRegex(ValueError, "evidence changed"):
+            begin_mission(self.config)
+        report.write_text("Status: COMPLETE\n")
+        (self.repo_root / "README.md").write_text("unreviewed product edits")
+        with self.assertRaisesRegex(ValueError, "content changed"):
+            begin_mission(self.config)
+
+    def test_no_commit_manual_reanchor_retains_explicit_authorization_gate(self):
+        mission = self.no_commit_fixture()
+        finish_mission(self.config, mission["mission_id"], [], no_commit=True)
+        self.write_task(task_id="TASK-MANUAL", status="ACCEPTED")
+        self.write_checkpoint(current_task="TASK-MANUAL", task_status="ACCEPTED")
+        (self.config.reports_dir / "TASK-MANUAL-implementation.md").write_text("Status: COMPLETE\n")
+        (self.config.reviews_dir / "TASK-MANUAL-review.md").write_text("Decision: APPROVED\nRemaining blockers: NONE\n")
+        (self.repo_root / "README.md").write_text("accepted tooling repair")
+        run_git(self.repo_root, "add", "README.md")
+        run_git(self.repo_root, "commit", "-m", "TASK-MANUAL: accepted repair")
+        with self.assertRaisesRegex(ValueError, "explicit authorization"):
+            begin_mission(self.config)
+        fresh = begin_mission(self.config, authorization="User explicitly approves supporting repair and recovery")
+        self.assertIsNone(fresh["task_id"])
 
     def test_entrypoints_and_controller_reference_shared_roles_not_duplicate_prompts(self):
         root = Path(__file__).resolve().parents[3]

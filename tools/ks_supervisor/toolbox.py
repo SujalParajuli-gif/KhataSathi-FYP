@@ -819,6 +819,35 @@ def _save_mission(config, data):
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
 
 
+def _no_commit_completion_head(config, mission):
+    """Validate a sealed no-commit result against physical accepted authority."""
+    result = mission.get("result", {})
+    commit = result.get("commit", {})
+    head = result.get("completion_head")
+    if (result.get("completion_kind") != "NO_COMMIT" or commit.get("status") != "NOT APPLICABLE"
+            or commit.get("sha") is not None or head != mission["initial_head"]
+            or not head or result.get("accepted_files") != []):
+        raise ValueError("Invalid no-commit completion anchor")
+    paths = {"contract": find_task_file(config.tasks_dir, mission["task_id"]),
+             "report": find_report_file(config.reports_dir, mission["task_id"]),
+             "review": find_review_file(config.reviews_dir, mission["task_id"])}
+    hashes = result.get("artifact_sha256", {})
+    if any(not path or hashes.get(kind) != compute_file_hash(_safe_path(config, path))
+           for kind, path in paths.items()):
+        raise ValueError("No-commit accepted evidence changed after completion")
+    task = parse_task_contract(paths["contract"])
+    review = parse_review(paths["review"])
+    report = parse_report(paths["report"])
+    closeouts = [r for r in CycleLedger(config, mission["mission_id"]).records()
+                 if r["task_id"] == mission["task_id"] and r["phase"] == "closeout" and r["outcome"] == "ACCEPTED"]
+    if (not task or task.status != "ACCEPTED" or not review or review.decision != "APPROVED"
+            or review.blockers or not review.blockers_explicitly_empty or not report or not report.is_complete
+            or not closeouts or closeouts[-1].get("content_identity") != result.get("content_identity")
+            or closeouts[-1].get("senior_review_sha256") != hashes["review"]):
+        raise ValueError("No-commit completion lacks accepted closeout authority")
+    return head
+
+
 def begin_mission(config, previous_mission=None, authorization=""):
     """Bind facts for one Codex invocation; no task or role execution."""
     with SupervisorLock(config, role="V3_MISSION_BIND"):
@@ -857,16 +886,24 @@ def begin_mission(config, previous_mission=None, authorization=""):
             result = old.get("result", {})
             if (not old["task_id"]
                     or result.get("status") != "MISSION COMPLETE" or result.get("result") != "ACCEPTED"
-                    or result.get("task_id") != old["task_id"]
-                    or not result.get("commit", {}).get("sha")):
+                    or result.get("task_id") != old["task_id"]):
                 raise ValueError("Fresh mission requires observed completed task/commit authority")
-            if old["task_id"] != info["active_task"] or result["commit"]["sha"] != info["head"]:
+            completion_head = (_no_commit_completion_head(config, old)
+                               if result.get("completion_kind") == "NO_COMMIT"
+                               else result.get("commit", {}).get("sha"))
+            if not completion_head:
+                raise ValueError("Fresh mission requires observed completed task/commit authority")
+            if old["task_id"] == info["active_task"] and completion_head == info["head"]:
+                if (result.get("completion_kind") == "NO_COMMIT"
+                        and result.get("content_identity") != info["content_identity"]):
+                    raise ValueError("No-commit completion content changed before succession")
+            else:
                 # A manually reviewed task may finish between ks-start missions.
                 # Re-anchor prospectively; never change the sealed prior result.
                 old_task = parse_task_contract(find_task_file(config.tasks_dir, old["task_id"]))
                 old_review = parse_review(find_review_file(config.reviews_dir, old["task_id"]))
                 old_report = parse_report(find_report_file(config.reports_dir, old["task_id"]))
-                ancestor, _, _ = run_git(config.repo_root, "merge-base", "--is-ancestor", result["commit"]["sha"], info["head"])
+                ancestor, _, _ = run_git(config.repo_root, "merge-base", "--is-ancestor", completion_head, info["head"])
                 code, subject, _ = run_git(config.repo_root, "log", "-1", "--format=%s")
                 if (not authorization.strip() or not old_task or old_task.status != "ACCEPTED"
                         or not old_review or old_review.decision != "APPROVED" or old_review.blockers
@@ -1218,7 +1255,7 @@ def transition_dashboard_policy(config, task_id, mission_id, blocked_run_id, aut
                              history_sha256=_identity(baseline), authority_snapshot=_identity(_protected(config, task_id)))
 
 
-def finish_mission(config, mission_id, accepted_files, next_task_id="", next_title=""):
+def finish_mission(config, mission_id, accepted_files, next_task_id="", next_title="", no_commit=False):
     """Validate observed completion/commit, report a candidate, seal task boundary.
 
     Codex runs existing closeout and hygiene/commit policy; this tool does neither.
@@ -1258,6 +1295,30 @@ def finish_mission(config, mission_id, accepted_files, next_task_id="", next_tit
         if next_task_id == task_id:
             raise ValueError("Next candidate must differ from completed mission")
         paths = sorted(set(accepted_files))
+        if no_commit:
+            if paths:
+                raise ValueError("No-commit completion cannot include accepted commit files")
+            if (info["dirty_paths"] or info["staged_paths"]
+                    or info["head"] != data["initial_head"]
+                    or info["active_task"] != task_id or not info["accepted"]
+                    or info["derived_state"] != "ACCEPTED_NO_COMMIT_WORTHY_CHANGES"
+                    or not review.blockers_explicitly_empty):
+                raise ValueError("No-commit completion requires unchanged HEAD, accepted task and clean worktree/index")
+            data["status"] = "COMPLETE"
+            data["events"] += ["NO COMMIT REQUIRED", "REANCHOR", "REPORT NEXT TASK", "STOP"]
+            data["result"] = {"status": "MISSION COMPLETE", "task_id": task_id, "result": "ACCEPTED",
+                              "senior_review": "ACCEPTED", "remaining_blockers": 0, "closeout": "COMPLETE",
+                              "completion_kind": "NO_COMMIT", "completion_head": info["head"],
+                              "commit": {"status": "NOT APPLICABLE", "sha": None}, "accepted_files": [],
+                              "content_identity": info["content_identity"],
+                              "artifact_sha256": {"contract": compute_file_hash(task_path),
+                                                  "report": compute_file_hash(report_path),
+                                                  "review": compute_file_hash(review_path)},
+                              "working_tree": "CLEAN", "dirty_paths": [],
+                              "next_task": {"id": next_task_id or None, "title": next_title, "started": False},
+                              "stop": "KS-START STOPPED AT TASK BOUNDARY. Run ks-start to begin the next task."}
+            _save_mission(config, data)
+            return data["result"]
         if not paths:
             raise ValueError("A task commit requires explicit accepted scope")
         for name in paths:

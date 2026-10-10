@@ -296,6 +296,7 @@ def main(argv: Optional[list] = None) -> int:
     mission_parser.add_argument("--authorization", default="")
     mission_parser.add_argument("--task", default="")
     mission_parser.add_argument("--accepted-file", action="append", default=[])
+    mission_parser.add_argument("--no-commit", action="store_true", help="Finish accepted work without commit files; requires unchanged HEAD and clean index/worktree")
     mission_parser.add_argument("--next-task", default="")
     mission_parser.add_argument("--next-title", default="")
     mission_parser.add_argument("--json", action="store_true")
@@ -347,12 +348,14 @@ def main(argv: Optional[list] = None) -> int:
             elif args.command == "role-instructions":
                 result = role_instructions(config, args.role, args.task, args.action, args.mission)
             elif args.command == "mission":
+                if args.no_commit and args.operation != "finish":
+                    raise ValueError("--no-commit is only valid for mission finish")
                 if args.operation == "begin":
                     result = begin_mission(config, args.previous_mission, args.authorization)
                 elif args.operation == "bind":
                     result = bind_mission(config, args.mission or "", args.task)
                 else:
-                    result = finish_mission(config, args.mission or "", args.accepted_file, args.next_task, args.next_title)
+                    result = finish_mission(config, args.mission or "", args.accepted_file, args.next_task, args.next_title, no_commit=args.no_commit)
             else:
                 result = record_cycle(config, args.task, args.phase, args.outcome, args.blocker, args.reason, args.failure_signature, mission_id=args.mission)
             print(json.dumps(result, indent=2, default=str))
