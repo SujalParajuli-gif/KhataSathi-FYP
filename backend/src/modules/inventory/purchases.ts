@@ -215,6 +215,44 @@ export async function getSupplierById(id: string) {
     return supplier;
 }
 
+/** All recorded supplier receipts, independent of receipt filters/pagination. */
+export async function getSupplierBalance(id: string, actorRole: string) {
+    validatePurchaseActorRole(actorRole);
+    const supplierId = validateScalarId(id, "Supplier ID");
+    // Aggregates can exceed a single Decimal(20,2) receipt's precision.
+    const BalanceDecimal = Prisma.Decimal.clone({ precision: 50 });
+    return prisma.$transaction(async (tx) => {
+        const supplier = await tx.supplier.findUnique({
+            where: { id: supplierId },
+            select: { id: true, name: true, isActive: true },
+        });
+        if (!supplier) throw new Error("Supplier not found");
+        const financial = { supplierId, payable: { not: null }, postedAt: { not: null } };
+        const receipts = await tx.stockReceiveBatch.aggregate({
+            where: financial, _sum: { payable: true }, _count: { id: true },
+        });
+        const payments = await tx.supplierPayment.aggregate({
+            where: { voidedAt: null, batch: financial }, _sum: { amount: true },
+        });
+        const unknownReceiptCount = await tx.stockReceiveBatch.count({
+            where: { supplierId, OR: [{ payable: null }, { postedAt: null }] },
+        });
+        const payable = new BalanceDecimal(receipts._sum.payable?.toString() ?? "0");
+        const paid = new BalanceDecimal(payments._sum.amount?.toString() ?? "0");
+        const due = payable.sub(paid).toFixed(2);
+        return {
+            supplier,
+            basis: "RECORDED_SUPPLIER_RECEIPTS" as const,
+            postedReceiptCount: receipts._count.id,
+            unknownReceiptCount,
+            payable: payable.toFixed(2),
+            paid: paid.toFixed(2),
+            due,
+            recordedBalance: unknownReceiptCount ? null : due,
+        };
+    }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+}
+
 export async function listSuppliers(params?: {
     q?: string;
     page?: number;

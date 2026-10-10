@@ -3,6 +3,7 @@ import multer from "multer";
 import { restock, adjust, lowStock, stockTransactions, receiveBatch, receiveBatches, receiveBatchDetail } from "./controller";
 import {
   getSuppliersHandler,
+  getSupplierBalanceHandler,
   createSupplierHandler,
   updateSupplierHandler,
   deactivateSupplierHandler,
@@ -87,6 +88,7 @@ router.get("/transactions", stockTransactions); // viewing the stock transaction
 
 // Financial purchase & supplier management (ADMIN & MANAGER only)
 router.get("/suppliers", requireRole("ADMIN", "MANAGER"), getSuppliersHandler);
+router.get("/suppliers/:id/balance", requireRole("ADMIN", "MANAGER"), getSupplierBalanceHandler);
 router.post("/suppliers", requireRole("ADMIN", "MANAGER"), createSupplierHandler);
 router.patch("/suppliers/:id", requireRole("ADMIN", "MANAGER"), updateSupplierHandler);
 router.post("/suppliers/:id/deactivate", requireRole("ADMIN", "MANAGER"), deactivateSupplierHandler);

@@ -1,6 +1,12 @@
 import api from "./client";
 
 export type Supplier = { id: string; name: string; contact: string | null; phone: string | null; panNo: string | null; address: string | null; isActive: boolean };
+export type SupplierBalance = {
+  supplier: Pick<Supplier, "id" | "name" | "isActive">;
+  basis: "RECORDED_SUPPLIER_RECEIPTS";
+  postedReceiptCount: number; unknownReceiptCount: number;
+  payable: string; paid: string; due: string; recordedBalance: string | null;
+};
 export type PurchaseLine = { productId: string; inputUnit: string; inputQty: string; conversionFactor: string; unitAcquisitionCost: string };
 export type ReceiptInput = { supplierId: string; billNumber: string; billDate: string | null; remarks: string; payable: string; lines: PurchaseLine[]; documentIds: string[]; operationKey: string };
 export type PaymentInput = { amount: string; method: "CASH" | "BANK_TRANSFER" | "OTHER"; reference: string; paidAt: string; operationKey: string };
@@ -9,6 +15,9 @@ export type ReceiptSummary = { id: string; capturedSupplierName: string | null; 
 export type PurchaseReceipt = { id: string; supplierName: string; supplier: Supplier | null; billNumber: string | null; billDate: string | null; isFinancial: boolean; payable: string | null; paidTotal: string | null; dueAmount: string | null; paymentStatus: string; items: (PurchaseLine & { id: string; productName: string; sku: string; stockQty: string; lineAmount: string })[]; payments: PurchasePayment[]; documents: { id: string; title: string | null; fileName: string }[] };
 export type Page<T> = { total: number; page: number; pageSize: number; totalPages: number; items: T[] };
 const root = "/api/inventory";
+export async function supplierBalance(id: string, signal?: AbortSignal) {
+  return (await api.get<{ balance: SupplierBalance }>(`${root}/suppliers/${encodeURIComponent(id)}/balance`, { signal })).data.balance;
+}
 export async function suppliers(params: { q?: string; page?: number; includeInactive?: boolean }, signal?: AbortSignal) {
   return (await api.get<{ suppliers: Supplier[]; totalPages: number }>(`${root}/suppliers`, { params: { pageSize: 20, ...params }, signal })).data;
 }

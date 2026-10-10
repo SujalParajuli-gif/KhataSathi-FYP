@@ -3,6 +3,7 @@ import { z } from "zod/v4";
 import {
   receiveStockBatch,
   listSuppliers,
+  getSupplierBalance,
   createSupplier,
   updateSupplier,
   deactivateSupplier,
@@ -332,6 +333,18 @@ export function handlePurchaseError(error: unknown, res: Response): void {
    ========================================================================= */
 
 // 1. GET /suppliers
+export async function getSupplierBalanceHandler(req: Request, res: Response): Promise<void> {
+  try {
+    if (!req.user) { res.status(401).json({ error: "Not authenticated" }); return; }
+    const id = boundedStringId.safeParse(req.params.id);
+    if (!id.success || !z.object({}).strict().safeParse(req.query).success) {
+      res.status(400).json({ error: "Invalid supplier balance parameters" });
+      return;
+    }
+    res.json({ balance: await getSupplierBalance(id.data, req.user.role) });
+  } catch (error) { handlePurchaseError(error, res); }
+}
+
 export async function getSuppliersHandler(req: Request, res: Response): Promise<void> {
   try {
     const queryResult = listSuppliersQuerySchema.safeParse(req.query);
