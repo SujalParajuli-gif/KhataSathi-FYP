@@ -61,7 +61,7 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
 
   // summing only the successful payments — pending and failed ones do not count toward the total
   const paidTotal = getSuccessfulChargePaidTotal(invoice.payments);
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0);
 
   // determining the payment status based on how much has been paid vs the net total
   let paymentStatus: "UNPAID" | "PARTIALLY_PAID" | "PAID" | "CANCELLED" =
@@ -72,7 +72,7 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
     paymentStatus = "PAID"; // if the net total is 0 or less (full discount), it is auto-paid
   } else if (paidTotal >= paymentTargetTotal) {
     paymentStatus = "PAID";
-  } else if (paidTotal > 0) {
+  } else if (paidTotal + Number(invoice.creditApplied || 0) > 0) {
     paymentStatus = "PARTIALLY_PAID"; // some money received but not the full amount yet
   }
 
@@ -87,6 +87,7 @@ async function recomputePaymentStatusTx(tx: any, invoiceId: string) {
     netTotal: invoice.netTotal,
     paymentTargetTotal,
     returnAdjustment: invoice.returnAdjustment,
+    creditApplied: invoice.creditApplied,
   };
 }
 
@@ -101,6 +102,7 @@ function ensureInvoiceCanAcceptPayment(invoice: {
   payments: PaymentLedgerEntry[];
   netTotal: number;
   returnAdjustment?: number;
+  creditApplied?: number;
 }) {
   if (invoice.status !== "FINALIZED") {
     throw new Error("Cannot add payment to a draft invoice");
@@ -111,7 +113,7 @@ function ensureInvoiceCanAcceptPayment(invoice: {
   if (invoice.paymentStatus === "PAID") {
     throw new Error("Invoice is already fully paid");
   }
-  if (getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0) <= 0) {
+  if (getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0) <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
 }
@@ -435,10 +437,10 @@ export async function addPayment(
 
       if (normalizedStatus === "SUCCESS") {
         const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
-        const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0);
+        const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0);
         if (currentPaid + normalizedAmount > paymentTargetTotal) {
           const err: any = new Error(
-            `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0)}`,
+            `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0)}`,
           );
           err.statusCode = 400;
           err.code = "OVERPAYMENT";
@@ -508,7 +510,7 @@ export async function addPayment(
               nextStatus: next.paymentStatus,
               paidTotal: next.paidTotal,
               netTotal: next.netTotal,
-              remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0),
+              remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0, next.creditApplied || 0),
             },
           },
         });
@@ -552,6 +554,7 @@ type InvoiceForPayment = {
   paymentStatus: string;
   netTotal: number;
   returnAdjustment?: number;
+  creditApplied?: number;
   payments: PaymentLedgerEntry[];
 };
 
@@ -572,7 +575,7 @@ export async function createEsewaPaymentIntentTx(
   }
 
   const currentPaid = getSuccessfulChargePaidTotal(invoice.payments);
-  const remainingDue = getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0);
+  const remainingDue = getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0);
   if (normalizedAmount > remainingDue) {
     throw new Error("Payment amount cannot exceed the remaining due.");
   }
@@ -667,7 +670,7 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
 
     // checking that marking this payment as successful would not cause overpayment
     const currentPaid = getSuccessfulChargePaidTotal(payment.invoice.payments, payment.id);
-    const paymentTargetTotal = getInvoicePaymentTargetTotal(payment.invoice.netTotal, payment.invoice.returnAdjustment || 0);
+    const paymentTargetTotal = getInvoicePaymentTargetTotal(payment.invoice.netTotal, payment.invoice.returnAdjustment || 0, payment.invoice.creditApplied || 0);
     if (currentPaid + payment.amount > paymentTargetTotal) {
       throw new Error("Verified eSewa payment would overpay the invoice.");
     }
@@ -702,7 +705,7 @@ async function markEsewaPaymentSuccess(paymentId: string, reference?: string | n
           nextStatus: next.paymentStatus,
           paidTotal: next.paidTotal,
           netTotal: next.netTotal,
-          remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0),
+          remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0, next.creditApplied || 0),
         },
       },
     });
@@ -1079,7 +1082,7 @@ export async function voidPayment(
           nextInvoiceStatus: next.paymentStatus,
           paidTotal: next.paidTotal,
           netTotal: next.netTotal,
-          remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0),
+          remainingDue: getRemainingPaymentDue(next.netTotal, next.paidTotal, next.returnAdjustment || 0, next.creditApplied || 0),
         },
       },
     });

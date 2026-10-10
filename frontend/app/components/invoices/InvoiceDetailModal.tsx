@@ -632,9 +632,10 @@ export default function InvoiceDetailModal({
                   </span>
                 </div>
 
+                {(invoice.creditApplied || 0) > 0 && <p className="text-[12px]">Applied customer credit: <strong className="font-mono">{formatNpr(invoice.creditApplied || 0)}</strong> (separate from receipts)</p>}
                 {(invoice.returnAdjustment || 0) > 0 && <div className="space-y-2 text-[12px]">
                   <p>Approved return reduction: <strong className="font-mono">{formatNpr(invoice.returnAdjustment || 0)}</strong></p>
-                  <p>Retained return credit: <strong className="font-mono">{formatNpr(invoice.retainedReturnCredit || 0)}</strong></p>
+                  <p>Original return credit (before applications): <strong className="font-mono">{formatNpr(invoice.retainedReturnCredit || 0)}</strong></p>
                   <p className="text-[#565449]">Credit stays with this original sale's owner. No payout or automatic application is recorded.</p>
                 </div>}
                 <div className="my-[8px] border-t border-dashed border-[#CFCFD3]" />

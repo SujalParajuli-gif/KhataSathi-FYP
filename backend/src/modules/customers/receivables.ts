@@ -4,6 +4,15 @@ import prisma from "../../db/prisma";
 import { getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 import { parseReturnSettlement } from "../returns/settlement";
 
+export const receivableInclude = {
+  payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true,
+  creditApplicationsFrom: { include: { sourceReturn: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
+  creditApplicationsTo: { include: { sourceReturn: true, sourceInvoice: { include: {
+    payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true,
+    creditApplicationsFrom: { include: { sourceReturn: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
+  } } } },
+} satisfies Prisma.InvoiceInclude;
+
 export function projectReceivableInvoice(i: any) {
   let reason: string | null = null;
   const target = getInvoicePaymentTargetTotal(Number(i.netTotal));
@@ -26,9 +35,29 @@ export function projectReceivableInvoice(i: any) {
       || allocation.reduce((sum: number, s: any) => sum + Number(s?.approvedReturnValue || 0), 0) !== adjustment) reason = "Return adjustment or original credit ownership does not reconcile";
   const credit = roundCurrency(Math.max(0, paid - (target - adjustment)));
   if (!reason && roundCurrency(allocation.reduce((sum: number, s: any) => sum + s.retainedCredit, 0)) !== credit) reason = "Retained credit requires an audited allocation review";
+  const incoming = (i.creditApplicationsTo || []).filter((a: any) => !a.reversedAt);
+  const outgoing = (i.creditApplicationsFrom || []).filter((a: any) => !a.reversedAt);
+  const applied = roundCurrency(incoming.reduce((sum: number, a: any) => sum + Number(a.amount), 0));
+  const used = roundCurrency(outgoing.reduce((sum: number, a: any) => sum + Number(a.amount), 0));
+  const creditSources = approved.map((r: any) => ({ returnId: r.id, retainedCredit: parseReturnSettlement(r.settlement)?.retainedCredit || 0,
+    availableCredit: roundCurrency((parseReturnSettlement(r.settlement)?.retainedCredit || 0) - outgoing.filter((a: any) => a.sourceReturnId === r.id).reduce((sum: number, a: any) => sum + Number(a.amount), 0)) }));
+  if (!Number.isFinite(Number(i.creditApplied || 0)) || roundCurrency(Number(i.creditApplied || 0)) !== applied
+      || [...incoming, ...outgoing].some((a: any) => !Number.isFinite(a.amount) || a.amount <= 0 || roundCurrency(a.amount) !== a.amount
+        || !i.customerId || a.originalCustomerId !== i.customerId || a.sourceInvoiceId === a.targetInvoiceId
+        || a.sourceReturn?.status !== "APPROVED" || parseReturnSettlement(a.sourceReturn?.settlement)?.originalCustomerId !== i.customerId)
+      || incoming.some((a: any) => a.targetInvoiceId !== i.id || a.sourceReturn?.invoiceId !== a.sourceInvoiceId || a.sourceInvoice?.customerId !== i.customerId
+        || a.sourceInvoice?.status !== "FINALIZED" || a.sourceInvoice?.paymentStatus === "CANCELLED" || a.sourceInvoice?.cancelledAt || a.sourceInvoice?.deletedAt
+        || projectReceivableInvoice(a.sourceInvoice).reason)
+      || outgoing.some((a: any) => a.sourceInvoiceId !== i.id || a.sourceReturn?.invoiceId !== i.id || a.targetInvoice?.customerId !== i.customerId)
+      || used > credit || creditSources.some((s: any) => s.availableCredit < 0)
+      || applied > Math.max(0, target - adjustment - paid) || (applied > 0 && approved.length > 0)) reason = "Credit application projection or original ownership does not reconcile";
   return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: reason ? "UNRESOLVED" : "ORIGINAL_SALE_DEBT_FIRST", reason,
     originalPayable: target, returnAdjustment: adjustment, recordedReceipts: paid,
-    due: reason ? null : roundCurrency(Math.max(0, target - adjustment - paid)), retainedCredit: reason ? null : credit };
+    appliedCredit: applied, usedCredit: used, creditSources: reason ? [] : creditSources,
+    applications: [...(i.creditApplicationsFrom || []), ...(i.creditApplicationsTo || [])].map((a: any) => ({ id: a.id, sourceInvoiceId: a.sourceInvoiceId,
+      sourceInvoiceNo: a.sourceInvoice?.invoiceNo || i.invoiceNo, targetInvoiceId: a.targetInvoiceId, targetInvoiceNo: a.targetInvoice?.invoiceNo || i.invoiceNo,
+      sourceReturnId: a.sourceReturnId, amount: a.amount, reason: a.reason, actorId: a.actorId, createdAt: a.createdAt, reversedAt: a.reversedAt, reversedById: a.reversedById, reversalReason: a.reversalReason })),
+    due: reason ? null : roundCurrency(Math.max(0, target - adjustment - paid - applied)), retainedCredit: reason ? null : roundCurrency(credit - used) };
 }
 
 export function summarizeReceivableCustomer(customer: any) {
@@ -49,10 +78,7 @@ export async function listCustomerReceivables(query: unknown, role: string) {
   return prisma.$transaction(async tx => {
     const customers = await tx.customer.findMany({ where, orderBy: [{ name: "asc" }, { id: "asc" }], take: pageSize, skip: (page - 1) * pageSize,
       select: { id: true, name: true, isActive: true, invoices: { where: { status: "FINALIZED" }, orderBy: [{ finalizedAt: "desc" }, { id: "desc" }],
-        select: { id: true, invoiceNo: true, status: true, paymentStatus: true, netTotal: true, paidTotal: true, returnAdjustment: true, customerId: true, cancelledAt: true, deletedAt: true,
-          payments: { select: { id: true, amount: true, kind: true, status: true, method: true, voidedAt: true } },
-          returnRequests: { select: { status: true, settlement: true } },
-          creditNotesAsOriginal: { select: { id: true } }, creditNoteAsReplacement: { select: { id: true } } } } } });
+        include: receivableInclude } } });
     const total = await tx.customer.count({ where });
     return { items: customers.map(summarizeReceivableCustomer), total, page, pageSize, totalPages: Math.ceil(total / pageSize),
       basis: "Recorded original-sale obligations and successful receipts; due and retained credit are separate, unknown settlement is withheld" };

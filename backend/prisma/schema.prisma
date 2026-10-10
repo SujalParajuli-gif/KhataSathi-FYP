@@ -255,6 +255,9 @@ model User {
   creditNotes                 CreditNote[]
   createdReturnRequests       ReturnRequest[]              @relation("ReturnRequestCreator")
   returnOperations            ReturnOperation[]
+  creditApplications          CustomerCreditApplication[] @relation("CreditApplicationActor")
+  reversedCreditApplications  CustomerCreditApplication[] @relation("CreditApplicationReverser")
+  creditOperations            CustomerCreditOperation[]
   reviewedReturnRequests      ReturnRequest[]              @relation("ReturnRequestReviewer")
   backupJobs                  BackupJob[]
   productImportBatches        ProductImportBatch[]
@@ -566,6 +569,7 @@ model Invoice {
   netTotal               Float                @default(0)
   paidTotal              Float                @default(0)
   returnAdjustment       Int                  @default(0)
+  creditApplied          Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
   parkedLabel                String?
@@ -593,6 +597,8 @@ model Invoice {
   creditNotesAsOriginal   CreditNote[]         @relation("CreditNoteOriginalInvoice")
   creditNoteAsReplacement CreditNote?          @relation("CreditNoteReplacementInvoice")
   returnRequests          ReturnRequest[]
+  creditApplicationsFrom  CustomerCreditApplication[] @relation("CreditApplicationSource")
+  creditApplicationsTo    CustomerCreditApplication[] @relation("CreditApplicationTarget")
   completedDraftRequest   BillingDraftRequest?
   checkoutOperation       CheckoutOperation?
 
@@ -775,6 +781,7 @@ model ReturnRequest {
 
   @@index([invoiceId])
   @@index([status, createdAt])
+  creditApplications CustomerCreditApplication[]
 }
 
 model ReturnItem {
@@ -1371,4 +1378,46 @@ model ReturnOperation {
   returnRequest ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Restrict)
 
   @@index([returnRequestId, createdAt])
+}
+
+
+model CustomerCreditApplication {
+  id                 String   @id @default(cuid())
+  sourceInvoiceId    String
+  targetInvoiceId    String
+  sourceReturnId     String
+  originalCustomerId String
+  amount             Float
+  reason             String   @db.VarChar(500)
+  actorId            String
+  createdAt          DateTime @default(now())
+  reversedAt         DateTime?
+  reversedById       String?
+  reversalReason     String?  @db.VarChar(500)
+
+  sourceInvoice Invoice       @relation("CreditApplicationSource", fields: [sourceInvoiceId], references: [id], onDelete: Restrict)
+  targetInvoice Invoice       @relation("CreditApplicationTarget", fields: [targetInvoiceId], references: [id], onDelete: Restrict)
+  sourceReturn  ReturnRequest @relation(fields: [sourceReturnId], references: [id], onDelete: Restrict)
+  actor         User          @relation("CreditApplicationActor", fields: [actorId], references: [id], onDelete: Restrict)
+  reversedBy    User?         @relation("CreditApplicationReverser", fields: [reversedById], references: [id], onDelete: Restrict)
+  operations    CustomerCreditOperation[]
+
+  @@index([sourceInvoiceId, reversedAt])
+  @@index([targetInvoiceId, reversedAt])
+  @@index([sourceReturnId, reversedAt])
+}
+
+model CustomerCreditOperation {
+  id            String   @id @default(cuid())
+  operationKey  String   @unique @db.VarChar(120)
+  payloadHash   String   @db.Char(64)
+  actorId       String
+  applicationId String
+  action        String   @db.VarChar(16)
+  responseJson  Json
+  createdAt     DateTime @default(now())
+
+  actor       User                      @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  application CustomerCreditApplication @relation(fields: [applicationId], references: [id], onDelete: Restrict)
+  @@index([applicationId, createdAt])
 }

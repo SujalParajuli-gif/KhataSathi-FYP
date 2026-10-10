@@ -23,6 +23,8 @@ import { requireBusinessCapability } from "../settings/capabilities";
 
 import { listCustomerReceivables } from "./receivables";
 import { ZodError } from "zod";
+import { applyCustomerCredit, reverseCustomerCredit, CreditApplicationConflict } from "./creditApplications";
+import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
 const router: ReturnType<typeof Router> = Router();
 const requirePos = requireBusinessCapability("POS");
@@ -35,6 +37,21 @@ router.get("/receivables", requirePos, requireRole("ADMIN", "MANAGER"), async (r
     console.error("Customer receivables failed", error);
     res.status(500).json({ error: "Customer receivables could not be loaded" });
   }
+});
+
+const creditFailure = (res: import("express").Response, error: unknown) => {
+  if (error instanceof ZodError) { res.status(400).json({ error: "Invalid credit application input" }); return; }
+  if (error instanceof CreditApplicationConflict || error instanceof FinancialTransactionConflictError) { res.status(409).json({ error: error.message }); return; }
+  console.error("Credit application failed", { code: typeof (error as any)?.code === "string" ? (error as any).code : "UNKNOWN" });
+  res.status(500).json({ error: "Credit application outcome is unknown; retry the same operation" });
+};
+router.post("/credit-applications", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  try { res.status(201).json(await applyCustomerCredit(req.user!.id, req.body)); }
+  catch (error) { creditFailure(res, error); }
+});
+router.post("/credit-applications/:id/reverse", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  try { res.json(await reverseCustomerCredit(req.user!.id, String(req.params.id), req.body)); }
+  catch (error) { creditFailure(res, error); }
 });
 
 router.get("/lookup", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), lookupCustomers);

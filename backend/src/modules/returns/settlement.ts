@@ -42,6 +42,7 @@ export async function updateReturnedInvoiceTx(tx: any, invoice: any, adjustment:
 }
 
 export async function assertOriginalReturnBasisTx(tx: any, invoice: any) {
+  if (Number(invoice.creditApplied || 0) > 0) throw new ReturnSettlementConflict("Reverse incoming credit applications before returning this sale");
   if (!Number.isFinite(invoice.netTotal) || invoice.netTotal < 0 || getInvoicePaymentTargetTotal(invoice.netTotal) > 2147483647) throw new ReturnSettlementConflict("Return invoice exceeds the supported settlement amount");
   const links = await tx.creditNote.count({ where: { OR: [{ originalInvoiceId: invoice.id }, { replacementInvoiceId: invoice.id }] } });
   const refunds = await tx.payment.count({ where: { invoiceId: invoice.id, kind: "REFUND" } });
