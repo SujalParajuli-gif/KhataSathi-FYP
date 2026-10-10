@@ -339,6 +339,7 @@ test("getInvoice: verifies detail query select excludes costAtSale and maps disp
     });
 
     // Verify original relations and IDs remain accessible
+    assert.ok(invoice.customer);
     assert.equal(invoice.customer.name, "Live Store Name Changed");
     assert.equal(invoice.items[0].product.name, "New Salt Label");
     assert.equal(invoice.customerId, "cust-1");

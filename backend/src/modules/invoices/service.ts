@@ -1,3 +1,4 @@
+import { allocateCorrectionCredit, captureCorrectionBasis, runCorrectionOperation, CorrectionSettlementConflict } from "./correctionSettlement";
 import { createHash, randomBytes } from "crypto";
 import { Prisma } from "@prisma/client";
 import {
@@ -1337,6 +1338,7 @@ type ParkDraftInput = {
 };
 
 type ModifyFinalizedInvoiceInput = {
+  operationKey?: string;
   customerId?: string | null;
   discountAmount?: number;
   overridePin?: string | null;
@@ -2176,6 +2178,7 @@ async function recordCheckoutCashPaymentTx(
     netTotal: number;
     returnAdjustment?: number;
     creditApplied?: number;
+    correctionCredit?: number;
     paidTotal?: number;
   },
   amount: number,
@@ -2187,14 +2190,14 @@ async function recordCheckoutCashPaymentTx(
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0);
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
-  if (currentPaid + normalizedAmount > paymentTargetTotal) {
+  if (roundCurrency(currentPaid + normalizedAmount) > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0)}`,
     );
   }
 
@@ -2217,7 +2220,7 @@ async function recordCheckoutCashPaymentTx(
     select: { id: true, name: true, role: true },
   });
   const nextPaymentStatus =
-    currentPaid + normalizedAmount >= paymentTargetTotal
+    roundCurrency(currentPaid + normalizedAmount) >= paymentTargetTotal
       ? "PAID"
       : "PARTIALLY_PAID";
 
@@ -2281,6 +2284,7 @@ async function recordCheckoutManualDigitalPaymentTx(
     netTotal: number;
     returnAdjustment?: number;
     creditApplied?: number;
+    correctionCredit?: number;
     paidTotal?: number;
   },
   method: "FONEPAY" | "BANK_TRANSFER",
@@ -2301,15 +2305,15 @@ async function recordCheckoutManualDigitalPaymentTx(
       `${method === "FONEPAY" ? "Fonepay" : "Bank transfer"} reference is required`,
     );
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0);
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
 
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
-  if (currentPaid + normalizedAmount > paymentTargetTotal) {
+  if (roundCurrency(currentPaid + normalizedAmount) > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0)}`,
     );
   }
 
@@ -2318,7 +2322,7 @@ async function recordCheckoutManualDigitalPaymentTx(
     select: { id: true, name: true, role: true },
   });
   const nextPaymentStatus =
-    currentPaid + normalizedAmount >= paymentTargetTotal
+    roundCurrency(currentPaid + normalizedAmount) >= paymentTargetTotal
       ? "PAID"
       : "PARTIALLY_PAID";
   const nextPaidTotal = roundCurrency(currentPaid + normalizedAmount);
@@ -2365,7 +2369,7 @@ async function recordCheckoutManualDigitalPaymentTx(
         nextStatus: nextPaymentStatus,
         paidTotal: nextPaidTotal,
         netTotal: invoice.netTotal,
-        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0),
+        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0),
       },
     },
   });
@@ -2967,8 +2971,12 @@ export async function modifyFinalizedInvoice(
   const replacementItems = normalizeCheckoutItems(input.items);
   const settings = await getBusinessSettings();
 
-  return runFinancialTransaction(prisma, async (tx) => {
-    await lockInvoiceForUpdate(tx, invoiceId);
+  if (input.reason !== undefined && typeof input.reason !== "string") throw new CorrectionSettlementConflict("Invoice correction reason must be text");
+  const reason = input.reason?.trim() || "Invoice modified";
+  if (reason.length > 500) throw new CorrectionSettlementConflict("Invoice correction reason is too long");
+  return runCorrectionOperation({ action: "REPLACE", actorId: userId, invoiceId, operationKey: input.operationKey,
+    content: { customerId: input.customerId === undefined ? "UNCHANGED" : input.customerId || null,
+      discountAmount: input.discountAmount ?? null, overridePin: input.overridePin ?? null, reason, items: replacementItems } }, async (tx) => {
     const originalProductIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
     await lockProductsForUpdate(tx, [
       ...originalProductIds,
@@ -2985,7 +2993,7 @@ export async function modifyFinalizedInvoice(
           },
         },
         payments: true,
-        customer: true,
+        customer: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true, returnRequests: true, correctionAsSource: true, correctionAsTarget: true,
       },
     });
 
@@ -3002,6 +3010,7 @@ export async function modifyFinalizedInvoice(
       "modify this invoice",
     );
 
+    const basis = captureCorrectionBasis(original);
     const customerId =
       input.customerId === undefined
         ? original.customerId
@@ -3234,71 +3243,20 @@ export async function modifyFinalizedInvoice(
       }
     }
 
-    const creditedAmount = roundCurrency(
-      Math.min(original.paidTotal, finalizedReplacement.netTotal),
-    );
-    if (creditedAmount > 0) {
-      const successfulOriginalPayment = original.payments.find(
-        (payment) =>
-          payment.status === "SUCCESS" &&
-          String((payment as any).kind || "CHARGE").toUpperCase() !== "REFUND",
-      );
-      const paymentMethod = successfulOriginalPayment?.method || "CASH";
-      const nextPaymentStatus =
-        creditedAmount >= finalizedReplacement.netTotal
-          ? "PAID"
-          : "PARTIALLY_PAID";
-
-      await tx.payment.create({
-        data: {
-          invoiceId: finalizedReplacement.id,
-          method: paymentMethod,
-          amount: creditedAmount,
-          status: "SUCCESS",
-          reference: `Credit transfer ${creditNoteNo}`,
-          createdById: userId,
-        },
-      });
-
-      await tx.invoice.update({
-        where: { id: finalizedReplacement.id },
-        data: {
-          paidTotal: creditedAmount,
-          paymentStatus: nextPaymentStatus,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorId: userId,
-          action: "INVOICE_PAYMENT_UPDATED",
-          entityType: "Invoice",
-          entityId: finalizedReplacement.id,
-          meta: {
-            invoiceNo: finalizedReplacement.invoiceNo,
-            actorName: actor?.name || null,
-            actorRole: actor?.role || null,
-            method: paymentMethod,
-            reference: `Credit transfer ${creditNoteNo}`,
-            amountAdded: creditedAmount,
-            previousStatus: finalizedReplacement.paymentStatus,
-            nextStatus: nextPaymentStatus,
-            paidTotal: creditedAmount,
-            netTotal: finalizedReplacement.netTotal,
-            remainingDue: roundCurrency(
-              Math.max(0, finalizedReplacement.netTotal - creditedAmount),
-            ),
-          },
-        },
-      });
-    }
+    const allocation = allocateCorrectionCredit(basis.recordedReceipts, finalizedReplacement.netTotal, basis.originalCustomerId, customerId);
+    const creditedAmount = allocation.transferredCredit;
+    const target = getInvoicePaymentTargetTotal(finalizedReplacement.netTotal);
+    await tx.invoice.update({ where: { id: finalizedReplacement.id }, data: {
+      correctionCredit: creditedAmount, paidTotal: 0,
+      paymentStatus: creditedAmount >= target ? "PAID" : creditedAmount > 0 ? "PARTIALLY_PAID" : target <= 0 ? "PAID" : "UNPAID",
+    } });
 
     const creditNote = await tx.creditNote.create({
       data: {
         creditNoteNo,
         originalInvoiceId: original.id,
         replacementInvoiceId: finalizedReplacement.id,
-        reason: normalizeParkedLabel(input.reason) || "Invoice modified",
+        reason: reason.slice(0, 80),
         originalNetTotal: original.netTotal,
         originalPaidTotal: original.paidTotal,
         replacementNetTotal: finalizedReplacement.netTotal,
@@ -3368,7 +3326,8 @@ export async function modifyFinalizedInvoice(
       },
     });
 
-    return { creditNote, replacementInvoice };
+    return { response: { creditNote, replacementInvoice }, settlement: { ...basis, ...allocation,
+      targetInvoiceId: finalizedReplacement.id, reason } };
   });
 }
 
@@ -4049,7 +4008,11 @@ export async function listInvoices(filters: InvoiceFilters) {
 // fetching a single invoice with all its related data — items, payments, cashier, customer
 // we include full details here because this is used for the invoice detail view and print page
 export async function getInvoice(id: string) {
-  const invoice = await prisma.invoice.findUnique({
+  return getInvoiceTx(prisma, id);
+}
+
+async function getInvoiceTx(tx: Prisma.TransactionClient, id: string) {
+  const invoice = await tx.invoice.findUnique({
     where: { id },
     include: {
       items: {
@@ -4110,7 +4073,7 @@ export async function getInvoice(id: string) {
   if (!invoice) return null;
 
   const projectedPayments = Array.isArray(invoice.payments)
-    ? invoice.payments.map((p) => projectPublicPayment(p))
+    ? invoice.payments.map((p: any) => projectPublicPayment(p))
     : [];
 
   return resolveInvoiceDisplayIdentity({
@@ -4492,9 +4455,8 @@ export async function finalizeInvoice(
 
 // cancelling a finalized invoice — reverses the stock deductions and marks it as cancelled
 // this is a serious action so we wrap it in a transaction and log everything in the audit
-export async function cancelInvoice(invoiceId: string, userId: string) {
-  await runFinancialTransaction(prisma, async (tx) => {
-    await lockInvoiceForUpdate(tx, invoiceId);
+export async function cancelInvoice(invoiceId: string, userId: string, operationKey?: string) {
+  return runCorrectionOperation({ action: "CANCEL", actorId: userId, invoiceId, operationKey, content: { reason: "Invoice cancelled" } }, async (tx) => {
     const productIds = await lockInvoiceItemsForUpdate(tx, invoiceId);
     await lockProductsForUpdate(tx, productIds);
     // fetching the invoice with its items and payments — we need all of this for the reversal
@@ -4508,7 +4470,7 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
             },
           },
         },
-        payments: true,
+        payments: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true, returnRequests: true, correctionAsSource: true, correctionAsTarget: true,
       },
     });
 
@@ -4520,6 +4482,8 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
       throw new Error("Invoice is already cancelled");
     }
     await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice");
+
+    const basis = captureCorrectionBasis(invoice);
 
     // fetching the actor info for the audit log
     const actor = await tx.user.findUnique({
@@ -4598,9 +4562,10 @@ export async function cancelInvoice(invoiceId: string, userId: string) {
         },
       },
     });
+    const response = await getInvoiceTx(tx, invoiceId);
+    return { response, settlement: { ...basis, targetInvoiceId: null,
+      transferredCredit: 0, retainedCredit: basis.recordedReceipts, reason: "Invoice cancelled" } };
   });
-
-  return getInvoice(invoiceId); // returning the updated invoice
 }
 
 // soft-deleting a cancelled invoice — sets the deletedAt timestamp so the invoice

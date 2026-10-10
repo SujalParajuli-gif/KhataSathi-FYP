@@ -258,6 +258,7 @@ model User {
   creditApplications          CustomerCreditApplication[] @relation("CreditApplicationActor")
   reversedCreditApplications  CustomerCreditApplication[] @relation("CreditApplicationReverser")
   creditOperations            CustomerCreditOperation[]
+  invoiceCorrections          InvoiceCorrectionSettlement[]
   reviewedReturnRequests      ReturnRequest[]              @relation("ReturnRequestReviewer")
   backupJobs                  BackupJob[]
   productImportBatches        ProductImportBatch[]
@@ -569,6 +570,7 @@ model Invoice {
   netTotal               Float                @default(0)
   paidTotal              Float                @default(0)
   returnAdjustment       Int                  @default(0)
+  correctionCredit       Float                @default(0)
   creditApplied          Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
@@ -599,6 +601,8 @@ model Invoice {
   returnRequests          ReturnRequest[]
   creditApplicationsFrom  CustomerCreditApplication[] @relation("CreditApplicationSource")
   creditApplicationsTo    CustomerCreditApplication[] @relation("CreditApplicationTarget")
+  correctionAsSource      InvoiceCorrectionSettlement? @relation("CorrectionSource")
+  correctionAsTarget      InvoiceCorrectionSettlement? @relation("CorrectionTarget")
   completedDraftRequest   BillingDraftRequest?
   checkoutOperation       CheckoutOperation?
 
@@ -1420,4 +1424,28 @@ model CustomerCreditOperation {
   actor       User                      @relation(fields: [actorId], references: [id], onDelete: Restrict)
   application CustomerCreditApplication @relation(fields: [applicationId], references: [id], onDelete: Restrict)
   @@index([applicationId, createdAt])
+}
+
+model InvoiceCorrectionSettlement {
+  id                 String   @id @default(cuid())
+  sourceInvoiceId    String   @unique
+  targetInvoiceId    String?  @unique
+  originalCustomerId String?
+  action             String   @db.VarChar(16)
+  receipts           Json
+  originalPayable    Int
+  recordedReceipts   Float
+  transferredCredit  Float
+  retainedCredit     Float
+  reason             String   @db.VarChar(500)
+  actorId            String
+  createdAt          DateTime @default(now())
+  operationKey       String   @unique @db.VarChar(120)
+  payloadHash        String   @db.Char(64)
+  responseJson       Json
+
+  sourceInvoice Invoice  @relation("CorrectionSource", fields: [sourceInvoiceId], references: [id], onDelete: Restrict)
+  targetInvoice Invoice? @relation("CorrectionTarget", fields: [targetInvoiceId], references: [id], onDelete: Restrict)
+  actor         User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  @@index([actorId, createdAt])
 }

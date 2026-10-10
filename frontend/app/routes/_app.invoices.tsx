@@ -425,6 +425,7 @@ function InvoiceModifyModal({
   reason,
   error,
   busy,
+  locked,
   onChangeReason,
   onChangeQty,
   onRemoveLine,
@@ -437,6 +438,7 @@ function InvoiceModifyModal({
   reason: string;
   error: string;
   busy: boolean;
+  locked: boolean;
   onChangeReason: (value: string) => void;
   onChangeQty: (productId: string, qty: number) => void;
   onRemoveLine: (productId: string) => void;
@@ -484,6 +486,7 @@ function InvoiceModifyModal({
   }, [invoice, lines, reason]);
 
   function handleAttemptClose() {
+    if (busy || locked) return;
     if (isDirty && !busy) {
       setConfirmDiscardOpen(true);
     } else {
@@ -494,6 +497,7 @@ function InvoiceModifyModal({
   useEffect(() => {
     if (!invoice) return;
     function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || document.querySelector('[data-modal-frame="true"][aria-modal="true"]')) return;
       if (event.key === "Escape") {
         event.preventDefault();
         handleAttemptClose();
@@ -501,7 +505,7 @@ function InvoiceModifyModal({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [invoice, isDirty, busy]);
+  }, [invoice, isDirty, busy, locked]);
 
   // debounced product search — waits 300ms after typing stops before calling the API
   useEffect(() => {
@@ -790,7 +794,7 @@ function InvoiceModifyModal({
           </div>
         </div>
 
-        <div className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
+        <fieldset disabled={busy || locked} className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
           <div className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start">
             <div className="min-w-0 space-y-4">
               <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
@@ -1257,6 +1261,7 @@ function InvoiceModifyModal({
                 <input
                   type="text"
                   value={reason}
+                  maxLength={500}
                   onChange={(event) => onChangeReason(event.target.value)}
                   placeholder="Type details or manual reason..."
                   className="mt-3 w-full rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 py-2.5 text-[13px] font-semibold text-[#000000] outline-none transition focus:border-[#000000]"
@@ -1270,7 +1275,7 @@ function InvoiceModifyModal({
               ) : null}
             </aside>
           </div>
-        </div>
+        </fieldset>
 
         {scanModalOpen ? (
           <div className="absolute inset-0 z-20 flex flex-col bg-[#FFFFFF]">
@@ -1386,7 +1391,7 @@ function InvoiceModifyModal({
               <button
                 type="button"
                 onClick={handleAttemptClose}
-                disabled={busy}
+                disabled={busy || locked}
                 className="flex-1 sm:flex-none h-[42px] rounded-[14px] border-2 border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
               >
                 Back
@@ -1397,7 +1402,7 @@ function InvoiceModifyModal({
                 disabled={busy || lines.length === 0}
                 className="flex-1 sm:flex-none h-[42px] rounded-[14px] border-2 border-[#11120d] bg-[#11120d] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
               >
-                {busy ? "Creating..." : "Create Credit Note"}
+                {busy ? "Creating..." : locked ? "Retry same correction" : "Create Credit Note"}
               </button>
             </div>
           </div>
@@ -2166,6 +2171,7 @@ function InvoiceEditModal({
   useEffect(() => {
     if (!invoice) return;
     function handleKeyDown(event: KeyboardEvent) {
+      if (event.defaultPrevented || document.querySelector('[data-modal-frame="true"][aria-modal="true"]')) return;
       if (event.key === "Escape") {
         event.preventDefault();
         handleAttemptClose();
@@ -2463,6 +2469,12 @@ export default function CashierInvoicesPage() {
   const [paymentError, setPaymentError] = useState(""); // edit modal validation or API error
   const [savingEdit, setSavingEdit] = useState(false); // blocks repeated edit actions while an invoice update is running
   const [savingModify, setSavingModify] = useState(false);
+  const [modifyUnknown, setModifyUnknown] = useState(false);
+  const modifyAttempt = useRef<{ invoiceId: string; input: Parameters<typeof modifyFinalizedInvoiceApi>[1] } | null>(null);
+  const correctionActive = useRef(false);
+  const cancelAttempt = useRef<{ invoiceId: string; operationKey: string } | null>(null);
+  const cancelActive = useRef(false);
+
   const [pendingInvoiceAction, setPendingInvoiceAction] =
     useState<PendingInvoiceAction>(null); // stores the next payment or cancellation action waiting for confirmation
   const [showModifyConfirm, setShowModifyConfirm] = useState(false); // confirms credit-note replacement before saving it
@@ -3020,6 +3032,8 @@ export default function CashierInvoicesPage() {
   }
 
   function closeModifyInvoice() {
+    if (modifyAttempt.current) return;
+    setModifyUnknown(false);
     setModifyInvoice(null);
     setModifyLines([]);
     setModifyReason("");
@@ -3280,26 +3294,26 @@ export default function CashierInvoicesPage() {
   }
 
   async function submitModifyInvoice() {
-    if (!modifyInvoice || savingModify) return;
+    if (!modifyInvoice || correctionActive.current) return;
     if (modifyLines.length === 0) {
       setModifyError("Replacement invoice needs at least one item.");
       setShowModifyConfirm(false);
       return;
     }
 
-    setShowModifyConfirm(false);
+    correctionActive.current = true;
     setSavingModify(true);
     setModifyError("");
 
+    let committed = false;
     try {
-      const result = await modifyFinalizedInvoiceApi(modifyInvoice.id, {
-        customerId: modifyInvoice.customerId || null,
+      modifyAttempt.current ||= { invoiceId: modifyInvoice.id, input: {
+        operationKey: crypto.randomUUID(), customerId: modifyInvoice.customerId || null,
         reason: modifyReason.trim() || "Invoice modified",
-        items: modifyLines.map((line) => ({
-          productId: line.productId,
-          qty: line.qty,
-        })),
-      });
+        items: modifyLines.map(line => ({ productId: line.productId, qty: line.qty })),
+      } };
+      const result = await modifyFinalizedInvoiceApi(modifyAttempt.current.invoiceId, modifyAttempt.current.input);
+      committed = true;
 
       await loadInvoices();
       const replacementId = result?.replacementInvoice?.id;
@@ -3308,21 +3322,26 @@ export default function CashierInvoicesPage() {
         setDetailInvoice(replacement);
         setSelectedInvoiceId(replacementId);
       }
+      modifyAttempt.current = null;
+      setModifyUnknown(false);
+      setShowModifyConfirm(false);
       closeModifyInvoice();
       closeEditInvoice();
     } catch (err: any) {
-      setModifyError(
-        err?.response?.data?.error ||
-          err?.message ||
-          "Failed to modify invoice.",
-      );
+      const status = err?.response?.status;
+      const uncertain = committed || !status || status >= 500;
+      if (!uncertain) { modifyAttempt.current = null; setShowModifyConfirm(false); }
+      setModifyUnknown(uncertain);
+      setModifyError(uncertain ? "Outcome unconfirmed. Retry this exact correction to recover its recorded result." : err?.response?.data?.error || "Invoice correction was rejected.");
     } finally {
+      correctionActive.current = false;
       setSavingModify(false);
     }
   }
 
   // clearing the edit state here makes sure each invoice starts with a clean payment form
   function closeEditInvoice() {
+    if (cancelAttempt.current) return;
     setEditInvoice(null);
     setEditPaymentMethod("Cash");
     setPaymentAmount("");
@@ -3462,8 +3481,9 @@ export default function CashierInvoicesPage() {
 
   // all confirmed invoice follow-up actions funnel through one executor so success and error handling stay consistent
   async function confirmPendingInvoiceAction() {
-    if (!editInvoice || !pendingInvoiceAction) return;
+    if (!editInvoice || !pendingInvoiceAction || cancelActive.current) return;
 
+    let cancellationRecorded = false;
     try {
       setSavingEdit(true);
 
@@ -3481,8 +3501,12 @@ export default function CashierInvoicesPage() {
 
       // cancellations keep their own endpoint because they reverse stock and mark the invoice as cancelled
       if (pendingInvoiceAction.kind === "cancel-invoice") {
-        await cancelInvoiceApi(editInvoice.id);
+        cancelActive.current = true;
+        cancelAttempt.current ||= { invoiceId: editInvoice.id, operationKey: crypto.randomUUID() };
+        await cancelInvoiceApi(cancelAttempt.current.invoiceId, cancelAttempt.current.operationKey);
+        cancellationRecorded = true;
         await refreshInvoiceState(editInvoice.id);
+        cancelAttempt.current = null;
         closeEditInvoice();
         return;
       }
@@ -3504,9 +3528,11 @@ export default function CashierInvoicesPage() {
             ? "Failed to cancel invoice."
             : "Failed to update invoice.";
 
-      setPendingInvoiceAction(null);
-      setPaymentError(error?.response?.data?.error || fallbackMessage);
+      const uncertainCancel = pendingInvoiceAction.kind === "cancel-invoice" && (cancellationRecorded || !error?.response?.status || error.response.status >= 500);
+      if (!uncertainCancel) { cancelAttempt.current = null; setPendingInvoiceAction(null); }
+      setPaymentError(uncertainCancel ? "Outcome unconfirmed. Retry this exact cancellation to recover its recorded result." : error?.response?.data?.error || fallbackMessage);
     } finally {
+      cancelActive.current = false;
       setSavingEdit(false);
     }
   }
@@ -3610,7 +3636,7 @@ export default function CashierInvoicesPage() {
     return {
       title: "Cancel this invoice?",
       message:
-        "This will cancel the invoice, restore the sold stock, and keep the payment history for audit review.",
+        "This cancels the invoice and restores stock. Recorded receipts become retained credit for the original owner; no cash payout is made.",
       confirmLabel: "Cancel Invoice",
       tone: "danger" as const,
       icon: "warning",
@@ -4650,6 +4676,7 @@ export default function CashierInvoicesPage() {
         reason={modifyReason}
         error={modifyError}
         busy={savingModify}
+        locked={modifyUnknown}
         onChangeReason={setModifyReason}
         onChangeQty={changeModifyQty}
         onRemoveLine={removeModifyLine}
@@ -4745,12 +4772,12 @@ export default function CashierInvoicesPage() {
           open={!!pendingInvoiceActionConfig}
           title={pendingInvoiceActionConfig.title}
           message={pendingInvoiceActionConfig.message}
-          confirmLabel={pendingInvoiceActionConfig.confirmLabel}
+          confirmLabel={cancelAttempt.current ? "Retry same cancellation" : pendingInvoiceActionConfig.confirmLabel}
           onConfirm={confirmPendingInvoiceAction}
-          onClose={() => setPendingInvoiceAction(null)}
+          onClose={() => { if (!savingEdit && !cancelAttempt.current) setPendingInvoiceAction(null); }}
           tone={pendingInvoiceActionConfig.tone}
           icon={pendingInvoiceActionConfig.icon}
-          details={pendingInvoiceActionConfig.details}
+          details={<>{pendingInvoiceActionConfig.details}{paymentError && <p role="alert" className="mt-3 text-rose-700">{paymentError}</p>}</>}
           busy={savingEdit}
         />
       ) : null}
@@ -4775,12 +4802,12 @@ export default function CashierInvoicesPage() {
           open={!!modifyConfirmConfig}
           title={modifyConfirmConfig.title}
           message={modifyConfirmConfig.message}
-          confirmLabel={modifyConfirmConfig.confirmLabel}
+          confirmLabel={modifyUnknown ? "Retry same correction" : modifyConfirmConfig.confirmLabel}
           onConfirm={submitModifyInvoice}
-          onClose={() => setShowModifyConfirm(false)}
+          onClose={() => { if (!savingModify && !modifyAttempt.current) setShowModifyConfirm(false); }}
           tone="primary"
           icon="receipt_long"
-          details={modifyConfirmConfig.details}
+          details={<>{modifyConfirmConfig.details}{modifyError && <p role="alert" className="mt-3 text-rose-700">{modifyError}</p>}</>}
           busy={savingModify}
         />
       ) : null}

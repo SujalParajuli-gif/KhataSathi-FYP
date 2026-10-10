@@ -1684,6 +1684,7 @@ export async function transferParkedDraftApi(id: string, cashierId: string) {
 export async function modifyFinalizedInvoiceApi(
     invoiceId: string,
     data: {
+        operationKey: string;
         customerId?: string | null;
         discountAmount?: number;
         overridePin?: string;
@@ -1781,8 +1782,8 @@ export async function finalizeInvoiceApi(invoiceId: string, discountAmount?: num
 }
 
 // cancelling an invoice — restores the stock that was deducted when the invoice was finalized
-export async function cancelInvoiceApi(invoiceId: string) {
-    const res = await api.patch(`/api/invoices/${invoiceId}/cancel`);
+export async function cancelInvoiceApi(invoiceId: string, operationKey: string) {
+    const res = await api.patch(`/api/invoices/${invoiceId}/cancel`, { operationKey });
     return res.data;
 }
 

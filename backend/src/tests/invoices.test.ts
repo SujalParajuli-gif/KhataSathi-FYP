@@ -582,10 +582,15 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
   let capturedReplacementQueryArgs: any = null;
   let capturedCreditNoteCreateArgs: any = null;
   const originalTransaction = prisma.$transaction;
+  const originalUser = prisma.user.findUnique;
+  const originalCorrection = prisma.invoiceCorrectionSettlement.findUnique;
   const restoreSettings = mockBusinessSettingsForInvoiceTest();
   try {
+    (prisma.user as any).findUnique = async () => ({ role: "ADMIN", isActive: true });
+    (prisma.invoiceCorrectionSettlement as any).findUnique = async () => null;
     (prisma as any).$transaction = async (callback: any) => {
       const mockTx = {
+        invoiceCorrectionSettlement: { findUnique: async () => null, create: async (args: any) => ({ id: "correction-1", ...args.data }) },
         $queryRaw: async () => [],
         invoice: {
           findUnique: async (args: any) => {
@@ -594,8 +599,8 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
                 id: "inv-orig-1",
                 invoiceNo: "INV-20260930-0001",
                 status: "FINALIZED",
-                paymentStatus: "PAID",
-                paidTotal: 100,
+                paymentStatus: "UNPAID",
+                paidTotal: 0,
                 netTotal: 100,
                 items: [],
                 payments: [],
@@ -729,6 +734,7 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
 
     const result = await modifyFinalizedInvoice("inv-orig-1", "user-1", {
       reason: "Customer changed mind",
+      operationKey: "public-query-correction-key",
       items: [{ productId: "prod-1", qty: 1 }],
     });
 
@@ -743,6 +749,8 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
     assert.equal("items" in capturedCreditNoteCreateArgs?.include, false);
     assert.equal("items" in result.creditNote, false);
   } finally {
+    prisma.user.findUnique = originalUser;
+    prisma.invoiceCorrectionSettlement.findUnique = originalCorrection;
     prisma.$transaction = originalTransaction;
     restoreSettings();
   }

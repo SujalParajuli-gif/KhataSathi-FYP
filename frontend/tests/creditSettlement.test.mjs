@@ -8,3 +8,8 @@ test("invoice balance keeps incoming credit separate and rounds fractional remai
   const original = normalizeInvoice({ id: "source", status: "FINALIZED", netTotal: 1000, paidTotal: 400, returnAdjustment: 800, creditApplied: 0, items: [], payments: [] });
   assert.equal(original.dueAmount, 0); assert.equal(original.retainedReturnCredit, 200);
 });
+
+test("replacement settlement reduces due without manufacturing recorded receipts", () => {
+  const invoice = normalizeInvoice({ id: "replacement", status: "FINALIZED", paymentStatus: "PARTIALLY_PAID", netTotal: 700.49, paidTotal: 0, returnAdjustment: 0, creditApplied: 0, correctionCredit: 400.55, items: [], payments: [] });
+  assert.equal(invoice.correctionCredit, 400.55); assert.equal(invoice.paidAmount, 0); assert.equal(invoice.dueAmount, 299.45);
+});

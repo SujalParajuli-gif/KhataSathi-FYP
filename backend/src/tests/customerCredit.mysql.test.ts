@@ -74,8 +74,8 @@ test("MySQL credit applications preserve receipts, serialize spending/payment/re
     await assert.rejects(reverseCustomerCredit(actor.id, applied.id, { reason: "Undo", operationKey: payload.operationKey }), /conflict/);
     await assert.rejects(reverseApprovedReturnRequest(s.r.id, actor.id, "Undo", randomUUID()), /active credit/);
     await assert.rejects(createReturnRequest(actor.id, { invoiceId: target.id, reason: "CUSTOMER_REQUEST", items: [{ invoiceItemId: target.items[0].id, qty: 1 }], operationKey: randomUUID() }), /incoming credit/);
-    await assert.rejects(cancelInvoice(target.id, actor.id), /active credit/);
-    await assert.rejects(modifyFinalizedInvoice(target.id, actor.id, { items: [{ productId: product.id, qty: 3 }], reason: "Correction" }), /active credit/);
+    await assert.rejects(cancelInvoice(target.id, actor.id, randomUUID()), /active credit/);
+    await assert.rejects(modifyFinalizedInvoice(target.id, actor.id, { operationKey: randomUUID(), items: [{ productId: product.id, qty: 3 }], reason: "Correction" }), /active credit/);
     await assert.rejects(addPayment(target.id, "CASH", 151, "SUCCESS", actor.id), /Overpayment/);
     const reversal = { reason: "Wrong target selected", operationKey: randomUUID() }, reversed = await reverseCustomerCredit(actor.id, applied.id, reversal);
     assert.equal((await balance(target.id)).due, 300); assert.equal((await balance(s.i.id)).retainedCredit, 200);

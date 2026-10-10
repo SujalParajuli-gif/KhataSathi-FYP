@@ -1,3 +1,4 @@
+import { CorrectionSettlementConflict } from "./correctionSettlement";
 import { Request, Response } from "express";
 import * as invoiceService from "./service";
 import { formatZodIssues } from "../../lib/requestValidation";
@@ -338,12 +339,14 @@ export async function modifyFinalized(req: Request, res: Response) {
         discountAmount,
         overridePin: req.body?.overridePin,
         reason: req.body?.reason,
+        operationKey: req.body?.operationKey,
         items: req.body?.items,
       },
     );
 
     res.status(201).json(result);
   } catch (err: any) {
+    if (err instanceof CorrectionSettlementConflict) { res.status(409).json({ error: err.message }); return; }
     if (sendStockConflict(res, err)) return;
 
     if (
@@ -559,9 +562,11 @@ export async function cancel(req: Request, res: Response) {
     const invoice = await invoiceService.cancelInvoice(
       String(req.params.id),
       req.user!.id,
+      req.body?.operationKey,
     );
     res.json(invoice);
   } catch (err: any) {
+    if (err instanceof CorrectionSettlementConflict) { res.status(409).json({ error: err.message }); return; }
     if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("not found") ||

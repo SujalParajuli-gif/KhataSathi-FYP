@@ -1,8 +1,12 @@
+import { randomUUID } from "node:crypto";
 import test from "node:test";
 import assert from "node:assert/strict";
 import prisma from "../db/prisma";
-import { cancelInvoice, modifyFinalizedInvoice, publicInvoiceItemSelect } from "../modules/invoices/service";
+import { cancelInvoice as cancelService, modifyFinalizedInvoice as modifyService, publicInvoiceItemSelect } from "../modules/invoices/service";
 import { invalidateBusinessSettingsCache } from "../modules/settings/service";
+
+const modifyFinalizedInvoice = (id: string, actor: string, input: Parameters<typeof modifyService>[2]) => modifyService(id, actor, { ...input, operationKey: randomUUID() });
+const cancelInvoice = (id: string, actor: string) => cancelService(id, actor, randomUUID());
 
 interface InMemState {
   invoices: Map<string, any>;
@@ -11,6 +15,7 @@ interface InMemState {
   customers: Map<string, any>;
   users: Map<string, any>;
   creditNotes: Map<string, any>;
+  corrections?: Map<string, any>;
   payments: any[];
   stockTransactions: any[];
   auditLogs: any[];
@@ -24,6 +29,7 @@ function cloneState(state: InMemState): InMemState {
     customers: new Map(Array.from(state.customers.entries()).map(([k, v]) => [k, structuredClone(v)])),
     users: new Map(Array.from(state.users.entries()).map(([k, v]) => [k, structuredClone(v)])),
     creditNotes: new Map(Array.from(state.creditNotes.entries()).map(([k, v]) => [k, structuredClone(v)])),
+    corrections: new Map(Array.from(state.corrections?.entries() || []).map(([k,v]) => [k, structuredClone(v)])),
     payments: structuredClone(state.payments),
     stockTransactions: structuredClone(state.stockTransactions),
     auditLogs: structuredClone(state.auditLogs),
@@ -35,6 +41,8 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
   let activeTransactionState: InMemState | null = null;
 
   const originalTransaction = prisma.$transaction;
+  const originalUser = prisma.user.findUnique;
+  const originalCorrection = prisma.invoiceCorrectionSettlement.findUnique;
   const originalInvoiceFindUnique = prisma.invoice.findUnique;
   const originalBusinessSettingsUpsert = prisma.businessSettings.upsert;
 
@@ -47,6 +55,10 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
     let itemSeq = 500;
 
     return {
+      invoiceCorrectionSettlement: {
+        findUnique: async (args: any) => [...stagedState.corrections!.values()].find(r => r.operationKey === args.where.operationKey) || null,
+        create: async (args: any) => { const row = { id: randomUUID(), ...args.data }; stagedState.corrections!.set(row.id, row); return row; },
+      },
       businessSettings: { findUnique: async () => ({ defaultBillingChannel: "MANUAL_EXTERNAL" }) },
       $queryRaw: async (_query: TemplateStringsArray, ...values: unknown[]) => {
         const queryStr = String(_query);
@@ -300,6 +312,8 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
     getState: () => committedState,
     setup: (options?: { failOnItemUpdate?: boolean; failOnAuditLog?: boolean }) => {
       invalidateBusinessSettingsCache();
+      (prisma.user as any).findUnique = async (args: any) => ({ ...committedState.users.get(args.where.id), isActive: true });
+      (prisma.invoiceCorrectionSettlement as any).findUnique = async (args: any) => [...committedState.corrections!.values()].find(r => r.operationKey === args.where.operationKey) || null;
       (prisma.businessSettings as any).upsert = async () => ({
         id: 1,
         businessMode: "FULL_POS",
@@ -359,6 +373,8 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
       };
     },
     teardown: () => {
+      prisma.user.findUnique = originalUser;
+      prisma.invoiceCorrectionSettlement.findUnique = originalCorrection;
       prisma.$transaction = originalTransaction;
       prisma.invoice.findUnique = originalInvoiceFindUnique;
       prisma.businessSettings.upsert = originalBusinessSettingsUpsert;
@@ -517,6 +533,9 @@ function buildBaseCorrectionState(): InMemState {
 
   const payments = [
     {
+      id: "receipt-original",
+      createdById: "user-cashier",
+      createdAt: new Date("2026-09-15T10:00:00Z"),
       invoiceId: "inv-orig-1",
       method: "CASH",
       amount: 430,
