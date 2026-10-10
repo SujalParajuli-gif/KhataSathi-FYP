@@ -1,4 +1,6 @@
 import prisma from "../../db/prisma";
+import { getInvoicePaymentTargetTotal } from "../../lib/money";
+import { allocateReturn, assertOriginalReturnBasisTx, parseReturnSettlement, ReturnSettlementConflict, runReturnOperation, updateReturnedInvoiceTx } from "./settlement";
 import {
   lockInvoiceForUpdate,
   lockProductsForUpdate,
@@ -25,6 +27,7 @@ type CreateReturnItemInput = {
 
 type CreateReturnRequestInput = {
   invoiceId: string;
+  operationKey?: string;
   reason: string;
   note?: string | null;
   refundMethod?: string | null;
@@ -289,13 +292,13 @@ export async function createReturnRequest(
   if (!invoiceId) throw new Error("Invoice is required.");
 
   const reason = normalizeReason(input.reason);
-  const refundMethod = normalizeRefundMethod(input.refundMethod);
+  // New requests retain excess credit; no cash refund is initiated.
+  const refundMethod = null;
   const note = normalizeNote(input.note);
-  const requestedItems = normalizeReturnItems(input.items);
+  const requestedItems = normalizeReturnItems(input.items).sort((a, b) => a.invoiceItemId.localeCompare(b.invoiceItemId));
   const requestedIds = requestedItems.map((item) => item.invoiceItemId);
 
-  return runFinancialTransaction(prisma, async (tx: any) => {
-    await lockInvoiceForUpdate(tx, invoiceId);
+  return runReturnOperation({ action: "CREATE", actorId: createdById, invoiceId, operationKey: input.operationKey, content: { reason, note, items: requestedItems } }, async (tx: any) => {
     await tx.$queryRaw`SELECT id FROM InvoiceItem WHERE invoiceId = ${invoiceId} FOR UPDATE`;
 
     const invoice = await tx.invoice.findUnique({
@@ -317,8 +320,10 @@ export async function createReturnRequest(
     if (invoice.paymentStatus === "CANCELLED") {
       throw new Error("Cancelled invoices cannot be returned.");
     }
-    if (Number(invoice.paidTotal || 0) <= 0) {
-      throw new Error("Only invoices with a recorded payment can be returned.");
+    await assertOriginalReturnBasisTx(tx, invoice);
+    const itemSubtotal = roundCurrency(invoice.items.reduce((sum: number, item: any) => sum + Number(item.lineTotal || 0), 0));
+    if (itemSubtotal !== roundCurrency(invoice.subTotal) || invoice.items.some((item: any) => !Number.isFinite(item.qty) || item.qty <= 0 || !Number.isFinite(item.appliedUnitPrice) || item.appliedUnitPrice < 0 || roundCurrency(item.qty * item.appliedUnitPrice) !== roundCurrency(item.lineTotal))) {
+      throw new ReturnSettlementConflict("Return invoice original price basis is inconsistent");
     }
 
     const invoiceItemsById = new Map<string, any>(
@@ -385,34 +390,10 @@ export async function createReturnRequest(
       };
     });
 
-    const reservedRefunds = await tx.returnRequest.findMany({
-      where: { invoiceId, status: { in: ACTIVE_RETURN_STATUSES } },
-      select: { refundAmount: true },
-    });
-    const invoiceSubTotal = roundCurrency(
-      Number(invoice.subTotal || 0) ||
-        invoice.items.reduce(
-          (sum: number, item: any) => sum + Number(item.lineTotal || 0),
-          0,
-        ),
-    );
-    const grossReturnAmount = roundCurrency(
-      returnLines.reduce((sum, line) => sum + line.lineTotal, 0),
-    );
-    const rawRefundAmount = calculateDiscountAdjustedReturnAmount(
-      invoiceSubTotal,
-      invoice.netTotal,
-      grossReturnAmount,
-    );
-    const refundAmount = calculateRefundAmount(
-      invoice.paidTotal,
-      sumRefundAmount(reservedRefunds),
-      rawRefundAmount,
-    );
-
-    if (refundAmount <= 0) {
-      throw new Error("This invoice has no remaining refundable amount.");
-    }
+    const refundAmount = 0;
+    const settlement = { version: 2, originalCustomerId: invoice.customerId || null,
+      originalPayable: getInvoicePaymentTargetTotal(invoice.netTotal), approvedReturnValue: 0,
+      debtReduction: 0, retainedCredit: 0, approvalOrder: 0 };
 
     const request = await tx.returnRequest.create({
       data: {
@@ -421,6 +402,7 @@ export async function createReturnRequest(
         note,
         refundAmount,
         refundMethod,
+        settlement,
         createdById,
         items: {
           create: returnLines.map((line) => ({
@@ -446,8 +428,8 @@ export async function createReturnRequest(
           invoiceNo: invoice.invoiceNo,
           reason,
           refundAmount,
-          grossReturnAmount,
-          discountAdjustedRefundAmount: rawRefundAmount,
+          grossReturnAmount: roundCurrency(returnLines.reduce((sum, line) => sum + line.lineTotal, 0)),
+          settlement,
           itemCount: returnLines.length,
         },
       },
@@ -457,7 +439,7 @@ export async function createReturnRequest(
   });
 }
 
-export async function approveReturnRequest(id: string, reviewedById: string) {
+export async function approveReturnRequest(id: string, reviewedById: string, operationKey?: string) {
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
   const requestIdentity = await prisma.returnRequest.findUnique({
@@ -466,8 +448,7 @@ export async function approveReturnRequest(id: string, reviewedById: string) {
   });
   if (!requestIdentity) throw new Error("Return request not found.");
 
-  return runFinancialTransaction(prisma, async (tx: any) => {
-    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+  return runReturnOperation({ action: "APPROVE", actorId: reviewedById, invoiceId: requestIdentity.invoiceId, requestId, operationKey, content: {} }, async (tx: any) => {
     await lockReturnRequestForUpdate(tx, requestId);
     const productIds = await lockReturnItemsForUpdate(tx, requestId);
     await lockProductsForUpdate(tx, productIds);
@@ -481,12 +462,34 @@ export async function approveReturnRequest(id: string, reviewedById: string) {
       throw new Error("Only pending return requests can be approved.");
     }
 
+    const pendingSettlement = parseReturnSettlement(request.settlement);
+    let settled: any = null;
+    if (request.settlement != null && !pendingSettlement) throw new ReturnSettlementConflict("Return settlement basis is malformed");
+    if (pendingSettlement) {
+      await assertOriginalReturnBasisTx(tx, request.invoice);
+      if (pendingSettlement.originalCustomerId !== (request.invoice.customerId || null) || pendingSettlement.originalPayable !== getInvoicePaymentTargetTotal(request.invoice.netTotal)) throw new ReturnSettlementConflict("Return invoice owner or payable changed");
+      const payments = await tx.payment.findMany({ where: { invoiceId: request.invoiceId } });
+      if (payments.some((p: any) => p.kind === "CHARGE" && p.status === "PENDING" && p.method === "ESEWA" && !p.voidedAt)) throw new ReturnSettlementConflict("Return approval requires resolving the pending gateway payment first");
+      const approved = await tx.returnRequest.findMany({ where: { invoiceId: request.invoiceId, status: "APPROVED" }, include: { items: true } });
+      const paid = roundCurrency(payments.filter((p: any) => p.kind === "CHARGE" && p.status === "SUCCESS").reduce((sum: number, p: any) => sum + Number(p.amount), 0));
+      if (payments.some((p: any) => p.kind === "CHARGE" && p.status === "SUCCESS" && (!Number.isFinite(p.amount) || p.amount < 0 || p.voidedAt)) || paid !== roundCurrency(request.invoice.paidTotal) || paid > getInvoicePaymentTargetTotal(request.invoice.netTotal)) throw new ReturnSettlementConflict("Return invoice successful charge projection is inconsistent");
+      const heldCredit = roundCurrency(approved.reduce((sum: number, r: any) => sum + parseReturnSettlement(r.settlement)!.retainedCredit, 0));
+      if (heldCredit !== roundCurrency(Math.max(0, paid - getInvoicePaymentTargetTotal(request.invoice.netTotal, request.invoice.returnAdjustment || 0)))) throw new ReturnSettlementConflict("Return invoice retained credit allocation is inconsistent");
+      const allocation = allocateReturn({ netTotal: request.invoice.netTotal, subTotal: request.invoice.subTotal,
+        approvedGross: approved.reduce((sum: number, r: any) => sum + r.items.reduce((n: number, i: any) => n + Number(i.lineTotal), 0), 0),
+        nextGross: request.items.reduce((sum: number, i: any) => sum + Number(i.lineTotal), 0), previousAdjustment: request.invoice.returnAdjustment || 0, paid });
+      const approvalOrder = 1 + approved.reduce((max: number, r: any) => Math.max(max, parseReturnSettlement(r.settlement)!.approvalOrder), 0);
+      settled = { ...pendingSettlement, approvedReturnValue: allocation.approvedReturnValue, debtReduction: allocation.debtReduction, retainedCredit: allocation.retainedCredit, approvalOrder };
+      await updateReturnedInvoiceTx(tx, request.invoice, allocation.adjustment);
+    }
+
     const claimed = await tx.returnRequest.updateMany({
       where: { id: requestId, status: "PENDING" },
       data: {
         status: "APPROVED",
         reviewedById,
         reviewedAt: new Date(),
+        ...(settled ? { settlement: settled } : {}),
       },
     });
 
@@ -512,7 +515,7 @@ export async function approveReturnRequest(id: string, reviewedById: string) {
       });
     }
 
-    const refundAmount = roundCurrency(Math.abs(Number(request.refundAmount || 0)));
+    const refundAmount = settled ? 0 : roundCurrency(Math.abs(Number(request.refundAmount || 0)));
     const refundPayment =
       refundAmount > 0
         ? await tx.payment.create({
@@ -541,6 +544,7 @@ export async function approveReturnRequest(id: string, reviewedById: string) {
           refundAmount: request.refundAmount,
           refundMethod: request.refundMethod,
           refundPaymentId: refundPayment?.id || null,
+          settlement: settled,
           itemCount: request.items.length,
         },
       },
@@ -559,6 +563,7 @@ export async function reverseApprovedReturnRequest(
   id: string,
   reversedById: string,
   note?: string | null,
+  operationKey?: string,
 ) {
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
@@ -569,8 +574,7 @@ export async function reverseApprovedReturnRequest(
   });
   if (!requestIdentity) throw new Error("Return request not found.");
 
-  return runFinancialTransaction(prisma, async (tx: any) => {
-    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+  return runReturnOperation({ action: "REVERSE", actorId: reversedById, invoiceId: requestIdentity.invoiceId, requestId, operationKey, content: { note: reversalNote } }, async (tx: any) => {
     await lockReturnRequestForUpdate(tx, requestId);
     const productIds = await lockReturnItemsForUpdate(tx, requestId);
     await lockProductsForUpdate(tx, productIds);
@@ -586,6 +590,15 @@ export async function reverseApprovedReturnRequest(
     }
     if (request.status !== "APPROVED") {
       throw new Error("Only approved return requests can be reversed.");
+    }
+
+    const settlement = parseReturnSettlement(request.settlement);
+    if (request.settlement != null && !settlement) throw new ReturnSettlementConflict("Return settlement basis is malformed");
+    if (settlement) {
+      await assertOriginalReturnBasisTx(tx, request.invoice);
+      const approved = await tx.returnRequest.findMany({ where: { invoiceId: request.invoiceId, status: "APPROVED" }, select: { id: true, settlement: true } });
+      if (approved.some((r: any) => parseReturnSettlement(r.settlement)!.approvalOrder > settlement.approvalOrder)) throw new ReturnSettlementConflict("Return reversal must reverse later approved returns first");
+      await updateReturnedInvoiceTx(tx, request.invoice, Number(request.invoice.returnAdjustment) - settlement.approvedReturnValue);
     }
 
     const claimed = await tx.returnRequest.updateMany({
@@ -640,7 +653,7 @@ export async function reverseApprovedReturnRequest(
       });
     }
 
-    const reversalAmount = calculateRefundReversalAmount(
+    const reversalAmount = settlement ? 0 : calculateRefundReversalAmount(
       request.refundPayments,
       request.refundAmount,
     );
@@ -671,6 +684,7 @@ export async function reverseApprovedReturnRequest(
           invoiceNo: request.invoice.invoiceNo,
           refundAmount: request.refundAmount,
           refundReversalAmount: reversalAmount,
+          settlement,
           refundCorrectionPaymentId: refundCorrectionPayment?.id || null,
           itemCount: request.items.length,
           note: reversalNote,
@@ -697,6 +711,7 @@ export async function rejectReturnRequest(
   id: string,
   reviewedById: string,
   note?: string | null,
+  operationKey?: string,
 ) {
   const requestId = String(id || "").trim();
   if (!requestId) throw new Error("Return request is required.");
@@ -707,8 +722,7 @@ export async function rejectReturnRequest(
   });
   if (!requestIdentity) throw new Error("Return request not found.");
 
-  return runFinancialTransaction(prisma, async (tx: any) => {
-    await lockInvoiceForUpdate(tx, requestIdentity.invoiceId);
+  return runReturnOperation({ action: "REJECT", actorId: reviewedById, invoiceId: requestIdentity.invoiceId, requestId, operationKey, content: { note: rejectionNote } }, async (tx: any) => {
     await lockReturnRequestForUpdate(tx, requestId);
     const request = await tx.returnRequest.findUnique({
       where: { id: requestId },

@@ -1,9 +1,10 @@
 import { Request, Response } from "express";
 import * as returnService from "./service";
+import { ReturnSettlementConflict } from "./settlement";
 import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
 function sendKnownError(res: Response, err: any) {
-  if (err instanceof FinancialTransactionConflictError) {
+  if (err instanceof FinancialTransactionConflictError || err instanceof ReturnSettlementConflict) {
     res.status(409).json({ error: err.message, code: err.code });
     return true;
   }
@@ -49,6 +50,7 @@ export async function create(req: Request, res: Response) {
   try {
     const request = await returnService.createReturnRequest(req.user!.id, {
       invoiceId: req.body?.invoiceId,
+      operationKey: req.body?.operationKey,
       reason: req.body?.reason,
       note: req.body?.note,
       refundMethod: req.body?.refundMethod,
@@ -67,6 +69,7 @@ export async function approve(req: Request, res: Response) {
     const request = await returnService.approveReturnRequest(
       String(req.params.id),
       req.user!.id,
+      req.body?.operationKey,
     );
     res.json(request);
   } catch (err: any) {
@@ -82,6 +85,7 @@ export async function reject(req: Request, res: Response) {
       String(req.params.id),
       req.user!.id,
       req.body?.note,
+      req.body?.operationKey,
     );
     res.json(request);
   } catch (err: any) {
@@ -97,6 +101,7 @@ export async function reverse(req: Request, res: Response) {
       String(req.params.id),
       req.user!.id,
       req.body?.note,
+      req.body?.operationKey,
     );
     res.json(request);
   } catch (err: any) {

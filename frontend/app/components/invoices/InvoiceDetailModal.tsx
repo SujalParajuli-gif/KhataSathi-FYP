@@ -614,7 +614,7 @@ export default function InvoiceDetailModal({
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] px-3 py-2">
-                  <span className="font-extrabold text-[#565449]">Net total</span>
+                  <span className="font-extrabold text-[#565449]">Original net total</span>
                   <span className="font-mono text-[16px] font-extrabold text-[#000000]">
                     {formatNpr(invoice.netTotal)}
                   </span>
@@ -632,6 +632,11 @@ export default function InvoiceDetailModal({
                   </span>
                 </div>
 
+                {(invoice.returnAdjustment || 0) > 0 && <div className="space-y-2 text-[12px]">
+                  <p>Approved return reduction: <strong className="font-mono">{formatNpr(invoice.returnAdjustment || 0)}</strong></p>
+                  <p>Retained return credit: <strong className="font-mono">{formatNpr(invoice.retainedReturnCredit || 0)}</strong></p>
+                  <p className="text-[#565449]">Credit stays with this original sale's owner. No payout or automatic application is recorded.</p>
+                </div>}
                 <div className="my-[8px] border-t border-dashed border-[#CFCFD3]" />
 
                 {invoice.notes ? (

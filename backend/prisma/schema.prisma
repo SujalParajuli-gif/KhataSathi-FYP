@@ -254,6 +254,7 @@ model User {
   userAlerts                  UserAlertRead[]
   creditNotes                 CreditNote[]
   createdReturnRequests       ReturnRequest[]              @relation("ReturnRequestCreator")
+  returnOperations            ReturnOperation[]
   reviewedReturnRequests      ReturnRequest[]              @relation("ReturnRequestReviewer")
   backupJobs                  BackupJob[]
   productImportBatches        ProductImportBatch[]
@@ -564,6 +565,7 @@ model Invoice {
   loyaltyDiscountAmount  Float                @default(0)
   netTotal               Float                @default(0)
   paidTotal              Float                @default(0)
+  returnAdjustment       Int                  @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
   parkedLabel                String?
@@ -757,6 +759,7 @@ model ReturnRequest {
   note         String?        @db.Text
   status       ReturnStatus   @default(PENDING)
   refundAmount Float          @default(0)
+  settlement   Json?
   refundMethod PaymentMethod?
   createdById  String
   reviewedById String?
@@ -768,6 +771,7 @@ model ReturnRequest {
   reviewedBy     User?        @relation("ReturnRequestReviewer", fields: [reviewedById], references: [id])
   items          ReturnItem[]
   refundPayments Payment[]
+  operations     ReturnOperation[]
 
   @@index([invoiceId])
   @@index([status, createdAt])
@@ -1351,4 +1355,20 @@ model PaymentReceivingQrAsset {
   createdBy User                     @relation("PaymentQrAssetCreator", fields: [createdById], references: [id], onDelete: Restrict, onUpdate: Cascade)
 
   @@index([accountId])
+}
+
+model ReturnOperation {
+  id              String   @id @default(cuid())
+  operationKey    String   @unique @db.VarChar(120)
+  payloadHash     String   @db.Char(64)
+  actorId         String
+  returnRequestId String
+  action          String   @db.VarChar(16)
+  responseJson    Json
+  createdAt       DateTime @default(now())
+
+  actor         User          @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  returnRequest ReturnRequest @relation(fields: [returnRequestId], references: [id], onDelete: Restrict)
+
+  @@index([returnRequestId, createdAt])
 }

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import GIcon from "~/components/ui/GIcon";
 import { MobileFilterTabs } from "~/components/ui/MobileFilters";
 import { useToast } from "~/components/ui/Toast";
@@ -43,6 +43,7 @@ type ReturnRequestRow = {
   note?: string;
   status: ReturnStatusCode;
   refundAmount: number;
+  debtFirst: boolean;
   refundMethod?: "CASH" | "ESEWA";
   createdAt: string;
   createdByName: string;
@@ -88,6 +89,7 @@ function normalizeReturnRequest(raw: any): ReturnRequestRow {
     note: raw.note ? String(raw.note) : undefined,
     status: String(raw.status || "PENDING") as ReturnStatusCode,
     refundAmount: Number(raw.refundAmount || 0),
+    debtFirst: raw.settlement?.version === 2,
     refundMethod: raw.refundMethod ? String(raw.refundMethod) as "CASH" | "ESEWA" : undefined,
     createdAt: String(raw.createdAt || new Date().toISOString()),
     createdByName: String(raw.createdBy?.name || "Unknown user"),
@@ -170,6 +172,8 @@ export default function RequestsPage() {
   const [discountPercents, setDiscountPercents] = useState<Record<string, number>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState("");
+  const returnAttempt = useRef<{ id: string; action: "approve" | "reject"; key: string; note?: string } | null>(null);
+  const [uncertainReturn, setUncertainReturn] = useState<{ id: string; action: "approve" | "reject" } | null>(null);
   const [rateLimitRecoveryKey, setRateLimitRecoveryKey] = useState(0);
   const requestRateLimitRecovery = useRateLimitRecovery(() => {
     setRateLimitRecoveryKey((current) => current + 1);
@@ -229,16 +233,25 @@ export default function RequestsPage() {
   }, [discountRequests.length, returnRequests.length, visibleDiscounts, visibleReturns]);
 
   function setNote(id: string, value: string) {
+    if (returnAttempt.current?.id === id) return;
     setNotes((current) => ({ ...current, [id]: value }));
   }
 
   async function approveReturn(id: string) {
+    if (busyKey || (returnAttempt.current && (returnAttempt.current.id !== id || returnAttempt.current.action !== "approve"))) return;
+    const attempt = returnAttempt.current ?? { id, action: "approve" as const, key: crypto.randomUUID() };
+    returnAttempt.current = attempt;
     setBusyKey(`return:${id}`);
     try {
-      await approveReturnRequestApi(id);
+      await approveReturnRequestApi(id, attempt.key);
+      returnAttempt.current = null;
+      setUncertainReturn(null);
       setReturnRequests((current) => current.filter((request) => request.id !== id));
       showToast("success", "Return request approved.");
     } catch (error: any) {
+      const status = error?.response?.status;
+      if (!status || status >= 500) setUncertainReturn({ id, action: "approve" });
+      else { returnAttempt.current = null; setUncertainReturn(null); }
       showToast("danger", errorMessage(error, "Failed to approve return request."));
     } finally {
       setBusyKey("");
@@ -246,12 +259,20 @@ export default function RequestsPage() {
   }
 
   async function rejectReturn(id: string) {
+    if (busyKey || (returnAttempt.current && (returnAttempt.current.id !== id || returnAttempt.current.action !== "reject"))) return;
+    const attempt = returnAttempt.current ?? { id, action: "reject" as const, key: crypto.randomUUID(), note: notes[id]?.trim() || undefined };
+    returnAttempt.current = attempt;
     setBusyKey(`return:${id}`);
     try {
-      await rejectReturnRequestApi(id, notes[id]?.trim() || undefined);
+      await rejectReturnRequestApi(id, attempt.note, attempt.key);
+      returnAttempt.current = null;
+      setUncertainReturn(null);
       setReturnRequests((current) => current.filter((request) => request.id !== id));
       showToast("success", "Return request rejected.");
     } catch (error: any) {
+      const status = error?.response?.status;
+      if (!status || status >= 500) setUncertainReturn({ id, action: "reject" });
+      else { returnAttempt.current = null; setUncertainReturn(null); }
       showToast("danger", errorMessage(error, "Failed to reject return request."));
     } finally {
       setBusyKey("");
@@ -391,24 +412,27 @@ export default function RequestsPage() {
                           </div>
                         </div>
                         <div className="font-mono text-[16px] font-extrabold text-[#000000] lg:text-right">
-                          {formatNpr(request.refundAmount)}
+                          {request.debtFirst ? "Debt-first allocation at approval; no payout" : `Legacy refund ${formatNpr(request.refundAmount)}`}
+                          {uncertainReturn?.id === request.id && <p role="alert">Outcome unconfirmed. Retry the same {uncertainReturn.action} decision before changing it.</p>}
                         </div>
                         <div className="flex flex-wrap gap-2 lg:justify-end">
                           <button
                             type="button"
                             disabled={busyKey === key}
                             onClick={() => void rejectReturn(request.id)}
+                            aria-disabled={Boolean(uncertainReturn && (uncertainReturn.id !== request.id || uncertainReturn.action !== "reject"))}
                             className="h-[36px] rounded-[12px] border border-[#FECDD3] bg-[#FFF1F2] px-3 text-[12px] font-extrabold text-[#BE123C] transition hover:bg-rose-100 disabled:opacity-50"
                           >
-                            Reject
+                            {uncertainReturn?.id === request.id && uncertainReturn.action === "reject" ? "Retry same rejection" : "Reject"}
                           </button>
                           <button
                             type="button"
                             disabled={busyKey === key}
                             onClick={() => void approveReturn(request.id)}
+                            aria-disabled={Boolean(uncertainReturn && (uncertainReturn.id !== request.id || uncertainReturn.action !== "approve"))}
                             className="h-[36px] rounded-[12px] border border-[#11120d] bg-[#11120d] px-3 text-[12px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-50"
                           >
-                            Approve
+                            {uncertainReturn?.id === request.id && uncertainReturn.action === "approve" ? "Retry same approval" : "Approve"}
                           </button>
                         </div>
                       </div>

@@ -105,6 +105,8 @@ export type AppInvoice = {
   subtotal: number;
   discount: number;
   netTotal: number;
+  returnAdjustment?: number;
+  retainedReturnCredit?: number;
   paidAmount: number;
   dueAmount: number;
   notes?: string;
@@ -728,13 +730,15 @@ export function normalizeInvoice(raw: any): AppInvoice {
     items.reduce((sum, item) => sum + item.lineTotal, 0);
   const discount = Number(raw.loyaltyDiscountAmount ?? raw.discount ?? 0);
   const netTotal = Number(raw.netTotal ?? raw.total ?? subtotal - discount);
+  const returnAdjustment = Number(raw.returnAdjustment || 0);
+  const effectivePayable = raw.returnAdjustment !== undefined ? Math.max(0, Math.round(netTotal) - returnAdjustment) : netTotal;
   const paidAmount = Number(raw.paidTotal ?? raw.paidAmount ?? 0);
   const status = mapInvoiceStatus(raw.status, raw.paymentStatus);
   // if the invoice is cancelled, the due amount is always 0
   const dueAmount =
     status === "Cancelled"
       ? 0
-      : Math.max(0, Number(raw.dueAmount ?? netTotal - paidAmount));
+      : Math.max(0, Number(raw.dueAmount ?? effectivePayable - paidAmount));
 
   return {
     id: raw.id,
@@ -756,6 +760,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
     discount,
     netTotal,
     paidAmount,
+    returnAdjustment,
+    retainedReturnCredit: returnAdjustment > 0 ? Math.max(0, paidAmount - effectivePayable) : 0,
     dueAmount,
     notes: raw.notes || undefined,
     items,

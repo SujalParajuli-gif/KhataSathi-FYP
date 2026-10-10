@@ -261,6 +261,7 @@ type AppReturnRequest = {
   note?: string;
   status: ReturnStatusCode;
   refundAmount: number;
+  settlement?: { version: 2; approvedReturnValue: number; debtReduction: number; retainedCredit: number };
   refundMethod?: ReturnRefundMethod;
   createdAt: string;
   createdByName: string;
@@ -349,6 +350,7 @@ function normalizeReturnRequest(raw: any): AppReturnRequest {
     note: raw.note ? String(raw.note) : undefined,
     status: String(raw.status || "PENDING") as ReturnStatusCode,
     refundAmount: Number(raw.refundAmount || 0),
+    settlement: raw.settlement?.version === 2 ? raw.settlement : undefined,
     refundMethod: raw.refundMethod
       ? (String(raw.refundMethod) as ReturnRefundMethod)
       : undefined,
@@ -1425,12 +1427,11 @@ function InvoiceReturnRequestModal({
   lines,
   reason,
   note,
-  refundMethod,
   error,
   busy,
+  locked,
   onChangeReason,
   onChangeNote,
-  onChangeRefundMethod,
   onChangeQty,
   onClose,
   onSubmit,
@@ -1439,12 +1440,11 @@ function InvoiceReturnRequestModal({
   lines: ReturnLineState[];
   reason: ReturnReasonCode;
   note: string;
-  refundMethod: ReturnRefundMethod;
   error: string;
   busy: boolean;
+  locked: boolean;
   onChangeReason: (value: ReturnReasonCode) => void;
   onChangeNote: (value: string) => void;
-  onChangeRefundMethod: (value: ReturnRefundMethod) => void;
   onChangeQty: (invoiceItemId: string, qty: number) => void;
   onClose: () => void;
   onSubmit: () => void;
@@ -1473,14 +1473,11 @@ function InvoiceReturnRequestModal({
             Number.EPSILON) *
             100,
         ) / 100
-      : rawGrossReturn;
+      : 0;
   const discountAdjustmentAmount = Math.max(0, rawGrossReturn - discountAdjusted);
-  const reservedRefundTotal = Number(invoice?.reservedRefundTotal || 0);
-  const remainingRefundable = invoice
-    ? Math.max(0, invoice.paidAmount - reservedRefundTotal)
-    : 0;
-  const estimatedRefund = Math.min(discountAdjusted, remainingRefundable);
-  const isCappedAtRemaining = discountAdjusted > remainingRefundable;
+  const estimatedReturnValue = invoice ? Math.min(Math.round(discountAdjusted), Math.max(0, Math.round(invoice.netTotal) - (invoice.returnAdjustment || 0))) : 0;
+  const estimatedDebtReduction = Math.min(estimatedReturnValue, invoice?.dueAmount || 0);
+  const estimatedCredit = estimatedReturnValue - estimatedDebtReduction;
 
   const isDirty =
     selectedLines.length > 0 ||
@@ -1488,6 +1485,7 @@ function InvoiceReturnRequestModal({
     reason !== "CUSTOMER_REQUEST";
 
   function handleAttemptClose() {
+    if (busy || locked) return;
     if (isDirty && !busy) {
       setConfirmDiscardOpen(true);
     } else {
@@ -1505,7 +1503,7 @@ function InvoiceReturnRequestModal({
     }
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [invoice, isDirty, busy]);
+  }, [invoice, isDirty, busy, locked]);
 
   if (!invoice || typeof document === "undefined") return null;
 
@@ -1529,11 +1527,7 @@ function InvoiceReturnRequestModal({
             </div>
             <div className="mt-0.5 text-[12px] font-semibold text-[#8C8889] truncate">
               {invoice.customerName} | Paid {formatNpr(invoice.paidAmount)}
-              {reservedRefundTotal > 0 ? (
-                <span className="ml-2 font-bold text-amber-700">
-                  (Reserved refunds: {formatNpr(reservedRefundTotal)})
-                </span>
-              ) : null}
+
             </div>
           </div>
 
@@ -1548,7 +1542,7 @@ function InvoiceReturnRequestModal({
         </div>
 
         <div className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
-          <div className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_340px] items-start">
+          <fieldset disabled={busy || locked} className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_340px] items-start">
             <div className="min-w-0 overflow-hidden rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
               <div className="flex items-center justify-between gap-2 border-b border-[#DADDE3] bg-[#F8FAFC] px-4 py-3">
                 <div className="text-[12px] font-extrabold uppercase text-[#565449]">
@@ -1761,32 +1755,11 @@ function InvoiceReturnRequestModal({
                 />
               </div>
 
-              <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] p-4 shadow-sm">
-                <div className="text-[12px] font-extrabold uppercase text-[#8C8889]">
-                  Refund method
-                </div>
-                <div className="mt-2 grid grid-cols-2 gap-2">
-                  {(["CASH", "ESEWA"] as const).map((method) => (
-                    <button
-                      key={method}
-                      type="button"
-                      onClick={() => onChangeRefundMethod(method)}
-                      className={cn(
-                        "h-[40px] rounded-[12px] border text-[12.5px] font-extrabold transition",
-                        refundMethod === method
-                          ? "border-[#11120d] bg-[#11120d] text-[#FFFFFF]"
-                          : "border-[#CFCFD3] bg-[#FFFFFF] text-[#000000] hover:bg-[#F3F4F6]",
-                      )}
-                    >
-                      {method === "CASH" ? "Cash" : "eSewa"}
-                    </button>
-                  ))}
-                </div>
-              </div>
+              <p className="rounded-xl border border-[#CFCFD3] p-4 text-sm">Approval reduces this original sale's unpaid balance first. Any excess stays as retained credit with the original customer, or this walk-in invoice. No cash or gateway payout is made.</p>
 
               <div className="rounded-[16px] border border-[#DADDE3] bg-[#F8FAFC] p-4 shadow-sm">
                 <div className="text-[12px] font-extrabold uppercase text-[#565449]">
-                  Refund Breakdown
+                  Return settlement estimate
                 </div>
                 <div className="mt-3 space-y-2.5 text-[13px]">
                   <div className="flex items-center justify-between gap-3">
@@ -1805,16 +1778,14 @@ function InvoiceReturnRequestModal({
                   ) : null}
                   <div className="border-t border-dashed border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#11120d]">Estimated Refund</span>
+                    <span className="font-bold text-[#11120d]">Estimated return value</span>
                     <span className="font-mono text-[15px] font-extrabold text-[#179B4D]">
-                      {formatNpr(estimatedRefund)}
+                      {formatNpr(estimatedReturnValue)}
                     </span>
                   </div>
-                  {isCappedAtRemaining ? (
-                    <div className="rounded-[10px] bg-amber-50 p-2.5 text-[11px] font-bold text-amber-800 border border-amber-200">
-                      Refund capped at remaining paid balance ({formatNpr(remainingRefundable)}).
-                    </div>
-                  ) : null}
+                  <p>Estimated debt reduction: {formatNpr(estimatedDebtReduction)}</p>
+                  <p>Estimated retained credit: {formatNpr(estimatedCredit)}</p>
+                  <p className="text-xs text-[#565449]">Approval recalculates the original-value allocation using current receipts and previous approved returns, including cumulative rounding.</p>
                   <div className="flex items-center justify-between gap-3 text-[11px] text-[#8C8889] pt-1">
                     <span>Reason</span>
                     <span className="text-right font-bold text-[#000000]">
@@ -1826,11 +1797,11 @@ function InvoiceReturnRequestModal({
 
               {error ? (
                 <div className="rounded-[14px] border border-[#FECDD3] bg-[#FFF1F2] px-4 py-3 text-[12px] font-semibold text-[#BE123C]">
-                  {error}
+                  <span role="alert">{error}</span>
                 </div>
               ) : null}
             </aside>
-          </div>
+          </fieldset>
         </div>
 
         <div className="shrink-0 border-t border-[#DADDE3] bg-[#FFFFFF] px-4 sm:px-5 py-3 sm:py-4">
@@ -1838,7 +1809,7 @@ function InvoiceReturnRequestModal({
             <div className="flex items-center justify-between sm:justify-start gap-3 text-[12px] font-bold text-[#8C8889]">
               <span>{selectedLines.length} line(s) · {returnUnits} unit(s)</span>
               <span className="text-[#11120d] font-extrabold text-[13px] sm:text-[14px]">
-                {formatNpr(estimatedRefund)} estimated
+                {formatNpr(estimatedReturnValue)} estimated
               </span>
             </div>
 
@@ -1846,7 +1817,7 @@ function InvoiceReturnRequestModal({
               <button
                 type="button"
                 onClick={handleAttemptClose}
-                disabled={busy}
+                disabled={busy || locked}
                 className="flex-1 sm:flex-initial h-[42px] rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#000000] transition hover:bg-[#F3F4F6] disabled:opacity-50"
               >
                 Cancel
@@ -1857,7 +1828,7 @@ function InvoiceReturnRequestModal({
                 disabled={busy || selectedLines.length === 0}
                 className="flex-1 sm:flex-initial h-[42px] rounded-[14px] bg-[#11120d] px-5 text-[13px] font-extrabold text-white transition hover:bg-[#2a2c27] disabled:opacity-40"
               >
-                {busy ? "Submitting..." : "Submit Return"}
+                {busy ? "Submitting..." : locked ? "Retry same return" : "Submit Return"}
               </button>
             </div>
           </div>
@@ -2010,7 +1981,7 @@ function ReturnReviewModal({
                       </div>
                     </div>
                     <div className="font-mono text-[14px] font-extrabold text-[#000000] lg:text-right">
-                      {formatNpr(request.refundAmount)}
+                      {request.settlement ? request.status === "PENDING" ? "Allocated at approval" : formatNpr(request.settlement.approvedReturnValue) : `Legacy refund ${formatNpr(request.refundAmount)}`}
                     </div>
                     <div className="flex items-center gap-2 lg:justify-end">
                       <span
@@ -2089,7 +2060,7 @@ function ReturnReviewModal({
                       <div className="flex items-center justify-between gap-3">
                         <span className="font-bold text-[#8C8889]">Method</span>
                         <span className="font-extrabold text-[#000000]">
-                          {request.refundMethod === "ESEWA" ? "eSewa" : "Cash"}
+                          {request.settlement ? `Debt first; no payout. Debt reduction ${formatNpr(request.settlement.debtReduction)}, held credit ${formatNpr(request.settlement.retainedCredit)}${request.status === "REVERSED" ? " (withdrawn)" : ""}` : `Legacy ${request.refundMethod === "ESEWA" ? "eSewa" : "cash"} refund`}
                         </span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
@@ -2511,6 +2482,9 @@ export default function CashierInvoicesPage() {
     useState<ReturnRefundMethod>("CASH");
   const [returnError, setReturnError] = useState("");
   const [savingReturn, setSavingReturn] = useState(false);
+  const returnAttempt = useRef<Parameters<typeof createReturnRequestApi>[0] | null>(null);
+  const [returnUncertain, setReturnUncertain] = useState(false);
+  const returnReviewAttempt = useRef<{ kind: string; requestId: string; operationKey: string } | null>(null);
   const [returnOrigin, setReturnOrigin] = useState<"detail" | "edit" | null>(null);
   const [returnOriginInvoiceId, setReturnOriginInvoiceId] = useState<string | null>(null);
   const [returnRequests, setReturnRequests] = useState<AppReturnRequest[]>([]);
@@ -3056,7 +3030,6 @@ export default function CashierInvoicesPage() {
   function canRequestReturn(invoice: AppInvoice) {
     return (
       invoice.status !== "Cancelled" &&
-      invoice.paidAmount > 0 &&
       invoice.items.some(
         (item) =>
           item.id &&
@@ -3069,7 +3042,7 @@ export default function CashierInvoicesPage() {
 
   function openReturnRequest(invoice: AppInvoice, origin?: "detail" | "edit") {
     if (!canRequestReturn(invoice)) {
-      setReturnError("Only paid, non-cancelled invoices with items can be returned.");
+      setReturnError("Only non-cancelled invoices with returnable items can be returned.");
       return;
     }
 
@@ -3113,6 +3086,7 @@ export default function CashierInvoicesPage() {
   }
 
   function closeReturnRequest(submitted: boolean = false) {
+    if (!submitted && (savingReturn || returnAttempt.current)) return;
     const prevOrigin = returnOrigin;
     const prevOriginId = returnOriginInvoiceId;
 
@@ -3139,6 +3113,7 @@ export default function CashierInvoicesPage() {
   }
 
   function changeReturnQty(invoiceItemId: string, qty: number) {
+    if (savingReturn || returnAttempt.current) return;
     setReturnError("");
     setReturnLines((current) =>
       current.map((line) => {
@@ -3174,13 +3149,15 @@ export default function CashierInvoicesPage() {
     setReturnError("");
 
     try {
-      await createReturnRequestApi({
-        invoiceId: returnInvoice.id,
-        reason: returnReason,
-        note: returnNote.trim() || undefined,
-        refundMethod: returnRefundMethod,
-        items: selectedItems,
-      });
+      const payload = returnAttempt.current ?? {
+        invoiceId: returnInvoice.id, reason: returnReason,
+        note: returnNote.trim() || undefined, items: selectedItems,
+        operationKey: crypto.randomUUID(),
+      };
+      returnAttempt.current = payload;
+      await createReturnRequestApi(payload);
+      returnAttempt.current = null;
+      setReturnUncertain(false);
 
       showToast("success", `Return request submitted for ${returnInvoice.invoiceNo}.`);
       closeReturnRequest(true);
@@ -3189,10 +3166,14 @@ export default function CashierInvoicesPage() {
         await loadReturnRequests(returnReviewStatus);
       }
     } catch (err: any) {
-      setReturnError(
+      const status = err?.response?.status;
+      const uncertain = !status || status >= 500;
+      if (!uncertain) returnAttempt.current = null;
+      setReturnUncertain(uncertain);
+      setReturnError(uncertain ? "Outcome unconfirmed. Retry the same return to reconcile it safely." : (
         err?.response?.data?.error ||
           err?.message ||
-          "Failed to submit return request.",
+          "Failed to submit return request."),
       );
     } finally {
       setSavingReturn(false);
@@ -3206,19 +3187,23 @@ export default function CashierInvoicesPage() {
   }
 
   function closeReturnReview() {
+    if (returnReviewBusyId || returnReviewAttempt.current) return;
     setShowReturnReview(false);
     setPendingReturnReviewAction(null);
   }
 
   function requestApproveReturn(requestId: string) {
+    if (returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "approve", requestId });
   }
 
   function requestRejectReturn(requestId: string) {
+    if (returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "reject", requestId });
   }
 
   function requestReverseReturn(requestId: string) {
+    if (returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "reverse", requestId });
   }
 
@@ -3227,19 +3212,22 @@ export default function CashierInvoicesPage() {
 
     const action = pendingReturnReviewAction;
     setReturnReviewBusyId(action.requestId);
-    setPendingReturnReviewAction(null);
+    const attempt = returnReviewAttempt.current ?? { ...action, operationKey: crypto.randomUUID() };
+    returnReviewAttempt.current = attempt;
     setReturnRequestsError("");
 
     try {
       if (action.kind === "approve") {
-        await approveReturnRequestApi(action.requestId);
+        await approveReturnRequestApi(action.requestId, attempt.operationKey);
       } else if (action.kind === "reverse") {
-        await reverseReturnRequestApi(action.requestId);
+        await reverseReturnRequestApi(action.requestId, undefined, attempt.operationKey);
       } else {
-        await rejectReturnRequestApi(action.requestId);
+        await rejectReturnRequestApi(action.requestId, undefined, attempt.operationKey);
       }
 
-      await loadReturnRequests(returnReviewStatus);
+      returnReviewAttempt.current = null;
+      setPendingReturnReviewAction(null);
+      await Promise.all([loadReturnRequests(returnReviewStatus), loadInvoices()]);
       showToast(
         "success",
         action.kind === "approve"
@@ -3249,10 +3237,13 @@ export default function CashierInvoicesPage() {
             : "Return request rejected.",
       );
     } catch (err: any) {
-      setReturnRequestsError(
+      const status = err?.response?.status;
+      const uncertain = !status || status >= 500;
+      if (!uncertain) returnReviewAttempt.current = null;
+      setReturnRequestsError(uncertain ? "Outcome unconfirmed. Retry this same decision to reconcile it safely." : (
         err?.response?.data?.error ||
           err?.message ||
-          "Failed to review return request.",
+          "Failed to review return request."),
       );
     } finally {
       setReturnReviewBusyId(null);
@@ -3659,6 +3650,7 @@ export default function CashierInvoicesPage() {
 
     const isApprove = pendingReturnReviewAction.kind === "approve";
     const isReverse = pendingReturnReviewAction.kind === "reverse";
+    const debtFirst = Boolean(pendingReturnReviewRequest.settlement);
     const units = pendingReturnReviewRequest.items.reduce(
       (sum, item) => sum + item.qtyReturned,
       0,
@@ -3671,9 +3663,9 @@ export default function CashierInvoicesPage() {
           ? "Reverse this return?"
           : "Reject this return?",
       message: isApprove
-        ? "Returned item quantities will be restored to stock and the request will be marked approved."
+        ? debtFirst ? "Restore returned stock and reduce this original sale's debt first. Excess stays as retained credit with its original owner. No payout is made." : "Approve this legacy cash-refund return and restore stock. Its settlement remains outside authoritative customer balances."
         : isReverse
-          ? "This will remove the previously restored stock and add a refund correction entry to the invoice ledger."
+          ? debtFirst ? "Remove restored stock and withdraw this return's debt reduction and held credit. Reverse later approved returns first. No cash recollection is recorded." : "This will remove the previously restored stock and add a legacy refund correction entry to the invoice ledger."
           : "The return request will be closed without changing stock.",
       confirmLabel: isApprove
         ? "Approve Return"
@@ -3705,9 +3697,9 @@ export default function CashierInvoicesPage() {
             <span className="font-extrabold text-slate-900">{units}</span>
           </div>
           <div className="flex items-center justify-between gap-3">
-            <span>Refund amount</span>
+            <span>{debtFirst ? "Original-sale return value" : "Legacy refund amount"}</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(pendingReturnReviewRequest.refundAmount)}
+              {debtFirst ? pendingReturnReviewRequest.status === "PENDING" ? "Allocated at approval" : formatNpr(pendingReturnReviewRequest.settlement!.approvedReturnValue) : formatNpr(pendingReturnReviewRequest.refundAmount)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -4671,12 +4663,11 @@ export default function CashierInvoicesPage() {
         lines={returnLines}
         reason={returnReason}
         note={returnNote}
-        refundMethod={returnRefundMethod}
         error={returnError}
         busy={savingReturn}
+        locked={returnUncertain}
         onChangeReason={setReturnReason}
         onChangeNote={setReturnNote}
-        onChangeRefundMethod={setReturnRefundMethod}
         onChangeQty={changeReturnQty}
         onClose={closeReturnRequest}
         onSubmit={submitReturnRequest}
@@ -4769,12 +4760,12 @@ export default function CashierInvoicesPage() {
           open={!!pendingReturnReviewConfig}
           title={pendingReturnReviewConfig.title}
           message={pendingReturnReviewConfig.message}
-          confirmLabel={pendingReturnReviewConfig.confirmLabel}
+          confirmLabel={returnReviewAttempt.current ? "Retry same decision" : pendingReturnReviewConfig.confirmLabel}
           onConfirm={confirmReturnReviewAction}
-          onClose={() => setPendingReturnReviewAction(null)}
+          onClose={() => { if (!returnReviewBusyId && !returnReviewAttempt.current) setPendingReturnReviewAction(null); }}
           tone={pendingReturnReviewConfig.tone}
           icon={pendingReturnReviewConfig.icon}
-          details={pendingReturnReviewConfig.details}
+          details={<>{pendingReturnReviewConfig.details}{returnRequestsError && <p role="alert" className="mt-3 text-rose-700">{returnRequestsError}</p>}</>}
           busy={returnReviewBusyId === pendingReturnReviewRequest?.id}
         />
       ) : null}

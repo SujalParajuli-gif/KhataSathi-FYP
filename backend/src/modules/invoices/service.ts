@@ -2172,6 +2172,7 @@ async function recordCheckoutCashPaymentTx(
     invoiceNo: string;
     paymentStatus: string;
     netTotal: number;
+    returnAdjustment?: number;
     paidTotal?: number;
   },
   amount: number,
@@ -2183,14 +2184,14 @@ async function recordCheckoutCashPaymentTx(
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0);
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
   if (currentPaid + normalizedAmount > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0)}`,
     );
   }
 
@@ -2260,6 +2261,7 @@ async function recordCheckoutCashPaymentTx(
         remainingDue: getRemainingPaymentDue(
           invoice.netTotal,
           currentPaid + normalizedAmount,
+          invoice.returnAdjustment || 0,
         ),
       },
     },
@@ -2273,6 +2275,7 @@ async function recordCheckoutManualDigitalPaymentTx(
     invoiceNo: string;
     paymentStatus: string;
     netTotal: number;
+    returnAdjustment?: number;
     paidTotal?: number;
   },
   method: "FONEPAY" | "BANK_TRANSFER",
@@ -2293,7 +2296,7 @@ async function recordCheckoutManualDigitalPaymentTx(
       `${method === "FONEPAY" ? "Fonepay" : "Bank transfer"} reference is required`,
     );
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0);
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
@@ -2301,7 +2304,7 @@ async function recordCheckoutManualDigitalPaymentTx(
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
   if (currentPaid + normalizedAmount > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0)}`,
     );
   }
 
@@ -2357,7 +2360,7 @@ async function recordCheckoutManualDigitalPaymentTx(
         nextStatus: nextPaymentStatus,
         paidTotal: nextPaidTotal,
         netTotal: invoice.netTotal,
-        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal),
+        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal, invoice.returnAdjustment || 0),
       },
     },
   });

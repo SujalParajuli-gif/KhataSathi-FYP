@@ -32,6 +32,14 @@
                 ]
             },
             {
+                "key": "receivables",
+                "label": "Customer Receivables",
+                "pageTitle": "Customer Receivables",
+                "icon": "account_balance_wallet",
+                "to": "/receivables",
+                "roles": ["admin", "manager"]
+            },
+            {
                 "key": "expenses",
                 "label": "Expenses",
                 "pageTitle": "Expenses",

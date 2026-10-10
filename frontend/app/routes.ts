@@ -9,6 +9,7 @@ export default [
     route("products", "routes/_app.products.tsx"),
     route("purchases", "routes/_app.purchases.tsx"),
     route("expenses", "routes/_app.expenses.tsx"),
+    route("receivables", "routes/_app.receivables.tsx"),
     route("products/imports/:batchId", "routes/_app.products.imports.$batchId.tsx"),
     route("product-lookup", "routes/_app.productLookup.tsx"),
     route("billing", "routes/_app.billing.tsx"), // the cashier's billing/POS page

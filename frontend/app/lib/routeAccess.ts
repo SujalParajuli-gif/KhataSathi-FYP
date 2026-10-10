@@ -52,6 +52,7 @@ export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
     "/products",
     "/purchases",
     "/expenses",
+    "/receivables",
     "/product-lookup",
     "/discounts",
     "/history",
@@ -88,6 +89,7 @@ export const ALLOWED_ROUTES_BY_ROLE: Record<UserRole, string[]> = {
     "/products",
     "/purchases",
     "/expenses",
+    "/receivables",
     "/billing",
     "/product-lookup",
     "/discounts",
@@ -144,6 +146,7 @@ export function normalizeProtectedPath(
 }
 
 const POS_ROUTES = [
+  "/receivables",
   "/",
   "/analytics",
   "/billing",

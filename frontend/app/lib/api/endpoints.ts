@@ -1706,6 +1706,7 @@ export type ReturnStatusCode = "PENDING" | "APPROVED" | "REJECTED" | "REVERSED";
 
 export async function createReturnRequestApi(data: {
     invoiceId: string;
+    operationKey: string;
     reason: ReturnReasonCode;
     note?: string;
     refundMethod?: "CASH" | "ESEWA" | null;
@@ -1722,18 +1723,18 @@ export async function listReturnRequestsApi(filters?: {
     return res.data;
 }
 
-export async function approveReturnRequestApi(id: string) {
-    const res = await api.patch(`/api/returns/${id}/approve`);
+export async function approveReturnRequestApi(id: string, operationKey: string) {
+    const res = await api.patch(`/api/returns/${id}/approve`, { operationKey });
     return res.data;
 }
 
-export async function rejectReturnRequestApi(id: string, note?: string) {
-    const res = await api.patch(`/api/returns/${id}/reject`, { note });
+export async function rejectReturnRequestApi(id: string, note?: string, operationKey?: string) {
+    const res = await api.patch(`/api/returns/${id}/reject`, { note, operationKey });
     return res.data;
 }
 
-export async function reverseReturnRequestApi(id: string, note?: string) {
-    const res = await api.patch(`/api/returns/${id}/reverse`, { note });
+export async function reverseReturnRequestApi(id: string, note?: string, operationKey?: string) {
+    const res = await api.patch(`/api/returns/${id}/reverse`, { note, operationKey });
     return res.data;
 }
 

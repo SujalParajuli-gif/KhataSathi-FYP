@@ -21,9 +21,21 @@ import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
 import { requireBusinessCapability } from "../settings/capabilities";
 
+import { listCustomerReceivables } from "./receivables";
+import { ZodError } from "zod";
+
 const router: ReturnType<typeof Router> = Router();
 const requirePos = requireBusinessCapability("POS");
 router.use(authGuard); // all customer routes require authentication
+
+router.get("/receivables", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  try { res.json(await listCustomerReceivables(req.query, req.user!.role)); }
+  catch (error) {
+    if (error instanceof ZodError) { res.status(400).json({ error: "Invalid customer receivables filters" }); return; }
+    console.error("Customer receivables failed", error);
+    res.status(500).json({ error: "Customer receivables could not be loaded" });
+  }
+});
 
 router.get("/lookup", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), lookupCustomers);
 router.get("/", list); // any authenticated user can view the customer list

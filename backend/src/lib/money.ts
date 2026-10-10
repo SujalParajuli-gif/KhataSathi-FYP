@@ -17,13 +17,13 @@ export function roundPayableTotal(value: number) {
   return roundCurrency(Math.max(0, value), POS_PAYABLE_DECIMALS);
 }
 
-export function getInvoicePaymentTargetTotal(netTotal: number) {
-  return roundPayableTotal(netTotal);
+export function getInvoicePaymentTargetTotal(netTotal: number, returnAdjustment = 0) {
+  return Math.max(0, roundPayableTotal(netTotal) - returnAdjustment);
 }
 
-export function getRemainingPaymentDue(netTotal: number, paidTotal: number) {
+export function getRemainingPaymentDue(netTotal: number, paidTotal: number, returnAdjustment = 0) {
   return roundCurrency(
-    Math.max(0, getInvoicePaymentTargetTotal(netTotal) - roundCurrency(paidTotal)),
+    Math.max(0, getInvoicePaymentTargetTotal(netTotal, returnAdjustment) - roundCurrency(paidTotal)),
   );
 }
 
