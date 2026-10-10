@@ -16,6 +16,17 @@ enum Role {
   STAFF
 }
 
+enum ExpenseStatus {
+  RECORDED
+  VOIDED
+}
+
+enum ExpenseAction {
+  CREATE
+  CORRECT
+  VOID
+}
+
 enum BusinessMode {
   CATALOG_ONLY
   INVENTORY_ONLY
@@ -275,6 +286,8 @@ model User {
   paymentQrAssetsCreated      PaymentReceivingQrAsset[]    @relation("PaymentQrAssetCreator")
   createdSupplierPayments     SupplierPayment[]            @relation("SupplierPaymentCreator")
   voidedSupplierPayments      SupplierPayment[]            @relation("SupplierPaymentVoider")
+  expenses                    Expense[]
+  expenseRevisions            ExpenseRevision[]
 
   @@index([role, isActive, lastPresenceAt])
 }
@@ -1164,6 +1177,48 @@ model SupplierPayment {
   @@index([batchId, createdAt])
   @@index([createdById])
   @@index([voidedById])
+}
+
+model Expense {
+  id          String        @id @default(cuid())
+  amount      Decimal       @db.Decimal(20, 2)
+  occurredOn  DateTime      @db.Date
+  category    String        @db.VarChar(80)
+  description String        @db.VarChar(500)
+  status      ExpenseStatus @default(RECORDED)
+  revision    Int           @default(1)
+  createdById String
+  createdAt   DateTime      @default(now())
+  updatedAt   DateTime      @updatedAt
+
+  createdBy User              @relation(fields: [createdById], references: [id], onDelete: Restrict)
+  revisions ExpenseRevision[]
+
+  @@index([occurredOn, id])
+  @@index([status, occurredOn])
+}
+
+model ExpenseRevision {
+  id           String        @id @default(cuid())
+  expenseId    String
+  revision     Int
+  action       ExpenseAction
+  amount       Decimal       @db.Decimal(20, 2)
+  occurredOn   DateTime      @db.Date
+  category     String        @db.VarChar(80)
+  description  String        @db.VarChar(500)
+  status       ExpenseStatus
+  reason       String?       @db.VarChar(500)
+  actorId      String
+  operationKey String        @unique @db.VarChar(120)
+  payloadHash  String        @db.Char(64)
+  createdAt    DateTime      @default(now())
+
+  expense Expense @relation(fields: [expenseId], references: [id], onDelete: Restrict)
+  actor   User    @relation(fields: [actorId], references: [id], onDelete: Restrict)
+
+  @@unique([expenseId, revision])
+  @@index([actorId])
 }
 
 model AuditLog {

@@ -31,6 +31,13 @@ const fullPos = {
   staffDraftRequestsEnabled: true,
 };
 
+test("expenses are available to admin and manager in every business mode, never cashier or staff", () => {
+  for (const capabilities of [catalog, inventory, fullPos]) {
+    for (const role of ["admin", "manager"]) assert.equal(hasRouteAccess(role, "/expenses", capabilities), true);
+    for (const role of ["cashier", "staff"]) assert.equal(hasRouteAccess(role, "/expenses", capabilities), false);
+  }
+});
+
 test("non-POS modes send every role to a useful catalog landing route", () => {
   for (const capabilities of [catalog, inventory]) {
     assert.equal(getDefaultRoute("admin", capabilities), "/products");

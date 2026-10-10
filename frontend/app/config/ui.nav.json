@@ -32,6 +32,14 @@
                 ]
             },
             {
+                "key": "expenses",
+                "label": "Expenses",
+                "pageTitle": "Expenses",
+                "icon": "receipt_long",
+                "to": "/expenses",
+                "roles": ["admin", "manager"]
+            },
+            {
                 "key": "product-lookup",
                 "label": "Product Lookup",
                 "pageTitle": "Product Lookup",

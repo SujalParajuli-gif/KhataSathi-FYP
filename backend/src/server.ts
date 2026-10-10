@@ -16,6 +16,7 @@ import invoiceRoutes from "./modules/invoices/routes";
 import paymentRoutes from "./modules/payments/routes";
 import inventoryRoutes from "./modules/inventory/routes";
 import reportRoutes from "./modules/reports/routes";
+import expenseRoutes from "./modules/expenses/routes";
 import auditRoutes from "./modules/audit/routes";
 import adminRoutes, { runDueScheduledBackup } from "./modules/admin/backup";
 import userRoutes from "./modules/users/routes";
@@ -258,6 +259,7 @@ app.use("/api/customers", requireBusinessCapability("POS"), customerRoutes);
 app.use("/api/invoices", requireBusinessCapability("POS"), invoiceRoutes);
 app.use("/api", paymentRoutes); // payment routes handle both /api/payments and /api/invoices/:id/payments internally
 app.use("/api/inventory", requireBusinessCapability("INVENTORY"), inventoryRoutes);
+app.use("/api/expenses", expenseRoutes);
 app.use("/api/reports", requireBusinessCapability("POS"), reportRoutes);
 app.use("/api/audit", auditRoutes);
 app.use("/api/admin", adminRoutes);
