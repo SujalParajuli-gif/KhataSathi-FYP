@@ -261,7 +261,7 @@ type AppReturnRequest = {
   note?: string;
   status: ReturnStatusCode;
   refundAmount: number;
-  settlement?: { version: 2 | 3; approvedReturnValue: number; debtReduction: number; retainedCredit: number; restoredCredit?: number };
+  settlement?: { version: 2 | 3 | 4; approvedReturnValue: number; debtReduction: number; retainedCredit: number; restoredCredit?: number; applications?: { released: number }[] };
   refundMethod?: ReturnRefundMethod;
   createdAt: string;
   createdByName: string;
@@ -2065,7 +2065,7 @@ function ReturnReviewModal({
                       <div className="flex items-center justify-between gap-3">
                         <span className="font-bold text-[#8C8889]">Method</span>
                         <span className="font-extrabold text-[#000000]">
-                          {request.settlement ? `Debt first; no payout. Debt reduction ${formatNpr(request.settlement.debtReduction)}, restored original credit ${formatNpr(request.settlement.restoredCredit || 0)}, held credit ${formatNpr(request.settlement.retainedCredit)}${request.status === "REVERSED" ? " (withdrawn)" : ""}` : `Legacy ${request.refundMethod === "ESEWA" ? "eSewa" : "cash"} refund`}
+                          {request.settlement ? `Debt first; no payout. Debt reduction ${formatNpr(request.settlement.debtReduction)}, restored original credit ${formatNpr((request.settlement.restoredCredit || 0) + (request.settlement.applications?.reduce((n,a)=>n+a.released,0) || 0))}, held credit ${formatNpr(request.settlement.retainedCredit)}${request.status === "REVERSED" ? " (withdrawn)" : ""}` : `Legacy ${request.refundMethod === "ESEWA" ? "eSewa" : "cash"} refund`}
                         </span>
                       </div>
                       <div className="flex items-center justify-between gap-3">
@@ -3636,7 +3636,7 @@ export default function CashierInvoicesPage() {
     return {
       title: "Cancel this invoice?",
       message:
-        "This cancels the invoice and restores stock. Inherited credit is restored to its original source; this sale's recorded receipts become retained credit for the original owner. No cash payout is made.",
+        "This cancels the invoice and restores stock. Applied and inherited credit is restored to its original sources; this sale's recorded receipts become retained credit for the original owner. No cash payout is made.",
       confirmLabel: "Cancel Invoice",
       tone: "danger" as const,
       icon: "warning",
@@ -3689,7 +3689,7 @@ export default function CashierInvoicesPage() {
           ? "Reverse this return?"
           : "Reject this return?",
       message: isApprove
-        ? debtFirst ? "Restore returned stock and reduce unpaid debt first. Restore original credit next; remaining excess stays as receipt-backed credit. No payout is made." : "Approve this legacy cash-refund return and restore stock. Its settlement remains outside authoritative customer balances."
+        ? debtFirst ? "Restore returned stock and reduce unpaid debt first. Restore original credit next, newest application first; remaining excess stays as receipt-backed credit. No payout is made." : "Approve this legacy cash-refund return and restore stock. Its settlement remains outside authoritative customer balances."
         : isReverse
           ? debtFirst ? "Remove restored stock and withdraw debt reduction, restored original credit and held credit. Reverse later returns and uses of restored credit first. No cash recollection is recorded." : "This will remove the previously restored stock and add a legacy refund correction entry to the invoice ledger."
           : "The return request will be closed without changing stock.",

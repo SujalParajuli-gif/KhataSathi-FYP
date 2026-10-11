@@ -83,7 +83,7 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
           return { lastNumber: creditNoteSeq };
         },
       },
-      customerCreditApplication: { findFirst: async () => null },
+      customerCreditApplication: { findFirst: async () => null, findMany: async () => [] },
       customerCreditPayout: { count: async () => 0 },
       returnRequest: {
         findFirst: async () => null,

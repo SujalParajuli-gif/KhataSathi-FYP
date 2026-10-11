@@ -1,3 +1,4 @@
+import { applicationReturnBasisTx, allocateApplicationRelease, setApplicationReleasesTx, effectiveApplicationAmount } from "../customers/applicationSettlement";
 import { assertOriginalReturnBasisTx } from "../returns/settlement";
 import { effectiveCorrectionCredit } from "../../lib/money";
 import { allocateCorrectionCredit, captureCorrectionBasis, runCorrectionOperation, CorrectionSettlementConflict } from "./correctionSettlement";
@@ -648,10 +649,11 @@ async function assertNoActiveReturnRequestsTx(
   tx: any,
   invoiceId: string,
   actionLabel: string,
+  allowIncoming = false,
 ) {
-  const allocation = await tx.customerCreditApplication.findFirst({ where: { reversedAt: null, OR: [{ sourceInvoiceId: invoiceId }, { targetInvoiceId: invoiceId }] }, select: { id: true } });
+  const allocation = await tx.customerCreditApplication.findFirst({ where: { reversedAt: null, OR: [{ sourceInvoiceId: invoiceId }, { targetInvoiceId: invoiceId }] }, select: { id: true, sourceInvoiceId:true } });
   if (await tx.customerCreditPayout.count({ where: { sourceInvoiceId: invoiceId, recoveredAt: null } })) throw new ActiveCreditApplicationConflict(`Recover paid-out credit before you ${actionLabel}`);
-  if (allocation) throw new ActiveCreditApplicationConflict(`Reverse active credit applications before you ${actionLabel}`);
+  if (allocation && (!allowIncoming || allocation.sourceInvoiceId === invoiceId)) throw new ActiveCreditApplicationConflict(`Reverse active credit applications before you ${actionLabel}`);
   const activeReturn = await tx.returnRequest.findFirst({
     where: {
       invoiceId,
@@ -4488,7 +4490,7 @@ export async function cancelInvoice(invoiceId: string, userId: string, operation
     if (invoice.paymentStatus === "CANCELLED") {
       throw new Error("Invoice is already cancelled");
     }
-    await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice");
+    await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice", !invoice.correctionAsTarget && Number(invoice.creditApplied || 0)>0);
 
     let basis: any;
     if (invoice.correctionAsTarget) {
@@ -4497,6 +4499,14 @@ export async function cancelInvoice(invoiceId: string, userId: string, operation
       basis = captureCorrectionBasis({ ...invoice, correctionAsTarget: null, creditNoteAsReplacement: null, correctionCredit: 0, correctionCreditReleased: 0 });
       basis.inheritedFunding = { version: 1, sourceCorrectionId: inherited.id, originalCustomerId: invoice.customerId, inheritedCredit: inherited.inheritedCredit };
       await tx.invoice.update({ where: { id: invoice.id }, data: { correctionCreditReleased: inherited.inheritedCredit } });
+    } else if (Number(invoice.creditApplied || 0)>0) {
+      if (invoice.returnRequests.some((r:any)=>["APPROVED","REVERSED"].includes(r.status))) throw new CorrectionSettlementConflict("Cancellation after financial returns requires separate settlement review");
+      const funding=await applicationReturnBasisTx(tx,invoice);
+      const applications=allocateApplicationRelease(funding.rows,funding.applied);
+      basis=captureCorrectionBasis({...invoice,creditApplied:0});
+      basis.inheritedFunding={version:2,originalCustomerId:invoice.customerId,applications};
+      const creditApplied=await setApplicationReleasesTx(tx,funding.rows,applications,1);
+      await tx.invoice.update({where:{id:invoice.id},data:{creditApplied}});
     } else basis = captureCorrectionBasis(invoice);
 
     // fetching the actor info for the audit log

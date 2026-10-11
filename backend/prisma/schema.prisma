@@ -1401,6 +1401,7 @@ model CustomerCreditApplication {
   sourceCorrectionId String?
   originalCustomerId String
   amount             Float
+  amountReleased     Float    @default(0)
   reason             String   @db.VarChar(500)
   actorId            String
   createdAt          DateTime @default(now())

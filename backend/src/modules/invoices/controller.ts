@@ -1,3 +1,4 @@
+import { ApplicationSettlementConflict } from "../customers/applicationSettlement";
 import { CorrectionSettlementConflict } from "./correctionSettlement";
 import { Request, Response } from "express";
 import * as invoiceService from "./service";
@@ -346,7 +347,7 @@ export async function modifyFinalized(req: Request, res: Response) {
 
     res.status(201).json(result);
   } catch (err: any) {
-    if (err instanceof CorrectionSettlementConflict || err instanceof invoiceService.ActiveCreditApplicationConflict) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof ApplicationSettlementConflict || err instanceof CorrectionSettlementConflict || err instanceof invoiceService.ActiveCreditApplicationConflict) { res.status(409).json({ error: err.message }); return; }
     if (sendStockConflict(res, err)) return;
 
     if (
@@ -566,7 +567,7 @@ export async function cancel(req: Request, res: Response) {
     );
     res.json(invoice);
   } catch (err: any) {
-    if (err instanceof CorrectionSettlementConflict || err instanceof invoiceService.ActiveCreditApplicationConflict) { res.status(409).json({ error: err.message }); return; }
+    if (err instanceof ApplicationSettlementConflict || err instanceof CorrectionSettlementConflict || err instanceof invoiceService.ActiveCreditApplicationConflict) { res.status(409).json({ error: err.message }); return; }
     if (sendStockConflict(res, err)) return;
     if (
       err.message.includes("not found") ||

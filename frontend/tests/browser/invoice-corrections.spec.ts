@@ -105,3 +105,14 @@ for (const width of [1440,390]) test(`restored inherited credit stays separate f
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:info.outputPath(`restored-inherited-credit-${width}.png`),fullPage:true});
 });
+
+for (const width of [1440,390]) test(`partially restored application preserves original amount at ${width}px`, async ({ page },info) => {
+  await page.setViewportSize({width,height:960}); await setup(page);
+  await page.route("**/api/customers/receivables**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({items:[{id:"customer",name:"Original customer",isActive:true,due:0,retainedCredit:200,supportedDue:0,supportedCredit:200,unresolvedCount:0,invoices:[{invoiceId:"source",invoiceNo:"SOURCE-1",basis:"CAPTURED_CORRECTION",reason:null,originalPayable:1000,returnAdjustment:0,recordedReceipts:400,due:0,retainedCredit:200,applications:[{id:"application",sourceInvoiceId:"source",sourceInvoiceNo:"SOURCE-1",targetInvoiceId:"target",targetInvoiceNo:"TARGET-1",sourceCorrectionId:"correction",amount:300,amountReleased:200,remainingAmount:100,reason:"Original funding",actorId:"manager",createdAt:"2026-10-11T07:00:00Z",reversedAt:null}]}]}],total:1,totalPages:1})}));
+  await page.goto("/receivables"); await page.locator("summary").focus(); await page.keyboard.press("Enter");
+  await expect(page.getByText("Restored to original source: NPR 200; remaining applied credit: NPR 100",{exact:true})).toBeVisible();
+  await expect(page.getByText(/Credit to/)).toContainText("NPR 300");
+  await expect(page.getByRole("button",{name:/Reverse credit application/})).toHaveCount(0);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:info.outputPath(`restored-application-${width}.png`),fullPage:true});
+});

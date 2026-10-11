@@ -671,7 +671,7 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
           create: async () => ({ id: "inv-repl-1", invoiceNo: "INV-20260930-0002" }),
           findFirst: async () => null,
         },
-        customerCreditApplication: { findFirst: async () => null },
+        customerCreditApplication: { findFirst: async () => null, findMany: async () => [] },
       customerCreditPayout: { count: async () => 0 },
         returnRequest: {
           findFirst: async () => null,

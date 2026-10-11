@@ -1,3 +1,4 @@
+import { applicationReleaseReason, parseApplicationReleases, discoverApplicationSources, assertApplicationSourcesTx } from "../customers/applicationSettlement";
 import { createHash } from "node:crypto";
 import prisma from "../../db/prisma";
 import { lockInvoiceForUpdate, runFinancialTransaction } from "../../lib/transactionLocks";
@@ -75,7 +76,8 @@ export function correctionRecordReason(row: any, source: any, target?: any): str
   const fail = "Correction receipt allocation or original ownership does not reconcile";
   const inherited = row?.inheritedFunding;
   const parent = source?.correctionAsTarget;
-  const inheritedValid = inherited && inherited.version === 1 && row.action === "CANCEL" && parent
+  const applicationValid = inherited?.version === 2 && row.action === "CANCEL" && !parent && source.customerId === inherited.originalCustomerId && parseApplicationReleases(inherited.applications) && !applicationReleaseReason({...source,correctionAsSource:row});
+  const inheritedValid = applicationValid || inherited && inherited.version === 1 && row.action === "CANCEL" && parent
     && inherited.sourceCorrectionId === parent.id && inherited.originalCustomerId === source.customerId
     && inherited.inheritedCredit === parent.transferredCredit && source.customerId
     && parent.originalCustomerId === source.customerId && parent.sourceInvoice
@@ -129,12 +131,14 @@ export async function runCorrectionOperation(input: { action: "REPLACE" | "CANCE
   };
   const prior = await prisma.invoiceCorrectionSettlement.findUnique({ where: { operationKey: input.operationKey } });
   if (prior) return replay(prior);
+  const applicationSources = await discoverApplicationSources(input.invoiceId);
   const parent = await prisma.invoiceCorrectionSettlement.findUnique({ where: { targetInvoiceId: input.invoiceId } });
   try {
     return await runFinancialTransaction(prisma, async tx => {
-      for (const id of [...new Set([input.invoiceId, ...(parent ? [parent.sourceInvoiceId] : [])])].sort()) await lockInvoiceForUpdate(tx, id);
+      for (const id of [...new Set([input.invoiceId, ...applicationSources, ...(parent ? [parent.sourceInvoiceId] : [])])].sort()) await lockInvoiceForUpdate(tx, id);
       const existing = await tx.invoiceCorrectionSettlement.findUnique({ where: { operationKey: input.operationKey } });
       if (existing) return replay(existing);
+      await assertApplicationSourcesTx(tx,input.invoiceId,applicationSources);
       const result = await work(tx);
       const responseJson = JSON.parse(JSON.stringify(result.response));
       const settlement = await tx.invoiceCorrectionSettlement.create({ data: { ...result.settlement,

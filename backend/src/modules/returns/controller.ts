@@ -1,10 +1,11 @@
+import { ApplicationSettlementConflict } from "../customers/applicationSettlement";
 import { Request, Response } from "express";
 import * as returnService from "./service";
 import { ReturnSettlementConflict } from "./settlement";
 import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
 function sendKnownError(res: Response, err: any) {
-  if (err instanceof FinancialTransactionConflictError || err instanceof ReturnSettlementConflict) {
+  if (err instanceof FinancialTransactionConflictError || err instanceof ReturnSettlementConflict || err instanceof ApplicationSettlementConflict) {
     res.status(409).json({ error: err.message, code: err.code });
     return true;
   }
