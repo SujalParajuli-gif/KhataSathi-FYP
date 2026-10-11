@@ -108,6 +108,7 @@ export type AppInvoice = {
   returnAdjustment?: number;
   creditApplied?: number;
   correctionCredit?: number;
+  correctionCreditReleased?: number;
   retainedReturnCredit?: number;
   paidAmount: number;
   dueAmount: number;
@@ -735,7 +736,8 @@ export function normalizeInvoice(raw: any): AppInvoice {
   const returnAdjustment = Number(raw.returnAdjustment || 0);
   const creditApplied = Number(raw.creditApplied || 0);
   const correctionCredit = Number(raw.correctionCredit || 0);
-  const effectivePayable = raw.returnAdjustment !== undefined ? Math.max(0, Math.round(netTotal) - returnAdjustment - creditApplied - correctionCredit) : netTotal;
+  const correctionCreditReleased = Number(raw.correctionCreditReleased || 0);
+  const effectivePayable = raw.returnAdjustment !== undefined ? Math.max(0, Math.round(netTotal) - returnAdjustment - creditApplied - correctionCredit + correctionCreditReleased) : netTotal;
   const paidAmount = Number(raw.paidTotal ?? raw.paidAmount ?? 0);
   const status = mapInvoiceStatus(raw.status, raw.paymentStatus);
   // if the invoice is cancelled, the due amount is always 0
@@ -767,6 +769,7 @@ export function normalizeInvoice(raw: any): AppInvoice {
     returnAdjustment,
     creditApplied,
     correctionCredit,
+    correctionCreditReleased,
     retainedReturnCredit: returnAdjustment > 0 ? Math.max(0, paidAmount - effectivePayable) : 0,
     dueAmount,
     notes: raw.notes || undefined,

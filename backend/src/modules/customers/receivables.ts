@@ -1,13 +1,13 @@
-import { correctionRecordReason } from "../invoices/correctionSettlement";
+import { correctionRecordReason, restoredInheritedCredit } from "../invoices/correctionSettlement";
 import { Prisma } from "@prisma/client";
 import { z } from "zod";
 import prisma from "../../db/prisma";
-import { getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
+import { effectiveCorrectionCredit, getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 import { parseReturnSettlement } from "../returns/settlement";
 
 const correctionInclude = {
-  correctionAsSource: { include: { targetInvoice: true } },
-  correctionAsTarget: { include: { sourceInvoice: { include: { payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true } } } },
+  correctionAsSource: { include: { targetInvoice: { include: { returnRequests: true, correctionAsSource: true, payments: true } } } },
+  correctionAsTarget: { include: { sourceInvoice: { include: { payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true, correctionAsTarget: true } } } },
 } satisfies Prisma.InvoiceInclude;
 export const payoutInclude = {
   sourceReturn: true, sourceCorrection: true,
@@ -72,7 +72,9 @@ export function projectReceivableInvoice(i: any) {
   const targetCorrection = i.correctionAsTarget;
   const correctionReason = sourceCorrection ? correctionRecordReason(sourceCorrection, i, sourceCorrection.targetInvoice)
     : targetCorrection ? correctionRecordReason(targetCorrection, targetCorrection.sourceInvoice, i) : null;
-  const correctionCredit = Number(i.correctionCredit || 0);
+  const capturedCorrectionCredit = Number(i.correctionCredit || 0);
+  const correctionCreditReleased = Number(i.correctionCreditReleased || 0);
+  const correctionCredit = effectiveCorrectionCredit(i);
   const correction = sourceCorrection || targetCorrection;
   const summary = correction ? { sourceInvoiceId: correction.sourceInvoiceId, targetInvoiceId: correction.targetInvoiceId,
     action: correction.action, originalCustomerId: correction.originalCustomerId, transferredCredit: correction.transferredCredit,
@@ -80,7 +82,7 @@ export function projectReceivableInvoice(i: any) {
   if (sourceCorrection) {
     const outgoing = (i.creditApplicationsFrom || []).filter((a: any) => !a.reversedAt);
     const used = roundCurrency(outgoing.reduce((n: number, a: any) => n + Number(a.amount), 0));
-    const available = roundCurrency(sourceCorrection.retainedCredit - used - paidOutCredit);
+    const available = roundCurrency(sourceCorrection.retainedCredit + (restoredInheritedCredit(sourceCorrection, sourceCorrection.targetInvoice) || 0) - used - paidOutCredit);
     const invalid = correctionReason || payoutReason || ((i.creditApplicationsTo || []).some((a: any) => !a.reversedAt)
       || outgoing.some((a: any) => !Number.isFinite(a.amount) || a.amount <= 0 || roundCurrency(a.amount) !== a.amount
         || !applicationSourceMatches(a, i.customerId) || a.sourceCorrectionId !== sourceCorrection.id || a.sourceInvoiceId !== i.id
@@ -88,7 +90,7 @@ export function projectReceivableInvoice(i: any) {
       || available < 0 ? "Correction credit application or original ownership does not reconcile" : null);
     return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: invalid ? "UNRESOLVED" : "CAPTURED_CORRECTION", reason: invalid,
       originalPayable: target, returnAdjustment: 0, recordedReceipts: paid, appliedCredit: 0, correctionCredit: 0,
-      usedCredit: used, creditSources: !invalid && sourceCorrection.originalCustomerId ? [{ correctionId: sourceCorrection.id, retainedCredit: sourceCorrection.retainedCredit, availableCredit: available }] : [],
+      capturedCorrectionCredit, correctionCreditReleased, restoredSourceCredit: restoredInheritedCredit(sourceCorrection, sourceCorrection.targetInvoice) || 0, usedCredit: used, creditSources: !invalid && sourceCorrection.originalCustomerId ? [{ correctionId: sourceCorrection.id, retainedCredit: roundCurrency(sourceCorrection.retainedCredit + (restoredInheritedCredit(sourceCorrection, sourceCorrection.targetInvoice) || 0)), availableCredit: available }] : [],
       applications: projectApplications(i), payouts: payouts.map(projectPayout), paidOutCredit, correction: summary,
       due: invalid ? null : 0, retainedCredit: invalid ? null : available };
   }
@@ -105,8 +107,10 @@ export function projectReceivableInvoice(i: any) {
   if (allocation.some((s: any) => !s || s.originalCustomerId !== (i.customerId || null) || s.originalPayable !== target || s.approvalOrder < 1)
       || allocation.reduce((sum: number, s: any) => sum + Number(s?.approvedReturnValue || 0), 0) !== adjustment) reason = "Return adjustment or original credit ownership does not reconcile";
   if (targetCorrection && (correctionReason || !i.creditNoteAsReplacement || i.creditNoteAsReplacement.originalInvoiceId !== targetCorrection.sourceInvoiceId
-    || i.creditNoteAsReplacement.creditedAmount !== correctionCredit || roundCurrency(paid + correctionCredit) > target || approved.length)) reason = correctionReason || "Replacement settlement does not reconcile";
-  if (!Number.isFinite(correctionCredit) || correctionCredit < 0 || (!targetCorrection && correctionCredit !== 0)) reason = "Correction credit requires a captured source allocation";
+    || i.creditNoteAsReplacement.creditedAmount !== capturedCorrectionCredit || (!approved.length && roundCurrency(paid + correctionCredit) > target)
+    || (approved.length && allocation.some((s: any) => s?.version !== 3 || s.inheritedCorrectionId !== targetCorrection.id || s.inheritedCredit !== capturedCorrectionCredit)))) reason = correctionReason || "Replacement settlement does not reconcile";
+  if (!targetCorrection && allocation.some((s: any) => s?.version !== 2)) reason = "Inherited return credit requires a captured original source";
+  if (!Number.isFinite(correctionCredit) || correctionCredit < 0 || (!targetCorrection && (correctionCredit !== 0 || correctionCreditReleased !== 0))) reason = "Correction credit requires a captured source allocation";
   const credit = roundCurrency(Math.max(0, paid - (target - adjustment)));
   if (!reason && roundCurrency(allocation.reduce((sum: number, s: any) => sum + s.retainedCredit, 0)) !== credit) reason = "Retained credit requires an audited allocation review";
   const incoming = (i.creditApplicationsTo || []).filter((a: any) => !a.reversedAt);
@@ -128,7 +132,7 @@ export function projectReceivableInvoice(i: any) {
   if (payoutReason) reason = payoutReason;
   return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: reason ? "UNRESOLVED" : targetCorrection ? "CAPTURED_CORRECTION" : "ORIGINAL_SALE_DEBT_FIRST", reason,
     originalPayable: target, returnAdjustment: adjustment, recordedReceipts: paid,
-    correctionCredit, correction: summary, appliedCredit: applied, usedCredit: used, creditSources: reason ? [] : creditSources,
+    correctionCredit, capturedCorrectionCredit, correctionCreditReleased, correction: summary, appliedCredit: applied, usedCredit: used, creditSources: reason ? [] : creditSources,
     applications: projectApplications(i), payouts: payouts.map(projectPayout), paidOutCredit,
     due: reason ? null : roundCurrency(Math.max(0, target - adjustment - paid - applied - correctionCredit)), retainedCredit: reason ? null : roundCurrency(credit - used - paidOutCredit) };
 }

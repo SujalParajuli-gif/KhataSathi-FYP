@@ -632,7 +632,8 @@ export default function InvoiceDetailModal({
                   </span>
                 </div>
 
-                {(invoice.correctionCredit || 0) > 0 && <p className="text-[12px]">Replacement settlement credit: <strong className="font-mono">{formatNpr(invoice.correctionCredit || 0)}</strong> (noncash; original receipts remain on the source sale)</p>}
+                {(invoice.correctionCredit || 0) > 0 && <p className="text-[12px]">Replacement settlement credit: <strong className="font-mono">{formatNpr((invoice.correctionCredit || 0) - (invoice.correctionCreditReleased || 0))}</strong> (noncash; original receipts remain on the source sale)</p>}
+                {(invoice.correctionCreditReleased || 0) > 0 && <p className="text-[12px]">Credit restored to original source: <strong className="font-mono">{formatNpr(invoice.correctionCreditReleased || 0)}</strong> (noncash)</p>}
                 {(invoice.creditApplied || 0) > 0 && <p className="text-[12px]">Applied customer credit: <strong className="font-mono">{formatNpr(invoice.creditApplied || 0)}</strong> (separate from receipts)</p>}
                 {(invoice.returnAdjustment || 0) > 0 && <div className="space-y-2 text-[12px]">
                   <p>Approved return reduction: <strong className="font-mono">{formatNpr(invoice.returnAdjustment || 0)}</strong></p>

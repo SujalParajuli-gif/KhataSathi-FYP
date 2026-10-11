@@ -1,3 +1,5 @@
+import { assertOriginalReturnBasisTx } from "../returns/settlement";
+import { effectiveCorrectionCredit } from "../../lib/money";
 import { allocateCorrectionCredit, captureCorrectionBasis, runCorrectionOperation, CorrectionSettlementConflict } from "./correctionSettlement";
 import { createHash, randomBytes } from "crypto";
 import { Prisma } from "@prisma/client";
@@ -2182,6 +2184,7 @@ async function recordCheckoutCashPaymentTx(
     returnAdjustment?: number;
     creditApplied?: number;
     correctionCredit?: number;
+    correctionCreditReleased?: number;
     paidTotal?: number;
   },
   amount: number,
@@ -2193,14 +2196,14 @@ async function recordCheckoutCashPaymentTx(
   if (!Number.isFinite(normalizedAmount) || normalizedAmount <= 0) {
     throw new Error("Payment amount must be greater than zero");
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, effectiveCorrectionCredit(invoice));
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
   if (roundCurrency(currentPaid + normalizedAmount) > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, effectiveCorrectionCredit(invoice))}`,
     );
   }
 
@@ -2288,6 +2291,7 @@ async function recordCheckoutManualDigitalPaymentTx(
     returnAdjustment?: number;
     creditApplied?: number;
     correctionCredit?: number;
+    correctionCreditReleased?: number;
     paidTotal?: number;
   },
   method: "FONEPAY" | "BANK_TRANSFER",
@@ -2308,7 +2312,7 @@ async function recordCheckoutManualDigitalPaymentTx(
       `${method === "FONEPAY" ? "Fonepay" : "Bank transfer"} reference is required`,
     );
   }
-  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0);
+  const paymentTargetTotal = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, effectiveCorrectionCredit(invoice));
   if (paymentTargetTotal <= 0) {
     throw new Error("Zero-total invoice does not need a payment");
   }
@@ -2316,7 +2320,7 @@ async function recordCheckoutManualDigitalPaymentTx(
   const currentPaid = roundCurrency(Number(invoice.paidTotal || 0));
   if (roundCurrency(currentPaid + normalizedAmount) > paymentTargetTotal) {
     throw new Error(
-      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0)}`,
+      `Overpayment! Current paid: Rs ${currentPaid}, new: Rs ${normalizedAmount}, payable total: Rs ${paymentTargetTotal}. Max allowed: Rs ${getRemainingPaymentDue(invoice.netTotal, currentPaid, invoice.returnAdjustment || 0, invoice.creditApplied || 0, effectiveCorrectionCredit(invoice))}`,
     );
   }
 
@@ -2372,7 +2376,7 @@ async function recordCheckoutManualDigitalPaymentTx(
         nextStatus: nextPaymentStatus,
         paidTotal: nextPaidTotal,
         netTotal: invoice.netTotal,
-        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, invoice.correctionCredit || 0),
+        remainingDue: getRemainingPaymentDue(invoice.netTotal, nextPaidTotal, invoice.returnAdjustment || 0, invoice.creditApplied || 0, effectiveCorrectionCredit(invoice)),
       },
     },
   });
@@ -4486,7 +4490,14 @@ export async function cancelInvoice(invoiceId: string, userId: string, operation
     }
     await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice");
 
-    const basis = captureCorrectionBasis(invoice);
+    let basis: any;
+    if (invoice.correctionAsTarget) {
+      const inherited = await assertOriginalReturnBasisTx(tx, invoice);
+      if (!inherited || invoice.returnRequests.some((r: any) => ["APPROVED", "REVERSED"].includes(r.status))) throw new CorrectionSettlementConflict("Cancellation after financial returns requires separate settlement review");
+      basis = captureCorrectionBasis({ ...invoice, correctionAsTarget: null, creditNoteAsReplacement: null, correctionCredit: 0, correctionCreditReleased: 0 });
+      basis.inheritedFunding = { version: 1, sourceCorrectionId: inherited.id, originalCustomerId: invoice.customerId, inheritedCredit: inherited.inheritedCredit };
+      await tx.invoice.update({ where: { id: invoice.id }, data: { correctionCreditReleased: inherited.inheritedCredit } });
+    } else basis = captureCorrectionBasis(invoice);
 
     // fetching the actor info for the audit log
     const actor = await tx.user.findUnique({

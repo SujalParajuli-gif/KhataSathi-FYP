@@ -17,6 +17,10 @@ export function roundPayableTotal(value: number) {
   return roundCurrency(Math.max(0, value), POS_PAYABLE_DECIMALS);
 }
 
+export function effectiveCorrectionCredit(invoice: { correctionCredit?: number; correctionCreditReleased?: number }) {
+  return roundCurrency(Number(invoice.correctionCredit || 0) - Number(invoice.correctionCreditReleased || 0));
+}
+
 export function getInvoicePaymentTargetTotal(netTotal: number, returnAdjustment = 0, creditApplied = 0, correctionCredit = 0) {
   return roundCurrency(Math.max(0, roundPayableTotal(netTotal) - returnAdjustment - creditApplied - correctionCredit));
 }

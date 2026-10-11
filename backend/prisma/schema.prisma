@@ -574,6 +574,7 @@ model Invoice {
   paidTotal              Float                @default(0)
   returnAdjustment       Int                  @default(0)
   correctionCredit       Float                @default(0)
+  correctionCreditReleased Float              @default(0)
   creditApplied          Float                @default(0)
   paymentStatus          PaymentStatusInvoice @default(UNPAID)
   notes                  String?              @db.Text
@@ -1442,6 +1443,7 @@ model InvoiceCorrectionSettlement {
   targetInvoiceId    String?  @unique
   originalCustomerId String?
   action             String   @db.VarChar(16)
+  inheritedFunding   Json?
   receipts           Json
   originalPayable    Int
   recordedReceipts   Float

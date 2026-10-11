@@ -1,23 +1,29 @@
+import { receivableInclude, projectReceivableInvoice } from "../customers/receivables";
 import { createHash } from "node:crypto";
 import { Prisma } from "@prisma/client";
 import prisma from "../../db/prisma";
 import { runFinancialTransaction, lockInvoiceForUpdate } from "../../lib/transactionLocks";
-import { getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
+import { effectiveCorrectionCredit, getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 
 export class ReturnSettlementConflict extends Error {
   readonly code = "RETURN_SETTLEMENT_CONFLICT";
 }
 export type ReturnSettlement = {
-  version: 2; originalCustomerId: string | null; originalPayable: number;
+  version: 2 | 3; originalCustomerId: string | null; originalPayable: number;
   approvedReturnValue: number; debtReduction: number; retainedCredit: number; approvalOrder: number;
+  inheritedCorrectionId?: string; inheritedCredit?: number; restoredCredit?: number;
+  recordedReceipts?: number;
 };
 export function parseReturnSettlement(value: unknown): ReturnSettlement | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const s = value as ReturnSettlement;
-  if (s.version !== 2 || !(s.originalCustomerId === null || (typeof s.originalCustomerId === "string" && s.originalCustomerId.length > 0))) return null;
+  if (![2, 3].includes(s.version) || !(s.originalCustomerId === null || (typeof s.originalCustomerId === "string" && s.originalCustomerId.length > 0))) return null;
   if (![s.originalPayable, s.approvedReturnValue, s.approvalOrder].every(n => Number.isSafeInteger(n) && n >= 0)) return null;
   if (![s.debtReduction, s.retainedCredit].every(n => Number.isFinite(n) && n >= 0 && roundCurrency(n) === n)) return null;
-  if (s.approvedReturnValue > s.originalPayable || roundCurrency(s.debtReduction + s.retainedCredit) !== s.approvedReturnValue) return null;
+  if (s.version === 3 && (!s.originalCustomerId || typeof s.inheritedCorrectionId !== "string" || !s.inheritedCorrectionId
+      || ![s.inheritedCredit, s.restoredCredit, s.recordedReceipts].every(n => typeof n === "number" && Number.isFinite(n) && n >= 0 && roundCurrency(n) === n)
+      || s.restoredCredit! > s.inheritedCredit!)) return null;
+  if (s.approvedReturnValue > s.originalPayable || roundCurrency(s.debtReduction + s.retainedCredit + (s.version === 3 ? s.restoredCredit! : 0)) !== s.approvedReturnValue) return null;
   return s;
 }
 export function allocateReturn(params: { netTotal: number; subTotal: number; approvedGross: number; nextGross: number; previousAdjustment: number; paid: number }) {
@@ -33,21 +39,32 @@ export function allocateReturn(params: { netTotal: number; subTotal: number; app
   const debtReduction = roundCurrency(Math.min(value, Math.max(0, target - previousAdjustment - paid)));
   return { adjustment: cumulative, approvedReturnValue: value, debtReduction, retainedCredit: roundCurrency(value - debtReduction) };
 }
-export async function updateReturnedInvoiceTx(tx: any, invoice: any, adjustment: number) {
+export async function updateReturnedInvoiceTx(tx: any, invoice: any, adjustment: number, released = Number(invoice.correctionCreditReleased || 0)) {
   const payments = await tx.payment.findMany({ where: { invoiceId: invoice.id, kind: "CHARGE", status: "SUCCESS" }, select: { amount: true } });
   const paidTotal = roundCurrency(payments.reduce((sum: number, p: any) => sum + Number(p.amount), 0));
-  const target = getInvoicePaymentTargetTotal(invoice.netTotal, adjustment);
-  return tx.invoice.update({ where: { id: invoice.id }, data: { returnAdjustment: adjustment, paidTotal,
-    paymentStatus: paidTotal >= target ? "PAID" : paidTotal > 0 ? "PARTIALLY_PAID" : "UNPAID" } });
+  const credit = effectiveCorrectionCredit({ ...invoice, correctionCreditReleased: released });
+  const target = getInvoicePaymentTargetTotal(invoice.netTotal, adjustment, 0, credit);
+  return tx.invoice.update({ where: { id: invoice.id }, data: { returnAdjustment: adjustment, paidTotal, ...(invoice.correctionCredit ? { correctionCreditReleased: released } : {}),
+    paymentStatus: paidTotal >= target ? "PAID" : paidTotal + credit > 0 ? "PARTIALLY_PAID" : "UNPAID" } });
 }
 
 export async function assertOriginalReturnBasisTx(tx: any, invoice: any) {
   if (Number(invoice.creditApplied || 0) > 0) throw new ReturnSettlementConflict("Reverse incoming credit applications before returning this sale");
+  const parent = await tx.invoiceCorrectionSettlement.findUnique({ where: { targetInvoiceId: invoice.id } });
+  if (parent) {
+    const full = await tx.invoice.findUnique({ where: { id: invoice.id }, include: receivableInclude });
+    const projection = projectReceivableInvoice(full);
+    if (!invoice.customerId || parent.originalCustomerId !== invoice.customerId || projection.reason
+        || (full.creditApplicationsTo || []).some((a: any) => !a.reversedAt)
+        || (full.creditApplicationsFrom || []).some((a: any) => !a.reversedAt)
+        || full.correctionAsSource || parent.sourceInvoiceId === invoice.id) throw new ReturnSettlementConflict(projection.reason || "Replacement requires a reconciled single original credit source");
+    return { id: parent.id, inheritedCredit: parent.transferredCredit };
+  }
   if (!Number.isFinite(invoice.netTotal) || invoice.netTotal < 0 || getInvoicePaymentTargetTotal(invoice.netTotal) > 2147483647) throw new ReturnSettlementConflict("Return invoice exceeds the supported settlement amount");
   const links = await tx.creditNote.count({ where: { OR: [{ originalInvoiceId: invoice.id }, { replacementInvoiceId: invoice.id }] } });
   const refunds = await tx.payment.count({ where: { invoiceId: invoice.id, kind: "REFUND" } });
   const returns = await tx.returnRequest.findMany({ where: { invoiceId: invoice.id, status: { in: ["APPROVED", "REVERSED"] } }, select: { status: true, settlement: true } });
-  if (links || refunds || returns.some((r: any) => !parseReturnSettlement(r.settlement))) {
+  if (links || refunds || returns.some((r: any) => parseReturnSettlement(r.settlement)?.version !== 2)) {
     throw new ReturnSettlementConflict("Return invoice has unresolved legacy refunds or replacement credit; settlement review is required");
   }
   const approved = returns.filter((r: any) => r.status === "APPROVED");
@@ -69,9 +86,10 @@ export async function runReturnOperation(input: Operation, work: (tx: any) => Pr
   };
   const prior = await prisma.returnOperation.findUnique({ where: { operationKey: key } });
   if (prior) return replay(prior);
+  const parent = await prisma.invoiceCorrectionSettlement.findUnique({ where: { targetInvoiceId: input.invoiceId } });
   try {
     return await runFinancialTransaction(prisma, async (tx: any) => {
-      await lockInvoiceForUpdate(tx, input.invoiceId);
+      for (const id of [...new Set([input.invoiceId, ...(parent ? [parent.sourceInvoiceId] : [])])].sort()) await lockInvoiceForUpdate(tx, id);
       const existing = await tx.returnOperation.findUnique({ where: { operationKey: key } });
       if (existing) return replay(existing);
       const result = await work(tx);

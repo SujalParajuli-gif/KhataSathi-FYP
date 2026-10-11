@@ -13,3 +13,11 @@ test("replacement settlement reduces due without manufacturing recorded receipts
   const invoice = normalizeInvoice({ id: "replacement", status: "FINALIZED", paymentStatus: "PARTIALLY_PAID", netTotal: 700.49, paidTotal: 0, returnAdjustment: 0, creditApplied: 0, correctionCredit: 400.55, items: [], payments: [] });
   assert.equal(invoice.correctionCredit, 400.55); assert.equal(invoice.paidAmount, 0); assert.equal(invoice.dueAmount, 299.45);
 });
+
+test("restored inherited credit is removed from payment coverage without changing receipts", () => {
+  const invoice = normalizeInvoice({ id: "child", status: "FINALIZED", netTotal: 1000, paidTotal: 400, returnAdjustment: 500, correctionCredit: 400, correctionCreditReleased: 300, items: [], payments: [] });
+  assert.equal(invoice.correctionCredit, 400); assert.equal(invoice.correctionCreditReleased, 300);
+  assert.equal(invoice.paidAmount, 400); assert.equal(invoice.dueAmount, 0); assert.equal(invoice.retainedReturnCredit, 0);
+  const excess = normalizeInvoice({ id: "child", status: "FINALIZED", netTotal: 1000, paidTotal: 400, returnAdjustment: 800, correctionCredit: 400, correctionCreditReleased: 400, items: [], payments: [] });
+  assert.equal(excess.retainedReturnCredit, 200); assert.equal(excess.dueAmount, 0);
+});

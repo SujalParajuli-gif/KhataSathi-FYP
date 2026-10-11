@@ -1,3 +1,4 @@
+import { effectiveCorrectionCredit } from "../../lib/money";
 import { createHash } from "node:crypto";
 import { z } from "zod";
 import prisma from "../../db/prisma";
@@ -54,10 +55,10 @@ async function supportedInvoice(tx: any, id: string) {
 async function recomputeTarget(tx: any, invoice: any) {
   const rows = await tx.customerCreditApplication.findMany({ where: { targetInvoiceId: invoice.id, reversedAt: null }, select: { amount: true } });
   const creditApplied = roundCurrency(rows.reduce((sum: number, a: any) => sum + a.amount, 0));
-  const target = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment, creditApplied, invoice.correctionCredit || 0);
+  const target = getInvoicePaymentTargetTotal(invoice.netTotal, invoice.returnAdjustment, creditApplied, effectiveCorrectionCredit(invoice));
   const paid = roundCurrency(invoice.paidTotal);
   await tx.invoice.update({ where: { id: invoice.id }, data: { creditApplied,
-    paymentStatus: paid >= target ? "PAID" : paid + creditApplied + Number(invoice.correctionCredit || 0) > 0 ? "PARTIALLY_PAID" : "UNPAID" } });
+    paymentStatus: paid >= target ? "PAID" : paid + creditApplied + Number(effectiveCorrectionCredit(invoice)) > 0 ? "PARTIALLY_PAID" : "UNPAID" } });
 }
 export async function applyCustomerCredit(actorId: string, input: unknown) {
   const data = applySchema.parse(input);

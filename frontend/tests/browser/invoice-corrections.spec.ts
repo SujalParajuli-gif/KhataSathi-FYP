@@ -62,7 +62,7 @@ for (const width of [1440,390]) test(`lost replacement freezes fields and safely
   await page.keyboard.press("Escape"); await expect(page.getByRole("button", { name: "Retry same correction", exact: true })).toHaveCount(2);
   await page.screenshot({path:info.outputPath(`replacement-unknown-${width}.png`),fullPage:true});
   await page.getByRole("button", { name: "Retry same correction", exact: true }).last().click();
-  await expect(page.getByText(/Replacement settlement credit:/)).toContainText("NPR 400");
+  await expect(page.getByText(/replacement settlement credit:/i)).toContainText("NPR 400");
   expect(state.posts).toHaveLength(2); expect(state.posts[0]).toEqual(state.posts[1]);
 });
 
@@ -82,7 +82,7 @@ test("known replacement rejection preserves inputs and releases identity", async
   await page.getByRole("button", { name: "Create Credit Note", exact: true }).last().click();
   await expect(page.getByText("Invoice correction requires settlement review", {exact:true})).toBeVisible(); await expect(qty).toBeEnabled(); await expect(qty).toHaveValue("7");
   await qty.fill("6"); await page.getByRole("button", { name: "Create Credit Note", exact: true }).click(); await page.getByRole("button", { name: "Create Credit Note", exact: true }).last().click();
-  await expect(page.getByText(/Replacement settlement credit:/)).toBeVisible(); expect(state.posts[0].operationKey).not.toBe(state.posts[1].operationKey);
+  await expect(page.getByText(/replacement settlement credit:/i)).toBeVisible(); expect(state.posts[0].operationKey).not.toBe(state.posts[1].operationKey);
 });
 
 for (const width of [1440,390]) test(`captured correction credit is separate from receipts at ${width}px`, async ({ page },info) => {
@@ -92,4 +92,16 @@ for (const width of [1440,390]) test(`captured correction credit is separate fro
   await expect(page.getByText("Successful recorded receipts: NPR 1,000",{exact:true})).toBeVisible(); await expect(page.getByText(/existing manual cash-outs cannot be linked/)).toBeVisible();
   await expect(page.getByRole("button",{name:/Apply credit/})).toHaveCount(0); expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:info.outputPath(`correction-receivables-${width}.png`),fullPage:true});
+});
+
+for (const width of [1440,390]) test(`restored inherited credit stays separate from child receipts at ${width}px`, async ({ page },info) => {
+  await page.setViewportSize({width,height:960}); await setup(page);
+  await page.route("**/api/customers/receivables**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({items:[{id:"customer",name:"Original customer",isActive:true,due:0,retainedCredit:300,supportedDue:0,supportedCredit:300,unresolvedCount:0,invoices:[{invoiceId:"source",invoiceNo:"SOURCE-1",basis:"CAPTURED_CORRECTION",reason:null,originalPayable:1000,returnAdjustment:0,recordedReceipts:400,due:0,retainedCredit:300,correctionCredit:0,restoredSourceCredit:300},{invoiceId:"child",invoiceNo:"CHILD-1",basis:"CAPTURED_CORRECTION",reason:null,originalPayable:1000,returnAdjustment:500,recordedReceipts:400,due:0,retainedCredit:0,correctionCredit:100,capturedCorrectionCredit:400,correctionCreditReleased:300}]}],total:1,totalPages:1})}));
+  await page.goto("/receivables"); await page.locator("summary").focus(); await page.keyboard.press("Enter");
+  await expect(page.getByText("Credit restored to original source: NPR 300",{exact:true})).toBeVisible();
+  await expect(page.getByText("Inherited credit restored from replacement: NPR 300",{exact:true})).toBeVisible();
+  await expect(page.getByText("Remaining replacement settlement credit: NPR 100 (noncash)",{exact:true})).toBeVisible();
+  await expect(page.getByText("Successful recorded receipts: NPR 400",{exact:true})).toHaveCount(2);
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:info.outputPath(`restored-inherited-credit-${width}.png`),fullPage:true});
 });

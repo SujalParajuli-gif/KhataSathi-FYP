@@ -1,5 +1,6 @@
+import { receivableInclude, projectReceivableInvoice } from "../customers/receivables";
 import prisma from "../../db/prisma";
-import { getInvoicePaymentTargetTotal } from "../../lib/money";
+import { effectiveCorrectionCredit, getInvoicePaymentTargetTotal } from "../../lib/money";
 import { allocateReturn, assertOriginalReturnBasisTx, parseReturnSettlement, ReturnSettlementConflict, runReturnOperation, updateReturnedInvoiceTx } from "./settlement";
 import {
   lockInvoiceForUpdate,
@@ -320,7 +321,7 @@ export async function createReturnRequest(
     if (invoice.paymentStatus === "CANCELLED") {
       throw new Error("Cancelled invoices cannot be returned.");
     }
-    await assertOriginalReturnBasisTx(tx, invoice);
+    const inherited = await assertOriginalReturnBasisTx(tx, invoice);
     const itemSubtotal = roundCurrency(invoice.items.reduce((sum: number, item: any) => sum + Number(item.lineTotal || 0), 0));
     if (itemSubtotal !== roundCurrency(invoice.subTotal) || invoice.items.some((item: any) => !Number.isFinite(item.qty) || item.qty <= 0 || !Number.isFinite(item.appliedUnitPrice) || item.appliedUnitPrice < 0 || roundCurrency(item.qty * item.appliedUnitPrice) !== roundCurrency(item.lineTotal))) {
       throw new ReturnSettlementConflict("Return invoice original price basis is inconsistent");
@@ -391,7 +392,7 @@ export async function createReturnRequest(
     });
 
     const refundAmount = 0;
-    const settlement = { version: 2, originalCustomerId: invoice.customerId || null,
+    const settlement = { version: inherited ? 3 : 2, ...(inherited ? { inheritedCorrectionId: inherited.id, inheritedCredit: inherited.inheritedCredit, restoredCredit: 0, recordedReceipts: 0 } : {}), originalCustomerId: invoice.customerId || null,
       originalPayable: getInvoicePaymentTargetTotal(invoice.netTotal), approvedReturnValue: 0,
       debtReduction: 0, retainedCredit: 0, approvalOrder: 0 };
 
@@ -466,7 +467,8 @@ export async function approveReturnRequest(id: string, reviewedById: string, ope
     let settled: any = null;
     if (request.settlement != null && !pendingSettlement) throw new ReturnSettlementConflict("Return settlement basis is malformed");
     if (pendingSettlement) {
-      await assertOriginalReturnBasisTx(tx, request.invoice);
+      const inherited = await assertOriginalReturnBasisTx(tx, request.invoice);
+      if (Boolean(inherited) !== (pendingSettlement.version === 3) || (inherited && (pendingSettlement.inheritedCorrectionId !== inherited.id || pendingSettlement.inheritedCredit !== inherited.inheritedCredit))) throw new ReturnSettlementConflict("Inherited return source changed");
       if (pendingSettlement.originalCustomerId !== (request.invoice.customerId || null) || pendingSettlement.originalPayable !== getInvoicePaymentTargetTotal(request.invoice.netTotal)) throw new ReturnSettlementConflict("Return invoice owner or payable changed");
       const payments = await tx.payment.findMany({ where: { invoiceId: request.invoiceId } });
       if (payments.some((p: any) => p.kind === "CHARGE" && p.status === "PENDING" && p.method === "ESEWA" && !p.voidedAt)) throw new ReturnSettlementConflict("Return approval requires resolving the pending gateway payment first");
@@ -474,13 +476,14 @@ export async function approveReturnRequest(id: string, reviewedById: string, ope
       const paid = roundCurrency(payments.filter((p: any) => p.kind === "CHARGE" && p.status === "SUCCESS").reduce((sum: number, p: any) => sum + Number(p.amount), 0));
       if (payments.some((p: any) => p.kind === "CHARGE" && p.status === "SUCCESS" && (!Number.isFinite(p.amount) || p.amount < 0 || p.voidedAt)) || paid !== roundCurrency(request.invoice.paidTotal) || paid > getInvoicePaymentTargetTotal(request.invoice.netTotal)) throw new ReturnSettlementConflict("Return invoice successful charge projection is inconsistent");
       const heldCredit = roundCurrency(approved.reduce((sum: number, r: any) => sum + parseReturnSettlement(r.settlement)!.retainedCredit, 0));
-      if (heldCredit !== roundCurrency(Math.max(0, paid - getInvoicePaymentTargetTotal(request.invoice.netTotal, request.invoice.returnAdjustment || 0)))) throw new ReturnSettlementConflict("Return invoice retained credit allocation is inconsistent");
+      if (heldCredit !== roundCurrency(Math.max(0, paid - getInvoicePaymentTargetTotal(request.invoice.netTotal, request.invoice.returnAdjustment || 0, 0, effectiveCorrectionCredit(request.invoice))))) throw new ReturnSettlementConflict("Return invoice retained credit allocation is inconsistent");
       const allocation = allocateReturn({ netTotal: request.invoice.netTotal, subTotal: request.invoice.subTotal,
         approvedGross: approved.reduce((sum: number, r: any) => sum + r.items.reduce((n: number, i: any) => n + Number(i.lineTotal), 0), 0),
-        nextGross: request.items.reduce((sum: number, i: any) => sum + Number(i.lineTotal), 0), previousAdjustment: request.invoice.returnAdjustment || 0, paid });
+        nextGross: request.items.reduce((sum: number, i: any) => sum + Number(i.lineTotal), 0), previousAdjustment: request.invoice.returnAdjustment || 0, paid: roundCurrency(paid + effectiveCorrectionCredit(request.invoice)) });
       const approvalOrder = 1 + approved.reduce((max: number, r: any) => Math.max(max, parseReturnSettlement(r.settlement)!.approvalOrder), 0);
-      settled = { ...pendingSettlement, approvedReturnValue: allocation.approvedReturnValue, debtReduction: allocation.debtReduction, retainedCredit: allocation.retainedCredit, approvalOrder };
-      await updateReturnedInvoiceTx(tx, request.invoice, allocation.adjustment);
+      const restoredCredit = inherited ? roundCurrency(Math.min(allocation.retainedCredit, effectiveCorrectionCredit(request.invoice))) : 0;
+      settled = { ...pendingSettlement, approvedReturnValue: allocation.approvedReturnValue, debtReduction: allocation.debtReduction, retainedCredit: roundCurrency(allocation.retainedCredit - restoredCredit), ...(inherited ? { restoredCredit, recordedReceipts: paid } : {}), approvalOrder };
+      await updateReturnedInvoiceTx(tx, request.invoice, allocation.adjustment, roundCurrency(Number(request.invoice.correctionCreditReleased || 0) + restoredCredit));
     }
 
     const claimed = await tx.returnRequest.updateMany({
@@ -600,7 +603,14 @@ export async function reverseApprovedReturnRequest(
       await assertOriginalReturnBasisTx(tx, request.invoice);
       const approved = await tx.returnRequest.findMany({ where: { invoiceId: request.invoiceId, status: "APPROVED" }, select: { id: true, settlement: true } });
       if (approved.some((r: any) => parseReturnSettlement(r.settlement)!.approvalOrder > settlement.approvalOrder)) throw new ReturnSettlementConflict("Return reversal must reverse later approved returns first");
-      await updateReturnedInvoiceTx(tx, request.invoice, Number(request.invoice.returnAdjustment) - settlement.approvedReturnValue);
+      if (settlement.version === 3) {
+        const parent = await tx.invoiceCorrectionSettlement.findUnique({ where: { id: settlement.inheritedCorrectionId! } });
+        const origin = parent && await tx.invoice.findUnique({ where: { id: parent.sourceInvoiceId }, include: receivableInclude });
+        const projection = origin && projectReceivableInvoice(origin);
+        if (!projection || projection.reason || projection.retainedCredit! < settlement.restoredCredit!) throw new ReturnSettlementConflict("Reverse uses or recover payouts of restored original credit before reversing this return");
+      }
+      await updateReturnedInvoiceTx(tx, request.invoice, Number(request.invoice.returnAdjustment) - settlement.approvedReturnValue,
+        roundCurrency(Number(request.invoice.correctionCreditReleased || 0) - (settlement.restoredCredit || 0)));
     }
 
     const claimed = await tx.returnRequest.updateMany({
