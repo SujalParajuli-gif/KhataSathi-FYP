@@ -648,6 +648,7 @@ async function assertNoActiveReturnRequestsTx(
   actionLabel: string,
 ) {
   const allocation = await tx.customerCreditApplication.findFirst({ where: { reversedAt: null, OR: [{ sourceInvoiceId: invoiceId }, { targetInvoiceId: invoiceId }] }, select: { id: true } });
+  if (await tx.customerCreditPayout.count({ where: { sourceInvoiceId: invoiceId, recoveredAt: null } })) throw new ActiveCreditApplicationConflict(`Recover paid-out credit before you ${actionLabel}`);
   if (allocation) throw new ActiveCreditApplicationConflict(`Reverse active credit applications before you ${actionLabel}`);
   const activeReturn = await tx.returnRequest.findFirst({
     where: {

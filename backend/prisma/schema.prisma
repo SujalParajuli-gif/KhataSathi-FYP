@@ -295,6 +295,9 @@ model User {
   expenseRevisions            ExpenseRevision[]
 
   @@index([role, isActive, lastPresenceAt])
+  creditPayouts CustomerCreditPayout[] @relation("CreditPayoutActor")
+  creditRecoveries CustomerCreditPayout[] @relation("CreditPayoutRecoverer")
+  creditPayoutOperations CustomerCreditPayoutOperation[]
 }
 
 model AuthSession {
@@ -609,6 +612,7 @@ model Invoice {
   @@index([status, parkedAt])
   @@index([status, billingChannel, billRecordStatus, cancelledAt, deletedAt, finalizedAt, id], map: "Invoice_manual_bill_queue_idx")
   @@index([externalDocumentType, externalBillNo, externalBillDate], map: "Invoice_external_reference_idx")
+  creditPayouts CustomerCreditPayout[]
 }
 
 model CheckoutOperation {
@@ -786,6 +790,7 @@ model ReturnRequest {
   @@index([invoiceId])
   @@index([status, createdAt])
   creditApplications CustomerCreditApplication[]
+  creditPayouts CustomerCreditPayout[]
 }
 
 model ReturnItem {
@@ -946,6 +951,8 @@ model CashDrawerEvent {
 
   @@index([drawerId, createdAt])
   @@index([createdById])
+  payoutAsCashOut CustomerCreditPayout? @relation("PayoutCashOut")
+  payoutAsRecovery CustomerCreditPayout? @relation("PayoutCashIn")
 }
 
 model BackupJob {
@@ -1452,4 +1459,50 @@ model InvoiceCorrectionSettlement {
   targetInvoice Invoice? @relation("CorrectionTarget", fields: [targetInvoiceId], references: [id], onDelete: Restrict)
   actor         User     @relation(fields: [actorId], references: [id], onDelete: Restrict)
   @@index([actorId, createdAt])
+  creditPayouts CustomerCreditPayout[]
+}
+
+
+model CustomerCreditPayout {
+  id String @id @default(cuid())
+  sourceInvoiceId String
+  originalCustomerId String
+  sourceReturnId String?
+  sourceCorrectionId String?
+  amount Float
+  reason String @db.VarChar(500)
+  actorId String
+  createdAt DateTime @default(now())
+  payoutEventId String @unique
+  recoveredAt DateTime?
+  recoveredById String?
+  recoveryReason String? @db.VarChar(500)
+  recoveryEventId String? @unique
+
+  sourceInvoice Invoice @relation(fields: [sourceInvoiceId], references: [id], onDelete: Restrict)
+  sourceReturn ReturnRequest? @relation(fields: [sourceReturnId], references: [id], onDelete: Restrict)
+  sourceCorrection InvoiceCorrectionSettlement? @relation(fields: [sourceCorrectionId], references: [id], onDelete: Restrict)
+  actor User @relation("CreditPayoutActor", fields: [actorId], references: [id], onDelete: Restrict)
+  recoveredBy User? @relation("CreditPayoutRecoverer", fields: [recoveredById], references: [id], onDelete: Restrict)
+  payoutEvent CashDrawerEvent @relation("PayoutCashOut", fields: [payoutEventId], references: [id], onDelete: Restrict)
+  recoveryEvent CashDrawerEvent? @relation("PayoutCashIn", fields: [recoveryEventId], references: [id], onDelete: Restrict)
+  operations CustomerCreditPayoutOperation[]
+
+  @@index([sourceInvoiceId, recoveredAt])
+  @@index([sourceReturnId, recoveredAt])
+  @@index([sourceCorrectionId, recoveredAt])
+}
+
+model CustomerCreditPayoutOperation {
+  id String @id @default(cuid())
+  operationKey String @unique @db.VarChar(120)
+  payloadHash String @db.Char(64)
+  actorId String
+  payoutId String
+  action String @db.VarChar(16)
+  responseJson Json
+  createdAt DateTime @default(now())
+  actor User @relation(fields: [actorId], references: [id], onDelete: Restrict)
+  payout CustomerCreditPayout @relation(fields: [payoutId], references: [id], onDelete: Restrict)
+  @@index([payoutId, createdAt])
 }

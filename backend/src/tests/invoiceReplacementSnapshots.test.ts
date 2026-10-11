@@ -84,6 +84,7 @@ function createTransactionalPrismaHarness(initialState: InMemState) {
         },
       },
       customerCreditApplication: { findFirst: async () => null },
+      customerCreditPayout: { count: async () => 0 },
       returnRequest: {
         findFirst: async () => null,
       },

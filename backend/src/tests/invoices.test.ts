@@ -672,6 +672,7 @@ test("modifyFinalizedInvoice replacement query uses explicit publicInvoiceItemSe
           findFirst: async () => null,
         },
         customerCreditApplication: { findFirst: async () => null },
+      customerCreditPayout: { count: async () => 0 },
         returnRequest: {
           findFirst: async () => null,
         },

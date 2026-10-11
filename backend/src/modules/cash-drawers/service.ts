@@ -22,7 +22,7 @@ function normalizeNote(value: unknown) {
   return normalized ? normalized.slice(0, 500) : null;
 }
 
-async function summarizeDrawerTx(tx: any, drawer: any) {
+export async function summarizeDrawerTx(tx: any, drawer: any) {
   const cashSales = await tx.payment.aggregate({
     _sum: { amount: true },
     where: {
@@ -87,7 +87,11 @@ export async function getCurrentCashDrawer(cashierId: string) {
   });
   if (!drawer) return null;
 
-  return runFinancialTransaction(prisma, (tx) => summarizeDrawerTx(tx, drawer));
+  return runFinancialTransaction(prisma, async (tx) => {
+    await lockCashDrawerForUpdate(tx, drawer.id);
+    const current = await tx.cashDrawer.findUniqueOrThrow({ where: { id: drawer.id } });
+    return summarizeDrawerTx(tx, current);
+  });
 }
 
 export async function listCashDrawers(cashierId: string, role: string) {

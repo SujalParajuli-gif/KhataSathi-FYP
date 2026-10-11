@@ -593,6 +593,7 @@ export async function reverseApprovedReturnRequest(
     }
 
     if (await tx.customerCreditApplication.count({ where: { sourceReturnId: requestId, reversedAt: null } })) throw new ReturnSettlementConflict("Reverse active credit applications before reversing this source return");
+    if (await tx.customerCreditPayout.count({ where: { sourceReturnId: requestId, recoveredAt: null } })) throw new ReturnSettlementConflict("Recover paid-out credit before reversing this source return");
     const settlement = parseReturnSettlement(request.settlement);
     if (request.settlement != null && !settlement) throw new ReturnSettlementConflict("Return settlement basis is malformed");
     if (settlement) {

@@ -26,6 +26,8 @@ import { ZodError } from "zod";
 import { applyCustomerCredit, reverseCustomerCredit, CreditApplicationConflict } from "./creditApplications";
 import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
 
+import { confirmCustomerCreditPayout, confirmCustomerCreditRecovery, CashPayoutConflict } from "./cashPayouts";
+
 const router: ReturnType<typeof Router> = Router();
 const requirePos = requireBusinessCapability("POS");
 router.use(authGuard); // all customer routes require authentication
@@ -52,6 +54,21 @@ router.post("/credit-applications", requirePos, requireRole("ADMIN", "MANAGER"),
 router.post("/credit-applications/:id/reverse", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
   try { res.json(await reverseCustomerCredit(req.user!.id, String(req.params.id), req.body)); }
   catch (error) { creditFailure(res, error); }
+});
+
+const payoutFailure = (res: import("express").Response, error: unknown) => {
+  if (error instanceof ZodError) { res.status(400).json({ error: "Invalid cash payout confirmation" }); return; }
+  if (error instanceof CashPayoutConflict || error instanceof FinancialTransactionConflictError) { res.status(409).json({ error: error.message }); return; }
+  console.error("Cash payout failed", { code: typeof (error as any)?.code === "string" ? (error as any).code : "UNKNOWN" });
+  res.status(500).json({ error: "Cash outcome is unknown; retry the same operation" });
+};
+router.post("/credit-payouts", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  try { res.status(201).json(await confirmCustomerCreditPayout(req.user!.id, req.body)); }
+  catch (error) { payoutFailure(res, error); }
+});
+router.post("/credit-payouts/:id/recover", requirePos, requireRole("ADMIN", "MANAGER"), async (req, res) => {
+  try { res.json(await confirmCustomerCreditRecovery(req.user!.id, String(req.params.id), req.body)); }
+  catch (error) { payoutFailure(res, error); }
 });
 
 router.get("/lookup", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), lookupCustomers);
