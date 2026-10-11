@@ -1,5 +1,6 @@
 import { applicationReturnBasisTx, allocateApplicationRelease, setApplicationReleasesTx, effectiveApplicationAmount } from "../customers/applicationSettlement";
 import { assertOriginalReturnBasisTx } from "../returns/settlement";
+import { receivableInclude, projectReceivableInvoice } from "../customers/receivables";
 import { effectiveCorrectionCredit } from "../../lib/money";
 import { allocateCorrectionCredit, captureCorrectionBasis, runCorrectionOperation, CorrectionSettlementConflict } from "./correctionSettlement";
 import { createHash, randomBytes } from "crypto";
@@ -3001,8 +3002,8 @@ export async function modifyFinalizedInvoice(
             },
           },
         },
-        payments: true,
-        customer: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true, returnRequests: true, correctionAsSource: true, correctionAsTarget: true,
+        ...receivableInclude,
+        customer: true,
       },
     });
 
@@ -3019,7 +3020,14 @@ export async function modifyFinalizedInvoice(
       "modify this invoice",
     );
 
-    const basis = captureCorrectionBasis(original);
+    const parent = original.correctionAsTarget;
+    if (parent && (!original.customerId || parent.originalCustomerId !== original.customerId || parent.inheritedFunding || parent.sourceInvoice.correctionAsTarget
+        || projectReceivableInvoice(original).reason || original.creditApplicationsTo.length
+        || Number(original.correctionCreditReleased || 0))) {
+      throw new CorrectionSettlementConflict("Subsequent replacement requires one reconciled original credit source with no previous restoration or applications");
+    }
+    const basis: any = captureCorrectionBasis(parent ? { ...original, correctionAsTarget: null, creditNoteAsReplacement: null,
+      correctionCredit: 0, correctionCreditReleased: 0 } : original);
     const customerId =
       input.customerId === undefined
         ? original.customerId
@@ -3253,11 +3261,28 @@ export async function modifyFinalizedInvoice(
     }
 
     const allocation = allocateCorrectionCredit(basis.recordedReceipts, finalizedReplacement.netTotal, basis.originalCustomerId, customerId);
+    const inheritedCredit = parent ? parent.transferredCredit : 0;
+    const carriedTotal = roundCurrency(allocation.transferredCredit + inheritedCredit);
+    if (parent && (customerId !== original.customerId || getInvoicePaymentTargetTotal(finalizedReplacement.netTotal) < roundCurrency(basis.recordedReceipts + inheritedCredit))) {
+      throw new CorrectionSettlementConflict("Subsequent replacement must retain the same named customer and cover all original credit and own receipts");
+    }
+    if (parent) {
+      await tx.invoice.update({ where: { id: original.id }, data: { correctionCreditReleased: inheritedCredit } });
+      const application = inheritedCredit > 0 ? await tx.customerCreditApplication.create({ data: {
+        sourceInvoiceId: parent.sourceInvoiceId, sourceCorrectionId: parent.id, targetInvoiceId: finalizedReplacement.id,
+        originalCustomerId: original.customerId!, amount: inheritedCredit, actorId: userId, reason: reason.slice(0,500),
+      } }) : null;
+      if (application) await tx.auditLog.create({ data: { actorId: userId, action: "CUSTOMER_CREDIT_APPLIED", entityType: "CustomerCreditApplication", entityId: application.id,
+        meta: { sourceInvoiceId: parent.sourceInvoiceId, targetInvoiceId: finalizedReplacement.id, sourceCorrectionId: parent.id,
+          originalCustomerId: original.customerId, amount: inheritedCredit, reason: "Original credit forwarded with replacement" } } });
+      basis.inheritedFunding = { version: 4, sourceCorrectionId: parent.id, sourceInvoiceId: parent.sourceInvoiceId,
+        originalCustomerId: original.customerId, inheritedCredit, targetInvoiceId: finalizedReplacement.id, applicationId: application?.id || null };
+    }
     const creditedAmount = allocation.transferredCredit;
     const target = getInvoicePaymentTargetTotal(finalizedReplacement.netTotal);
     await tx.invoice.update({ where: { id: finalizedReplacement.id }, data: {
-      correctionCredit: creditedAmount, paidTotal: 0,
-      paymentStatus: creditedAmount >= target ? "PAID" : creditedAmount > 0 ? "PARTIALLY_PAID" : target <= 0 ? "PAID" : "UNPAID",
+      correctionCredit: creditedAmount, creditApplied: inheritedCredit, paidTotal: 0,
+      paymentStatus: carriedTotal >= target ? "PAID" : carriedTotal > 0 ? "PARTIALLY_PAID" : target <= 0 ? "PAID" : "UNPAID",
     } });
 
     const creditNote = await tx.creditNote.create({
@@ -3335,7 +3360,7 @@ export async function modifyFinalizedInvoice(
       },
     });
 
-    return { response: { creditNote, replacementInvoice }, settlement: { ...basis, ...allocation,
+    return { response: { creditNote, replacementInvoice, carriedCredit: { ownReceipts: creditedAmount, originalCredit: inheritedCredit } }, settlement: { ...basis, ...allocation,
       targetInvoiceId: finalizedReplacement.id, reason } };
   });
 }

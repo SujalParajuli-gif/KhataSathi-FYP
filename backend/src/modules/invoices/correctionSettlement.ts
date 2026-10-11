@@ -5,6 +5,28 @@ import { lockInvoiceForUpdate, runFinancialTransaction } from "../../lib/transac
 import { getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 import { parseReturnSettlement } from "../returns/settlement";
 
+// Only one original-parent allocation may be forwarded. Receipt capture stays
+// local to the intermediate sale; the original credit has its own application.
+export function forwardingRecordReason(row: any, source: any, target: any): string | null {
+  const fail = "Forwarded correction source allocation does not reconcile";
+  const f = row?.inheritedFunding, parent = source?.correctionAsTarget;
+  if (f?.version !== 4 || row.action !== "REPLACE" || !parent?.sourceInvoice || parent.inheritedFunding
+      || parent.sourceInvoice.correctionAsTarget || Number(parent.sourceInvoice.creditApplied || 0)
+      || !source.customerId || parent.originalCustomerId !== source.customerId || f.originalCustomerId !== source.customerId
+      || f.sourceCorrectionId !== parent.id || f.sourceInvoiceId !== parent.sourceInvoiceId
+      || f.inheritedCredit !== parent.transferredCredit || source.correctionCredit !== f.inheritedCredit
+      || source.correctionCreditReleased !== f.inheritedCredit || row.retainedCredit !== 0 || row.transferredCredit !== row.recordedReceipts
+      || !target || f.targetInvoiceId !== target.id || row.targetInvoiceId !== target.id || target.customerId !== source.customerId
+      || roundCurrency(row.recordedReceipts + f.inheritedCredit) > getInvoicePaymentTargetTotal(target.netTotal)
+      || (source.creditApplicationsTo || []).length || Number(source.creditApplied || 0)
+      || correctionRecordReason(parent, parent.sourceInvoice, source, false)) return fail;
+  if (f.inheritedCredit === 0) return f.applicationId === null ? null : fail;
+  const application = (target.creditApplicationsTo || []).find((a: any) => a.id === f.applicationId);
+  return application && application.amount === f.inheritedCredit && application.sourceCorrectionId === parent.id
+    && application.sourceInvoiceId === parent.sourceInvoiceId && !application.sourceReturnId
+    && application.targetInvoiceId === target.id && application.originalCustomerId === source.customerId ? null : fail;
+}
+
 export function restoredInheritedCredit(row: any, target: any): number | null {
   if (!target || row.targetInvoiceId !== target.id) return row.action === "CANCEL" ? 0 : null;
   const released = Number(target.correctionCreditReleased || 0);
@@ -39,6 +61,10 @@ export function restoredInheritedCredit(row: any, target: any): number | null {
   if (target.paymentStatus === "CANCELLED") {
     const own = target.correctionAsSource;
     const funding = own?.inheritedFunding;
+    if (funding?.version === 4) {
+      return !correctionRecordReason(own, { ...target, correctionAsTarget: { ...target.correctionAsTarget, ...row } }, own.targetInvoice, false)
+        && released === row.transferredCredit ? released : null;
+    }
     if ((target.returnRequests || []).some((r: any) => ["APPROVED", "REVERSED"].includes(r.status)) || !own || own.action !== "CANCEL" || own.sourceInvoiceId !== target.id
         || !funding || ![1,3].includes(funding.version) || funding.sourceCorrectionId !== row.id
         || funding.originalCustomerId !== row.originalCustomerId || funding.inheritedCredit !== row.transferredCredit) return null;
@@ -88,12 +114,13 @@ export function correctionRecordReason(row: any, source: any, target?: any, veri
     && inherited.sourceCorrectionId === parent.id && inherited.originalCustomerId === source.customerId
     && inherited.inheritedCredit === parent.transferredCredit && source.customerId
     && parent.originalCustomerId === source.customerId && parent.sourceInvoice
-    && !parent.sourceInvoice.correctionAsTarget
+    && (!parent.sourceInvoice.correctionAsTarget || parent.inheritedFunding?.version === 4)
     && !correctionRecordReason(parent, parent.sourceInvoice, { ...source, correctionAsSource: row });
-  if (inherited != null && !inheritedValid) return fail;
+  const forwarded = inherited?.version === 4 && !forwardingRecordReason(row, source, target);
+  if (inherited != null && !inheritedValid && !forwarded) return fail;
   if (!row || !source || row.sourceInvoiceId !== source.id || row.originalCustomerId !== (source.customerId || null)
       || source.status !== "FINALIZED" || source.paymentStatus !== "CANCELLED" || !source.cancelledAt
-      || (!inheritedValid && (Number(source.correctionCredit || 0) || Number(source.correctionCreditReleased || 0))) || Number(source.creditApplied || 0) || Number(source.returnAdjustment || 0)
+      || (!inheritedValid && !forwarded && (Number(source.correctionCredit || 0) || Number(source.correctionCreditReleased || 0))) || Number(source.creditApplied || 0) || Number(source.returnAdjustment || 0)
       || (source.returnRequests || []).some((r: any) => ["APPROVED", "REVERSED"].includes(r.status))) return fail;
   const rows = (source.payments || []).filter((p: any) => p.status === "SUCCESS" && p.kind === "CHARGE");
   const actual = rows.map((p: any) => ({ id: p.id, amount: p.amount, method: p.method })).sort((a: any, b: any) => a.id.localeCompare(b.id));
@@ -110,7 +137,7 @@ export function correctionRecordReason(row: any, source: any, target?: any, veri
       || row.transferredCredit < 0 || row.retainedCredit < 0 || roundCurrency(row.transferredCredit) !== row.transferredCredit
       || roundCurrency(row.retainedCredit) !== row.retainedCredit || roundCurrency(row.transferredCredit + row.retainedCredit) !== paid) return fail;
   const notes = source.creditNotesAsOriginal || [];
-  if (source.creditNoteAsReplacement && !inheritedValid) return fail;
+  if (source.creditNoteAsReplacement && !inheritedValid && !forwarded) return fail;
   if (row.action === "CANCEL") {
     if (row.targetInvoiceId || row.transferredCredit !== 0 || notes.length) return fail;
   } else if (row.action === "REPLACE") {
@@ -146,6 +173,10 @@ export async function runCorrectionOperation(input: { action: "REPLACE" | "CANCE
       const existing = await tx.invoiceCorrectionSettlement.findUnique({ where: { operationKey: input.operationKey } });
       if (existing) return replay(existing);
       await assertApplicationSourcesTx(tx,input.invoiceId,applicationSources);
+      const lockedParent = await tx.invoiceCorrectionSettlement.findUnique({ where: { targetInvoiceId: input.invoiceId } });
+      if ((lockedParent?.id || null) !== (parent?.id || null) || (lockedParent?.sourceInvoiceId || null) !== (parent?.sourceInvoiceId || null)) {
+        throw new CorrectionSettlementConflict("Original correction funding changed; retry the original operation");
+      }
       const result = await work(tx);
       const responseJson = JSON.parse(JSON.stringify(result.response));
       const settlement = await tx.invoiceCorrectionSettlement.create({ data: { ...result.settlement,

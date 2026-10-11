@@ -1,10 +1,11 @@
 import { test, expect, type Page } from "@playwright/test";
 
-async function setup(page: Page, role="manager") {
+async function setup(page: Page, role="manager", inherited=0) {
   const actor={id:"correction-actor",name:"Return actor",role};
   await page.addInitScript(actor=>{localStorage.setItem("khatasathi_auth_user",JSON.stringify(actor));localStorage.setItem("khatasathi_token","test-session");},actor);
   const invoice={id:"original",invoiceNo:"ORIGINAL-1",status:"FINALIZED",paymentStatus:"PARTIALLY_PAID",createdAt:"2026-10-10T10:00:00Z",finalizedAt:"2026-10-10T10:00:00Z",netTotal:1000,subTotal:1000,paidTotal:400,returnAdjustment:0,customer:{id:"customer",name:"Original customer"},cashier:actor,
     items:[{id:"original-line",productId:"item",qty:10,appliedUnitPrice:100,lineTotal:1000,remainingReturnableQty:10,displayProduct:{name:"Original item",sku:"ORIGINAL-SKU",source:"CAPTURED"}}],payments:[{id:"charge",method:"CASH",kind:"CHARGE",status:"SUCCESS",amount:400}]};
+  Object.assign(invoice,{correctionCredit:inherited,correctionCreditReleased:0});
   const state={posts:[] as any[],lost:false,reject:false,failRead:false,rows:[] as any[],reads:0,replacement:null as any};
   await page.route(u=>u.pathname.startsWith("/api/"),async route=>{
     const req=route.request(),url=new URL(req.url()),p=url.pathname;
@@ -21,7 +22,7 @@ async function setup(page: Page, role="manager") {
     if(p==="/api/invoices/original/modify" || p==="/api/invoices/original/cancel"){
       const body=req.postDataJSON();state.posts.push(body);
       if(state.reject){state.reject=false;return reply({error:"Invoice correction requires settlement review"},409);}
-      state.replacement ||= {...invoice,id:"replacement",invoiceNo:"REPLACEMENT-1",netTotal:700,subTotal:700,paidTotal:0,correctionCredit:400,returnAdjustment:0,payments:[]};
+      state.replacement ||= {...invoice,id:"replacement",invoiceNo:"REPLACEMENT-1",netTotal:700,subTotal:700,paidTotal:0,correctionCredit:400,creditApplied:inherited,returnAdjustment:0,payments:[]};
       if(state.lost){state.lost=false;return route.abort("failed");}
       return reply(p.endsWith("/modify")?{creditNote:{creditedAmount:400},replacementInvoice:state.replacement}:{...invoice,paymentStatus:"CANCELLED"},p.endsWith("/modify")?201:200);
     }
@@ -64,6 +65,20 @@ for (const width of [1440,390]) test(`lost replacement freezes fields and safely
   await page.getByRole("button", { name: "Retry same correction", exact: true }).last().click();
   await expect(page.getByText(/replacement settlement credit:/i)).toContainText("NPR 400");
   expect(state.posts).toHaveLength(2); expect(state.posts[0]).toEqual(state.posts[1]);
+});
+
+for(const width of [1440,390])test(`subsequent replacement separates original carry and own receipts with keyboard retry at ${width}px`,async({page},info)=>{
+  await page.setViewportSize({width,height:960});const state=await setup(page,"admin",200);await edit(page);
+  await page.getByRole("button",{name:"Modify with Credit Note",exact:true}).focus();await page.keyboard.press("Enter");
+  const qty=page.getByRole("spinbutton",{name:"Quantity for Original item"}).first();await qty.fill("7");
+  await expect(page.getByText("Original credit carried",{exact:true})).toBeVisible();
+  await expect(page.getByText("Own payment transfer est.",{exact:true})).toBeVisible();
+  await expect(page.getByText(/Keep the same customer/)).toContainText("must cover all original credit and own payments");
+  await page.getByRole("button",{name:"Create Credit Note",exact:true}).click();state.lost=true;await page.getByRole("button",{name:"Create Credit Note",exact:true}).last().click();
+  await expect(page.getByRole("alert")).toContainText("Outcome unconfirmed");await expect(qty).toBeDisabled();
+  await page.getByRole("button",{name:"Retry same correction",exact:true}).last().click();
+  expect(state.posts).toHaveLength(2);expect(state.posts[0]).toEqual(state.posts[1]);await expect(page.getByText(/replacement settlement credit:/i)).toContainText("NPR 400");await expect(page.getByText(/Applied customer credit:/)).toContainText("NPR 200");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath(`forward-credit-${width}.png`),fullPage:true});
 });
 
 test("lost cancellation retains its original key through Escape and retry", async ({ page }) => {

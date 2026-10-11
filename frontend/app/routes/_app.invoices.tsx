@@ -682,9 +682,10 @@ function InvoiceModifyModal({
   const nextUnits = lines.reduce((sum, line) => sum + line.qty, 0);
   const originalUnits = invoice.items.reduce((sum, item) => sum + item.qty, 0);
   const estimatedCreditTransfer = Math.min(invoice.paidAmount, nextSubtotal);
+  const originalCreditCarry = Math.max(0, (invoice.correctionCredit || 0) - (invoice.correctionCreditReleased || 0));
   const estimatedDueAfterTransfer = Math.max(
     0,
-    nextSubtotal - estimatedCreditTransfer,
+    nextSubtotal - estimatedCreditTransfer - originalCreditCarry,
   );
   const estimatedCustomerCredit = Math.max(
     0,
@@ -794,7 +795,8 @@ function InvoiceModifyModal({
           </div>
         </div>
 
-        <fieldset disabled={busy || locked} className="min-h-0 flex-1 overflow-y-auto p-3.5 sm:p-5 bg-[#FFFFFF]">
+        <div className="min-h-0 flex-1 overflow-y-auto">
+        <fieldset disabled={busy || locked} className="min-w-0 p-3.5 sm:p-5 bg-[#FFFFFF]">
           <div className="grid gap-4 sm:gap-5 xl:grid-cols-[minmax(0,1fr)_360px] items-start">
             <div className="min-w-0 space-y-4">
               <div className="rounded-[16px] border border-[#DADDE3] bg-[#FFFFFF] shadow-sm">
@@ -1177,11 +1179,24 @@ function InvoiceModifyModal({
                     </span>
                   </div>
                   <div className="flex items-center justify-between gap-3">
-                    <span className="font-bold text-[#64748B]">Credit transfer est.</span>
+                    <span className="font-bold text-[#64748B]">Own payment transfer est.</span>
                     <span className="font-mono text-[14px] font-extrabold text-[#000000]">
                       {formatNpr(estimatedCreditTransfer)}
                     </span>
                   </div>
+                  {originalCreditCarry > 0 && (
+                    <>
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-bold text-[#64748B]">Original credit carried</span>
+                        <span className="font-mono text-[14px] font-extrabold text-[#000000]">{formatNpr(originalCreditCarry)}</span>
+                      </div>
+                      <p className="text-xs text-[#64748B]">
+                        Keep the same customer. The final replacement total must cover all original credit and own payments.
+                        The server verifies totals and eligibility; this estimate uses current line prices.
+                      </p>
+                      {nextSubtotal < originalCreditCarry + invoice.paidAmount && <p className="text-xs font-bold text-[#BE123C]">This estimate is below existing funding. Increase the replacement total; the server verifies the final amount.</p>}
+                    </>
+                  )}
                   <div className="my-2 border-t border-[#CFCFD3]" />
                   <div className="flex items-center justify-between gap-3">
                     <span className="font-extrabold text-[#11120d]">Due after replacement</span>
@@ -1276,6 +1291,7 @@ function InvoiceModifyModal({
             </aside>
           </div>
         </fieldset>
+        </div>
 
         {scanModalOpen ? (
           <div className="absolute inset-0 z-20 flex flex-col bg-[#FFFFFF]">

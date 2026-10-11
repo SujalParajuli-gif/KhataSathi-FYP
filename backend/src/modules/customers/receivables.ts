@@ -6,8 +6,14 @@ import prisma from "../../db/prisma";
 import { effectiveCorrectionCredit, getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 import { parseReturnSettlement } from "../returns/settlement";
 
-const originalParentInclude = { sourceInvoice: { include: { payments:true,returnRequests:true,creditNotesAsOriginal:true,creditNoteAsReplacement:true,correctionAsTarget:true } } } satisfies Prisma.InvoiceCorrectionSettlementInclude;
-const applicationTargetInclude = { payments:true,returnRequests:true,correctionAsSource:true,correctionAsTarget:{include:originalParentInclude},creditApplicationsTo:true } satisfies Prisma.InvoiceInclude;
+const originalSourceInclude = { payments:true,returnRequests:true,creditNotesAsOriginal:true,creditNoteAsReplacement:true,correctionAsTarget:true } satisfies Prisma.InvoiceInclude;
+const forwardingTargetInclude = { payments:true,returnRequests:true,creditApplicationsTo:true,correctionAsSource:true,correctionAsTarget:true } satisfies Prisma.InvoiceInclude;
+const originalParentInclude = { sourceInvoice: { include: {
+  ...originalSourceInclude, creditApplicationsTo:true,
+  correctionAsTarget:{include:{sourceInvoice:{include:originalSourceInclude}}},
+  correctionAsSource:{include:{targetInvoice:{include:forwardingTargetInclude}}},
+} } } satisfies Prisma.InvoiceCorrectionSettlementInclude;
+const applicationTargetInclude = { payments:true,returnRequests:true,creditNotesAsOriginal:true,creditNoteAsReplacement:true,correctionAsSource:{include:{targetInvoice:{include:forwardingTargetInclude}}},correctionAsTarget:{include:originalParentInclude},creditApplicationsTo:true } satisfies Prisma.InvoiceInclude;
 const correctionInclude = {
   correctionAsSource: { include: { targetInvoice: { include: applicationTargetInclude } } },
   correctionAsTarget: { include: originalParentInclude },

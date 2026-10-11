@@ -75,7 +75,7 @@ export function applicationReleaseReason(invoice: any): string | null {
   const releasedReturns=approved.some((r:any)=>[4,5].includes(r.settlement?.version));
   if (releasedReturns && (approved.some((r:any)=>r.settlement?.version !== (mixed ? 5 : 4)) || adjustment !== Number(invoice.returnAdjustment || 0))) return fail;
   const funding=invoice.correctionAsSource?.inheritedFunding;
-  if ((mixed || funding?.version === 3) && (!parent?.sourceInvoice || parent.sourceInvoice.correctionAsTarget || correctionRecordReason(parent,parent.sourceInvoice,invoice,false))) return fail;
+  if ((mixed || funding?.version === 3) && (!parent?.sourceInvoice || parent.sourceInvoice.correctionAsTarget && parent.inheritedFunding?.version !== 4 || correctionRecordReason(parent,parent.sourceInvoice,invoice,false))) return fail;
   if (releasedReturns || rows.some((a:any)=>Number(a.amountReleased || 0)) || [2,3].includes(funding?.version)) {
     const charges=(invoice.payments || []).filter((p:any)=>p.kind === "CHARGE" && p.status === "SUCCESS");
     const paid=roundCurrency(charges.reduce((n:number,p:any)=>n+Number(p.amount),0));
@@ -104,10 +104,10 @@ export async function applicationReturnBasisTx(tx: any, invoice: any) {
   const parent=full.correctionAsTarget;
   const projection=projectReceivableInvoice(full);
   if (!rows.length || projection.reason || !full.customerId || full.correctionAsSource || (!parent && full.creditNoteAsReplacement)
-    || (parent && (parent.originalCustomerId !== full.customerId || !parent.sourceInvoice || parent.sourceInvoice.correctionAsTarget || Number(parent.sourceInvoice.creditApplied || 0)>0))
+    || (parent && (parent.originalCustomerId !== full.customerId || !parent.sourceInvoice || parent.sourceInvoice.correctionAsTarget && parent.inheritedFunding?.version !== 4 || Number(parent.sourceInvoice.creditApplied || 0)>0))
     || full.creditNotesAsOriginal.length || full.payments.some((p:any)=>p.kind==="REFUND")
-    || rows.some((a:any)=>a.originalCustomerId!==full.customerId || a.sourceInvoice.customerId!==full.customerId || a.sourceInvoice.correctionAsTarget
-      || Number(a.sourceInvoice.creditApplied || 0)>0 || a.sourceInvoice.correctionAsSource?.inheritedFunding
+    || rows.some((a:any)=>a.originalCustomerId!==full.customerId || a.sourceInvoice.customerId!==full.customerId || a.sourceInvoice.correctionAsTarget && a.sourceInvoice.correctionAsSource?.inheritedFunding?.version !== 4
+      || Number(a.sourceInvoice.creditApplied || 0)>0 || a.sourceInvoice.correctionAsSource?.inheritedFunding && a.sourceInvoice.correctionAsSource?.inheritedFunding?.version !== 4
       || (a.sourceReturnId && parseReturnSettlement(a.sourceReturn?.settlement)?.version!==2))) throw new ApplicationSettlementConflict(projection.reason || "Application-funded returns require reconciled original credit sources");
   return { rows, applications:captureApplications(rows), applied:projection.appliedCredit, parent };
 }
