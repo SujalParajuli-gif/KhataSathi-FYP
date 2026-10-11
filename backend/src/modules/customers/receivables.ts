@@ -12,12 +12,25 @@ const correctionInclude = {
 export const receivableInclude = {
   ...correctionInclude,
   payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true,
-  creditApplicationsFrom: { include: { sourceReturn: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
-  creditApplicationsTo: { include: { sourceReturn: true, sourceInvoice: { include: {
+  creditApplicationsFrom: { include: { sourceReturn: true, sourceCorrection: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
+  creditApplicationsTo: { include: { sourceReturn: true, sourceCorrection: true, sourceInvoice: { include: {
     ...correctionInclude, payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true,
-    creditApplicationsFrom: { include: { sourceReturn: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
+    creditApplicationsFrom: { include: { sourceReturn: true, sourceCorrection: true, targetInvoice: { select: { id: true, invoiceNo: true, customerId: true } } } },
   } } } },
 } satisfies Prisma.InvoiceInclude;
+
+function applicationSourceMatches(a: any, customerId: string | null) {
+  if (!customerId || a.originalCustomerId !== customerId || Boolean(a.sourceReturnId) === Boolean(a.sourceCorrectionId)) return false;
+  return a.sourceCorrectionId
+    ? a.sourceCorrection?.id === a.sourceCorrectionId && a.sourceCorrection?.sourceInvoiceId === a.sourceInvoiceId && a.sourceCorrection?.originalCustomerId === customerId
+    : a.sourceReturn?.id === a.sourceReturnId && a.sourceReturn?.invoiceId === a.sourceInvoiceId && a.sourceReturn?.status === "APPROVED"
+      && parseReturnSettlement(a.sourceReturn?.settlement)?.originalCustomerId === customerId;
+}
+function projectApplications(i: any) {
+  return [...(i.creditApplicationsFrom || []), ...(i.creditApplicationsTo || [])].map((a: any) => ({ id: a.id, sourceInvoiceId: a.sourceInvoiceId,
+    sourceInvoiceNo: a.sourceInvoice?.invoiceNo || i.invoiceNo, targetInvoiceId: a.targetInvoiceId, targetInvoiceNo: a.targetInvoice?.invoiceNo || i.invoiceNo,
+    sourceReturnId: a.sourceReturnId, sourceCorrectionId: a.sourceCorrectionId, amount: a.amount, reason: a.reason, actorId: a.actorId, createdAt: a.createdAt, reversedAt: a.reversedAt, reversedById: a.reversedById, reversalReason: a.reversalReason }));
+}
 
 export function projectReceivableInvoice(i: any) {
   let reason: string | null = null;
@@ -37,10 +50,19 @@ export function projectReceivableInvoice(i: any) {
     action: correction.action, originalCustomerId: correction.originalCustomerId, transferredCredit: correction.transferredCredit,
     retainedCredit: correction.retainedCredit, actorId: correction.actorId, reason: correction.reason, createdAt: correction.createdAt } : null;
   if (sourceCorrection) {
-    return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: correctionReason ? "UNRESOLVED" : "CAPTURED_CORRECTION", reason: correctionReason,
+    const outgoing = (i.creditApplicationsFrom || []).filter((a: any) => !a.reversedAt);
+    const used = roundCurrency(outgoing.reduce((n: number, a: any) => n + Number(a.amount), 0));
+    const available = roundCurrency(sourceCorrection.retainedCredit - used);
+    const invalid = correctionReason || ((i.creditApplicationsTo || []).some((a: any) => !a.reversedAt)
+      || outgoing.some((a: any) => !Number.isFinite(a.amount) || a.amount <= 0 || roundCurrency(a.amount) !== a.amount
+        || !applicationSourceMatches(a, i.customerId) || a.sourceCorrectionId !== sourceCorrection.id || a.sourceInvoiceId !== i.id
+        || a.targetInvoiceId === i.id || a.targetInvoice?.id !== a.targetInvoiceId || a.targetInvoice?.customerId !== i.customerId)
+      || available < 0 ? "Correction credit application or original ownership does not reconcile" : null);
+    return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: invalid ? "UNRESOLVED" : "CAPTURED_CORRECTION", reason: invalid,
       originalPayable: target, returnAdjustment: 0, recordedReceipts: paid, appliedCredit: 0, correctionCredit: 0,
-      usedCredit: 0, creditSources: [], applications: [], correction: summary,
-      due: correctionReason ? null : 0, retainedCredit: correctionReason ? null : sourceCorrection.retainedCredit };
+      usedCredit: used, creditSources: !invalid && sourceCorrection.originalCustomerId ? [{ correctionId: sourceCorrection.id, retainedCredit: sourceCorrection.retainedCredit, availableCredit: available }] : [],
+      applications: projectApplications(i), correction: summary,
+      due: invalid ? null : 0, retainedCredit: invalid ? null : available };
   }
   const financialReturns = returns.filter((r: any) => ["APPROVED", "REVERSED"].includes(r.status));
   const approved = returns.filter((r: any) => r.status === "APPROVED");
@@ -63,14 +85,14 @@ export function projectReceivableInvoice(i: any) {
   const outgoing = (i.creditApplicationsFrom || []).filter((a: any) => !a.reversedAt);
   const applied = roundCurrency(incoming.reduce((sum: number, a: any) => sum + Number(a.amount), 0));
   const used = roundCurrency(outgoing.reduce((sum: number, a: any) => sum + Number(a.amount), 0));
-  const creditSources = approved.map((r: any) => ({ returnId: r.id, retainedCredit: parseReturnSettlement(r.settlement)?.retainedCredit || 0,
+  const creditSources: { returnId?: string; correctionId?: string; retainedCredit: number; availableCredit: number }[] = approved.map((r: any) => ({ returnId: r.id, retainedCredit: parseReturnSettlement(r.settlement)?.retainedCredit || 0,
     availableCredit: roundCurrency((parseReturnSettlement(r.settlement)?.retainedCredit || 0) - outgoing.filter((a: any) => a.sourceReturnId === r.id).reduce((sum: number, a: any) => sum + Number(a.amount), 0)) }));
   if (!Number.isFinite(Number(i.creditApplied || 0)) || roundCurrency(Number(i.creditApplied || 0)) !== applied
       || [...incoming, ...outgoing].some((a: any) => !Number.isFinite(a.amount) || a.amount <= 0 || roundCurrency(a.amount) !== a.amount
         || !i.customerId || a.originalCustomerId !== i.customerId || a.sourceInvoiceId === a.targetInvoiceId
-        || a.sourceReturn?.status !== "APPROVED" || parseReturnSettlement(a.sourceReturn?.settlement)?.originalCustomerId !== i.customerId)
-      || incoming.some((a: any) => a.targetInvoiceId !== i.id || a.sourceReturn?.invoiceId !== a.sourceInvoiceId || a.sourceInvoice?.customerId !== i.customerId
-        || a.sourceInvoice?.status !== "FINALIZED" || a.sourceInvoice?.paymentStatus === "CANCELLED" || a.sourceInvoice?.cancelledAt || a.sourceInvoice?.deletedAt
+        || !applicationSourceMatches(a, i.customerId))
+      || incoming.some((a: any) => a.targetInvoiceId !== i.id || a.sourceInvoice?.customerId !== i.customerId
+        || a.sourceInvoice?.status !== "FINALIZED"
         || projectReceivableInvoice(a.sourceInvoice).reason)
       || outgoing.some((a: any) => a.sourceInvoiceId !== i.id || a.sourceReturn?.invoiceId !== i.id || a.targetInvoice?.customerId !== i.customerId)
       || used > credit || creditSources.some((s: any) => s.availableCredit < 0)
@@ -78,9 +100,7 @@ export function projectReceivableInvoice(i: any) {
   return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: reason ? "UNRESOLVED" : targetCorrection ? "CAPTURED_CORRECTION" : "ORIGINAL_SALE_DEBT_FIRST", reason,
     originalPayable: target, returnAdjustment: adjustment, recordedReceipts: paid,
     correctionCredit, correction: summary, appliedCredit: applied, usedCredit: used, creditSources: reason ? [] : creditSources,
-    applications: [...(i.creditApplicationsFrom || []), ...(i.creditApplicationsTo || [])].map((a: any) => ({ id: a.id, sourceInvoiceId: a.sourceInvoiceId,
-      sourceInvoiceNo: a.sourceInvoice?.invoiceNo || i.invoiceNo, targetInvoiceId: a.targetInvoiceId, targetInvoiceNo: a.targetInvoice?.invoiceNo || i.invoiceNo,
-      sourceReturnId: a.sourceReturnId, amount: a.amount, reason: a.reason, actorId: a.actorId, createdAt: a.createdAt, reversedAt: a.reversedAt, reversedById: a.reversedById, reversalReason: a.reversalReason })),
+    applications: projectApplications(i),
     due: reason ? null : roundCurrency(Math.max(0, target - adjustment - paid - applied - correctionCredit)), retainedCredit: reason ? null : roundCurrency(credit - used) };
 }
 

@@ -89,7 +89,7 @@ for (const width of [1440,390]) test(`captured correction credit is separate fro
   await page.setViewportSize({width,height:960}); await setup(page);
   await page.route("**/api/customers/receivables**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({items:[{id:"customer",name:"Original customer",isActive:true,due:300,retainedCredit:400,supportedDue:300,supportedCredit:400,unresolvedCount:0,invoices:[{invoiceId:"original",invoiceNo:"ORIGINAL-1",basis:"CAPTURED_CORRECTION",reason:null,originalPayable:1000,returnAdjustment:0,recordedReceipts:1000,due:0,retainedCredit:400,correctionCredit:0,correction:{action:"REPLACE",sourceInvoiceId:"original",targetInvoiceId:"replacement",originalCustomerId:"customer",transferredCredit:600,retainedCredit:400,reason:"Original-sale correction",actorId:"manager",createdAt:"2026-10-10T15:00:00Z"}}]}],total:1,totalPages:1})}));
   await page.goto("/receivables"); await page.locator("summary").focus(); await page.keyboard.press("Enter");
-  await expect(page.getByText("Successful recorded receipts: NPR 1,000",{exact:true})).toBeVisible(); await expect(page.getByText(/Application and confirmed payout for correction credit are unavailable/)).toBeVisible();
+  await expect(page.getByText("Successful recorded receipts: NPR 1,000",{exact:true})).toBeVisible(); await expect(page.getByText(/Confirmed payout remains unavailable/)).toBeVisible();
   await expect(page.getByRole("button",{name:/Apply credit/})).toHaveCount(0); expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:info.outputPath(`correction-receivables-${width}.png`),fullPage:true});
 });

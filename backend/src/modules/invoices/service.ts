@@ -640,13 +640,15 @@ export function buildActiveReturnBlockMessage(
   return `Cannot ${actionLabel} because this invoice has ${article} ${normalizedStatus} return/refund request. Finish or reject returns before changing the invoice.`;
 }
 
+export class ActiveCreditApplicationConflict extends Error {}
+
 async function assertNoActiveReturnRequestsTx(
   tx: any,
   invoiceId: string,
   actionLabel: string,
 ) {
   const allocation = await tx.customerCreditApplication.findFirst({ where: { reversedAt: null, OR: [{ sourceInvoiceId: invoiceId }, { targetInvoiceId: invoiceId }] }, select: { id: true } });
-  if (allocation) throw new Error(`Reverse active credit applications before you ${actionLabel}`);
+  if (allocation) throw new ActiveCreditApplicationConflict(`Reverse active credit applications before you ${actionLabel}`);
   const activeReturn = await tx.returnRequest.findFirst({
     where: {
       invoiceId,

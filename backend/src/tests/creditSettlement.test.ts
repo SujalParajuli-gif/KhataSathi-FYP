@@ -26,3 +26,22 @@ test("incoming credit limits gateway intent before any pending receipt is writte
   assert.equal(writes, 0);
   assert.equal(getRemainingPaymentDue(300, 0.1, 0, 0.2), 299.7);
 });
+
+
+test("captured correction source applications preserve gross provenance and withhold malformed ownership", () => {
+  const receipt = { id: "receipt", method: "CASH", amount: 400, kind: "CHARGE", status: "SUCCESS" };
+  const correction = { id: "correction", sourceInvoiceId: "source", targetInvoiceId: null, action: "CANCEL", originalCustomerId: "customer", originalPayable: 1000,
+    receipts: [{ id: receipt.id, method: receipt.method, amount: receipt.amount }], recordedReceipts: 400, transferredCredit: 0, retainedCredit: 400 };
+  const app = { id: "app", sourceInvoiceId: "source", targetInvoiceId: "target", sourceReturnId: null, sourceCorrectionId: correction.id, sourceCorrection: correction, originalCustomerId: "customer", amount: 150, targetInvoice: { id: "target", customerId: "customer" } };
+  const source = { id: "source", customerId: "customer", status: "FINALIZED", paymentStatus: "CANCELLED", cancelledAt: new Date(), deletedAt: new Date(), netTotal: 1000, paidTotal: 400,
+    payments: [receipt], correctionAsSource: correction, creditApplicationsFrom: [app] };
+  const target = { id: "target", customerId: "customer", status: "FINALIZED", netTotal: 300, paidTotal: 0, creditApplied: 150, payments: [], creditApplicationsTo: [{ ...app, sourceInvoice: source }] };
+  assert.equal(projectReceivableInvoice(source).retainedCredit, 250); assert.equal(projectReceivableInvoice(source).usedCredit, 150);
+  assert.equal(projectReceivableInvoice(source).creditSources[0].correctionId, correction.id);
+  assert.equal(projectReceivableInvoice(target).due, 150); assert.equal(projectReceivableInvoice(target).recordedReceipts, 0);
+  assert.equal(projectReceivableInvoice({ ...source, creditApplicationsFrom: [{ ...app, amount: 401 }] }).retainedCredit, null);
+  assert.equal(projectReceivableInvoice({ ...source, creditApplicationsFrom: [{ ...app, sourceReturnId: "also-return" }] }).retainedCredit, null);
+  assert.equal(projectReceivableInvoice({ ...source, creditApplicationsFrom: [{ ...app, targetInvoice: { id: "target", customerId: "other" } }] }).retainedCredit, null);
+  assert.equal(projectReceivableInvoice({ ...target, creditApplicationsTo: [{ ...app, sourceInvoice: { ...source, paidTotal: 399 } }] }).due, null);
+  const reversed = { ...app, reversedAt: new Date() }; assert.equal(projectReceivableInvoice({ ...source, creditApplicationsFrom: [reversed] }).retainedCredit, 400);
+});

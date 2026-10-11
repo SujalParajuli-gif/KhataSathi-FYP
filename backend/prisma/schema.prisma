@@ -1389,7 +1389,8 @@ model CustomerCreditApplication {
   id                 String   @id @default(cuid())
   sourceInvoiceId    String
   targetInvoiceId    String
-  sourceReturnId     String
+  sourceReturnId     String?
+  sourceCorrectionId String?
   originalCustomerId String
   amount             Float
   reason             String   @db.VarChar(500)
@@ -1401,7 +1402,8 @@ model CustomerCreditApplication {
 
   sourceInvoice Invoice       @relation("CreditApplicationSource", fields: [sourceInvoiceId], references: [id], onDelete: Restrict)
   targetInvoice Invoice       @relation("CreditApplicationTarget", fields: [targetInvoiceId], references: [id], onDelete: Restrict)
-  sourceReturn  ReturnRequest @relation(fields: [sourceReturnId], references: [id], onDelete: Restrict)
+  sourceCorrection InvoiceCorrectionSettlement? @relation(fields: [sourceCorrectionId], references: [id], onDelete: Restrict)
+  sourceReturn  ReturnRequest? @relation(fields: [sourceReturnId], references: [id], onDelete: Restrict)
   actor         User          @relation("CreditApplicationActor", fields: [actorId], references: [id], onDelete: Restrict)
   reversedBy    User?         @relation("CreditApplicationReverser", fields: [reversedById], references: [id], onDelete: Restrict)
   operations    CustomerCreditOperation[]
@@ -1409,6 +1411,7 @@ model CustomerCreditApplication {
   @@index([sourceInvoiceId, reversedAt])
   @@index([targetInvoiceId, reversedAt])
   @@index([sourceReturnId, reversedAt])
+  @@index([sourceCorrectionId, reversedAt])
 }
 
 model CustomerCreditOperation {
@@ -1444,6 +1447,7 @@ model InvoiceCorrectionSettlement {
   payloadHash        String   @db.Char(64)
   responseJson       Json
 
+  applications CustomerCreditApplication[]
   sourceInvoice Invoice  @relation("CorrectionSource", fields: [sourceInvoiceId], references: [id], onDelete: Restrict)
   targetInvoice Invoice? @relation("CorrectionTarget", fields: [targetInvoiceId], references: [id], onDelete: Restrict)
   actor         User     @relation(fields: [actorId], references: [id], onDelete: Restrict)

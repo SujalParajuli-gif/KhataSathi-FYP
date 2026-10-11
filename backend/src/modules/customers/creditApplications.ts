@@ -9,8 +9,8 @@ import { projectReceivableInvoice, receivableInclude } from "./receivables";
 export class CreditApplicationConflict extends Error {}
 const key = z.string().regex(/^[A-Za-z0-9_-]{16,120}$/);
 const reason = z.string().trim().min(1).max(500);
-const applySchema = z.object({ sourceReturnId: z.string().min(1).max(100), targetInvoiceId: z.string().min(1).max(100),
-  amount: z.number().finite().positive().max(2147483647).refine(n => roundCurrency(n) === n), reason, operationKey: key }).strict();
+const applySchema = z.object({ sourceReturnId: z.string().min(1).max(100).optional(), sourceCorrectionId: z.string().min(1).max(100).optional(), targetInvoiceId: z.string().min(1).max(100),
+  amount: z.number().finite().positive().max(2147483647).refine(n => roundCurrency(n) === n), reason, operationKey: key }).strict().refine(d => Boolean(d.sourceReturnId) !== Boolean(d.sourceCorrectionId), { message: "Exactly one return or correction source is required" });
 const reverseSchema = z.object({ reason, operationKey: key }).strict();
 
 async function assertActor(actorId: string) {
@@ -62,24 +62,27 @@ async function recomputeTarget(tx: any, invoice: any) {
 export async function applyCustomerCredit(actorId: string, input: unknown) {
   const data = applySchema.parse(input);
   await assertActor(actorId);
-  const source = await prisma.returnRequest.findUnique({ where: { id: data.sourceReturnId }, select: { invoiceId: true } });
-  if (!source) throw new CreditApplicationConflict("Source return was not found");
+  const source = data.sourceReturnId
+    ? await prisma.returnRequest.findUnique({ where: { id: data.sourceReturnId }, select: { invoiceId: true } })
+    : await prisma.invoiceCorrectionSettlement.findUnique({ where: { id: data.sourceCorrectionId! }, select: { sourceInvoiceId: true } }).then(r => r && { invoiceId: r.sourceInvoiceId });
+  if (!source) throw new CreditApplicationConflict("Credit source was not found");
   const { operationKey, ...content } = data;
   return operation(actorId, "APPLY", operationKey, content, [source.invoiceId, data.targetInvoiceId], async tx => {
     const from = await supportedInvoice(tx, source.invoiceId), to = await supportedInvoice(tx, data.targetInvoiceId);
-    const settlement = from.invoice.returnRequests.find((r: any) => r.id === data.sourceReturnId && r.status === "APPROVED");
-    const basis = parseReturnSettlement(settlement?.settlement);
+    const settlement = data.sourceReturnId ? from.invoice.returnRequests.find((r: any) => r.id === data.sourceReturnId && r.status === "APPROVED") : null;
+    const basis = data.sourceReturnId ? parseReturnSettlement(settlement?.settlement)
+      : from.invoice.correctionAsSource?.id === data.sourceCorrectionId ? from.invoice.correctionAsSource : null;
     if (!basis || !basis.originalCustomerId || basis.originalCustomerId !== from.invoice.customerId || to.invoice.customerId !== basis.originalCustomerId
       || from.invoice.id === to.invoice.id) throw new CreditApplicationConflict("Credit must belong to the same named customer on a different supported sale");
     if (to.invoice.returnRequests.some((r: any) => r.status === "APPROVED")) throw new CreditApplicationConflict("Return-adjusted target sales require separate credit settlement review");
-    const available = from.projection.creditSources.find((s: any) => s.returnId === data.sourceReturnId)?.availableCredit || 0;
-    if (data.amount > available) throw new CreditApplicationConflict("Application exceeds this return's available credit");
+    const available = from.projection.creditSources.find((s: any) => data.sourceReturnId ? s.returnId === data.sourceReturnId : s.correctionId === data.sourceCorrectionId)?.availableCredit || 0;
+    if (data.amount > available) throw new CreditApplicationConflict("Application exceeds this source's available credit");
     if (data.amount > to.projection.due!) throw new CreditApplicationConflict("Application exceeds the target sale's remaining due");
     const result = await tx.customerCreditApplication.create({ data: { sourceInvoiceId: source.invoiceId, targetInvoiceId: data.targetInvoiceId,
-      sourceReturnId: data.sourceReturnId, amount: data.amount, originalCustomerId: basis.originalCustomerId, reason: data.reason, actorId } });
+      sourceReturnId: data.sourceReturnId ?? null, sourceCorrectionId: data.sourceCorrectionId ?? null, amount: data.amount, originalCustomerId: basis.originalCustomerId, reason: data.reason, actorId } });
     await recomputeTarget(tx, to.invoice);
     await tx.auditLog.create({ data: { actorId, action: "CUSTOMER_CREDIT_APPLIED", entityType: "CustomerCreditApplication", entityId: result.id,
-      meta: { sourceInvoiceId: source.invoiceId, targetInvoiceId: data.targetInvoiceId, sourceReturnId: data.sourceReturnId, amount: data.amount, reason: data.reason, originalCustomerId: basis.originalCustomerId } } });
+      meta: { sourceInvoiceId: source.invoiceId, targetInvoiceId: data.targetInvoiceId, sourceReturnId: data.sourceReturnId ?? null, sourceCorrectionId: data.sourceCorrectionId ?? null, amount: data.amount, reason: data.reason, originalCustomerId: basis.originalCustomerId } } });
     return result;
   });
 }
@@ -96,7 +99,7 @@ export async function reverseCustomerCredit(actorId: string, applicationId: stri
     const result = await tx.customerCreditApplication.update({ where: { id: applicationId }, data: { reversedAt: new Date(), reversedById: actorId, reversalReason: data.reason } });
     await recomputeTarget(tx, to.invoice);
     await tx.auditLog.create({ data: { actorId, action: "CUSTOMER_CREDIT_REVERSED", entityType: "CustomerCreditApplication", entityId: applicationId,
-      meta: { sourceInvoiceId: identity.sourceInvoiceId, targetInvoiceId: identity.targetInvoiceId, amount: current.amount, reason: data.reason } } });
+      meta: { sourceInvoiceId: identity.sourceInvoiceId, targetInvoiceId: identity.targetInvoiceId, sourceReturnId: current.sourceReturnId, sourceCorrectionId: current.sourceCorrectionId, originalCustomerId: current.originalCustomerId, amount: current.amount, reason: data.reason } } });
     return result;
   });
 }
