@@ -116,3 +116,10 @@ for (const width of [1440,390]) test(`partially restored application preserves o
   expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await page.screenshot({path:info.outputPath(`restored-application-${width}.png`),fullPage:true});
 });
+
+for (const width of [1440,390]) test(`mixed return shows parent and application restoration at ${width}px`, async ({page},info) => {
+  await page.setViewportSize({width,height:960});await setup(page,"admin");
+  await page.route("**/api/returns**",route=>route.fulfill({contentType:"application/json",body:JSON.stringify({requests:[{id:"mixed-return",invoiceId:"original",invoiceNo:"ORIGINAL-1",status:"APPROVED",reason:"CUSTOMER_REQUEST",refundAmount:0,createdAt:"2026-10-11T07:00:00Z",createdBy:{name:"Manager"},invoice:{id:"original",invoiceNo:"ORIGINAL-1",customer:{name:"Original customer"},cashier:{name:"Cashier"}},settlement:{version:5,approvedReturnValue:700,debtReduction:200,restoredCredit:200,retainedCredit:50,applications:[{released:100},{released:150}]},items:[{id:"returned-line",invoiceItemId:"original-line",productId:"item",qtyReturned:7,unitPrice:100,lineTotal:700,displayProduct:{name:"Original item",sku:"ORIGINAL-SKU",source:"CAPTURED"}}]}],total:1,totalPages:1})}));
+  await page.goto("/invoices");await page.getByRole("button",{name:"Return requests",exact:true}).focus();await page.keyboard.press("Enter");await page.getByRole("button",{name:"Approved",exact:true}).click();await expect(page.getByText("Debt first; no payout.",{exact:false})).toContainText("restored original credit NPR 450, held credit NPR 50");
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);await page.screenshot({path:info.outputPath(`mixed-return-${width}.png`),fullPage:true});
+});

@@ -4490,14 +4490,20 @@ export async function cancelInvoice(invoiceId: string, userId: string, operation
     if (invoice.paymentStatus === "CANCELLED") {
       throw new Error("Invoice is already cancelled");
     }
-    await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice", !invoice.correctionAsTarget && Number(invoice.creditApplied || 0)>0);
+    await assertNoActiveReturnRequestsTx(tx, invoice.id, "cancel this invoice", Number(invoice.creditApplied || 0)>0);
 
     let basis: any;
     if (invoice.correctionAsTarget) {
       const inherited = await assertOriginalReturnBasisTx(tx, invoice);
       if (!inherited || invoice.returnRequests.some((r: any) => ["APPROVED", "REVERSED"].includes(r.status))) throw new CorrectionSettlementConflict("Cancellation after financial returns requires separate settlement review");
-      basis = captureCorrectionBasis({ ...invoice, correctionAsTarget: null, creditNoteAsReplacement: null, correctionCredit: 0, correctionCreditReleased: 0 });
-      basis.inheritedFunding = { version: 1, sourceCorrectionId: inherited.id, originalCustomerId: invoice.customerId, inheritedCredit: inherited.inheritedCredit };
+      basis = captureCorrectionBasis({ ...invoice, correctionAsTarget: null, creditNoteAsReplacement: null, correctionCredit: 0, correctionCreditReleased: 0, creditApplied: 0 });
+      let applications;
+      if (inherited.application) {
+        applications = allocateApplicationRelease(inherited.application.rows, inherited.application.applied);
+        const creditApplied = await setApplicationReleasesTx(tx, inherited.application.rows, applications, 1);
+        await tx.invoice.update({ where: { id: invoice.id }, data: { creditApplied } });
+      }
+      basis.inheritedFunding = { version: applications ? 3 : 1, sourceCorrectionId: inherited.id, originalCustomerId: invoice.customerId, inheritedCredit: inherited.inheritedCredit, ...(applications ? { applications } : {}) };
       await tx.invoice.update({ where: { id: invoice.id }, data: { correctionCreditReleased: inherited.inheritedCredit } });
     } else if (Number(invoice.creditApplied || 0)>0) {
       if (invoice.returnRequests.some((r:any)=>["APPROVED","REVERSED"].includes(r.status))) throw new CorrectionSettlementConflict("Cancellation after financial returns requires separate settlement review");

@@ -113,8 +113,11 @@ test("MySQL inherited credit restoration conserves source/receipts and serialize
     const fundedApplication = await funded(), otherSource = await sale(400); await cancelInvoice(otherSource.id, actor.id, randomUUID());
     const otherCorrection = await prisma.invoiceCorrectionSettlement.findUniqueOrThrow({ where: { sourceInvoiceId: otherSource.id } });
     await applyCustomerCredit(actor.id, { sourceCorrectionId: otherCorrection.id, targetInvoiceId: fundedApplication.child.id, amount: 100, reason: "Extra source", operationKey: randomUUID() });
-    await assert.rejects(request(fundedApplication.child, 5), /incoming credit/);
-    await assert.rejects(cancelInvoice(fundedApplication.child.id, actor.id, randomUUID()), /active credit/);
+    const mixedRequest = await request(fundedApplication.child, 5);
+    const mixedApproval = await approveReturnRequest(mixedRequest.id, actor.id, randomUUID());
+    assert.equal(mixedApproval.settlement.version, 5);
+    assert.equal(mixedApproval.settlement.restoredCredit, 300);
+    await assert.rejects(cancelInvoice(fundedApplication.child.id, actor.id, randomUUID()), /active credit|return/i);
     const bad = await funded(); await prisma.invoice.update({ where: { id: bad.child.id }, data: { correctionCreditReleased: 1 } }); await assert.rejects(request(bad.child, 5), /reconcile/);
 
     const rf = await funded(), rr = await approve(rf.child, 5), rt = await sale(0);

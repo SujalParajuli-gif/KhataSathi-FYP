@@ -393,7 +393,7 @@ export async function createReturnRequest(
     });
 
     const refundAmount = 0;
-    const settlement = { version: inherited?.application ? 4 : inherited ? 3 : 2, ...(inherited?.application ? { applications: inherited.application.applications, recordedReceipts: 0 } : inherited ? { inheritedCorrectionId: inherited.id, inheritedCredit: inherited.inheritedCredit, restoredCredit: 0, recordedReceipts: 0 } : {}), originalCustomerId: invoice.customerId || null,
+    const settlement = { version: inherited?.application ? inherited.id ? 5 : 4 : inherited ? 3 : 2, ...(inherited?.application ? { applications: inherited.application.applications, recordedReceipts: 0, ...(inherited.id ? {inheritedCorrectionId:inherited.id,inheritedCredit:inherited.inheritedCredit,restoredCredit:0} : {}) } : inherited ? { inheritedCorrectionId: inherited.id, inheritedCredit: inherited.inheritedCredit, restoredCredit: 0, recordedReceipts: 0 } : {}), originalCustomerId: invoice.customerId || null,
       originalPayable: getInvoicePaymentTargetTotal(invoice.netTotal), approvedReturnValue: 0,
       debtReduction: 0, retainedCredit: 0, approvalOrder: 0 };
 
@@ -469,7 +469,7 @@ export async function approveReturnRequest(id: string, reviewedById: string, ope
     if (request.settlement != null && !pendingSettlement) throw new ReturnSettlementConflict("Return settlement basis is malformed");
     if (pendingSettlement) {
       const inherited = await assertOriginalReturnBasisTx(tx, request.invoice);
-      if (Boolean(inherited && !inherited.application) !== (pendingSettlement.version === 3) || Boolean(inherited?.application) !== (pendingSettlement.version === 4) || (inherited?.application && !sameApplicationBasis(pendingSettlement.applications!,inherited.application.applications)) || (inherited && !inherited.application && (pendingSettlement.inheritedCorrectionId !== inherited.id || pendingSettlement.inheritedCredit !== inherited.inheritedCredit))) throw new ReturnSettlementConflict("Inherited return source changed");
+      if (Boolean(inherited?.id) !== [3,5].includes(pendingSettlement.version) || Boolean(inherited?.application) !== [4,5].includes(pendingSettlement.version) || (inherited?.application && !sameApplicationBasis(pendingSettlement.applications!,inherited.application.applications)) || (inherited?.id && (pendingSettlement.inheritedCorrectionId !== inherited.id || pendingSettlement.inheritedCredit !== inherited.inheritedCredit))) throw new ReturnSettlementConflict("Inherited return source changed");
       if (pendingSettlement.originalCustomerId !== (request.invoice.customerId || null) || pendingSettlement.originalPayable !== getInvoicePaymentTargetTotal(request.invoice.netTotal)) throw new ReturnSettlementConflict("Return invoice owner or payable changed");
       const payments = await tx.payment.findMany({ where: { invoiceId: request.invoiceId } });
       if (payments.some((p: any) => p.kind === "CHARGE" && p.status === "PENDING" && p.method === "ESEWA" && !p.voidedAt)) throw new ReturnSettlementConflict("Return approval requires resolving the pending gateway payment first");
@@ -482,11 +482,11 @@ export async function approveReturnRequest(id: string, reviewedById: string, ope
         approvedGross: approved.reduce((sum: number, r: any) => sum + r.items.reduce((n: number, i: any) => n + Number(i.lineTotal), 0), 0),
         nextGross: request.items.reduce((sum: number, i: any) => sum + Number(i.lineTotal), 0), previousAdjustment: request.invoice.returnAdjustment || 0, paid: roundCurrency(paid + effectiveCorrectionCredit(request.invoice) + Number(request.invoice.creditApplied || 0)) });
       const approvalOrder = 1 + approved.reduce((max: number, r: any) => Math.max(max, parseReturnSettlement(r.settlement)!.approvalOrder), 0);
-      const restoredCredit = inherited && !inherited.application ? roundCurrency(Math.min(allocation.retainedCredit, effectiveCorrectionCredit(request.invoice))) : 0;
       const applications = inherited?.application ? allocateApplicationRelease(inherited.application.rows,Math.min(allocation.retainedCredit,inherited.application.applied)) : null;
       const restoredApplications = roundCurrency(applications?.reduce((n,a)=>n+a.released,0) || 0);
+      const restoredCredit = inherited?.id ? roundCurrency(Math.min(allocation.retainedCredit - restoredApplications, effectiveCorrectionCredit(request.invoice))) : 0;
       const applied = applications ? await setApplicationReleasesTx(tx,inherited.application.rows,applications,1) : Number(request.invoice.creditApplied || 0);
-      settled = { ...pendingSettlement, approvedReturnValue: allocation.approvedReturnValue, debtReduction: allocation.debtReduction, retainedCredit: roundCurrency(allocation.retainedCredit - restoredCredit - restoredApplications), ...(inherited?.application ? {applications,recordedReceipts:paid} : inherited ? { restoredCredit, recordedReceipts: paid } : {}), approvalOrder };
+      settled = { ...pendingSettlement, approvedReturnValue: allocation.approvedReturnValue, debtReduction: allocation.debtReduction, retainedCredit: roundCurrency(allocation.retainedCredit - restoredCredit - restoredApplications), ...(inherited?.application ? {applications,recordedReceipts:paid,...(inherited.id ? {restoredCredit} : {})} : inherited ? { restoredCredit, recordedReceipts: paid } : {}), approvalOrder };
       await updateReturnedInvoiceTx(tx, request.invoice, allocation.adjustment, roundCurrency(Number(request.invoice.correctionCreditReleased || 0) + restoredCredit),applied);
     }
 
@@ -614,9 +614,11 @@ export async function reverseApprovedReturnRequest(
         if (!projection || projection.reason || projection.retainedCredit! < settlement.restoredCredit!) throw new ReturnSettlementConflict("Reverse uses or recover payouts of restored original credit before reversing this return");
       }
       let applied = Number(request.invoice.creditApplied || 0);
-      if (settlement.version === 4) {
+      if ([4,5].includes(settlement.version)) {
         if (!basis?.application) throw new ReturnSettlementConflict("Application return source changed");
-        await assertApplicationRestoreTx(tx,settlement.applications!);
+        const parent = settlement.version === 5 ? await tx.invoiceCorrectionSettlement.findUnique({where:{id:settlement.inheritedCorrectionId!}}) : null;
+        if (settlement.version === 5 && !parent) throw new ReturnSettlementConflict("Original inherited source changed");
+        await assertApplicationRestoreTx(tx,[...settlement.applications!,...(parent ? [{sourceInvoiceId:parent.sourceInvoiceId,sourceReturnId:null,sourceCorrectionId:parent.id,originalCustomerId:settlement.originalCustomerId!,released:settlement.restoredCredit!}] : [])]);
         applied=await setApplicationReleasesTx(tx,basis.application.rows,settlement.applications!,-1);
       }
       await updateReturnedInvoiceTx(tx, request.invoice, Number(request.invoice.returnAdjustment) - settlement.approvedReturnValue,

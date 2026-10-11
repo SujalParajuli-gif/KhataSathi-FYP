@@ -261,7 +261,7 @@ type AppReturnRequest = {
   note?: string;
   status: ReturnStatusCode;
   refundAmount: number;
-  settlement?: { version: 2 | 3 | 4; approvedReturnValue: number; debtReduction: number; retainedCredit: number; restoredCredit?: number; applications?: { released: number }[] };
+  settlement?: { version: 2 | 3 | 4 | 5; approvedReturnValue: number; debtReduction: number; retainedCredit: number; restoredCredit?: number; applications?: { released: number }[] };
   refundMethod?: ReturnRefundMethod;
   createdAt: string;
   createdByName: string;
@@ -350,7 +350,7 @@ function normalizeReturnRequest(raw: any): AppReturnRequest {
     note: raw.note ? String(raw.note) : undefined,
     status: String(raw.status || "PENDING") as ReturnStatusCode,
     refundAmount: Number(raw.refundAmount || 0),
-    settlement: raw.settlement?.version === 2 ? raw.settlement : undefined,
+    settlement: [2, 3, 4, 5].includes(raw.settlement?.version) ? raw.settlement : undefined,
     refundMethod: raw.refundMethod
       ? (String(raw.refundMethod) as ReturnRefundMethod)
       : undefined,
@@ -3689,7 +3689,7 @@ export default function CashierInvoicesPage() {
           ? "Reverse this return?"
           : "Reject this return?",
       message: isApprove
-        ? debtFirst ? "Restore returned stock and reduce unpaid debt first. Restore original credit next, newest application first; remaining excess stays as receipt-backed credit. No payout is made." : "Approve this legacy cash-refund return and restore stock. Its settlement remains outside authoritative customer balances."
+        ? debtFirst ? "Restore returned stock and reduce unpaid debt first. Restore applied credit newest first, then inherited credit to its original source; remaining excess stays as receipt-backed credit. No payout is made." : "Approve this legacy cash-refund return and restore stock. Its settlement remains outside authoritative customer balances."
         : isReverse
           ? debtFirst ? "Remove restored stock and withdraw debt reduction, restored original credit and held credit. Reverse later returns and uses of restored credit first. No cash recollection is recorded." : "This will remove the previously restored stock and add a legacy refund correction entry to the invoice ledger."
           : "The return request will be closed without changing stock.",

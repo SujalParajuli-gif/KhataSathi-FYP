@@ -10,7 +10,7 @@ export class ReturnSettlementConflict extends Error {
   readonly code = "RETURN_SETTLEMENT_CONFLICT";
 }
 export type ReturnSettlement = {
-  version: 2 | 3 | 4; originalCustomerId: string | null; originalPayable: number;
+  version: 2 | 3 | 4 | 5; originalCustomerId: string | null; originalPayable: number;
   approvedReturnValue: number; debtReduction: number; retainedCredit: number; approvalOrder: number;
   inheritedCorrectionId?: string; inheritedCredit?: number; restoredCredit?: number;
   recordedReceipts?: number;
@@ -19,15 +19,15 @@ export type ReturnSettlement = {
 export function parseReturnSettlement(value: unknown): ReturnSettlement | null {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const s = value as ReturnSettlement;
-  if (![2, 3, 4].includes(s.version) || !(s.originalCustomerId === null || (typeof s.originalCustomerId === "string" && s.originalCustomerId.length > 0))) return null;
+  if (![2, 3, 4, 5].includes(s.version) || !(s.originalCustomerId === null || (typeof s.originalCustomerId === "string" && s.originalCustomerId.length > 0))) return null;
   if (![s.originalPayable, s.approvedReturnValue, s.approvalOrder].every(n => Number.isSafeInteger(n) && n >= 0)) return null;
   if (![s.debtReduction, s.retainedCredit].every(n => Number.isFinite(n) && n >= 0 && roundCurrency(n) === n)) return null;
-  if (s.version === 3 && (!s.originalCustomerId || typeof s.inheritedCorrectionId !== "string" || !s.inheritedCorrectionId
+  if ([3,5].includes(s.version) && (!s.originalCustomerId || typeof s.inheritedCorrectionId !== "string" || !s.inheritedCorrectionId
       || ![s.inheritedCredit, s.restoredCredit, s.recordedReceipts].every(n => typeof n === "number" && Number.isFinite(n) && n >= 0 && roundCurrency(n) === n)
       || s.restoredCredit! > s.inheritedCredit!)) return null;
-  if (s.version === 4 && (!s.originalCustomerId || !parseApplicationReleases(s.applications) || !Number.isFinite(s.recordedReceipts) || s.recordedReceipts! < 0 || roundCurrency(s.recordedReceipts!) !== s.recordedReceipts)) return null;
-  if (s.approvedReturnValue > s.originalPayable || roundCurrency(s.debtReduction + s.retainedCredit + (s.version === 3 ? s.restoredCredit! : s.version === 4 ? roundCurrency(s.applications!.reduce((n,a)=>n+a.released,0)) : 0)) !== s.approvedReturnValue) return null;
-  return s.version === 4 ? {...s,applications:parseApplicationReleases(s.applications)!} : s;
+  if ([4,5].includes(s.version) && (!s.originalCustomerId || !parseApplicationReleases(s.applications) || !Number.isFinite(s.recordedReceipts) || s.recordedReceipts! < 0 || roundCurrency(s.recordedReceipts!) !== s.recordedReceipts)) return null;
+  if (s.approvedReturnValue > s.originalPayable || roundCurrency(s.debtReduction + s.retainedCredit + ([3,5].includes(s.version) ? s.restoredCredit! : 0) + ([4,5].includes(s.version) ? roundCurrency(s.applications!.reduce((n,a)=>n+a.released,0)) : 0)) !== s.approvedReturnValue) return null;
+  return [4,5].includes(s.version) ? {...s,applications:parseApplicationReleases(s.applications)!} : s;
 }
 export function allocateReturn(params: { netTotal: number; subTotal: number; approvedGross: number; nextGross: number; previousAdjustment: number; paid: number }) {
   const { netTotal, subTotal, approvedGross, nextGross, previousAdjustment, paid } = params;
@@ -52,7 +52,10 @@ export async function updateReturnedInvoiceTx(tx: any, invoice: any, adjustment:
 }
 
 export async function assertOriginalReturnBasisTx(tx: any, invoice: any): Promise<any> {
-  if (Number(invoice.creditApplied || 0) > 0 || (await tx.returnRequest.findMany({where:{invoiceId:invoice.id,status:"APPROVED"},select:{settlement:true}})).some((r:any)=>r.settlement?.version === 4)) return { application: await applicationReturnBasisTx(tx, invoice) };
+  if (Number(invoice.creditApplied || 0) > 0 || (await tx.returnRequest.findMany({where:{invoiceId:invoice.id,status:"APPROVED"},select:{settlement:true}})).some((r:any)=>[4,5].includes(r.settlement?.version))) {
+    const application=await applicationReturnBasisTx(tx,invoice);
+    return {application,...(application.parent ? {id:application.parent.id,inheritedCredit:application.parent.transferredCredit} : {})};
+  }
   const parent = await tx.invoiceCorrectionSettlement.findUnique({ where: { targetInvoiceId: invoice.id } });
   if (parent) {
     const full = await tx.invoice.findUnique({ where: { id: invoice.id }, include: receivableInclude });

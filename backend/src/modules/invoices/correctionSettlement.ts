@@ -16,12 +16,19 @@ export function restoredInheritedCredit(row: any, target: any): number | null {
       || payments.some((p: any) => p.kind === "REFUND") || !Number.isFinite(target.paidTotal) || roundCurrency(target.paidTotal) !== paid
       || paid + row.transferredCredit > getInvoicePaymentTargetTotal(target.netTotal)) return null;
   const approved = (target.returnRequests || []).filter((r: any) => r.status === "APPROVED");
+  const mixed = approved.some((r: any) => r.settlement?.version === 5) || target.correctionAsSource?.inheritedFunding?.version === 3;
+  if (mixed && applicationReleaseReason({ ...target, correctionAsTarget: { ...target.correctionAsTarget, ...row } })) return null;
   let sum = 0;
   let adjustment = 0, order = 0;
   const ordered = approved.map((r: any) => ({ r, s: parseReturnSettlement(r.settlement) })).sort((a: any, b: any) => (a.s?.approvalOrder || 0) - (b.s?.approvalOrder || 0));
   for (const { s } of ordered) {
-    if (!s || s.version !== 3 || s.inheritedCorrectionId !== row.id || s.inheritedCredit !== row.transferredCredit
+    if (!s || ![3,5].includes(s.version) || s.inheritedCorrectionId !== row.id || s.inheritedCredit !== row.transferredCredit
         || s.approvalOrder <= order || s.recordedReceipts! > paid || s.originalCustomerId !== row.originalCustomerId || s.originalPayable !== getInvoicePaymentTargetTotal(target.netTotal)) return null;
+    if (s.version === 5) {
+      adjustment += s.approvedReturnValue; order = s.approvalOrder;
+      sum = roundCurrency(sum + s.restoredCredit!);
+      continue;
+    }
     const debt = roundCurrency(Math.min(s.approvedReturnValue, Math.max(0, s.originalPayable - adjustment - s.recordedReceipts! - (row.transferredCredit - sum))));
     const restored = roundCurrency(Math.min(s.approvedReturnValue - debt, row.transferredCredit - sum));
     if (s.debtReduction !== debt || s.restoredCredit !== restored) return null;
@@ -33,7 +40,7 @@ export function restoredInheritedCredit(row: any, target: any): number | null {
     const own = target.correctionAsSource;
     const funding = own?.inheritedFunding;
     if ((target.returnRequests || []).some((r: any) => ["APPROVED", "REVERSED"].includes(r.status)) || !own || own.action !== "CANCEL" || own.sourceInvoiceId !== target.id
-        || !funding || funding.version !== 1 || funding.sourceCorrectionId !== row.id
+        || !funding || ![1,3].includes(funding.version) || funding.sourceCorrectionId !== row.id
         || funding.originalCustomerId !== row.originalCustomerId || funding.inheritedCredit !== row.transferredCredit) return null;
     const receipts = (target.payments || []).filter((p: any) => p.status === "SUCCESS" && p.kind === "CHARGE");
     const actual = receipts.map((p: any) => ({ id: p.id, amount: p.amount, method: p.method })).sort((a: any, b: any) => a.id.localeCompare(b.id));
@@ -72,12 +79,12 @@ export function allocateCorrectionCredit(paid: number, target: number, originalC
   return { transferredCredit, retainedCredit: roundCurrency(paid - transferredCredit) };
 }
 
-export function correctionRecordReason(row: any, source: any, target?: any): string | null {
+export function correctionRecordReason(row: any, source: any, target?: any, verifyRestoration = true): string | null {
   const fail = "Correction receipt allocation or original ownership does not reconcile";
   const inherited = row?.inheritedFunding;
   const parent = source?.correctionAsTarget;
   const applicationValid = inherited?.version === 2 && row.action === "CANCEL" && !parent && source.customerId === inherited.originalCustomerId && parseApplicationReleases(inherited.applications) && !applicationReleaseReason({...source,correctionAsSource:row});
-  const inheritedValid = applicationValid || inherited && inherited.version === 1 && row.action === "CANCEL" && parent
+  const inheritedValid = applicationValid || inherited && [1,3].includes(inherited.version) && row.action === "CANCEL" && parent
     && inherited.sourceCorrectionId === parent.id && inherited.originalCustomerId === source.customerId
     && inherited.inheritedCredit === parent.transferredCredit && source.customerId
     && parent.originalCustomerId === source.customerId && parent.sourceInvoice
@@ -112,7 +119,7 @@ export function correctionRecordReason(row: any, source: any, target?: any): str
         || notes[0].originalPaidTotal !== paid || notes[0].originalNetTotal !== source.netTotal
         || notes[0].replacementNetTotal !== target.netTotal || Number(target.correctionCredit || 0) !== row.transferredCredit
         || row.transferredCredit !== allocateCorrectionCredit(paid, target.netTotal, row.originalCustomerId, target.customerId || null).transferredCredit) return fail;
-    if (restoredInheritedCredit(row, target) === null) return fail;
+    if (verifyRestoration && restoredInheritedCredit(row, target) === null) return fail;
   } else return fail;
   return null;
 }

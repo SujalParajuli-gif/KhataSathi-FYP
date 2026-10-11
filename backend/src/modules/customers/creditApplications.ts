@@ -74,7 +74,7 @@ export async function applyCustomerCredit(actorId: string, input: unknown) {
     const settlement = data.sourceReturnId ? from.invoice.returnRequests.find((r: any) => r.id === data.sourceReturnId && r.status === "APPROVED") : null;
     const basis = data.sourceReturnId ? parseReturnSettlement(settlement?.settlement)
       : from.invoice.correctionAsSource?.id === data.sourceCorrectionId ? from.invoice.correctionAsSource : null;
-    if (basis?.version === 4 || (basis as any)?.inheritedFunding?.version === 2) throw new CreditApplicationConflict("Nested application-funded credit requires separate settlement review");
+    if ([4,5].includes(basis?.version) || [2,3].includes((basis as any)?.inheritedFunding?.version)) throw new CreditApplicationConflict("Nested application-funded credit requires separate settlement review");
     if (!basis || !basis.originalCustomerId || basis.originalCustomerId !== from.invoice.customerId || to.invoice.customerId !== basis.originalCustomerId
       || from.invoice.id === to.invoice.id) throw new CreditApplicationConflict("Credit must belong to the same named customer on a different supported sale");
     if (to.invoice.returnRequests.some((r: any) => r.status === "APPROVED")) throw new CreditApplicationConflict("Return-adjusted target sales require separate credit settlement review");
@@ -99,7 +99,7 @@ export async function reverseCustomerCredit(actorId: string, applicationId: stri
     const to = await supportedInvoice(tx, identity.targetInvoiceId);
     const current = await tx.customerCreditApplication.findUnique({ where: { id: applicationId } });
     if (!current || current.reversedAt) throw new CreditApplicationConflict("Credit application is already reversed");
-    if (Number(current.amountReleased || 0) || to.invoice.returnRequests.some((r:any)=>r.status === "APPROVED" && (r.settlement as any)?.version === 4)) throw new CreditApplicationConflict("Reverse application-funded returns before reversing this application");
+    if (Number(current.amountReleased || 0) || to.invoice.returnRequests.some((r:any)=>r.status === "APPROVED" && [4,5].includes((r.settlement as any)?.version))) throw new CreditApplicationConflict("Reverse application-funded returns before reversing this application");
     const result = await tx.customerCreditApplication.update({ where: { id: applicationId }, data: { reversedAt: new Date(), reversedById: actorId, reversalReason: data.reason } });
     await recomputeTarget(tx, to.invoice);
     await tx.auditLog.create({ data: { actorId, action: "CUSTOMER_CREDIT_REVERSED", entityType: "CustomerCreditApplication", entityId: applicationId,

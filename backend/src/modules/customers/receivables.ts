@@ -6,10 +6,11 @@ import prisma from "../../db/prisma";
 import { effectiveCorrectionCredit, getInvoicePaymentTargetTotal, roundCurrency } from "../../lib/money";
 import { parseReturnSettlement } from "../returns/settlement";
 
-const applicationTargetInclude = { payments:true,returnRequests:true,correctionAsSource:true,creditApplicationsTo:true } satisfies Prisma.InvoiceInclude;
+const originalParentInclude = { sourceInvoice: { include: { payments:true,returnRequests:true,creditNotesAsOriginal:true,creditNoteAsReplacement:true,correctionAsTarget:true } } } satisfies Prisma.InvoiceCorrectionSettlementInclude;
+const applicationTargetInclude = { payments:true,returnRequests:true,correctionAsSource:true,correctionAsTarget:{include:originalParentInclude},creditApplicationsTo:true } satisfies Prisma.InvoiceInclude;
 const correctionInclude = {
-  correctionAsSource: { include: { targetInvoice: { include: { returnRequests: true, correctionAsSource: true, payments: true } } } },
-  correctionAsTarget: { include: { sourceInvoice: { include: { payments: true, returnRequests: true, creditNotesAsOriginal: true, creditNoteAsReplacement: true, correctionAsTarget: true } } } },
+  correctionAsSource: { include: { targetInvoice: { include: applicationTargetInclude } } },
+  correctionAsTarget: { include: originalParentInclude },
 } satisfies Prisma.InvoiceInclude;
 export const payoutInclude = {
   sourceReturn: true, sourceCorrection: true,
@@ -111,7 +112,7 @@ export function projectReceivableInvoice(i: any) {
       || allocation.reduce((sum: number, s: any) => sum + Number(s?.approvedReturnValue || 0), 0) !== adjustment) reason = "Return adjustment or original credit ownership does not reconcile";
   if (targetCorrection && (correctionReason || !i.creditNoteAsReplacement || i.creditNoteAsReplacement.originalInvoiceId !== targetCorrection.sourceInvoiceId
     || i.creditNoteAsReplacement.creditedAmount !== capturedCorrectionCredit || (!approved.length && roundCurrency(paid + correctionCredit) > target)
-    || (approved.length && allocation.some((s: any) => s?.version !== 3 || s.inheritedCorrectionId !== targetCorrection.id || s.inheritedCredit !== capturedCorrectionCredit)))) reason = correctionReason || "Replacement settlement does not reconcile";
+    || (approved.length && allocation.some((s: any) => ![3,5].includes(s?.version) || s.inheritedCorrectionId !== targetCorrection.id || s.inheritedCredit !== capturedCorrectionCredit)))) reason = correctionReason || "Replacement settlement does not reconcile";
   if (!targetCorrection && allocation.some((s: any) => ![2,4].includes(s?.version))) reason = "Inherited return credit requires a captured original source";
   if (!Number.isFinite(correctionCredit) || correctionCredit < 0 || (!targetCorrection && (correctionCredit !== 0 || correctionCreditReleased !== 0))) reason = "Correction credit requires a captured source allocation";
   const credit = roundCurrency(Math.max(0, paid - (target - adjustment)));
@@ -131,7 +132,7 @@ export function projectReceivableInvoice(i: any) {
         || (effectiveApplicationAmount(a)>0 && projectReceivableInvoice(a.sourceInvoice).reason))
       || outgoing.some((a: any) => a.sourceInvoiceId !== i.id || a.sourceReturn?.invoiceId !== i.id || a.targetInvoice?.customerId !== i.customerId)
       || used + paidOutCredit > credit || creditSources.some((s: any) => s.availableCredit < 0)
-      || applied > Math.max(0, target - adjustment - paid - correctionCredit) || (applied > 0 && approved.length > 0 && allocation.some((s:any)=>s?.version!==4))) reason = "Credit application projection or original ownership does not reconcile";
+      || applied > Math.max(0, target - adjustment - paid - correctionCredit) || (applied > 0 && approved.length > 0 && allocation.some((s:any)=>![4,5].includes(s?.version)))) reason = "Credit application projection or original ownership does not reconcile";
   if (releaseReason) reason = releaseReason;
   if (payoutReason) reason = payoutReason;
   return { invoiceId: i.id, invoiceNo: i.invoiceNo, basis: reason ? "UNRESOLVED" : targetCorrection ? "CAPTURED_CORRECTION" : "ORIGINAL_SALE_DEBT_FIRST", reason,
