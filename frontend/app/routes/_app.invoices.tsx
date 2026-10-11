@@ -2416,6 +2416,7 @@ export default function CashierInvoicesPage() {
   const { showToast } = useToast();
   const authUser = getAuthUser();
   const isAdminView = authUser?.role === "admin";
+  const canReviewReturns = isAdminView || authUser?.role === "manager";
   const [activeTab, setActiveTab] = useState<"All" | InvoiceStatusLabel>("All"); // active status tab at the top of the page
   const [query, setQuery] = useState(""); // invoice search text
   const [debouncedQuery, setDebouncedQuery] = useState("");
@@ -2628,7 +2629,7 @@ export default function CashierInvoicesPage() {
   }
 
   async function loadReturnRequests(status: ReturnStatusCode = "PENDING") {
-    if (!isAdminView) return;
+    if (!canReviewReturns) return;
     setReturnReviewStatus(status);
     setReturnRequestsLoading(true);
     setReturnRequestsError("");
@@ -2703,13 +2704,12 @@ export default function CashierInvoicesPage() {
   useEffect(() => {
     const timer = window.setTimeout(() => {
       void (async () => {
-        const results = isAdminView
-          ? await Promise.allSettled([
-              loadAdminCashiers(),
-              loadReturnRequests(),
-              loadAdminParkedDrafts(),
-            ])
-          : await Promise.allSettled([loadCashierPrivileges()]);
+        const results = await Promise.allSettled([
+          ...(isAdminView
+            ? [loadAdminCashiers(), loadAdminParkedDrafts()]
+            : [loadCashierPrivileges()]),
+          ...(canReviewReturns ? [loadReturnRequests()] : []),
+        ]);
 
         if (
           results.some(
@@ -2723,7 +2723,7 @@ export default function CashierInvoicesPage() {
     }, 100);
 
     return () => window.clearTimeout(timer);
-  }, [invoiceReloadKey, isAdminView]);
+  }, [invoiceReloadKey, isAdminView, canReviewReturns]);
 
   useEffect(() => {
     const timer = window.setTimeout(() => {
@@ -3176,7 +3176,7 @@ export default function CashierInvoicesPage() {
       showToast("success", `Return request submitted for ${returnInvoice.invoiceNo}.`);
       closeReturnRequest(true);
       await loadInvoices();
-      if (isAdminView) {
+      if (canReviewReturns) {
         await loadReturnRequests(returnReviewStatus);
       }
     } catch (err: any) {
@@ -3195,6 +3195,7 @@ export default function CashierInvoicesPage() {
   }
 
   function openReturnReview() {
+    if (!canReviewReturns) return;
     setReturnReviewStatus("PENDING");
     setShowReturnReview(true);
     void loadReturnRequests("PENDING");
@@ -3207,22 +3208,22 @@ export default function CashierInvoicesPage() {
   }
 
   function requestApproveReturn(requestId: string) {
-    if (returnReviewBusyId || returnReviewAttempt.current) return;
+    if (!canReviewReturns || returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "approve", requestId });
   }
 
   function requestRejectReturn(requestId: string) {
-    if (returnReviewBusyId || returnReviewAttempt.current) return;
+    if (!canReviewReturns || returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "reject", requestId });
   }
 
   function requestReverseReturn(requestId: string) {
-    if (returnReviewBusyId || returnReviewAttempt.current) return;
+    if (!canReviewReturns || returnReviewBusyId || returnReviewAttempt.current) return;
     setPendingReturnReviewAction({ kind: "reverse", requestId });
   }
 
   async function confirmReturnReviewAction() {
-    if (!pendingReturnReviewAction || returnReviewBusyId) return;
+    if (!canReviewReturns || !pendingReturnReviewAction || returnReviewBusyId) return;
 
     const action = pendingReturnReviewAction;
     setReturnReviewBusyId(action.requestId);
@@ -4134,7 +4135,7 @@ export default function CashierInvoicesPage() {
 
             <MobileFilterButton activeCount={mobileFilterCount} onClick={openMobileFilters} className="lg:hidden shrink-0" />
 
-            {isAdminView ? (
+            {canReviewReturns ? (
               <button
                 type="button"
                 onClick={openReturnReview}
@@ -4701,7 +4702,7 @@ export default function CashierInvoicesPage() {
       />
 
       <ReturnReviewModal
-        open={showReturnReview}
+        open={canReviewReturns && showReturnReview}
         status={returnReviewStatus}
         requests={returnRequests}
         loading={returnRequestsLoading}
@@ -4782,7 +4783,7 @@ export default function CashierInvoicesPage() {
         />
       ) : null}
 
-      {pendingReturnReviewConfig ? (
+      {canReviewReturns && pendingReturnReviewConfig ? (
         <ConfirmDialog
           open={!!pendingReturnReviewConfig}
           title={pendingReturnReviewConfig.title}
