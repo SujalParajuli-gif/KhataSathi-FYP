@@ -36,7 +36,7 @@ interface CategorizedHistoryFilters {
 // Restricted proof events are served only by visibility-checked dedicated history.
 // Apply before pagination, search and count so hidden evidence has no side channel.
 function privateAuditExclusions() {
-    return ["SALE_RECOVERY_", "SALE_EVIDENCE_", "SALES_EVIDENCE_", "PAYMENT_ACCOUNT_", "PURCHASE_", "CUSTOMER_CREDIT_"]
+    return ["SALE_RECOVERY_", "SALE_EVIDENCE_", "SALES_EVIDENCE_", "SALES_OCR_", "PAYMENT_ACCOUNT_", "PURCHASE_", "CUSTOMER_CREDIT_"]
         .map((prefix) => ({ action: { not: { startsWith: prefix } } }))
         .concat([{ action: { not: { equals: "MANUAL_BILL_ATTACHED" } } } as any]);
 }

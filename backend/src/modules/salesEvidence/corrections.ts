@@ -172,7 +172,11 @@ export function projectProofHistory(log: any) {
       previous: links(meta.previousDocument ?? meta.previous), current: links(meta.currentDocument ?? meta.current),
       previousSource: paper(meta.previousSource), currentSource: paper(meta.currentSource), previousTarget: paper(meta.previousTarget),
       currentTarget: paper(meta.currentTarget), reason: meta.reason ?? null, duplicateOverrideReason: meta.duplicateOverrideReason ?? null,
-      retained: meta.retained ?? null, deletedAt: meta.deletedAt ?? null } };
+      retained: meta.retained ?? null, deletedAt: meta.deletedAt ?? null,
+      ...(log.action.startsWith("SALES_OCR_") ? { review: {
+        priorRevision: typeof meta.priorRevision === "string" ? meta.priorRevision : null,
+        revision: typeof meta.revision === "string" ? meta.revision : null,
+      } } : {}) } };
 }
 export async function getSaleEvidenceHistory(id: string, actor: SalesEvidenceActor,
   resolver: () => Promise<BusinessCapabilities> = getBusinessCapabilities) {
@@ -181,6 +185,7 @@ export async function getSaleEvidenceHistory(id: string, actor: SalesEvidenceAct
   if (!doc) throw new SalesEvidenceConflictError("Sales evidence not found", "NOT_FOUND");
   const logs = await prisma.auditLog.findMany({ where: { entityType: "Document", entityId: id, OR: [
     { action: { startsWith: "SALE_EVIDENCE_" } }, { action: { startsWith: "SALES_EVIDENCE_" } }, { action: { startsWith: "SALE_RECOVERY_" } },
+    { action: { startsWith: "SALES_OCR_" } },
   ] }, include: { actor: { select: { id: true, name: true, role: true } } }, orderBy: [{ createdAt: "desc" }, { id: "desc" }], take: 100 });
   return { document: { id: doc.id, saleRecoveryStatus: doc.saleRecoveryStatus, linkedEntityId: doc.linkedEntityId, voidedAt: doc.deletedAt, retained: true },
     history: logs.map(projectProofHistory) };
