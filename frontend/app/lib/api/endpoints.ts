@@ -1215,6 +1215,7 @@ export type CashDrawerEvent = {
 };
 
 export type CashDrawer = {
+    cashBasis?: import("~/components/CashDrawerBasis").DrawerCashBasis;
     id: string;
     cashierId: string;
     status: "OPEN" | "CLOSED";

@@ -1,3 +1,4 @@
+import CashDrawerBasis from "~/components/CashDrawerBasis";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Link, useSearchParams } from "react-router";
 import Icon from "~/components/ui/Icon";
@@ -3206,7 +3207,7 @@ export default function SettingsPage() {
           </section>
         ) : null}
 
-        {tab === "drawer" ? (
+        {tab === "drawer" && !settingsLoadIssue ? (
           <section className="grid grid-cols-1 gap-5 xl:grid-cols-[360px_minmax(0,1fr)]">
             <div className="rounded-[8px] border border-slate-200 bg-white p-5 shadow-sm">
               <div className="mb-5 flex items-center justify-between">
@@ -3234,6 +3235,7 @@ export default function SettingsPage() {
                     Rs.{" "}
                     {Number(currentDrawer.expectedTotal || 0).toLocaleString()}
                   </div>
+                  <CashDrawerBasis basis={currentDrawer.cashBasis} />
                   <div className="mt-6 space-y-2 border-t border-slate-200 pt-4 text-[14px] font-medium text-slate-500">
                     <div className="flex justify-between gap-4">
                       <span>Started with:</span>
@@ -3372,6 +3374,7 @@ export default function SettingsPage() {
                         </td>
                         <td className="px-4 py-3 text-[13px] font-semibold text-slate-900">
                           {drawer.cashier?.name || "Cashier"}
+                          <CashDrawerBasis basis={drawer.cashBasis} compact />
                         </td>
                         <td className="px-4 py-3 font-mono text-[13px] font-extrabold text-slate-900">
                           Rs.{" "}
@@ -3434,7 +3437,7 @@ export default function SettingsPage() {
                         {Number(drawer.openingFloat || 0).toLocaleString()}
                       </span>
                       <span>
-                        Expected: Rs.{" "}
+                        {drawer.status === "CLOSED" ? "Saved expected" : "Current expected"}: Rs.{" "}
                         {Number(drawer.expectedTotal || 0).toLocaleString()}
                       </span>
                       <span>
@@ -3452,6 +3455,7 @@ export default function SettingsPage() {
                           : Number(drawer.difference).toLocaleString()}
                       </span>
                     </div>
+                    <CashDrawerBasis basis={drawer.cashBasis} />
                   </div>
                 ))}
               </div>

@@ -1,3 +1,4 @@
+import { getOpenCashDrawersForReport } from "../cash-drawers/service";
 import { Prisma, type PaymentMethod, type PaymentStatusInvoice } from "@prisma/client";
 import {
   BUSINESS_TIME_ZONE,
@@ -508,18 +509,7 @@ async function getOperationalDashboardMetrics({
       take: 10,
     }),
     prisma.product.count({ where: slowMovingWhere }),
-    prisma.cashDrawer.findMany({
-      where: { status: "OPEN" },
-      select: {
-        id: true,
-        openedAt: true,
-        openingFloat: true,
-        expectedTotal: true,
-        cashSalesTotal: true,
-        cashier: { select: { id: true, name: true } },
-      },
-      orderBy: { openedAt: "desc" },
-    }),
+    getOpenCashDrawersForReport(),
     prisma.invoice.count({
       where: {
         status: "DRAFT",

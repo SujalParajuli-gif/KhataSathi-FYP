@@ -140,6 +140,7 @@ export type AnalyticsOperations = {
   cashDrawers: {
     openCount: number;
     openDrawers: Array<{
+      cashBasis?: import("~/components/CashDrawerBasis").DrawerCashBasis;
       id: string;
       openedAt: string;
       openingFloat: number;

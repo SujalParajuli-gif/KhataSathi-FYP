@@ -1,3 +1,4 @@
+import CashDrawerBasis from "~/components/CashDrawerBasis";
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
 import CardShell from "~/components/ui/CardShell";
@@ -860,7 +861,7 @@ export default function Dashboard() {
                   <SectionTitle title="Open Cash Drawers" />
                 </div>
                 <div className="space-y-2 p-[20px]">
-                  {(managerReport?.operations?.cashDrawers.openDrawers || [])
+                  {!managerReport ? <EmptyState text="Cash drawer totals unavailable" /> : (managerReport?.operations?.cashDrawers.openDrawers || [])
                     .length === 0 ? (
                     <EmptyState text="No open cash drawers" />
                   ) : (
@@ -870,11 +871,12 @@ export default function Dashboard() {
                         <ManagerListRow
                           key={drawer.id}
                           title={drawer.cashier?.name || "Cashier"}
-                          detail={`Opened ${formatShortDateTime(drawer.openedAt)}`}
+                          detail={`Opened ${formatShortDateTime(drawer.openedAt)} · ${drawer.cashBasis?.kind === "CURRENT_SOURCE_ROWS" ? "Current source totals" : "Cash basis unavailable"}${drawer.cashBasis?.legacyCashRefundCount ? ` · ${drawer.cashBasis.legacyCashRefundCount} legacy cash refund entries; attribution unknown` : ""}`}
                           value={formatNpr(drawer.expectedTotal || 0)}
                         />
                       ))
                   )}
+                  {!!managerReport?.operations?.cashDrawers.openDrawers.length && <CashDrawerBasis basis={managerReport.operations.cashDrawers.openDrawers[0].cashBasis} />}
                 </div>
               </CardShell>
             </div>

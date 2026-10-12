@@ -1,3 +1,5 @@
+import { Prisma } from "@prisma/client";
+import { calculateDrawerTotalsTx, projectDrawerTx } from "./projection";
 import prisma from "../../db/prisma";
 import {
   lockCashDrawerForUpdate,
@@ -23,51 +25,10 @@ function normalizeNote(value: unknown) {
 }
 
 export async function summarizeDrawerTx(tx: any, drawer: any) {
-  const cashSales = await tx.payment.aggregate({
-    _sum: { amount: true },
-    where: {
-      method: "CASH",
-      kind: "CHARGE",
-      status: "SUCCESS",
-      createdById: drawer.cashierId,
-      createdAt: {
-        gte: drawer.openedAt,
-        ...(drawer.closedAt ? { lte: drawer.closedAt } : {}),
-      },
-    },
-  });
-
-  const events = await tx.cashDrawerEvent.groupBy({
-    by: ["type"],
-    where: { drawerId: drawer.id },
-    _sum: { amount: true },
-  });
-
-  const amountByType = new Map(
-    events.map((event: any) => [event.type, Number(event._sum.amount || 0)]),
-  );
-  const cashSalesTotal = roundCurrency(Number(cashSales._sum.amount || 0));
-  const cashInTotal = roundCurrency(Number(amountByType.get("CASH_IN") || 0));
-  const cashOutTotal = roundCurrency(Number(amountByType.get("CASH_OUT") || 0));
-  const expectedTotal = roundCurrency(
-    Number(drawer.openingFloat || 0) + cashSalesTotal + cashInTotal - cashOutTotal,
-  );
-  const actualTotal =
-    drawer.actualTotal === null || drawer.actualTotal === undefined
-      ? null
-      : roundCurrency(Number(drawer.actualTotal || 0));
-  const difference =
-    actualTotal === null ? null : roundCurrency(actualTotal - expectedTotal);
-
+  const { cashBasis, ...totals } = await calculateDrawerTotalsTx(tx, drawer);
   const updated = await tx.cashDrawer.update({
     where: { id: drawer.id },
-    data: {
-      cashSalesTotal,
-      cashInTotal,
-      cashOutTotal,
-      expectedTotal,
-      difference,
-    },
+    data: totals,
     include: {
       cashier: { select: { id: true, name: true, email: true } },
       events: {
@@ -77,39 +38,44 @@ export async function summarizeDrawerTx(tx: any, drawer: any) {
     },
   });
 
-  return updated;
+  return { ...updated, cashBasis };
 }
 
-export async function getCurrentCashDrawer(cashierId: string) {
-  const drawer = await prisma.cashDrawer.findFirst({
-    where: { cashierId, status: "OPEN" },
-    orderBy: { openedAt: "desc" },
-  });
-  if (!drawer) return null;
+const drawerInclude = {
+  cashier: { select: { id: true, name: true, email: true } },
+  events: { include: { createdBy: { select: { id: true, name: true } } }, orderBy: { createdAt: "desc" as const } },
+};
 
-  return runFinancialTransaction(prisma, async (tx) => {
-    await lockCashDrawerForUpdate(tx, drawer.id);
-    const current = await tx.cashDrawer.findUniqueOrThrow({ where: { id: drawer.id } });
-    return summarizeDrawerTx(tx, current);
-  });
+export async function getCurrentCashDrawer(cashierId: string) {
+  return prisma.$transaction(async tx => {
+    const asOf = new Date();
+    const drawer = await tx.cashDrawer.findFirst({ where: { cashierId, status: "OPEN" }, orderBy: { openedAt: "desc" }, include: drawerInclude });
+    return drawer ? projectDrawerTx(tx, drawer, asOf) : null;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 export async function listCashDrawers(cashierId: string, role: string) {
-  const canSeeAllDrawers = role === "ADMIN" || role === "MANAGER";
-  const drawers = await prisma.cashDrawer.findMany({
-    where: canSeeAllDrawers ? {} : { cashierId },
-    include: {
-      cashier: { select: { id: true, name: true, email: true } },
-      events: {
-        include: { createdBy: { select: { id: true, name: true } } },
-        orderBy: { createdAt: "desc" },
-      },
-    },
-    orderBy: { openedAt: "desc" },
-    take: 30,
-  });
+  return prisma.$transaction(async tx => {
+    const asOf = new Date();
+    const drawers = await tx.cashDrawer.findMany({ where: role === "ADMIN" || role === "MANAGER" ? {} : { cashierId }, include: drawerInclude, orderBy: { openedAt: "desc" }, take: 30 });
+    const result: Awaited<ReturnType<typeof projectDrawerTx>>[] = [];
+    for (const drawer of drawers) result.push(await projectDrawerTx(tx, drawer, asOf));
+    return result;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+}
 
-  return drawers;
+/** Only the manager report's existing public fields, plus basis; no events or notes. */
+export async function getOpenCashDrawersForReport() {
+  return prisma.$transaction(async tx => {
+    const asOf = new Date();
+    const drawers = await tx.cashDrawer.findMany({ where: { status: "OPEN" }, include: { cashier: { select: { id: true, name: true } } }, orderBy: { openedAt: "desc" } });
+    const result: Array<{ id: string; openedAt: Date; openingFloat: number; expectedTotal: number; cashSalesTotal: number; cashier: { id: string; name: string } | null; cashBasis: ReturnType<typeof import("./projection").drawerCashBasis> }> = [];
+    for (const drawer of drawers) {
+      const projected = await projectDrawerTx(tx, drawer, asOf);
+      result.push({ id: drawer.id, openedAt: drawer.openedAt, openingFloat: drawer.openingFloat, expectedTotal: projected.expectedTotal, cashSalesTotal: projected.cashSalesTotal, cashier: drawer.cashier, cashBasis: projected.cashBasis });
+    }
+    return result;
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
 
 export async function openCashDrawer(
