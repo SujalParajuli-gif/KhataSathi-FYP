@@ -1,3 +1,4 @@
+import SalesReportBasis from "~/components/SalesReportBasis";
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Link } from "react-router";
 import ProjectSelect from "~/components/ui/ProjectSelect";
@@ -464,9 +465,10 @@ export default function AnalyticsPage() {
 
   return (
     <div className="space-y-6 pb-8 text-slate-900">
+      <SalesReportBasis basis={report?.meta?.salesBasis} />
       <Panel
         title="Analytics"
-        subtitle="Real revenue, collections, discounts, customer, brand, and cashier performance from finalized invoices."
+        subtitle="Recorded invoice sales, collections, discounts, and performance from finalized invoices."
         actions={
           isManager ? undefined : (
           <div className="flex flex-wrap gap-2">
@@ -662,7 +664,7 @@ export default function AnalyticsPage() {
               {report?.summary.cancelledInvoiceCount ? (
                 <>
                   <span className="font-bold text-[#11120d]">{report.summary.cancelledInvoiceCount}</span> cancelled{" "}
-                  {report.summary.cancelledInvoiceCount === 1 ? "invoice" : "invoices"} fell within {filters.from} to {filters.to}, but cancelled sales are excluded from revenue totals.
+                  {report.summary.cancelledInvoiceCount === 1 ? "invoice" : "invoices"} fell within {filters.from} to {filters.to}, but cancelled sales are excluded from invoice sales totals.
                 </>
               ) : (
                 <>
@@ -711,21 +713,21 @@ export default function AnalyticsPage() {
           {/* these metric cards lead the page because they answer the main business questions before the user studies the charts */}
           <div className="grid grid-cols-[repeat(auto-fit,minmax(190px,1fr))] gap-3">
             <MetricCard
-              title="Net Sales"
+              title="Invoice Sales"
               value={formatNpr(report.summary.netSales)}
-              subtitle={`${report.summary.invoiceCount} sales invoices`}
+              subtitle={`After discounts, before returns; ${report.summary.invoiceCount} invoices`}
               icon="payments"
               tone="border-[#11120d] bg-[#11120d] text-white"
             />
             <MetricCard
-              title="Collected"
+              title="Recorded Collections"
               value={formatNpr(report.summary.collectedTotal)}
               subtitle={`${pct(report.summary.collectionRate)} collected`}
               icon="task_alt"
               tone="border-[#9DD8B2] bg-[#EAF8EF] text-[#179B4D]"
             />
             <MetricCard
-              title="Outstanding Due"
+              title="Invoice-basis Due"
               value={formatNpr(report.summary.dueTotal)}
               subtitle={`${report.summary.unpaidInvoiceCount + report.summary.partiallyPaidInvoiceCount} invoices still open`}
               icon="hourglass_top"
@@ -734,7 +736,7 @@ export default function AnalyticsPage() {
             <MetricCard
               title="Discount Given"
               value={formatNpr(report.summary.discountTotal)}
-              subtitle={`${pct(report.summary.discountRate)} of gross sales`}
+              subtitle={`${pct(report.summary.discountRate)} of invoice subtotal`}
               icon="percent"
               tone="border-[#F6D28B] bg-[#FFF7E8] text-[#B7791F]"
             />
@@ -757,8 +759,8 @@ export default function AnalyticsPage() {
           <div className="space-y-5 xl:flex xl:items-start xl:gap-5 xl:space-y-0">
             <div className="xl:min-w-0 xl:flex-1">
               <Panel
-                title="Revenue vs collection"
-                subtitle="Revenue and collected cash across the selected range, with invoice volume for context."
+                title="Invoice sales vs collections"
+                subtitle="Invoice sales before returns and recorded collections for invoices finalized in the selected range."
               >
                 <SafeChartFrame className="h-[365px] px-3 py-4">
                   <ResponsiveContainer width="100%" height="100%">
@@ -808,15 +810,15 @@ export default function AnalyticsPage() {
                               </div>
                               <div className="mt-2 space-y-1 text-[13px] font-semibold text-[#565449]">
                                 <div>
-                                  Revenue:{" "}
+                                  Invoice sales:{" "}
                                   {formatNpr(payload[0].payload.revenue)}
                                 </div>
                                 <div>
-                                  Collected:{" "}
+                                  Recorded collections:{" "}
                                   {formatNpr(payload[0].payload.collected)}
                                 </div>
                                 <div>
-                                  Due: {formatNpr(payload[0].payload.due)}
+                                  Invoice-basis due: {formatNpr(payload[0].payload.due)}
                                 </div>
                                 <div>
                                   Invoices: {payload[0].payload.invoices}
@@ -830,6 +832,7 @@ export default function AnalyticsPage() {
                         yAxisId="money"
                         type="monotone"
                         dataKey="revenue"
+                        name="Invoice sales"
                         stroke="#11120d"
                         fill="#11120d"
                         fillOpacity={0.12}
@@ -839,6 +842,7 @@ export default function AnalyticsPage() {
                         yAxisId="money"
                         type="monotone"
                         dataKey="collected"
+                        name="Recorded collections"
                         stroke="#179b4d"
                         fill="#eaf8ef"
                         fillOpacity={0.95}
@@ -976,7 +980,7 @@ export default function AnalyticsPage() {
             <div className="space-y-5 xl:w-[420px] xl:flex-none">
               <Panel
                 title="Payment mix"
-                subtitle="Successful payments recorded against invoices in the selected range."
+                subtitle="Lifetime successful non-refund charges for invoices finalized in the selected range."
               >
                 <div className="grid grid-cols-1 gap-4 px-4 py-5 md:grid-cols-[200px_168px]">
                   <SafeChartFrame className="h-[210px]">
@@ -1009,7 +1013,7 @@ export default function AnalyticsPage() {
                   <div className="space-y-3">
                     {paymentData.length === 0 ? (
                       <div className="rounded-[16px] border border-dashed border-[#CFCFD3] bg-[#F3F4F6]/70 px-4 py-6 text-[13px] font-semibold text-[#8C8889]">
-                        No successful payments were recorded in this range.
+                        No successful charges for the selected invoices.
                       </div>
                     ) : (
                       paymentData.map((slice) => (
@@ -1045,7 +1049,7 @@ export default function AnalyticsPage() {
 
               <Panel
                 title="Brand performance"
-                subtitle="Revenue by brand from sold invoice items."
+                subtitle="Invoice sales by brand from sold invoice items."
               >
                 {brandData.length === 0 ? (
                   <div className="h-[280px] px-3 py-4">
@@ -1093,6 +1097,7 @@ export default function AnalyticsPage() {
                         />
                         <Bar
                           dataKey="revenue"
+                          name="Invoice sales"
                           fill="#11120d"
                           radius={[0, 8, 8, 0]}
                         />
@@ -1106,7 +1111,7 @@ export default function AnalyticsPage() {
 
           <Panel
             title="Top products"
-            subtitle="Best-selling products by revenue in the selected range."
+            subtitle="Best-selling products by invoice sales in the selected range."
           >
             {topProductsData.length === 0 ? (
               <div className="h-[360px] px-3 py-4">
@@ -1149,7 +1154,7 @@ export default function AnalyticsPage() {
                             </div>
                             <div className="mt-2 space-y-1 text-[12px] font-semibold text-[#565449]">
                               <div>
-                                Revenue: {formatNpr(payload[0].payload.revenue)}
+                                Invoice sales: {formatNpr(payload[0].payload.revenue)}
                               </div>
                               <div>Qty sold: {payload[0].payload.qty}</div>
                               <div>
@@ -1162,6 +1167,7 @@ export default function AnalyticsPage() {
                     />
                     <Bar
                       dataKey="revenue"
+                      name="Invoice sales"
                       fill="#11120d"
                       radius={[0, 9, 9, 0]}
                     />
@@ -1174,7 +1180,7 @@ export default function AnalyticsPage() {
           <div className="grid grid-cols-1 gap-5 xl:grid-cols-2">
             <Panel
               title="Top customers"
-              subtitle="Customers generating the most revenue in this range."
+              subtitle="Customers generating the most invoice sales in this range."
             >
               {topCustomersData.length === 0 ? (
                 <div className="h-[340px] px-3 py-4">
@@ -1225,15 +1231,15 @@ export default function AnalyticsPage() {
                               </div>
                               <div className="mt-2 space-y-1 text-[12px] font-semibold text-[#565449]">
                                 <div>
-                                  Revenue:{" "}
+                                  Invoice sales:{" "}
                                   {formatNpr(payload[0].payload.revenue)}
                                 </div>
                                 <div>
-                                  Collected:{" "}
+                                  Recorded collections:{" "}
                                   {formatNpr(payload[0].payload.collected)}
                                 </div>
                                 <div>
-                                  Due: {formatNpr(payload[0].payload.due)}
+                                  Invoice-basis due: {formatNpr(payload[0].payload.due)}
                                 </div>
                                 <div>
                                   Invoices: {payload[0].payload.invoiceCount}
@@ -1245,6 +1251,7 @@ export default function AnalyticsPage() {
                       />
                       <Bar
                         dataKey="revenue"
+                        name="Invoice sales"
                         fill="#179b4d"
                         radius={[0, 9, 9, 0]}
                       />
@@ -1256,7 +1263,7 @@ export default function AnalyticsPage() {
 
             <Panel
               title="Cashier performance"
-              subtitle="Revenue and discounts by cashier, with collections and basket quality in the tooltip."
+              subtitle="Invoice sales and discounts by cashier, with collections and basket quality in the tooltip."
             >
               {cashierChartData.length === 0 ? (
                 <div className="h-[340px] px-3 py-4">
@@ -1303,11 +1310,11 @@ export default function AnalyticsPage() {
                               </div>
                               <div className="mt-2 space-y-1 text-[12px] font-semibold text-[#565449]">
                                 <div>
-                                  Revenue:{" "}
+                                  Invoice sales:{" "}
                                   {formatNpr(payload[0].payload.revenue)}
                                 </div>
                                 <div>
-                                  Collected:{" "}
+                                  Recorded collections:{" "}
                                   {formatNpr(payload[0].payload.collected)}
                                 </div>
                                 <div>
@@ -1328,6 +1335,7 @@ export default function AnalyticsPage() {
                       />
                       <Bar
                         dataKey="revenue"
+                        name="Invoice sales"
                         fill="#11120d"
                         radius={[0, 9, 9, 0]}
                       />

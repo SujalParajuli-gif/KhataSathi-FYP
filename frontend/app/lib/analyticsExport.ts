@@ -1,5 +1,5 @@
 import type { AnalyticsReport } from "./reports";
-import { paymentMethodLabel, paymentStatusLabel } from "./reports";
+import { INVOICE_SALES_BASIS, paymentMethodLabel, paymentStatusLabel } from "./reports";
 
 // creating a temporary download link and clicking it to trigger a file download in the browser
 function downloadBlob(filename: string, data: BlobPart, mimeType: string) {
@@ -41,10 +41,18 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   workbook.creator = "KhataSathi";
   workbook.created = new Date();
 
+  const basis = workbook.addWorksheet("Reporting Basis");
+  basis.columns = [{ header: "Measure", key: "measure", width: 18 }, { header: "Basis / limitations", key: "basis", width: 110 }];
+  styleHeaderRow(basis.getRow(1));
+  for (const entry of Object.entries(report.meta.salesBasis || INVOICE_SALES_BASIS)) {
+    basis.addRow(entry);
+  }
+  basis.getColumn(2).alignment = { wrapText: true, vertical: "top" };
+
   // Sheet 1: Summary — report metadata and all aggregate metrics
   const summary = workbook.addWorksheet("Summary");
   summary.columns = [
-    { header: "Metric", key: "metric", width: 28 },
+    { header: "Metric", key: "metric", width: 48 },
     { header: "Value", key: "value", width: 22 },
   ];
 
@@ -61,8 +69,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
       : "All payment statuses",
   ]);
   summary.addRow([]);
-  summary.addRow(["Metric", "Value"]);
-  styleHeaderRow(summary.getRow(8));
+  styleHeaderRow(summary.addRow(["Metric", "Value"]));
   summary.addRows([
     ["Sales invoices", report.summary.invoiceCount],
     ["Cancelled invoices", report.summary.cancelledInvoiceCount],
@@ -73,11 +80,11 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     ["Walk-in invoices", report.summary.walkInInvoiceCount],
     ["Cashiers", report.summary.cashierCount],
     ["Items sold", report.summary.itemsSold],
-    ["Gross sales", report.summary.grossSales],
+    ["Invoice subtotal (before discounts)", report.summary.grossSales],
     ["Discount total", report.summary.discountTotal],
-    ["Net sales", report.summary.netSales],
-    ["Collected total", report.summary.collectedTotal],
-    ["Due total", report.summary.dueTotal],
+    ["Invoice sales (after discounts, before returns)", report.summary.netSales],
+    ["Recorded collections", report.summary.collectedTotal],
+    ["Invoice-basis due", report.summary.dueTotal],
     ["Average basket size", report.summary.averageBasketSize],
     ["Collection rate (%)", report.summary.collectionRate],
     ["Discount rate (%)", report.summary.discountRate],
@@ -87,9 +94,9 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   const trend = workbook.addWorksheet("Sales Over Time");
   trend.columns = [
     { header: "Period", key: "label", width: 18 },
-    { header: "Revenue", key: "revenue", width: 14 },
-    { header: "Collected", key: "collected", width: 14 },
-    { header: "Due", key: "due", width: 14 },
+    { header: "Invoice sales", key: "revenue", width: 18 },
+    { header: "Recorded collections", key: "collected", width: 24 },
+    { header: "Invoice-basis due", key: "due", width: 22 },
     { header: "Discount", key: "discount", width: 14 },
     { header: "Invoices", key: "invoices", width: 12 },
     { header: "Items Sold", key: "itemsSold", width: 12 },
@@ -107,7 +114,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     { header: "SKU", key: "sku", width: 16 },
     { header: "Brand", key: "brandName", width: 18 },
     { header: "Qty", key: "qty", width: 10 },
-    { header: "Revenue", key: "revenue", width: 14 },
+    { header: "Invoice sales", key: "revenue", width: 18 },
     { header: "Invoice Count", key: "invoiceCount", width: 14 },
   ];
   styleHeaderRow(products.getRow(1));
@@ -121,9 +128,9 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
     { header: "Customer", key: "name", width: 24 },
     { header: "Phone", key: "phone", width: 18 },
     { header: "Invoices", key: "invoiceCount", width: 12 },
-    { header: "Revenue", key: "revenue", width: 14 },
-    { header: "Collected", key: "collected", width: 14 },
-    { header: "Due", key: "due", width: 14 },
+    { header: "Invoice sales", key: "revenue", width: 18 },
+    { header: "Recorded collections", key: "collected", width: 24 },
+    { header: "Invoice-basis due", key: "due", width: 22 },
     { header: "Discount", key: "discount", width: 14 },
     { header: "Items Sold", key: "itemsSold", width: 12 },
     { header: "Average Basket", key: "averageBasket", width: 16 },
@@ -138,9 +145,9 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   cashiers.columns = [
     { header: "Cashier", key: "name", width: 24 },
     { header: "Invoices", key: "invoiceCount", width: 12 },
-    { header: "Revenue", key: "revenue", width: 14 },
-    { header: "Collected", key: "collected", width: 14 },
-    { header: "Due", key: "due", width: 14 },
+    { header: "Invoice sales", key: "revenue", width: 18 },
+    { header: "Recorded collections", key: "collected", width: 24 },
+    { header: "Invoice-basis due", key: "due", width: 22 },
     { header: "Discount", key: "discount", width: 14 },
     { header: "Items Sold", key: "itemsSold", width: 12 },
     { header: "Average Basket", key: "averageBasket", width: 16 },
@@ -170,7 +177,7 @@ export async function exportAnalyticsWorkbook(report: AnalyticsReport) {
   brands.columns = [
     { header: "Brand", key: "brandName", width: 22 },
     { header: "Qty", key: "qty", width: 10 },
-    { header: "Revenue", key: "revenue", width: 14 },
+    { header: "Invoice sales", key: "revenue", width: 18 },
     { header: "Invoice Count", key: "invoiceCount", width: 14 },
   ];
   styleHeaderRow(brands.getRow(1));

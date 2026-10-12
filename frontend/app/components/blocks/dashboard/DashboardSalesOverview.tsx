@@ -165,7 +165,7 @@ export default function DashboardSalesOverview({
         </span>
         <span className="text-slate-300">|</span>
         <span className="text-slate-500">
-          Revenue:{" "}
+          Invoice sales:{" "}
           <span className="text-slate-900">
             {formatNpr(totals.totalRevenue)}
           </span>
@@ -225,7 +225,7 @@ export default function DashboardSalesOverview({
                           Items sold: {payload[0].payload.itemsSold}
                         </div>
                         <div className="text-[12px] font-semibold text-slate-600">
-                          Revenue: {formatNpr(payload[0].payload.revenue)}
+                          Invoice sales: {formatNpr(payload[0].payload.revenue)}
                         </div>
                       </div>
                     ) : null

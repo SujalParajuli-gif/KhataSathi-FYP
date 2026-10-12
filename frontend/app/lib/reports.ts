@@ -1,3 +1,16 @@
+export const INVOICE_SALES_BASIS = {
+  kind: "INVOICE_TOTALS_BEFORE_RETURNS",
+  period: "Finalized invoice date in Asia/Kathmandu, with the selected filters. Cancelled invoices (including replaced originals) are excluded; replacements count on their own finalized date.",
+  sales: "Invoice sales after discounts and invoice rounding, before approved-return or refund adjustments. Subtotal is before discounts; discount is the recorded loyalty discount.",
+  collections: "Recorded collections use the greater of stored invoice paid total and lifetime successful non-refund charges, capped at the rounded invoice total. Payment-method totals use lifetime successful non-refund charges without that cap, not payments dated within the selected period.",
+  due: "Invoice-basis due is rounded invoice sales minus recorded collections. It does not reconcile return debt reductions, credit applications or retained credit; use customer receivables for supported current balances.",
+  rankings: "Product and brand invoice sales allocate the rounded invoice total in proportion to recorded item line totals; sold quantities are not reduced by returns.",
+  returnValue: "Approved return value covers currently approved requests created in the selected period; it is not a payout total or an approval-date cash measure.",
+  exclusions: "These figures are not return-adjusted net revenue, actual cash movement or profit. Tax is not removed or assumed known; acquisition costs and expenses are not deducted. Approved return value is not proof of a cash refund.",
+} as const;
+
+export type InvoiceSalesBasis = { [K in keyof typeof INVOICE_SALES_BASIS]: string };
+
 // the quick date range presets for the analytics filter bar
 export type AnalyticsRangePreset = "today" | "week" | "month" | "quarter";
 export const MAX_INTERACTIVE_REPORT_DAYS = 366;
@@ -202,6 +215,7 @@ export type AnalyticsOperations = {
 export type AnalyticsReport = {
   filters: AnalyticsFilters;
   meta: {
+    salesBasis?: InvoiceSalesBasis;
     generatedAt: string;
     bucketGranularity: AnalyticsBucketGranularity;
     rangeDays: number;

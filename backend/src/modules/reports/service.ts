@@ -25,6 +25,18 @@ const DAY_MS = 24 * 60 * 60 * 1000; // milliseconds in a day — used for calcul
 export const MAX_INTERACTIVE_REPORT_DAYS = 366;
 const REPORT_BATCH_SIZE = 250;
 
+// Describes the existing report; these measures do not reconcile customer credit.
+export const INVOICE_SALES_BASIS = {
+  kind: "INVOICE_TOTALS_BEFORE_RETURNS",
+  period: "Finalized invoice date in Asia/Kathmandu, with the selected filters. Cancelled invoices (including replaced originals) are excluded; replacements count on their own finalized date.",
+  sales: "Invoice sales after discounts and invoice rounding, before approved-return or refund adjustments. Subtotal is before discounts; discount is the recorded loyalty discount.",
+  collections: "Recorded collections use the greater of stored invoice paid total and lifetime successful non-refund charges, capped at the rounded invoice total. Payment-method totals use lifetime successful non-refund charges without that cap, not payments dated within the selected period.",
+  due: "Invoice-basis due is rounded invoice sales minus recorded collections. It does not reconcile return debt reductions, credit applications or retained credit; use customer receivables for supported current balances.",
+  rankings: "Product and brand invoice sales allocate the rounded invoice total in proportion to recorded item line totals; sold quantities are not reduced by returns.",
+  returnValue: "Approved return value covers currently approved requests created in the selected period; it is not a payout total or an approval-date cash measure.",
+  exclusions: "These figures are not return-adjusted net revenue, actual cash movement or profit. Tax is not removed or assumed known; acquisition costs and expenses are not deducted. Approved return value is not proof of a cash refund.",
+} as const;
+
 export class ReportValidationError extends Error {
   statusCode = 400;
   code = "REPORT_VALIDATION_ERROR";
@@ -1038,6 +1050,7 @@ export async function getAnalyticsReport(
   const report = {
     filters: normalized.filters,
     meta: {
+      salesBasis: INVOICE_SALES_BASIS,
       generatedAt: new Date().toISOString(),
       bucketGranularity: granularity,
       rangeDays:
@@ -1127,6 +1140,9 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   lines.push(csvRow(["Generated At", report.meta.generatedAt]));
   lines.push(csvRow(["From", report.filters.from]));
   lines.push(csvRow(["To", report.filters.to]));
+  for (const [name, description] of Object.entries(report.meta.salesBasis)) {
+    lines.push(csvRow([`Reporting basis: ${name}`, description]));
+  }
   lines.push(csvRow(["Cashier Filter", report.filters.cashierId || "All cashiers"]));
   lines.push(
     csvRow([
@@ -1150,11 +1166,11 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   lines.push(csvRow(["Walk-in invoices", report.summary.walkInInvoiceCount]));
   lines.push(csvRow(["Cashiers", report.summary.cashierCount]));
   lines.push(csvRow(["Items sold", report.summary.itemsSold]));
-  lines.push(csvRow(["Gross sales", report.summary.grossSales]));
+  lines.push(csvRow(["Invoice subtotal (before discounts)", report.summary.grossSales]));
   lines.push(csvRow(["Discount total", report.summary.discountTotal]));
-  lines.push(csvRow(["Net sales", report.summary.netSales]));
-  lines.push(csvRow(["Collected total", report.summary.collectedTotal]));
-  lines.push(csvRow(["Due total", report.summary.dueTotal]));
+  lines.push(csvRow(["Invoice sales (after discounts, before returns)", report.summary.netSales]));
+  lines.push(csvRow(["Recorded collections", report.summary.collectedTotal]));
+  lines.push(csvRow(["Invoice-basis due", report.summary.dueTotal]));
   lines.push(csvRow(["Average basket size", report.summary.averageBasketSize]));
   lines.push(csvRow(["Collection rate (%)", report.summary.collectionRate]));
   lines.push(csvRow(["Discount rate (%)", report.summary.discountRate]));
@@ -1165,9 +1181,9 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
   lines.push(
     csvRow([
       "Period",
-      "Revenue",
-      "Collected",
-      "Due",
+      "Invoice sales (after discounts, before returns)",
+      "Recorded collections",
+      "Invoice-basis due",
       "Discount",
       "Invoices",
       "Items Sold",
@@ -1192,7 +1208,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
 
   // top products section
   lines.push(csvRow(["Top Products"]));
-  lines.push(csvRow(["Product", "SKU", "Brand", "Quantity", "Revenue", "Invoice Count"]));
+  lines.push(csvRow(["Product", "SKU", "Brand", "Quantity", "Invoice sales (after discounts, before returns)", "Invoice Count"]));
   for (const product of report.topProducts) {
     lines.push(
       csvRow([
@@ -1214,9 +1230,9 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
       "Customer",
       "Phone",
       "Invoices",
-      "Revenue",
-      "Collected",
-      "Due",
+      "Invoice sales (after discounts, before returns)",
+      "Recorded collections",
+      "Invoice-basis due",
       "Discount",
       "Items Sold",
       "Average Basket",
@@ -1245,9 +1261,9 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
     csvRow([
       "Cashier",
       "Invoices",
-      "Revenue",
-      "Collected",
-      "Due",
+      "Invoice sales (after discounts, before returns)",
+      "Recorded collections",
+      "Invoice-basis due",
       "Discount",
       "Items Sold",
       "Average Basket",
@@ -1279,7 +1295,7 @@ export async function exportAnalyticsCsv(filters: AnalyticsFilters) {
 
   // brand performance section
   lines.push(csvRow(["Brand Performance"]));
-  lines.push(csvRow(["Brand", "Quantity", "Revenue", "Invoice Count"]));
+  lines.push(csvRow(["Brand", "Quantity", "Invoice sales (after discounts, before returns)", "Invoice Count"]));
   for (const brand of report.brandPerformance) {
     lines.push(
       csvRow([
@@ -1328,6 +1344,7 @@ export async function salesSummary(from: string, to: string) {
   return {
     from,
     to,
+    salesBasis: INVOICE_SALES_BASIS,
     invoiceCount,
     totalSales,
     totalRevenue: totalSales,

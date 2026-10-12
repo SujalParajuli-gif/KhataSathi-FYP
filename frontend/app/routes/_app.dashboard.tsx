@@ -1,3 +1,4 @@
+import SalesReportBasis from "~/components/SalesReportBasis";
 import CashDrawerBasis from "~/components/CashDrawerBasis";
 import React, { useState, useEffect } from "react";
 import { useNavigate } from "react-router";
@@ -348,7 +349,7 @@ export default function Dashboard() {
               iconName: "payments",
               iconBgClass: "bg-emerald-50 text-emerald-700",
               value: formatNpr(todayReport?.summary.netSales || 0),
-              label: "Revenue Today",
+              label: "Invoice Sales Today",
               badgeText: `${todayReport?.summary.invoiceCount || 0} invoices`,
               badgeIconName: "receipt_long",
               badgeClass: "bg-emerald-50 text-emerald-700 border-emerald-100",
@@ -390,7 +391,7 @@ export default function Dashboard() {
                   : "bg-emerald-100 text-emerald-700",
             })),
             {
-              label: "Refunds Today",
+              label: "Approved Return Requests Today",
               value: formatNpr(operations?.returns.refundAmount || 0),
               icon: "assignment_return",
               iconBg: "bg-[#FFF7E8] text-[#B7791F]",
@@ -457,7 +458,7 @@ export default function Dashboard() {
             iconName: "payments",
             iconBgClass: "bg-[#F3F4F6] text-[#000000]",
             value: formatNpr(s.totalRevenue || s.totalSales || 0),
-            label: "Total Sales (7d)",
+            label: "Invoice Sales (7d)",
             badgeText: `${s.invoiceCount || 0} invoices`,
             badgeIconName: "receipt_long",
             badgeClass: "bg-[#F3F4F6] text-[#000000] border-[#CFCFD3]",
@@ -537,19 +538,19 @@ export default function Dashboard() {
         ) {
           const summary = analyticsData.value.summary;
           builtPayment.push({
-            label: "Total Revenue",
+            label: "Invoice Sales (7d)",
             value: formatNpr(summary.netSales || 0),
             icon: "account_balance",
             iconBg: "bg-emerald-100 text-emerald-700",
           });
           builtPayment.push({
-            label: "Total Paid",
+            label: "Recorded Collections (7d)",
             value: formatNpr(summary.collectedTotal || 0),
             icon: "check_circle",
             iconBg: "bg-sky-100 text-sky-700",
           });
           builtPayment.push({
-            label: "Outstanding",
+            label: "Invoice-basis Due (7d)",
             value: formatNpr(summary.dueTotal || 0),
             icon: "pending",
             iconBg: "bg-[#FFF7E8] text-[#B7791F]",
@@ -557,19 +558,19 @@ export default function Dashboard() {
         } else if (salesData.status === "fulfilled" && salesData.value) {
           const s = salesData.value;
           builtPayment.push({
-            label: "Total Revenue",
+            label: "Invoice Sales (7d)",
             value: formatNpr(s.totalRevenue || s.totalSales || 0),
             icon: "account_balance",
             iconBg: "bg-emerald-100 text-emerald-700",
           });
           builtPayment.push({
-            label: "Total Paid",
+            label: "Recorded Collections (7d)",
             value: formatNpr(s.totalPaid || s.totalCollected || 0),
             icon: "check_circle",
             iconBg: "bg-sky-100 text-sky-700",
           });
           builtPayment.push({
-            label: "Outstanding",
+            label: "Invoice-basis Due (7d)",
             value: formatNpr(
               Math.max(
                 0,
@@ -645,6 +646,7 @@ export default function Dashboard() {
 
   return (
     <div className="min-w-0 space-y-[10px] overflow-x-hidden font-sans antialiased text-slate-900 pb-10">
+      <SalesReportBasis basis={managerReport?.meta?.salesBasis} />
       {/* this split layout gives most of the width to KPI, invoices, and charts while keeping quick actions and alerts on the side */}
       <div className="space-y-[20px] lg:flex lg:items-start lg:gap-[20px] lg:space-y-0">
         <div className="min-w-0 space-y-[20px] lg:min-w-0 lg:flex-1">
