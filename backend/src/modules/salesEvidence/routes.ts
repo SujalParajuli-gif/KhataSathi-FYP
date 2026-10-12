@@ -3,6 +3,7 @@ import multer from "multer";
 import { authGuard } from "../../middleware/auth";
 import { requireRole } from "../../middleware/rbac";
 import { requireBusinessCapability } from "../settings/capabilities";
+import { getSalesReviewHandler, extractSalesReviewHandler, saveSalesReviewHandler, salesReviewMatchesHandler } from "./reviewController";
 import {
   archiveSaleEvidenceHandler,
   attachSaleEvidenceHandler,
@@ -107,6 +108,10 @@ function safeSingleUpload(handler: RequestHandler): RequestHandler {
 }
 
 router.post("/", safeSingleUpload(upload.single("file")), uploadSaleEvidence);
+router.get("/:id/review", getSalesReviewHandler);
+router.post("/:id/extract", extractSalesReviewHandler);
+router.patch("/:id/review", saveSalesReviewHandler);
+router.get("/:id/review-matches", salesReviewMatchesHandler);
 router.post("/:id/archive", archiveSaleEvidenceHandler);
 router.get("/:id/candidates", getSaleEvidenceCandidatesHandler);
 router.post("/:id/attach", attachSaleEvidenceHandler);

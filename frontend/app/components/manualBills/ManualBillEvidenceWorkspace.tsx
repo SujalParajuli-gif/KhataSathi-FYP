@@ -29,6 +29,8 @@ import GIcon from "~/components/ui/GIcon";
 import { ModalFrame as Modal } from "~/components/ui/Modal";
 import PaginationBar from "~/components/ui/PaginationBar";
 import ManualBillRecoveryModal from "./ManualBillRecoveryModal";
+import SalesBillReview from "./SalesBillReview";
+import type { CorrectedSale } from "~/lib/api/salesReview";
 
 interface Props {
   onRefreshParent?: () => void;
@@ -42,6 +44,8 @@ const DOCUMENT_TYPE_LABELS: Record<ExternalDocumentType, string> = {
 };
 
 export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) {
+  const [reviewDoc, setReviewDoc] = useState<SalesEvidenceRecord | null>(null);
+  const [recoveryReview, setRecoveryReview] = useState<CorrectedSale | null>(null);
   const [documents, setDocuments] = useState<SalesEvidenceRecord[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
@@ -582,6 +586,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
 
                   {/* Actions */}
                   <div className="mt-4 pt-3 border-t border-control-line flex flex-wrap items-center justify-end gap-2">
+                    <button type="button" onClick={() => setReviewDoc(doc)} className="min-h-10 rounded-xl border border-control-line px-3 py-1 text-[11px] font-bold hover:bg-control-hover">Review bill and matches</button>
                     <button
                       type="button"
                       onClick={() => handleDownload(doc)}
@@ -605,6 +610,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
                           type="button"
                           onClick={() => {
                             setRecoveryDoc(doc);
+                            setRecoveryReview(null);
                             setRecoveryOpen(true);
                           }}
                           className="inline-flex min-h-10 items-center gap-1 rounded-xl bg-action px-2.5 py-1 text-[11px] font-bold text-white hover:bg-black"
@@ -659,6 +665,16 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
       )}
 
       {/* Upload Modal */}
+      {reviewDoc && <SalesBillReview document={reviewDoc} onClose={() => setReviewDoc(null)} onDecision={async (kind, doc, corrected, candidate) => {
+        setReviewDoc(null);
+        if (kind === "attach") {
+          await openAttachModal(doc);
+          setAttachBillNo(corrected.billNumber || "");
+          if (corrected.billDate) setAttachBillDate(corrected.billDate);
+          if (candidate) { setCandidates(v => v.some(c => c.id === candidate.id) ? v : [candidate, ...v]); setSelectedCandidate(candidate); }
+        } else if (kind === "create") { setRecoveryDoc(doc); setRecoveryReview(corrected); setRecoveryOpen(true); }
+        else { setArchiveDoc(doc); setArchiveReason(""); setArchiveError(null); setArchiveConflict(null); setArchiveOpen(true); }
+      }} />}
       {uploadOpen && (
         <Modal
           open={uploadOpen}
@@ -1086,6 +1102,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
             setRecoveryDoc(null);
           }}
           document={recoveryDoc}
+          reviewedFacts={recoveryReview}
           onSuccess={() => {
             loadDocuments();
             onRefreshParent?.();

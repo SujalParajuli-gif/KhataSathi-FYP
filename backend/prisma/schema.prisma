@@ -1292,6 +1292,7 @@ model Document {
   recoveryCheckoutOperationKey String?             @unique @db.VarChar(120)
   recoveryCheckoutPayloadHash  String?             @db.Char(64)
   purchaseReview Json? // Untrusted observations and separately saved human corrections; never posting authority
+  salesReview Json? // Sales observations and human corrections; never checkout or attachment authority
 
   uploadedBy User @relation(fields: [uploadedById], references: [id])
 

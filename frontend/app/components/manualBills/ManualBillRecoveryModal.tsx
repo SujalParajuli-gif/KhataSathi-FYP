@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import ProjectSelect from "~/components/ui/ProjectSelect";
 import GIcon from "~/components/ui/GIcon";
+import type { CorrectedSale } from "~/lib/api/salesReview";
 import { ModalFrame as Modal } from "~/components/ui/Modal";
 import type {
   ExternalDocumentType,
@@ -31,6 +32,7 @@ interface Props {
   open: boolean;
   onClose: () => void;
   document: SalesEvidenceRecord | null;
+  reviewedFacts?: CorrectedSale | null;
   onSuccess: (result: { invoiceId: string; invoiceNo: string }) => void;
 }
 
@@ -77,6 +79,7 @@ export default function ManualBillRecoveryModal({
   open,
   onClose,
   document,
+  reviewedFacts,
   onSuccess,
 }: Props) {
   // Outcome state
@@ -147,9 +150,9 @@ export default function ManualBillRecoveryModal({
     setDuplicateWarning(null);
     setConflictDoc(null);
     setEsewaIntent(null);
-    setBillNo("");
+    setBillNo(reviewedFacts?.billNumber || "");
     setExternalDocumentType("PAN_INVOICE");
-    setExternalBillDate(getNepalDateTimeLocalString().slice(0, 10));
+    setExternalBillDate(reviewedFacts?.billDate || getNepalDateTimeLocalString().slice(0, 10));
     setReason("");
     setDuplicateOverrideReason("");
     setSelectedCustomer(null);
@@ -171,7 +174,7 @@ export default function ManualBillRecoveryModal({
 
     loadOutcome(document.id);
     loadActiveDrawer();
-  }, [open, document]);
+  }, [open, document, reviewedFacts]);
 
   async function loadOutcome(docId: string): Promise<SaleEvidenceRecoveryOutcome | null> {
     setOutcomeLoading(true);
@@ -812,6 +815,12 @@ export default function ManualBillRecoveryModal({
           </div>
         </div>
 
+        {reviewedFacts && <section aria-label="Saved human review for checkout" className="space-y-2 rounded-xl border border-control-line p-3 text-sm">
+          <h3 className="font-semibold">Saved human review for comparison</h3>
+          <p>Printed customer: {reviewedFacts.customerName || "Unknown"} · Printed total: {reviewedFacts.total ? `NPR ${reviewedFacts.total}` : "Unknown"}.</p>
+          <p>Only the reviewed reference and explicit date are prefilled. Choose the customer, products, quantities, prices and payment assessment in this protected checkout; these observations never post a sale.</p>
+          {reviewedFacts.lines.map((line, index) => <p key={index} className="break-words">Line {index + 1}: {line.name || "Unknown item"} · {line.quantity || "Unknown quantity"} {line.unit || "Unknown unit"} · Printed unit price {line.unitPrice || "Unknown"} · Product {line.productId || "Unresolved"}</p>)}
+        </section>}
         {infoMessage && (
           <div className="rounded-xl border border-blue-200 bg-blue-50 p-3 text-blue-800 text-[12px] flex items-center gap-2">
             <GIcon name="info" className="text-blue-600 text-[16px] shrink-0" />
