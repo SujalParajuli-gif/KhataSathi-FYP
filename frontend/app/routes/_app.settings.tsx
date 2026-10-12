@@ -140,6 +140,7 @@ type BackupScheduleDraft = {
   lastRunAt?: string | null;
 };
 type SecurityDateRange = { from: string; to: string };
+type DefaultBillingChannel = "MANUAL_EXTERNAL" | null;
 
 // this builds our default settings model in memory incase nothing is provided yet
 const INITIAL_DEFAULTS = buildBusinessDefaults(5, 15, 2, 7, 8, 30);
@@ -722,6 +723,24 @@ function formatBusinessMode(mode: BusinessMode) {
   return "Full POS";
 }
 
+function formatTaxCalculationMode(mode: TaxCalculationMode) {
+  if (mode === "NO_VAT") return "Verified not VAT registered";
+  if (mode === "VAT_EXCLUSIVE") return "VAT registered — prices exclude VAT";
+  return "Not configured — keep tax status unknown";
+}
+
+function formatDefaultBillingChannel(channel: DefaultBillingChannel) {
+  return channel === "MANUAL_EXTERNAL"
+    ? "Manual External Paper Bill"
+    : "Standard POS Register";
+}
+
+function describeDefaultBillingChannel(channel: DefaultBillingChannel) {
+  return channel === "MANUAL_EXTERNAL"
+    ? "New sales will start in the manual external paper-bill workflow."
+    : "New sales will start in the standard POS register workflow.";
+}
+
 function SettingsToggleSwitch({
   checked,
   onChange,
@@ -1067,13 +1086,20 @@ export default function SettingsPage() {
     String(INITIAL_DEFAULTS.draftRequestExpiryMinutes),
   );
   const [savedDefaults, setSavedDefaults] = useState(INITIAL_DEFAULTS); // snapshot of the last saved business defaults
-  const [defaultBillingChannel, setDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
-  const [savedDefaultBillingChannel, setSavedDefaultBillingChannel] = useState<"MANUAL_EXTERNAL" | null>(null);
+  const [defaultBillingChannel, setDefaultBillingChannel] = useState<DefaultBillingChannel>(null);
+  const [savedDefaultBillingChannel, setSavedDefaultBillingChannel] = useState<DefaultBillingChannel>(null);
   const [billingChannelBusy, setBillingChannelBusy] = useState(false);
+  const [pendingBillingChannel, setPendingBillingChannel] =
+    useState<DefaultBillingChannel | undefined>(undefined);
+  const [showBillingChannelConfirm, setShowBillingChannelConfirm] =
+    useState(false);
+  const [billingChannelError, setBillingChannelError] = useState("");
   const [businessTaxMode, setBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
   const [savedBusinessTaxMode, setSavedBusinessTaxMode] = useState<TaxCalculationMode>("UNKNOWN");
   const [businessTaxModeBusy, setBusinessTaxModeBusy] = useState(false);
   const [businessTaxModeError, setBusinessTaxModeError] = useState("");
+  const [showBusinessTaxModeConfirm, setShowBusinessTaxModeConfirm] =
+    useState(false);
   const [showDefaultsConfirm, setShowDefaultsConfirm] = useState(false); // confirmation dialog before saving business defaults
   const [defaultsShowErrors, setDefaultsShowErrors] = useState(false);
   const [defaultsBusy, setDefaultsBusy] = useState(false);
@@ -2039,20 +2065,56 @@ export default function SettingsPage() {
     }
   }
 
-  async function handleSaveBillingChannel(newChannel: "MANUAL_EXTERNAL" | null) {
+  function requestBillingChannelChange(nextChannel: DefaultBillingChannel) {
+    if (nextChannel === savedDefaultBillingChannel) return;
+    setPendingBillingChannel(nextChannel);
+    setBillingChannelError("");
+    setShowBillingChannelConfirm(true);
+  }
+
+  function closeBillingChannelConfirm() {
+    if (billingChannelBusy) return;
+    setPendingBillingChannel(undefined);
+    setBillingChannelError("");
+    setShowBillingChannelConfirm(false);
+  }
+
+  async function handleSaveBillingChannel(newChannel: DefaultBillingChannel) {
     try {
       setBillingChannelBusy(true);
+      setBillingChannelError("");
       const updated = await updateBusinessSettingsApi({ defaultBillingChannel: newChannel });
       const saved = updated.defaultBillingChannel === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
       setDefaultBillingChannel(saved);
       setSavedDefaultBillingChannel(saved);
+      setPendingBillingChannel(undefined);
+      setShowBillingChannelConfirm(false);
       showToast("success", "Default billing channel updated.");
       await refreshSettingsData();
     } catch (error: any) {
-      showToast("danger", error?.response?.data?.error || error?.message || "Failed to update default billing channel.");
+      const message =
+        error?.response?.data?.error ||
+        error?.message ||
+        "Default billing channel save could not be confirmed. Retry or cancel.";
+      setBillingChannelError(message);
+      showToast("danger", message);
     } finally {
       setBillingChannelBusy(false);
     }
+  }
+
+  function requestBusinessTaxModeSave() {
+    if (!isAdmin || !settingsTabLoadedAtRef.current.has("overview")) return;
+    if (businessTaxMode === savedBusinessTaxMode) return;
+    setBusinessTaxModeError("");
+    setShowBusinessTaxModeConfirm(true);
+  }
+
+  function closeBusinessTaxModeConfirm() {
+    if (businessTaxModeBusy) return;
+    setBusinessTaxMode(savedBusinessTaxMode);
+    setBusinessTaxModeError("");
+    setShowBusinessTaxModeConfirm(false);
   }
 
   async function saveBusinessTaxMode() {
@@ -2065,6 +2127,7 @@ export default function SettingsPage() {
       const saved = updated.taxCalculationMode ?? "UNKNOWN";
       setBusinessTaxMode(saved);
       setSavedBusinessTaxMode(saved);
+      setShowBusinessTaxModeConfirm(false);
       showToast("success", "Business tax status updated.");
       await refreshSettingsData();
     } catch (error: any) {
@@ -2790,10 +2853,13 @@ export default function SettingsPage() {
 
                   <div className="flex items-center gap-2">
                     <ProjectSelect
+                      aria-label="Default billing channel"
                       value={defaultBillingChannel || "DEFAULT"}
                       onChange={(e) => {
-                        const next = e.target.value === "MANUAL_EXTERNAL" ? "MANUAL_EXTERNAL" : null;
-                        handleSaveBillingChannel(next);
+                        const next = e.target.value === "MANUAL_EXTERNAL"
+                          ? "MANUAL_EXTERNAL"
+                          : null;
+                        requestBillingChannelChange(next);
                       }}
                       disabled={billingChannelBusy || !isAdmin}
                     >
@@ -3010,20 +3076,32 @@ export default function SettingsPage() {
               )}
             </div>
 
-            <div className="rounded-[16px] border border-amber-200 bg-amber-50/60 p-5 shadow-2xs">
-              <div className="mb-3 flex items-center gap-2.5">
-                <div className="flex h-7 w-7 items-center justify-center rounded-[8px] bg-white text-amber-700">
-                  <Icon name="receipt_long" sizePx={17} />
+            <div className="self-start rounded-[14px] border border-slate-200 bg-white p-4 shadow-2xs sm:p-5">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <div className="flex items-center gap-2.5">
+                  <div className="flex h-8 w-8 items-center justify-center rounded-[8px] bg-amber-50 text-amber-700">
+                    <Icon name="receipt_long" sizePx={17} />
+                  </div>
+                  <div>
+                    <h2 className="text-[15px] font-semibold text-[#11120D]">Business VAT status</h2>
+                    <p className="mt-0.5 text-[12px] font-medium text-slate-500">
+                      Seller registration information only
+                    </p>
+                  </div>
                 </div>
-                <h2 className="text-[16px] font-semibold text-[#11120D]">Business VAT status</h2>
+                <span className="inline-flex items-center gap-1.5 rounded-full border border-amber-200 bg-amber-50 px-2.5 py-1 text-[11px] font-bold text-amber-800">
+                  <Icon name="schedule" sizePx={13} />
+                  VAT calculation coming later
+                </span>
               </div>
-              <p className="mb-3 max-w-3xl text-[12.5px] leading-relaxed text-slate-700">
-                Record the verified seller status. Product prices are VAT-exclusive when registered. This setting does not calculate or add tax to sales yet.
+              <p className="mt-3 text-[12.5px] leading-relaxed text-slate-600">
+                Record the verified seller status. This does not calculate, add, or report VAT on sales yet.
               </p>
-              <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+              <div className="mt-4 flex flex-col gap-3 border-t border-slate-100 pt-4 sm:flex-row sm:items-end">
                 <label className="flex-1 text-[12px] font-semibold text-slate-700" htmlFor="business-tax-mode">
-                  Tax configuration
-                  <ProjectSelect aria-label="Tax configuration"
+                  VAT registration status
+                  <ProjectSelect
+                    aria-label="VAT registration status"
                     id="business-tax-mode"
                     value={businessTaxMode}
                     onChange={(event) => {
@@ -3041,12 +3119,12 @@ export default function SettingsPage() {
                 {isAdmin ? (
                   <button
                     type="button"
-                    onClick={() => void saveBusinessTaxMode()}
+                    onClick={requestBusinessTaxModeSave}
                     disabled={businessTaxModeBusy || businessTaxMode === savedBusinessTaxMode || !settingsTabLoadedAtRef.current.has("overview")}
                     className="inline-flex h-11 items-center justify-center gap-2 rounded-lg bg-slate-900 px-4 text-sm font-bold text-white hover:bg-slate-800 disabled:cursor-not-allowed disabled:opacity-50"
                   >
-                    <Icon name="save" sizePx={16} />
-                    {businessTaxModeBusy ? "Saving…" : "Save tax status"}
+                    <Icon name="fact_check" sizePx={16} />
+                    Review change
                   </button>
                 ) : (
                   <span className="text-xs font-semibold text-slate-600">Only an administrator can change this setting.</span>
@@ -5295,6 +5373,79 @@ export default function SettingsPage() {
             {defaultsSaveError ? (
               <div className="rounded-[10px] border border-rose-200 bg-rose-50 p-3 font-bold text-rose-700" role="alert">
                 {defaultsSaveError}
+              </div>
+            ) : null}
+          </div>
+        }
+      />
+
+      <ConfirmDialog
+        open={showBusinessTaxModeConfirm}
+        title="Save VAT status?"
+        message="Review the seller registration status before saving. This does not enable VAT calculation, VAT-aware bills, or tax reporting."
+        confirmLabel="Save VAT status"
+        onConfirm={() => void saveBusinessTaxMode()}
+        onClose={closeBusinessTaxModeConfirm}
+        tone="primary"
+        icon="receipt_long"
+        busy={businessTaxModeBusy}
+        details={
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <span className="font-semibold text-slate-700">Current status</span>
+              <span className="max-w-[60%] text-right font-extrabold text-slate-900">
+                {formatTaxCalculationMode(savedBusinessTaxMode)}
+              </span>
+            </div>
+            <div className="flex items-start justify-between gap-4 border-t border-slate-200 pt-3">
+              <span className="font-semibold text-slate-700">New status</span>
+              <span className="max-w-[60%] text-right font-extrabold text-slate-900">
+                {formatTaxCalculationMode(businessTaxMode)}
+              </span>
+            </div>
+            {businessTaxModeError ? (
+              <div className="rounded-[10px] border border-rose-200 bg-rose-50 p-3 font-bold text-rose-700" role="alert">
+                {businessTaxModeError}
+              </div>
+            ) : null}
+          </div>
+        }
+      />
+
+      <ConfirmDialog
+        open={showBillingChannelConfirm}
+        title="Change default billing channel?"
+        message="Review where new sales begin before making this shop-wide default active. Existing sales are not changed."
+        confirmLabel="Save billing channel"
+        onConfirm={() => {
+          if (pendingBillingChannel !== undefined) {
+            void handleSaveBillingChannel(pendingBillingChannel);
+          }
+        }}
+        onClose={closeBillingChannelConfirm}
+        tone="primary"
+        icon="point_of_sale"
+        busy={billingChannelBusy}
+        details={
+          <div className="space-y-3">
+            <div className="flex items-start justify-between gap-4">
+              <span className="font-semibold text-slate-700">Current default</span>
+              <span className="max-w-[60%] text-right font-extrabold text-slate-900">
+                {formatDefaultBillingChannel(savedDefaultBillingChannel)}
+              </span>
+            </div>
+            <div className="flex items-start justify-between gap-4 border-t border-slate-200 pt-3">
+              <span className="font-semibold text-slate-700">New default</span>
+              <span className="max-w-[60%] text-right font-extrabold text-slate-900">
+                {formatDefaultBillingChannel(pendingBillingChannel ?? null)}
+              </span>
+            </div>
+            <p className="border-t border-slate-200 pt-3 font-semibold text-slate-700">
+              {describeDefaultBillingChannel(pendingBillingChannel ?? null)}
+            </p>
+            {billingChannelError ? (
+              <div className="rounded-[10px] border border-rose-200 bg-rose-50 p-3 font-bold text-rose-700" role="alert">
+                {billingChannelError}
               </div>
             ) : null}
           </div>
