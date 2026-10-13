@@ -1,0 +1,88 @@
+/* Keep type refinements local to expense operations and navigation. Color,
+   rather than container opacity, preserves text contrast and motion states. */
+@layer utilities {
+  :where(
+    main:has([aria-label="Expense history"]),
+    body:has(main [aria-label="Expense history"]) [role="dialog"]:has(fieldset)
+  ) {
+    .text-xs,
+    [class~="text-[11px]"] {
+      font-size: 0.8125rem;
+      line-height: 1.5;
+    }
+
+    .text-slate-400,
+    .text-slate-500,
+    .text-muted {
+      color: var(--color-muted);
+    }
+
+    input[class]::placeholder,
+    textarea[class]::placeholder {
+      color: var(--color-muted);
+      opacity: 1;
+    }
+  }
+
+  main:has([aria-label="Expense history"]) > div > header > div > h1 {
+    font-size: 1.625rem;
+    line-height: 1.25;
+    font-weight: 600;
+  }
+
+  [aria-label="Expense summary metrics"] {
+    .text-xs.font-medium {
+      color: var(--color-ink);
+      font-weight: 600;
+    }
+
+    .text-xl.font-mono {
+      font-size: clamp(1.125rem, 1.2vw, 1.375rem);
+      line-height: 1.4;
+      letter-spacing: -0.015em;
+    }
+  }
+
+  [aria-label="Expense history"] th {
+    font-size: 0.8125rem;
+    color: var(--color-muted);
+  }
+
+  :where(#app-sidebar, [aria-label="Mobile navigation"], [data-nav-flyout]) {
+    [class~="text-[13px]"],
+    [class~="text-[13.5px]"],
+    [class~="text-[12.5px]"] {
+      font-size: 0.875rem;
+      line-height: 1.4;
+    }
+
+    [class~="text-[10px]"],
+    [class~="text-[10.5px]"],
+    [class~="text-[11px]"],
+    [class~="text-[11.5px]"] {
+      font-size: 0.75rem;
+      line-height: 1.5;
+    }
+
+    .text-slate-400,
+    .text-slate-500,
+    [class~="text-[#8C8889]"] {
+      color: var(--color-muted);
+    }
+
+    .uppercase {
+      letter-spacing: 0.06em;
+    }
+
+    /* Nested navigation remains compact while avoiding cramped text rows. */
+    a.h-9 {
+      min-height: 2.5rem;
+    }
+  }
+
+  @media (max-width: 639px) {
+    main:has([aria-label="Expense history"]) > div > header > div > h1 {
+      font-size: 1.5rem;
+    }
+  }
+}
