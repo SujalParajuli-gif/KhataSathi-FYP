@@ -6264,6 +6264,16 @@ export default function BillingPage() {
             <span className="hidden sm:inline font-medium">
               {operatorLabel} &bull; <span className="font-mono">{terminalLabel}</span>
             </span>
+            {isCashier && <button type="button" className="billing-toolbar-button" aria-haspopup="dialog" aria-label={`Requests (${incomingRequestsTotal} pending, ${unseenIncomingRequestCount} unseen)`} onClick={() => {
+              setShowIncomingRequests(true);
+              setSelectedIncomingRequest(null);
+              setIncomingRequestsError("");
+              void loadIncomingRequests();
+            }}>
+              <Icon name="forward_to_inbox" sizePx={18}/><span>Requests</span>
+              <span className="rounded bg-inset px-1.5 text-xs font-semibold">{incomingRequestsTotal}</span>
+              {unseenIncomingRequestCount > 0 && <span className="rounded bg-emerald-50 px-1.5 text-xs font-semibold text-emerald-800">{unseenIncomingRequestCount} unseen</span>}
+            </button>}
             <BillingToolsMenu onOpenCalculator={() => setIsCalculatorOpen(true)} lastInvoiceId={lastCreatedInvoiceId}/>
             <div className="billing-density" aria-label="View density"><span>Density</span>
               <button
@@ -6308,6 +6318,14 @@ export default function BillingPage() {
           </div>
         ) : null}
 
+        {activeDraftRequestId && draftRequestNoticeVisible && <div role="status" className="flex shrink-0 items-center gap-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-sm text-emerald-900">
+          <Icon name="assignment_turned_in" sizePx={18}/>
+          <span>Staff request loaded. Finalizing this bill completes the request automatically.</span>
+          <button type="button" aria-label="Dismiss staff request notice" className="ml-auto rounded p-1" onClick={() => {
+            acknowledgeDraftRequestNotice(currentUser?.id, activeDraftRequestId);
+            setDraftRequestNoticeVisible(false);
+          }}><Icon name="close" sizePx={18}/></button>
+        </div>}
         {proofFollowup && <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" role="status"><p className="font-medium">Sale {proofFollowup.invoiceNo || proofFollowup.invoiceId} is saved. Original proof is pending.</p><p className="mt-1">{proofFollowup.error}</p><div className="mt-2 flex flex-wrap items-center gap-2">{!proofFollowup.file && <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" aria-label="Reselect original saved-sale proof" onChange={e => { const file = e.target.files?.[0]; if (file) setProofFollowup(current => current ? { ...current, file } : null); }} />}<button type="button" disabled={!proofFollowup.file || proofRetrying} onClick={retryProofAttachment} className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 disabled:opacity-40">{proofRetrying ? "Attaching…" : "Retry proof attachment"}</button><button type="button" onClick={() => { setProofFollowup(null); showToast("info", "Proof remains pending. Attach it later in Manual Bills."); }} className="px-3 py-1.5 underline">Attach later in Manual Bills</button></div></div>}
         {activeWorkspaceTab === "billing" && <div className="flex shrink-0 gap-2 border-b border-line bg-white p-3 md:hidden" role="tablist" aria-label="Billing panel">{(["cart", "products", "customer"] as const).map(pane => <button type="button" key={pane} role="tab" aria-selected={mobileBillingPane === pane} onClick={() => setMobileBillingPane(pane)} className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium ${mobileBillingPane === pane ? "bg-action text-white" : "bg-inset"}`}>{({cart:"Current sale",products:"Products",customer:"Customer"})[pane]}</button>)}</div>}
         {/* WORKSPACE CONTENT BODY */}
@@ -6384,6 +6402,7 @@ export default function BillingPage() {
                   onUpdateQty={(productId, newQty) => changeQty(productId, newQty)}
                   onRemoveItem={(productId) => removeLine(productId)}
                   onClearCart={requestResetBill}
+                  canClearDraft={hasBillDraft}
                   onOpenPriceOverride={(item) => {
                     const row = cartRows.find((r) => r.productId === item.productId);
                     if (row) openPriceOverride(row);

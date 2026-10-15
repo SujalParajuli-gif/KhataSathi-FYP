@@ -39,8 +39,8 @@ test("request checkout survives a lost response/reload and clears the posted car
   });
 
   async function submitPending() {
-    await expect(page.getByRole("button", { name: /PAY NOW|RECOVER CHECKOUT/ })).toBeEnabled();
-    await page.getByRole("button", { name: /PAY NOW|RECOVER CHECKOUT/ }).click();
+    await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/i })).toBeEnabled();
+    await page.getByRole("button", { name: /Review in Worksheet|Recover checkout/i }).click();
     const retryOrConfirmBtn = page.getByRole("button", { name: /Retry Submission|^Confirm/i });
     if (await retryOrConfirmBtn.isVisible({ timeout: 2000 }).catch(() => false)) {
       await retryOrConfirmBtn.click();
@@ -60,5 +60,5 @@ test("request checkout survives a lost response/reload and clears the posted car
   await expect.poll(() => page.evaluate(() => localStorage.getItem("khatasathi_billing_cart"))).toBeNull();
   expect(await page.evaluate(() => localStorage.getItem("khatasathi_pending_draft_completion"))).toContain("legacy-sale");
   await page.reload();
-  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Review in Worksheet/i })).toBeDisabled();
 });

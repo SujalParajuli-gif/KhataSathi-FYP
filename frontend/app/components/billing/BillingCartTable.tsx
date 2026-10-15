@@ -37,6 +37,7 @@ interface BillingCartTableProps {
   onUpdateQty: (productId: string, newQty: number) => void;
   onRemoveItem: (productId: string) => void;
   onClearCart: () => void;
+  canClearDraft?: boolean;
   onOpenPriceOverride: (item: CartTableItem) => void;
   onParkBill: () => void;
   parkedCount?: number;
@@ -55,6 +56,7 @@ export default function BillingCartTable({
   onUpdateQty,
   onRemoveItem,
   onClearCart,
+  canClearDraft = cart.length > 0,
   onOpenPriceOverride,
   onParkBill,
   parkedCount = 0,
@@ -380,7 +382,7 @@ export default function BillingCartTable({
             <span>{cartNote ? "Edit Note" : "Add Note"}</span>
           </button>
 
-          {cart.length > 0 && (
+          {canClearDraft && (
             <button
               type="button"
               onClick={onClearCart}

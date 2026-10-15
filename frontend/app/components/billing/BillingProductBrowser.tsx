@@ -112,6 +112,43 @@ export default function BillingProductBrowser({
   const [barcodeValue, setBarcodeValue] = useState("");
   const [showBarcodeScanInput, setShowBarcodeScanInput] = useState(false);
   const totalPages = Math.max(1, Math.ceil(totalProducts / pageSize));
+  const [searchIndex, setSearchIndex] = useState(0);
+  const [searchFocused, setSearchFocused] = useState(false);
+  const resultRows = useRef<Array<HTMLTableRowElement | null>>([]);
+  const activeSearch = Boolean(searchFocused && searchTerm.trim() && !loading && !error && products.length);
+  useEffect(() => { setSearchIndex(0); }, [searchTerm, selectedCategory, sortBy, page, products]);
+  useEffect(() => {
+    if (!activeSearch) return;
+    const row = resultRows.current[searchIndex];
+    const container = row?.closest<HTMLElement>(".billing-list");
+    if (!row || !container) return;
+    const rowBox = row.getBoundingClientRect();
+    const box = container.getBoundingClientRect();
+    const headerHeight = container.querySelector("thead")?.getBoundingClientRect().height || 0;
+    if (rowBox.top < box.top + headerHeight) container.scrollTop -= box.top + headerHeight - rowBox.top;
+    else if (rowBox.bottom > box.bottom) container.scrollTop += rowBox.bottom - box.bottom;
+  }, [searchIndex, activeSearch]);
+  function unavailableReason(product: BillingProductItem) {
+    return product.sellingPriceStatus === "PENDING" ? "Price required" : product.stock <= 0 ? "Out of stock" : getAddDisabledReason?.(product) || null;
+  }
+  function handleSearchKeyDown(event: React.KeyboardEvent<HTMLInputElement>) {
+    if (event.nativeEvent.isComposing || event.altKey || event.ctrlKey || event.metaKey || event.shiftKey) return;
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      onSearchChange("");
+      return;
+    }
+    if (!activeSearch) return;
+    if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+      event.preventDefault();
+      setSearchIndex(index => Math.max(0, Math.min(products.length - 1, index + (event.key === "ArrowDown" ? 1 : -1))));
+    } else if (event.key === "Enter") {
+      event.preventDefault();
+      const selected = products[searchIndex];
+      if (selected && !unavailableReason(selected)) onAddToCart(selected);
+    }
+  }
   useEffect(() => {
     const open = () => setShowBarcodeScanInput(true);
     window.addEventListener("billing-open-scanner", open);
@@ -151,6 +188,16 @@ export default function BillingProductBrowser({
               type="text"
               value={searchTerm}
               onChange={(e) => onSearchChange(e.target.value)}
+              onKeyDown={handleSearchKeyDown}
+              onFocus={() => setSearchFocused(true)}
+              onBlur={() => setSearchFocused(false)}
+              role="combobox"
+              aria-label="Search products"
+              aria-autocomplete="none"
+              aria-haspopup="grid"
+              aria-expanded={activeSearch}
+              aria-controls={products.length && !loading && !error ? "billing-product-results" : undefined}
+              aria-activedescendant={activeSearch ? `catalog-result-${products[searchIndex]?.id}` : undefined}
               placeholder="Search product name, SKU or brand..."
               className="w-full rounded-lg border border-line bg-white py-1.5 pl-9 pr-14 text-[13px] font-medium text-ink placeholder-[#8C8889] focus:border-[#102043] focus:outline-none focus:ring-1 focus:ring-[#102043]"
             />
@@ -254,7 +301,7 @@ export default function BillingProductBrowser({
             )}
           </div>
         ) : (
-          <table className="w-full border-collapse text-left">
+          <table id="billing-product-results" role="grid" aria-label="Product results" className="w-full border-collapse text-left">
             <thead className="sticky top-0 z-10 border-b border-line bg-inset text-[12px] font-medium  text-muted">
               <tr>
                 <th className="py-2.5 pl-3 pr-2">Product / SKU</th>
@@ -264,19 +311,22 @@ export default function BillingProductBrowser({
               </tr>
             </thead>
             <tbody className="divide-y divide-[#e4edf6]">
-              {products.map((p) => {
+              {products.map((p, index) => {
                 const isOutOfStock = p.stock <= 0;
                 const isUnpriced = p.sellingPriceStatus === "PENDING";
                 const isLowStock = !isOutOfStock && (p.lowStockThreshold || 0) > 0 && p.stock <= (p.lowStockThreshold || 0);
-                const disabledReason = isUnpriced ? "Price required" : isOutOfStock ? "Out of stock" : getAddDisabledReason?.(p) || null;
+                const disabledReason = unavailableReason(p);
                 const stockNotice = disabledReason || (isLowStock ? "Low stock" : null);
                 const catStyle = { bg: "bg-inset border-line", text: "text-muted", icon: "inventory_2" };
 
                 return (
                   <tr
                     key={p.id}
+                    id={`catalog-result-${p.id}`}
+                    ref={element => { resultRows.current[index] = element; }}
+                    aria-selected={activeSearch && searchIndex === index}
                     onClick={() => { if (!disabledReason) onAddToCart(p); }}
-                    className={`transition group ${disabledReason ? "billing-product-unavailable" : "cursor-pointer hover:bg-[#F8FAFC] active:bg-inset"}`}
+                    className={`transition group ${activeSearch && searchIndex === index ? "bg-inset outline outline-1 -outline-offset-1 outline-line" : ""} ${disabledReason ? "billing-product-unavailable" : "cursor-pointer hover:bg-[#F8FAFC] active:bg-inset"}`}
                   >
                     {/* Thumbnail + Name & SKU */}
                     <td className="pl-3 pr-2 align-middle">
