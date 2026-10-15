@@ -308,7 +308,6 @@ export default function BillingCustomerSummary({
                 ref={searchInputRef}
                 data-modal-initial-focus
                 type="text"
-                autoFocus
                 value={customerSearchQuery}
                 onChange={(e) => {
                   setCustomerSearchQuery(e.target.value);

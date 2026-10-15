@@ -69,6 +69,7 @@ import ConfirmPaymentModal from "~/components/billing/ConfirmPaymentModal";
 import BillingProductBrowser from "~/components/billing/BillingProductBrowser";
 import BillingCompactCartHistory from "~/components/billing/BillingCompactCartHistory";
 import BillingCartTable, { type CartTableItem } from "~/components/billing/BillingCartTable";
+import BillingInvoicePreview from "~/components/billing/BillingInvoicePreview";
 import BillingCustomerSummary from "~/components/billing/BillingCustomerSummary";
 import BillingToolsMenu from "~/components/billing/BillingToolsMenu";
 import BillingWorksheetView from "~/components/billing/BillingWorksheetView";
@@ -1171,6 +1172,7 @@ export default function BillingPage() {
     getBusinessSettingsApi().then(settings => { if (live) setBusinessIdentity({ ...resolvePrintBusinessIdentity(settings), displayName: settings.businessName?.trim() || settings.legalName?.trim() || "Business name not configured" }); }).catch(() => { if (live) setBusinessIdentity({ ...resolvePrintBusinessIdentity(), displayName: "Business information unavailable" }); });
     return () => { live = false; };
   }, []);
+  const [cartHistoryInvoiceId, setCartHistoryInvoiceId] = useState<string | null>(null);
   const [historyNavigation, setHistoryNavigation] = useState<HistoryNavigation>({ scope: "INVOICES", payment: "ALL", revision: 0 });
   function openWorkspaceHistory(scope: "INVOICES" | "CART_ITEMS" = "INVOICES", payment: "ALL" | "OUTSTANDING" = "ALL", invoiceId?: string) {
     setHistoryNavigation(current => ({ scope, payment, invoiceId, revision: current.revision + 1 }));
@@ -6330,8 +6332,9 @@ export default function BillingPage() {
         {activeWorkspaceTab === "billing" && <div className="flex shrink-0 gap-2 border-b border-line bg-white p-3 md:hidden" role="tablist" aria-label="Billing panel">{(["cart", "products", "customer"] as const).map(pane => <button type="button" key={pane} role="tab" aria-selected={mobileBillingPane === pane} onClick={() => setMobileBillingPane(pane)} className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium ${mobileBillingPane === pane ? "bg-action text-white" : "bg-inset"}`}>{({cart:"Current sale",products:"Products",customer:"Customer"})[pane]}</button>)}</div>}
         {/* WORKSPACE CONTENT BODY */}
         <div className="billing-body">
-          {activeWorkspaceTab === "billing" && (
-            <div className="billing-columns">
+          <div className="billing-columns" style={{ display: activeWorkspaceTab === "billing" ? undefined : "none" }}>
+            {activeWorkspaceTab === "billing" && <>
+
               {/* Column 1: Catalog Browser + Compact History (4 cols = ~33%) */}
               <div className={`billing-products-column ${mobileBillingPane === "products" ? "" : "hidden md:flex"}`}>
                 <div className="billing-catalog-slot">
@@ -6386,7 +6389,7 @@ export default function BillingPage() {
                     loading={customerHistoryLoading}
                     error={customerHistoryError}
                     onOpenDetailedHistory={() => openWorkspaceHistory("CART_ITEMS")}
-                    onOpenInvoice={(id) => openWorkspaceHistory("CART_ITEMS", "ALL", id)}
+                    onOpenInvoice={setCartHistoryInvoiceId}
                   />
                 </div>
               </div>
@@ -6416,6 +6419,7 @@ export default function BillingPage() {
                 />
               </div>
 
+            </>}
               {/* Column 3: Customer & Payment Summary + Quick Actions (3 cols = ~25%) */}
               <div className={`billing-summary-column ${mobileBillingPane === "customer" ? "" : "hidden md:flex"}`}>
                 <BillingCustomerSummary searchOpen={isCustomerSearchOpen} onChangeSearchOpen={setCustomerSearchOpen}
@@ -6450,7 +6454,6 @@ export default function BillingPage() {
 
               </div>
             </div>
-          )}
 
           {activeWorkspaceTab === "worksheet" && (
             <BillingWorksheetView
@@ -6462,7 +6465,7 @@ export default function BillingPage() {
               discountAmount={subtotalDiscount}
               payableTotal={payableTotal}
               cashReceived={paymentMethod === "Cash" ? cashTendered : ""}
-              onChooseCustomer={() => { setActiveWorkspaceTab("billing"); setCustomerSearchOpen(true); }}
+              onChooseCustomer={() => setCustomerSearchOpen(true)}
               cashierName={currentUser?.name || operatorLabel}
               business={businessIdentity}
               note={invoiceNote}
@@ -6488,7 +6491,7 @@ export default function BillingPage() {
           <div className={activeWorkspaceTab === "history" ? "h-full min-h-0" : "hidden"}>
             <BillingPurchaseHistoryV2 selectedCustomer={selectedCustomer as any} cart={cartTableItems}
               visible={activeWorkspaceTab === "history"} navigation={historyNavigation}
-              onChangeCustomer={() => { setActiveWorkspaceTab("billing"); setCustomerSearchOpen(true); }}
+              onChangeCustomer={() => setCustomerSearchOpen(true)}
               onReturnToBilling={() => setActiveWorkspaceTab("billing")} />
           </div>
         </div>
@@ -8048,6 +8051,7 @@ export default function BillingPage() {
       />
 
 
+      <BillingInvoicePreview invoiceId={cartHistoryInvoiceId} onClose={() => setCartHistoryInvoiceId(null)} />
       <BillingCalculatorModal
         open={isCalculatorOpen}
         onClose={() => setIsCalculatorOpen(false)}

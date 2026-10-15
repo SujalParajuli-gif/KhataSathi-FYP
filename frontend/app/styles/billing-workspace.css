@@ -418,9 +418,9 @@
 .billing-stock-notice.is-unavailable {border-color:#e0dce0;background:#f1f1f1;color:#565456;}
 .billing-product-unavailable td:last-child button {opacity:.4;cursor:not-allowed;box-shadow:none;}
 .billing-summary-column {overflow-y:auto;scroll-padding:12px;}
-.billing-summary-stack {flex:1 0 auto;min-height:100%;}
-.billing-summary-content {flex:1 0 auto;}
-.billing-summary-stack .billing-payment-section {flex:1 0 auto;justify-content:space-between;}
+.billing-summary-stack {flex:0 0 auto;}
+.billing-summary-content {flex:0 0 auto;}
+.billing-summary-stack .billing-payment-section {flex:0 0 auto;justify-content:flex-start;}
 .billing-summary-content {color:#000;}
 .billing-summary-content .text-muted,.billing-summary-content .text-ink {color:#000;}
 .billing-summary-label {font-size:17px;font-weight:700;color:#000;}

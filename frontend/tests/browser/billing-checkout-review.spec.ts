@@ -220,8 +220,8 @@ test("refreshed prices derive matching payment allocations, change due, and paya
 
   // Dialog must show updated price of 100 and exact change of 400
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
-  await expect(page.getByText(/रु 100/i).first()).toBeVisible();
-  await expect(page.getByText(/रु 400/i).first()).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Finalize this invoice?", exact: true }).getByText(/रु 100/i).first()).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Finalize this invoice?", exact: true }).getByText(/रु 400/i).first()).toBeVisible();
 
   await page.getByRole("button", { name: /^Confirm/i }).click();
 
@@ -665,7 +665,7 @@ test("customer wholesale vs loyalty mode change invalidates open checkout review
   // Click FINAL CHECKOUT to reach confirm dialog (based on initial loyalty mode: wholesale 40 - 10% loyalty = 36)
   await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
-  await expect(page.getByText(/रु 36/i).first()).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Finalize this invoice?", exact: true }).getByText(/रु 36/i).first()).toBeVisible();
 
   // While confirmation dialog is open, customer pricing mode changes on server to wholesale mode:
   // loyaltyPercent 0, wholesalePercent 10.
@@ -689,7 +689,7 @@ test("customer wholesale vs loyalty mode change invalidates open checkout review
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
 
   // Renewed dialog shows updated price (retail 50 - 10% wholesale = 45)
-  await expect(page.getByText(/रु 45/i).first()).toBeVisible();
+  await expect(page.getByRole("dialog", { name: "Finalize this invoice?", exact: true }).getByText(/रु 45/i).first()).toBeVisible();
 
   await page.getByRole("button", { name: /^Confirm/i }).click();
 

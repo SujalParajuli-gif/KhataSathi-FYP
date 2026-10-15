@@ -4,9 +4,8 @@ import { formatBillingMoney } from "~/lib/billingWorkspace";
 import React, { useEffect, useRef, useState } from "react";
 import Icon from "~/components/ui/Icon";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
-import InvoiceDetailModal from "~/components/invoices/InvoiceDetailModal";
-import { getCustomerInvoiceEventsApi, getInvoiceApi, type CustomerInvoiceEventItem, type CustomerInvoiceEventsSummary } from "~/lib/api/endpoints";
-import { normalizeInvoice } from "~/lib/invoices";
+import BillingInvoicePreview from "./BillingInvoicePreview";
+import { getCustomerInvoiceEventsApi, type CustomerInvoiceEventItem, type CustomerInvoiceEventsSummary } from "~/lib/api/endpoints";
 import { shopToday } from "~/lib/billingWorkspace";
 import type { CustomerOption } from "./BillingCustomerSummary";
 import type { CartTableItem } from "./BillingCartTable";
@@ -21,7 +20,7 @@ export default function BillingPurchaseHistoryV2(p: Props) {
   const [events, setEvents] = useState<CustomerInvoiceEventItem[]>([]); const [summary, setSummary] = useState<CustomerInvoiceEventsSummary | null>(null);
   const [total, setTotal] = useState(0); const [pages, setPages] = useState(1); const [loading, setLoading] = useState(false); const [error, setError] = useState<string | null>(null);
   const request = useRef(0);
-  const [detailId, setDetailId] = useState<string | null>(null); const [detail, setDetail] = useState<any>(null); const [detailError, setDetailError] = useState<string | null>(null);
+  const [detailId, setDetailId] = useState<string | null>(null);
   const cartIds = [...new Set(p.cart.map(line => line.productId))].sort().join(",");
   useEffect(() => { setScope(p.navigation.scope); setPayment(p.navigation.payment); setPage(1); setDetailId(p.navigation.invoiceId || null); }, [p.navigation.revision]);
   useEffect(() => { setPage(1); setDetailId(null); }, [p.selectedCustomer?.id]);
@@ -41,12 +40,6 @@ export default function BillingPurchaseHistoryV2(p: Props) {
     }, search ? 180 : 0);
     return () => { clearTimeout(timer); controller.abort(); };
   }, [p.visible, p.selectedCustomer?.id, cartIds, scope, search, type, payment, from, to, page, pageSize]);
-  useEffect(() => {
-    if (!p.visible || !detailId) return;
-    let live = true; setDetail(null); setDetailError(null);
-    getInvoiceApi(detailId).then(value => { if (live) setDetail(normalizeInvoice(value.invoice || value)); }).catch(e => { if (live) setDetailError(e?.message || "Could not load invoice details."); });
-    return () => { live = false; };
-  }, [detailId, p.visible]);
   const reset = () => { setSearch(""); setFrom(""); setTo(""); setPreset("ALL"); setType("ALL"); setPayment("ALL"); setPage(1); };
   const choosePreset = (value: string) => { setPreset(value); setPage(1); if (value === "ALL") { setFrom(""); setTo(""); return; } const today = shopToday(); const date = new Date(`${today}T12:00:00Z`); if(value === "WEEK") date.setUTCDate(date.getUTCDate() - ((date.getUTCDay()+6)%7)); else if(value === "MONTH") date.setUTCDate(1); else date.setUTCDate(date.getUTCDate() - (value === "7D" ? 6 : value === "30D" ? 29 : value === "6M" ? 182 : 0)); setFrom(date.toISOString().slice(0, 10)); setTo(today); };
   return <section className="billing-history" aria-label="Purchase History">
@@ -74,6 +67,6 @@ export default function BillingPurchaseHistoryV2(p: Props) {
       <fieldset disabled={loading} aria-label="History pagination"><PaginationBar className="billing-history-pagination" page={page} totalPages={pages} total={total} start={(page-1)*pageSize} end={Math.min(page*pageSize,total)} label="records" pageSize={pageSize} pageSizeOptions={[10,15,25,50]} onPageChange={setPage} onPageSizeChange={value=>{setPageSize(value);setPage(1);}} showSinglePageControls/></fieldset>
 
     </div>
-    <InvoiceDetailModal formatMoney={formatBillingMoney} open={p.visible && Boolean(detailId)} invoice={detail} loading={Boolean(detailId) && !detail && !detailError} error={detailError} onClose={() => setDetailId(null)} />
+    <BillingInvoicePreview invoiceId={p.visible ? detailId : null} onClose={() => setDetailId(null)} />
   </section>;
 }
