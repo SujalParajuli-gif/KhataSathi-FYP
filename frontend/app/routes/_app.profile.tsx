@@ -1,3 +1,4 @@
+import ShopInformationPanel from "~/components/profile/ShopInformationPanel";
 import GIcon from "~/components/ui/Icon";
 import React, { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
@@ -1610,6 +1611,7 @@ export default function ProfilePage() {
         </div>
 
         <div className="order-2 lg:col-span-8 lg:order-none">
+          {adminTab === "personal" && <ShopInformationPanel/>}
           {adminTab !== "users" ? (
             <ProfilePanel
               title={

@@ -169,6 +169,7 @@ export default function RequestsPage() {
   const [filter, setFilter] = useState<HubFilter>("all");
   const [returnRequests, setReturnRequests] = useState<ReturnRequestRow[]>([]);
   const [discountRequests, setDiscountRequests] = useState<CustomerDiscountRequest[]>([]);
+  const [discountAddresses, setDiscountAddresses] = useState<Record<string, string>>({});
   const [discountPercents, setDiscountPercents] = useState<Record<string, number>>({});
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [busyKey, setBusyKey] = useState("");
@@ -283,6 +284,7 @@ export default function RequestsPage() {
     setBusyKey(`discount:${request.id}`);
     try {
       await approveCustomerDiscountRequestApi(request.id, {
+        address: discountAddresses[request.id]?.trim() || undefined,
         discountPercent: discountPercents[request.id] || request.discountPercent,
         adminNote: notes[request.id]?.trim() || undefined,
       });
@@ -552,6 +554,7 @@ export default function RequestsPage() {
                             className="mt-1 h-[42px] w-full rounded-[14px] border border-[#CFCFD3] px-3 text-[13px] font-bold outline-none focus:border-[#11120d]"
                           />
                         </label>
+<label className="block space-y-1 text-sm"><span>Customer address (required for a new customer)</span><input value={discountAddresses[request.id] || ""} onChange={e => setDiscountAddresses(current => ({ ...current, [request.id]: e.target.value }))} placeholder="Existing customers keep their saved address" className="w-full rounded-xl border border-control-line bg-white px-3 py-2 text-sm" /></label>
                         <textarea
                           value={notes[request.id] || ""}
                           onChange={(event) => setNote(request.id, event.target.value)}

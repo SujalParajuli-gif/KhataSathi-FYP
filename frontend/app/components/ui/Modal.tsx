@@ -1,4 +1,4 @@
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode, type RefObject } from "react";
 import { createPortal } from "react-dom";
 import Icon from "~/components/ui/Icon";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
@@ -31,6 +31,8 @@ type ModalFrameProps = {
   dialogClassName?: string;
   bodyClassName?: string;
   descriptionClassName?: string;
+  presentation?: "default" | "billing";
+  dismissOnBackdrop?: boolean;
 };
 
 // the base modal frame — provides the overlay, centered positioning, header with title, and close button
@@ -55,11 +57,11 @@ export function ModalFrame({
   dialogClassName,
   bodyClassName,
   descriptionClassName,
+  presentation = "default",
+  dismissOnBackdrop = true,
 }: ModalFrameProps) {
   useBodyScrollLock(open);
   const dialogRef = useRef<HTMLDivElement>(null);
-  const onCloseRef = useRef(onClose);
-  onCloseRef.current = onClose;
   const titleId = useId();
   const descriptionId = useId();
   const [anchorStyle, setAnchorStyle] = useState<React.CSSProperties | null>(null);
@@ -100,79 +102,19 @@ export function ModalFrame({
     };
   }, [open, anchorRef, desktopAnchored]);
 
-  useEffect(() => {
-    if (!open) return undefined;
-
-    const previouslyFocused = document.activeElement as HTMLElement | null;
-    const focusableSelector = [
-      "[data-modal-initial-focus]",
-      "button:not([disabled])",
-      "input:not([disabled]):not([type='hidden'])",
-      "select:not([disabled])",
-      "textarea:not([disabled])",
-      "a[href]",
-      "[tabindex]:not([tabindex='-1'])",
-    ].join(",");
-
-    function isTopDialog() {
-      const dialogs = document.querySelectorAll<HTMLElement>(
-        "[data-modal-frame='true'][aria-modal='true']",
-      );
-      return dialogs[dialogs.length - 1] === dialogRef.current;
-    }
-
-    function handleDialogKeys(event: KeyboardEvent) {
-      if (event.defaultPrevented || !isTopDialog()) return;
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onCloseRef.current();
-        return;
-      }
-      if (event.key !== "Tab" || !dialogRef.current) return;
-
-      const controls = Array.from(
-        dialogRef.current.querySelectorAll<HTMLElement>(focusableSelector),
-      ).filter((element) => element.offsetParent !== null);
-      if (controls.length === 0) {
-        event.preventDefault();
-        dialogRef.current.focus();
-        return;
-      }
-      const first = controls[0];
-      const last = controls[controls.length - 1];
-      if (event.shiftKey && document.activeElement === first) {
-        event.preventDefault();
-        last.focus();
-      } else if (!event.shiftKey && document.activeElement === last) {
-        event.preventDefault();
-        first.focus();
-      }
-    }
-
-    const animationFrame = window.requestAnimationFrame(() => {
-      const initialControl =
-        dialogRef.current?.querySelector<HTMLElement>("[data-modal-initial-focus]") ||
-        dialogRef.current?.querySelector<HTMLElement>(focusableSelector);
-      (initialControl || dialogRef.current)?.focus();
-    });
-    window.addEventListener("keydown", handleDialogKeys);
-    return () => {
-      window.cancelAnimationFrame(animationFrame);
-      window.removeEventListener("keydown", handleDialogKeys);
-      if (previouslyFocused?.isConnected) previouslyFocused.focus();
-    };
-  }, [open]);
+  useModalDialogFocus(open, dialogRef, onClose);
 
   if (!open || typeof document === "undefined") return null;
 
   return createPortal(
-    <div className={`fixed inset-0 ${overlayLayers[layer]}`}>
+    <div data-dialog-presentation={presentation} className={`fixed inset-0 ${overlayLayers[layer]}`}>
       {/* semi-transparent backdrop — clicking it closes the modal */}
       <button
         type="button"
         aria-label="Close dialog overlay"
-        onClick={onClose}
-        className="absolute inset-0 bg-slate-950/45 backdrop-blur-sm"
+        onClick={() => { if (dismissOnBackdrop) onClose(); }}
+        tabIndex={presentation === "billing" ? -1 : undefined}
+        className={presentation === "billing" ? "billing-dialog-backdrop absolute inset-0" : "absolute inset-0 bg-slate-950/45 backdrop-blur-sm"}
       />
 
       <div
@@ -202,14 +144,15 @@ export function ModalFrame({
           tabIndex={-1}
           style={anchorStyle?.maxHeight ? { maxHeight: anchorStyle.maxHeight } : undefined}
           className={cn(
-            "relative flex w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
+            presentation === "billing" ? "relative flex w-full flex-col overflow-hidden border bg-white" : "relative flex w-full flex-col overflow-hidden border border-[#CFCFD3] bg-[#FFFFFF]",
             anchorStyle ? "max-h-full" : drawer ? "h-[92dvh] max-h-[92dvh] rounded-t-[20px] sm:h-dvh sm:max-h-dvh sm:rounded-none" : "max-h-[calc(100dvh-16px)] sm:max-h-[calc(100dvh-32px)]",
-            drawer ? "" : mobileFullScreen
+            presentation === "billing" ? "" : drawer ? "" : mobileFullScreen
               ? cn("flex h-dvh max-h-dvh flex-col rounded-none border-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border", !dialogClassName?.includes("h-") && "lg:h-auto")
               : mobileBottomSheet
                 ? "flex max-h-[88dvh] flex-col rounded-t-[26px] border-x-0 border-b-0 lg:max-h-[calc(100vh-32px)] lg:rounded-[24px] lg:border"
                 : compact ? "rounded-[18px]" : "rounded-[20px] sm:rounded-[24px]",
             maxWidthClass,
+            presentation === "billing" && "billing-dialog",
             dialogClassName,
           )}
         >
@@ -222,8 +165,9 @@ export function ModalFrame({
           {/* modal header with title, optional description, and close button */}
           <div
             className={cn(
-              "flex items-start justify-between gap-4 border-b border-[#CFCFD3]",
-              compact ? "px-[16px] py-[14px] sm:px-[18px]" : "px-[16px] py-[16px] sm:px-[24px] sm:py-[20px]",
+              presentation === "billing" ? "flex items-start justify-between gap-4 border-b" : "flex items-start justify-between gap-4 border-b border-[#CFCFD3]",
+              presentation === "billing" && "billing-dialog-header",
+              presentation === "billing" ? "" : compact ? "px-[16px] py-[14px] sm:px-[18px]" : "px-[16px] py-[16px] sm:px-[24px] sm:py-[20px]",
               mobileBottomSheet && "pt-[22px]",
             )}
           >
@@ -232,7 +176,8 @@ export function ModalFrame({
                 id={titleId}
                 className={cn(
                   "font-semibold text-ink",
-                  compact ? "text-[16px]" : "text-[18px]",
+                  presentation === "billing" && "billing-dialog-title",
+                  presentation === "billing" ? "" : compact ? "text-[16px]" : "text-[18px]",
                 )}
               >
                 {title}
@@ -242,6 +187,7 @@ export function ModalFrame({
                   id={descriptionId}
                   className={cn(
                     "mt-[3px] font-normal text-muted",
+                    presentation === "billing" && "billing-dialog-description",
                     compact
                       ? "text-[12px] leading-[18px]"
                       : "text-[13px] leading-[24px]",
@@ -259,8 +205,9 @@ export function ModalFrame({
                 type="button"
                 onClick={onClose}
                 className={cn(
-                  "inline-flex shrink-0 items-center justify-center border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]",
-                  compact ? "h-10 w-10 rounded-[12px]" : "h-11 w-11 rounded-[14px]",
+                  presentation === "billing" ? "inline-flex shrink-0 items-center justify-center border bg-white text-muted transition hover:bg-inset hover:text-ink" : "inline-flex shrink-0 items-center justify-center border border-[#CFCFD3] bg-[#FFFFFF] text-[#8C8889] transition hover:bg-[#F3F4F6] hover:text-[#000000]",
+                  presentation === "billing" && "billing-dialog-close",
+                  presentation === "billing" ? "" : compact ? "h-10 w-10 rounded-[12px]" : "h-11 w-11 rounded-[14px]",
                 )}
                 aria-label="Close dialog"
               >
@@ -271,7 +218,8 @@ export function ModalFrame({
 
           {/* modal body content */}
           <div className={cn(
-            compact ? "px-[18px] py-[14px]" : "px-[16px] py-[14px] lg:px-[24px] lg:py-[20px]",
+            presentation === "billing" && "billing-dialog-body",
+            presentation === "billing" ? "" : compact ? "px-[18px] py-[14px]" : "px-[16px] py-[14px] lg:px-[24px] lg:py-[20px]",
             bodyClassName ? bodyClassName : "min-h-0 flex-1 overflow-y-auto overscroll-contain",
           )}>
             {children}
@@ -279,7 +227,7 @@ export function ModalFrame({
 
           {/* optional footer — typically contains action buttons */}
           {footer ? (
-            <div className="flex shrink-0 items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-4 sm:px-6 pb-[max(18px,calc(env(safe-area-inset-bottom)+12px))] pt-3.5 lg:px-6 lg:py-4">
+            <div className={cn(presentation === "billing" ? "billing-dialog-footer flex shrink-0 items-center justify-end gap-3 border-t" : "flex shrink-0 items-center justify-end gap-3 border-t border-[#CFCFD3] bg-[rgba(243,244,246,0.85)] px-4 sm:px-6 pb-[max(18px,calc(env(safe-area-inset-bottom)+12px))] pt-3.5 lg:px-6 lg:py-4")}>
               {footer}
             </div>
           ) : null}
@@ -298,6 +246,7 @@ type DialogButtonProps = {
   variant?: "primary" | "secondary" | "danger";
   icon?: string;
   disabled?: boolean;
+  presentation?: "default" | "billing";
 };
 
 // reusable button used inside dialogs — supports primary (dark), secondary (outline), and danger (red) variants
@@ -307,6 +256,7 @@ export function DialogButton({
   variant = "secondary",
   icon,
   disabled,
+  presentation = "default",
 }: DialogButtonProps) {
   // choosing the color scheme based on the variant
   const toneClass =
@@ -322,8 +272,8 @@ export function DialogButton({
       onClick={onClick}
       disabled={disabled}
       className={cn(
-        "inline-flex min-h-11 items-center justify-center gap-2 rounded-[14px] border px-4 py-2.5 text-[13px] font-extrabold transition active:scale-[0.98]",
-        toneClass,
+        presentation === "billing" ? `billing-dialog-button billing-dialog-button-${variant}` : "inline-flex min-h-11 items-center justify-center gap-2 rounded-[14px] border px-4 py-2.5 text-[13px] font-extrabold transition active:scale-[0.98]",
+        presentation !== "billing" && toneClass,
         disabled && "pointer-events-none opacity-50",
       )}
     >
@@ -347,6 +297,7 @@ type ConfirmDialogProps = {
   icon?: string;
   details?: ReactNode;
   busy?: boolean;
+  presentation?: "default" | "billing";
 };
 
 // confirmation dialog — used for destructive actions like cancelling invoices, deactivating products, etc.
@@ -363,6 +314,7 @@ export function ConfirmDialog({
   icon = tone === "danger" ? "warning" : "help",
   details,
   busy,
+  presentation = "default",
 }: ConfirmDialogProps) {
   const iconTone =
     tone === "danger"
@@ -371,14 +323,18 @@ export function ConfirmDialog({
 
   return (
     <ModalFrame
+      presentation={presentation}
+      dismissOnBackdrop={presentation !== "billing" || !busy}
+      dialogClassName={presentation === "billing" ? "billing-confirm-dialog" : undefined}
       open={open}
       onClose={onClose}
       title={title}
+      maxWidthClass={presentation === "billing" ? "max-w-[500px]" : undefined}
       mobileBottomSheet
       footer={(
         <div className="grid w-full grid-cols-2 gap-3">
-          <DialogButton onClick={onClose}>{cancelLabel}</DialogButton>
-          <DialogButton
+          <DialogButton presentation={presentation} onClick={onClose}>{cancelLabel}</DialogButton>
+          <DialogButton presentation={presentation}
             onClick={onConfirm}
             variant={tone === "danger" ? "danger" : "primary"}
             icon={tone === "danger" ? "block" : "check_circle"}
@@ -407,7 +363,7 @@ export function ConfirmDialog({
 
         {/* optional details section — used to show additional context before confirming */}
         {details ? (
-          <div className="rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.9)] p-[16px] text-[13px] text-[#565449]">
+          <div className={presentation === "billing" ? "billing-confirm-details" : "rounded-[18px] border border-[#CFCFD3] bg-[rgba(243,244,246,0.9)] p-[16px] text-[13px] text-[#565449]"}>
             {details}
           </div>
         ) : null}
@@ -420,6 +376,7 @@ export function ConfirmDialog({
 // --
 
 type SuccessDialogProps = {
+  presentation?: "default" | "billing";
   open: boolean;
   title: string;
   message: string;
@@ -431,6 +388,7 @@ type SuccessDialogProps = {
 
 // success dialog — shown after a successful operation like invoice finalization or payment confirmation
 export function SuccessDialog({
+  presentation = "default",
   open,
   title,
   message,
@@ -440,7 +398,7 @@ export function SuccessDialog({
   children,
 }: SuccessDialogProps) {
   return (
-    <ModalFrame
+    <ModalFrame presentation={presentation}
       open={open}
       onClose={onClose}
       title={title}
@@ -448,7 +406,7 @@ export function SuccessDialog({
       footer={(
         <div className="flex w-full items-center justify-end gap-3">
           {secondaryAction}
-          <DialogButton onClick={onClose} variant="primary" icon="check_circle">
+          <DialogButton presentation={presentation} onClick={onClose} variant="primary" icon="check_circle">
             {actionLabel}
           </DialogButton>
         </div>
@@ -531,4 +489,73 @@ export function StatusDialog({
 
     </ModalFrame>
   );
+}
+
+
+// Shared modal keyboard containment, initial focus and restoration; presentation remains with each dialog.
+export function useModalDialogFocus(open: boolean, dialogRef: RefObject<HTMLElement | null>, onClose: () => void, contentRevision?: string) {
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+  useEffect(() => {
+    if (!open) return undefined;
+
+    const previouslyFocused = document.activeElement as HTMLElement | null;
+    const focusableSelector = [
+      "[data-modal-initial-focus]",
+      "button:not([disabled])",
+      "input:not([disabled]):not([type='hidden'])",
+      "select:not([disabled])",
+      "textarea:not([disabled])",
+      "a[href]",
+      "[tabindex]:not([tabindex='-1'])",
+    ].join(",");
+
+    function isTopDialog() {
+      const dialogs = document.querySelectorAll<HTMLElement>(
+        "[data-modal-frame='true'][aria-modal='true']",
+      );
+      return dialogs[dialogs.length - 1] === dialogRef.current;
+    }
+
+    function handleDialogKeys(event: KeyboardEvent) {
+      if (event.defaultPrevented || !isTopDialog()) return;
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onCloseRef.current();
+        return;
+      }
+      if (event.key !== "Tab" || !dialogRef.current) return;
+
+      const controls = Array.from(
+        dialogRef.current.querySelectorAll<HTMLElement>(focusableSelector),
+      ).filter((element) => element.offsetParent !== null);
+      if (controls.length === 0) {
+        event.preventDefault();
+        dialogRef.current.focus();
+        return;
+      }
+      const first = controls[0];
+      const last = controls[controls.length - 1];
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+
+    const animationFrame = window.requestAnimationFrame(() => {
+      const initialControl =
+        dialogRef.current?.querySelector<HTMLElement>("[data-modal-initial-focus]") ||
+        dialogRef.current?.querySelector<HTMLElement>(focusableSelector);
+      (initialControl || dialogRef.current)?.focus();
+    });
+    window.addEventListener("keydown", handleDialogKeys);
+    return () => {
+      window.cancelAnimationFrame(animationFrame);
+      window.removeEventListener("keydown", handleDialogKeys);
+      if (previouslyFocused?.isConnected) previouslyFocused.focus();
+    };
+  }, [open, contentRevision]);
 }

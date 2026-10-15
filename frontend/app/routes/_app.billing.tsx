@@ -1,3 +1,8 @@
+import { formatBillingMoney } from "~/lib/billingWorkspace";
+import "~/styles/billing-workspace.css";
+import { paperReviewIssue, shopToday, type PaperReview } from "~/lib/billingWorkspace";
+import { getBusinessSettingsApi, getCategoriesApi } from "~/lib/api/endpoints";
+import { resolvePrintBusinessIdentity } from "~/lib/invoices";
 import React, {
   useCallback,
   useEffect,
@@ -48,18 +53,28 @@ import {
 } from "~/lib/api/endpoints";
 import {
   getManualBillRecord,
+  uploadInvoiceProofApi,
+  type BillScanObservations,
   recordManualBillReference,
   type ExpectedManualBillRecord,
   type ExternalDocumentType,
   type ManualBillRecord,
 } from "~/lib/api/manualBills";
-import BillingWorksheetModal from "~/components/billing/BillingWorksheetModal";
 import BillingCalculatorModal from "~/components/billing/BillingCalculatorModal";
 import BillingCustomerHistoryModal from "~/components/billing/BillingCustomerHistoryModal";
 import BillingCompactHistoryOverlay from "~/components/billing/BillingCompactHistoryOverlay";
 import CashierQrGalleryModal from "~/components/billing/CashierQrGalleryModal";
 import SavedSalePaymentFollowup from "~/components/billing/SavedSalePaymentFollowup";
 import ConfirmPaymentModal from "~/components/billing/ConfirmPaymentModal";
+import BillingProductBrowser from "~/components/billing/BillingProductBrowser";
+import BillingCompactCartHistory from "~/components/billing/BillingCompactCartHistory";
+import BillingCartTable, { type CartTableItem } from "~/components/billing/BillingCartTable";
+import BillingCustomerSummary from "~/components/billing/BillingCustomerSummary";
+import BillingToolsMenu from "~/components/billing/BillingToolsMenu";
+import BillingWorksheetView from "~/components/billing/BillingWorksheetView";
+import BillingPurchaseHistoryV2, { type HistoryNavigation } from "~/components/billing/BillingPurchaseHistoryV2";
+import BillingOcrComparisonModal from "~/components/billing/BillingOcrComparisonModal";
+import BillingPriceDifferPopover from "~/components/billing/BillingPriceDifferPopover";
 import {
   getEnabledPaymentAccountsApi,
   type EnabledPaymentAccountDto,
@@ -118,273 +133,6 @@ const BILLING_VIEW_SIZE_LABELS: Record<BillingViewSize, string> = {
   "105": "105%",
   "110": "110%",
 };
-const BILLING_VIEW_DENSITY: Record<
-  BillingViewSize,
-  {
-    scaleLabel: string;
-    topBar: string;
-    searchWidth: string;
-    scanWidth: string;
-    inputHeight: string;
-    topButton: string;
-    tableCols: string;
-    header: string;
-    headerHash: string;
-    headerTitle: string;
-    headerSub: string;
-    row: string;
-    rowMain: string;
-    rowSub: string;
-    qtyControl: string;
-    qtyButton: string;
-    qtyInput: string;
-    rowAction: string;
-    rightPanel: string;
-    rightPanelInner: string;
-    rightTopStack: string;
-    rightCheckoutStack: string;
-    customerCard: string;
-    billSummary: string;
-    billSummaryTitle: string;
-    billSummaryRows: string;
-    statusCard: string;
-    grandCard: string;
-    grandLabel: string;
-    grandTotal: string;
-    payButton: string;
-    secondaryButton: string;
-    footer: string;
-  }
-> = {
-  "85": {
-    scaleLabel: "85%",
-    topBar: "gap-2.5 px-[14px] py-[10px]",
-    searchWidth: "w-[500px] max-w-[38vw]",
-    scanWidth: "w-[255px]",
-    inputHeight: "h-[36px]",
-    topButton:
-      "flex h-[36px] items-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-2.5 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols: "grid-cols-[36px_minmax(200px,1fr)_98px_112px_126px_100px_44px]",
-    header:
-      "gap-2.5 border-b border-[#DADDE3] bg-[#F8FAFC] px-[13px] py-[6px] mt-[2px]",
-    headerHash: "text-center text-[15px] font-extrabold",
-    headerTitle: "text-[13px] font-extrabold leading-4",
-    headerSub: "mt-0.5 text-[10px] font-bold leading-3 text-[#565449]",
-    row: "gap-2 px-[13px] py-[4px]",
-    rowMain: "truncate text-[12px] font-extrabold leading-4 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-3 text-[#565449]",
-    qtyControl: "h-[28px]",
-    qtyButton: "w-[32px] text-[15px]",
-    qtyInput: "w-[46px] text-[12px]",
-    rowAction: "h-[28px] w-[28px]",
-    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
-    rightPanelInner: "gap-[9px] px-[12px] py-[10px]",
-    rightTopStack: "space-y-[10px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[10px]",
-    customerCard: "p-[11px]",
-    billSummary: "py-[16px] px-[18px]",
-    billSummaryTitle: "mb-[8px] text-[15px]",
-    billSummaryRows: "space-y-[8px] text-[14px]",
-    statusCard: "px-[9px] py-[7px]",
-    grandCard: "p-[12px]",
-    grandLabel: "mb-[4px] text-[12px]",
-    grandTotal: "text-[32px]",
-    payButton: "h-[48px] text-[13px]",
-    secondaryButton: "h-[38px] text-[12px]",
-    footer: "px-[16px] py-[6px] text-[10px]",
-  },
-  "90": {
-    scaleLabel: "90%",
-    topBar: "gap-3 px-[16px] py-[12px]",
-    searchWidth: "w-[520px] max-w-[39vw]",
-    scanWidth: "w-[270px]",
-    inputHeight: "h-[38px]",
-    topButton:
-      "flex h-[38px] items-center gap-1.5 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols:
-      "grid-cols-[38px_minmax(220px,1fr)_104px_118px_132px_106px_46px]",
-    header:
-      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[14px] py-[7px] mt-[2px]",
-    headerHash: "text-center text-[16px] font-extrabold",
-    headerTitle: "text-[13px] font-extrabold leading-4",
-    headerSub: "mt-0.5 text-[10px] font-bold leading-3 text-[#565449]",
-    row: "gap-2 px-[14px] py-[5px]",
-    rowMain: "truncate text-[12px] font-extrabold leading-4 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-3 text-[#565449]",
-    qtyControl: "h-[30px]",
-    qtyButton: "w-[34px] text-[16px]",
-    qtyInput: "w-[48px] text-[12px]",
-    rowAction: "h-[30px] w-[30px]",
-    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
-    rightPanelInner: "gap-[10px] px-[14px] py-[11px]",
-    rightTopStack: "space-y-[11px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[11px]",
-    customerCard: "p-[12px]",
-    billSummary: "py-[18px] px-[20px]",
-    billSummaryTitle: "mb-[9px] text-[16px]",
-    billSummaryRows: "space-y-[9px] text-[15px]",
-    statusCard: "px-[10px] py-[8px]",
-    grandCard: "p-[14px]",
-    grandLabel: "mb-[5px] text-[13px]",
-    grandTotal: "text-[34px]",
-    payButton: "h-[50px] text-[14px]",
-    secondaryButton: "h-[40px] text-[12px]",
-    footer: "px-[18px] py-[7px] text-[11px]",
-  },
-  "95": {
-    scaleLabel: "95%",
-    topBar: "gap-3 px-[16px] py-[12px]",
-    searchWidth: "w-[540px] max-w-[40vw]",
-    scanWidth: "w-[285px]",
-    inputHeight: "h-[39px]",
-    topButton:
-      "flex h-[39px] items-center gap-1.5 rounded-[13px] border border-[#CFCFD3] bg-[#FFFFFF] px-3.5 text-[12px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols:
-      "grid-cols-[40px_minmax(230px,1fr)_110px_124px_138px_112px_48px]",
-    header:
-      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[8px] mt-[2px]",
-    headerHash: "text-center text-[17px] font-extrabold",
-    headerTitle: "text-[14px] font-extrabold leading-5",
-    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
-    row: "gap-2.5 px-[16px] py-[6px]",
-    rowMain: "truncate text-[12px] font-extrabold leading-5 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[10px] font-bold leading-4 text-[#565449]",
-    qtyControl: "h-[32px]",
-    qtyButton: "w-[36px] text-[17px]",
-    qtyInput: "w-[50px] text-[12px]",
-    rowAction: "h-[30px] w-[30px]",
-    rightPanel: "w-[28%] min-w-[280px] max-w-[400px]",
-    rightPanelInner: "gap-[12px] px-[16px] py-[12px]",
-    rightTopStack: "space-y-[12px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[12px]",
-    customerCard: "p-[13px]",
-    billSummary: "py-[22px] px-[22px]",
-    billSummaryTitle: "mb-[10px] text-[17px]",
-    billSummaryRows: "space-y-[10px] text-[16px]",
-    statusCard: "px-[11px] py-[8px]",
-    grandCard: "p-[16px]",
-    grandLabel: "mb-[5px] text-[14px]",
-    grandTotal: "text-[37px]",
-    payButton: "h-[54px] text-[15px]",
-    secondaryButton: "h-[42px] text-[12px]",
-    footer: "px-[20px] py-[8px] text-[11px]",
-  },
-  "100": {
-    scaleLabel: "100%",
-    topBar: "gap-4 px-[18px] py-[15px]",
-    searchWidth: "w-[560px] max-w-[42vw]",
-    scanWidth: "w-[300px]",
-    inputHeight: "h-[40px]",
-    topButton:
-      "flex h-[40px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-4 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols:
-      "grid-cols-[44px_minmax(260px,1fr)_118px_132px_150px_120px_54px]",
-    header:
-      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[18px] py-[10px] mt-[3px]",
-    headerHash: "text-center text-[18px] font-extrabold",
-    headerTitle: "text-[15px] font-extrabold leading-5",
-    headerSub: "mt-0.5 text-[12px] font-bold leading-4 text-[#565449]",
-    row: "gap-3 px-[18px] py-[7px]",
-    rowMain: "truncate text-[13px] font-extrabold leading-5 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
-    qtyControl: "h-[34px]",
-    qtyButton: "w-[38px] text-[18px]",
-    qtyInput: "w-[54px] text-[13px]",
-    rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
-    rightPanelInner: "gap-[14px] px-[20px] py-[15px]",
-    rightTopStack: "space-y-[14px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[14px]",
-    customerCard: "p-[14px]",
-    billSummary: "py-[28px] px-[30px]",
-    billSummaryTitle: "mb-[12px] text-[18px]",
-    billSummaryRows: "space-y-[12px] text-[17px]",
-    statusCard: "px-[12px] py-[9px]",
-    grandCard: "p-[18px]",
-    grandLabel: "mb-[6px] text-[15px]",
-    grandTotal: "text-[40px]",
-    payButton: "h-[58px] text-[16px]",
-    secondaryButton: "h-[46px] text-[13px]",
-    footer: "px-[24px] py-[10px] text-[12px]",
-  },
-  "105": {
-    scaleLabel: "105%",
-    topBar: "gap-3 px-[16px] py-[12px]",
-    searchWidth: "w-[560px] max-w-[40vw]",
-    scanWidth: "w-[290px]",
-    inputHeight: "h-[42px]",
-    topButton:
-      "flex h-[42px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3.5 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols:
-      "grid-cols-[42px_minmax(220px,1fr)_108px_122px_142px_112px_48px]",
-    header:
-      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[10px] mt-[3px]",
-    headerHash: "text-center text-[18px] font-extrabold",
-    headerTitle: "text-[15px] font-extrabold leading-5",
-    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
-    row: "gap-2.5 px-[16px] py-[8px]",
-    rowMain: "truncate text-[14px] font-extrabold leading-5 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
-    qtyControl: "h-[36px]",
-    qtyButton: "w-[38px] text-[18px]",
-    qtyInput: "w-[54px] text-[14px]",
-    rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
-    rightPanelInner: "gap-[13px] px-[18px] py-[14px]",
-    rightTopStack: "space-y-[12px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[12px]",
-    customerCard: "p-[14px]",
-    billSummary: "py-[22px] px-[24px]",
-    billSummaryTitle: "mb-[12px] text-[18px]",
-    billSummaryRows: "space-y-[12px] text-[18px]",
-    statusCard: "px-[12px] py-[9px]",
-    grandCard: "p-[18px]",
-    grandLabel: "mb-[6px] text-[15px]",
-    grandTotal: "text-[42px]",
-    payButton: "h-[58px] text-[16px]",
-    secondaryButton: "h-[46px] text-[13px]",
-    footer: "px-[20px] py-[9px] text-[11px]",
-  },
-  "110": {
-    scaleLabel: "110%",
-    topBar: "gap-3 px-[16px] py-[12px]",
-    searchWidth: "w-[545px] max-w-[38vw]",
-    scanWidth: "w-[275px]",
-    inputHeight: "h-[42px]",
-    topButton:
-      "flex h-[42px] items-center gap-2 rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] px-3 text-[13px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] disabled:opacity-50",
-    tableCols:
-      "grid-cols-[40px_minmax(200px,1fr)_104px_118px_136px_108px_46px]",
-    header:
-      "gap-3 border-b border-[#DADDE3] bg-[#F8FAFC] px-[16px] py-[10px] mt-[3px]",
-    headerHash: "text-center text-[18px] font-extrabold",
-    headerTitle: "text-[15px] font-extrabold leading-5",
-    headerSub: "mt-0.5 text-[11px] font-bold leading-4 text-[#565449]",
-    row: "gap-2 px-[15px] py-[8px]",
-    rowMain: "truncate text-[14px] font-extrabold leading-5 text-[#11120d]",
-    rowSub: "mt-0.5 truncate text-[11px] font-bold leading-4 text-[#565449]",
-    qtyControl: "h-[36px]",
-    qtyButton: "w-[38px] text-[18px]",
-    qtyInput: "w-[54px] text-[14px]",
-    rowAction: "h-[32px] w-[32px]",
-    rightPanel: "w-[30%] min-w-[300px] max-w-[420px]",
-    rightPanelInner: "gap-[12px] px-[17px] py-[13px]",
-    rightTopStack: "space-y-[12px] shrink-0",
-    rightCheckoutStack: "mt-auto space-y-[12px]",
-    customerCard: "p-[14px]",
-    billSummary: "py-[22px] px-[24px]",
-    billSummaryTitle: "mb-[12px] text-[18px]",
-    billSummaryRows: "space-y-[12px] text-[18px]",
-    statusCard: "px-[12px] py-[9px]",
-    grandCard: "p-[18px]",
-    grandLabel: "mb-[6px] text-[15px]",
-    grandTotal: "text-[42px]",
-    payButton: "h-[58px] text-[16px]",
-    secondaryButton: "h-[46px] text-[13px]",
-    footer: "px-[20px] py-[9px] text-[11px]",
-  },
-};
-
 function readStoredBillingViewSize(): BillingViewSize {
   if (typeof window === "undefined") return "100";
   const stored = window.localStorage.getItem(BILLING_VIEW_SIZE_STORAGE_KEY);
@@ -462,6 +210,7 @@ type Product = {
   quantityStep: number;
   wholesaleEligible: boolean;
   retailPrice: number;
+  sellingPriceStatus?: "READY" | "PENDING";
   wholesalePrice: number;
   wholesaleQtyThreshold?: number;
   stock: number;
@@ -940,13 +689,7 @@ function acknowledgeDraftRequestNotice(
   }
 }
 
-// we use this to format numbers as Nepalese Rupees (NPR)
-// without this it looks like plain text "1500" instead of "NPR 1,500"
-function formatNpr(n: number) {
-  const s = Math.round(n).toString();
-  const withComma = s.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
-  return `NPR ${withComma}`;
-}
+
 
 // we use this to keep percentages between 0 and 100
 // so an admin can't accidentally type a 200% discount and break the math
@@ -1362,7 +1105,7 @@ export default function BillingPage() {
   const [billingViewSize, setBillingViewSize] = useState<BillingViewSize>(() =>
     readStoredBillingViewSize(),
   );
-  const billingView = BILLING_VIEW_DENSITY[billingViewSize];
+
   const isManager = currentUser?.role === "manager";
   const isCashier = currentUser?.role === "cashier";
   const operatorLabel = currentUser
@@ -1399,7 +1142,7 @@ export default function BillingPage() {
     });
   }
   const [searchParams] = useSearchParams();
-  const [isWorksheetOpen, setIsWorksheetOpen] = useState(false);
+  function setIsWorksheetOpen(open: boolean) { if (open) setActiveWorkspaceTab("worksheet"); }
   const [isCalculatorOpen, setIsCalculatorOpen] = useState(false);
   const [isCompactHistoryOpen, setIsCompactHistoryOpen] = useState(false);
   const [isDetailedHistoryOpen, setIsDetailedHistoryOpen] = useState(false);
@@ -1417,8 +1160,59 @@ export default function BillingPage() {
   const [gatewayDisplay, setGatewayDisplay] = useState<GatewayDisplayResponse | null>(null);
   const [paperDraftBillNo, setPaperDraftBillNo] = useState("");
   const [paperDraftDocumentType, setPaperDraftDocumentType] = useState<ExternalDocumentType>("PAN_INVOICE");
-  const [paperDraftBillDate, setPaperDraftBillDate] = useState(() => new Date().toLocaleDateString("en-CA"));
+  const [paperDraftBillDate, setPaperDraftBillDate] = useState(shopToday);
   const [paperDraftChoice, setPaperDraftChoice] = useState<"RECORD_AFTER_SAVE" | "LATER">("RECORD_AFTER_SAVE");
+  const [activeWorkspaceTab, setActiveWorkspaceTab] = useState<"billing" | "worksheet" | "history">("billing");
+  const worksheetReviewRef = useRef<string | null>(null);
+  const cartSessionRef = useRef(0);
+  const [businessIdentity, setBusinessIdentity] = useState(() => ({ ...resolvePrintBusinessIdentity(), displayName: "Loading business information…" }));
+  useEffect(() => {
+    let live = true;
+    getBusinessSettingsApi().then(settings => { if (live) setBusinessIdentity({ ...resolvePrintBusinessIdentity(settings), displayName: settings.businessName?.trim() || settings.legalName?.trim() || "Business name not configured" }); }).catch(() => { if (live) setBusinessIdentity({ ...resolvePrintBusinessIdentity(), displayName: "Business information unavailable" }); });
+    return () => { live = false; };
+  }, []);
+  const [historyNavigation, setHistoryNavigation] = useState<HistoryNavigation>({ scope: "INVOICES", payment: "ALL", revision: 0 });
+  function openWorkspaceHistory(scope: "INVOICES" | "CART_ITEMS" = "INVOICES", payment: "ALL" | "OUTSTANDING" = "ALL", invoiceId?: string) {
+    setHistoryNavigation(current => ({ scope, payment, invoiceId, revision: current.revision + 1 }));
+    setActiveWorkspaceTab("history");
+  }
+  const [mobileBillingPane, setMobileBillingPane] = useState<"cart" | "products" | "customer">("cart");
+  const [isPaperException, setIsPaperException] = useState(false);
+  const [paperExceptionReason, setPaperExceptionReason] = useState("");
+  const [isOcrComparisonOpen, setIsOcrComparisonOpen] = useState(false);
+  const [ocrSourceFile, setOcrSourceFile] = useState<File | null>(null);
+  const [ocrSourceObservations, setOcrSourceObservations] = useState<BillScanObservations | null>(null);
+  const [ocrCheckedFingerprint, setOcrCheckedFingerprint] = useState<string | null>(null);
+  const [proofFollowup, setProofFollowup] = useState<{ invoiceId: string; invoiceNo?: string; file: File | null; error: string } | null>(() => {
+    try { const actor = getAuthUser()?.id; const raw = window.sessionStorage.getItem(`khatasathi:pendingProof:${actor}`); const saved = raw ? JSON.parse(raw) : null;
+      return saved && typeof saved.invoiceId === "string" ? { ...saved, file: null, error: "The original file did not survive reload. Select it again to attach to this saved sale." } : null;
+    } catch { return null; }
+  });
+  const [proofRetrying, setProofRetrying] = useState(false);
+  useEffect(() => {
+    try { const key = `khatasathi:pendingProof:${getAuthUser()?.id}`;
+      if (proofFollowup) window.sessionStorage.setItem(key, JSON.stringify({ invoiceId: proofFollowup.invoiceId, invoiceNo: proofFollowup.invoiceNo }));
+      else window.sessionStorage.removeItem(key);
+    } catch { /* Visible follow-up stays available even if browser storage is restricted. */ }
+  }, [proofFollowup]);
+  async function retryProofAttachment() {
+    if (!proofFollowup?.file || proofRetrying) return;
+    setProofRetrying(true);
+    try { await uploadInvoiceProofApi(proofFollowup.invoiceId, proofFollowup.file); setProofFollowup(null); showToast("success", "Original proof attached to the saved sale."); }
+    catch (error: any) { setProofFollowup(current => current ? { ...current, error: error?.message || "Proof upload failed; the sale is already saved. Retry attachment only." } : null); }
+    finally { setProofRetrying(false); }
+  }
+
+  const [priceDifferItem, setPriceDifferItem] = useState<{
+    item: CartTableItem;
+    past: CustomerProductPurchaseHistoryItem[];
+    anchor?: HTMLElement;
+  } | null>(null);
+  const [catalogCategory, setCatalogCategory] = useState("ALL");
+  const [catalogSearch, setCatalogSearch] = useState("");
+  const [catalogSort, setCatalogSort] = useState("popularity");
+  const [catalogPage, setCatalogPage] = useState(1);
+  const catalogPageSize = 15;
   const [fonepayConfirmed, setFonepayConfirmed] = useState(false);
   const [storageLimitationWarning, setStorageLimitationWarning] = useState<string | null>(null);
   const [manualPaymentInvoiceId, setManualPaymentInvoiceId] = useState<string | null>(null);
@@ -1536,6 +1330,7 @@ export default function BillingPage() {
       quantityStep: Number(p.quantityStep ?? 1),
       wholesaleEligible: p.wholesaleEligible !== false,
       retailPrice: p.retailPrice || 0,
+      sellingPriceStatus: p.sellingPriceStatus,
       wholesalePrice: p.wholesalePrice || 0,
       wholesaleQtyThreshold: p.wholesaleQtyThreshold || 1,
       stock: Number(p.availableStock ?? p.stock ?? 0),
@@ -1697,11 +1492,17 @@ export default function BillingPage() {
     const controller = new AbortController();
     async function load() {
       try {
-        const [custData, parkedData, privilegeData] = await Promise.allSettled([
+        const [prodData, custData, parkedData, privilegeData] = await Promise.allSettled([
+          listProductsApi({ active: "true", page: 1, pageSize: 100, sortBy: "popularity" }, { signal: controller.signal }),
           listCustomersApi(true, { signal: controller.signal }),
           listParkedDraftsApi({ signal: controller.signal }),
           getMyCashierPrivilegesApi({ signal: controller.signal }),
         ]);
+
+        if (prodData.status === "fulfilled" && prodData.value) {
+          const raw = Array.isArray(prodData.value) ? prodData.value : (prodData.value.products || []);
+          mergeProducts(mapRawProducts(raw));
+        }
 
         if (custData.status === "fulfilled" && custData.value) {
           // mapping customers into a lighter billing shape keeps the rest of the page simpler
@@ -1722,7 +1523,7 @@ export default function BillingPage() {
           setCashierPrivilege(privilegeData.value.privilege);
         }
 
-        const rejected = [custData, parkedData, privilegeData].find(
+        const rejected = [custData, parkedData, privilegeData, prodData].find(
           (result) => result.status === "rejected" && isRateLimitError(result.reason),
         );
         if (rejected) requestRateLimitRecovery();
@@ -1772,6 +1573,19 @@ export default function BillingPage() {
   const [customerQuery, setCustomerQuery] = useState(""); // search text inside the customer picker
   const [customerSearchIndex, setCustomerSearchIndex] = useState(0);
   const [selectedCartRowIndex, setSelectedCartRowIndex] = useState(-1);
+  const cartNavigationFrameRef = useRef<number | null>(null);
+  const queuedCartNavigationRef = useRef<Array<(index: number) => number>>([]);
+  useEffect(() => () => { if (cartNavigationFrameRef.current !== null) cancelAnimationFrame(cartNavigationFrameRef.current); }, []);
+  function queueCartNavigation(change: (index: number) => number) {
+    queuedCartNavigationRef.current.push(change);
+    if (cartNavigationFrameRef.current !== null) return;
+    cartNavigationFrameRef.current = requestAnimationFrame(() => {
+      cartNavigationFrameRef.current = null;
+      const changes = queuedCartNavigationRef.current.splice(0);
+      setSelectedCartRowIndex(index => changes.reduce((value, apply) => apply(value), index));
+    });
+  }
+
   const [selectedCustomerId, setSelectedCustomerId] = useState<string | null>(
     null,
   );
@@ -2825,8 +2639,9 @@ export default function BillingPage() {
       const isInactive = !p.active;
       const isInsufficientStock = line.qty > p.stock;
       const isInvalidStep = !isQuantityStepCompliant(line.qty, p.quantityStep);
-      const isUnresolved = isInactive || isInsufficientStock || isInvalidStep;
-      const unresolvedReason = isInactive
+      const isUnpriced = p.sellingPriceStatus === "PENDING";
+      const isUnresolved = isInactive || isInsufficientStock || isInvalidStep || isUnpriced;
+      const unresolvedReason = isUnpriced ? ("UNPRICED" as const) : isInactive
         ? ("INACTIVE" as const)
         : isInsufficientStock
           ? ("INSUFFICIENT_STOCK" as const)
@@ -2864,7 +2679,7 @@ export default function BillingPage() {
   const overrideDiffLabel = overrideDiffIsReduction
     ? "Price reduction"
     : "Price increase";
-  const overrideDiffDisplay = `${overrideDiffIsReduction ? "-" : "+"}${formatNpr(overrideDiffAbs)}`;
+  const overrideDiffDisplay = `${overrideDiffIsReduction ? "-" : "+"}${formatBillingMoney(overrideDiffAbs)}`;
   const canUsePriceOverride =
     isManager || cashierPrivilege?.canOverrideBillingPrice === true;
   const priceOverrideTargetRow = priceOverrideTargetId
@@ -3060,22 +2875,22 @@ export default function BillingPage() {
                 : "Exact cash ready";
   const paymentStateDetail =
     paymentMethod === "Split"
-      ? `Cash ${formatNpr(splitCashNum)} + digital ${formatNpr(splitDigitalAmount)}.`
+      ? `Cash ${formatBillingMoney(splitCashNum)} + digital ${formatBillingMoney(splitDigitalAmount)}.`
       : paymentStatus === "Unpaid"
         ? "No payment recorded now."
         : paymentStatus === "Partial"
-          ? `Balance due ${formatNpr(balanceDue)}.`
+          ? `Balance due ${formatBillingMoney(balanceDue)}.`
           : paymentMethod === "Fonepay"
-            ? `Collect ${formatNpr(payableTotal)} by Fonepay.`
+            ? `Collect ${formatBillingMoney(payableTotal)} by Fonepay.`
             : paymentMethod === "Bank Transfer"
-            ? `Collect ${formatNpr(payableTotal)} by Bank Transfer.`
+            ? `Collect ${formatBillingMoney(payableTotal)} by Bank Transfer.`
             : paymentMethod === "eSewa"
-            ? `Collect ${formatNpr(payableTotal)} online.`
+            ? `Collect ${formatBillingMoney(payableTotal)} online.`
             : cashShort > 0
-              ? `Need ${formatNpr(cashShort)} more.`
+              ? `Need ${formatBillingMoney(cashShort)} more.`
               : changeDue > 0
-                ? `Give ${formatNpr(changeDue)} back.`
-                : `Cash matches ${formatNpr(payableTotal)}.`;
+                ? `Give ${formatBillingMoney(changeDue)} back.`
+                : `Cash matches ${formatBillingMoney(payableTotal)}.`;
   const paymentStateTone =
     paymentMethod === "Cash" && paymentStatus === "Paid" && changeDue > 0
       ? "success"
@@ -3672,6 +3487,7 @@ export default function BillingPage() {
   // we use this to clear all current cart data when a transaction finishes or is cancelled manually
   // the stored cart is cleared here too so the next visit starts fresh on purpose
   function resetBill(options?: { forceClearPending?: boolean; preserveStorageWarning?: boolean }) {
+    cartSessionRef.current++;
     if (pendingCheckoutRef.current && !options?.forceClearPending) {
       writeStoredBillingCart([], null, null, null, pendingCheckoutRef.current);
     } else {
@@ -4066,6 +3882,7 @@ export default function BillingPage() {
         throw new Error("This request has no accepted items to load.");
       }
 
+      cartSessionRef.current++;
       setCart(acceptedLines);
       setActiveDraftInvoiceId(null);
       setActiveDraftRequestId(accepted.id);
@@ -4142,6 +3959,7 @@ export default function BillingPage() {
       }))
       .filter((item) => item.productId);
 
+    cartSessionRef.current++;
     setCart(nextCart);
     setActiveDraftInvoiceId(resumed.id);
     setActiveDraftRequestId(null);
@@ -4334,9 +4152,22 @@ export default function BillingPage() {
     }
   }
 
+  function currentPaperReview(): PaperReview {
+    return isPaperException ? { kind: "EXCEPTION", reason: paperExceptionReason.trim() } : { kind: "REFERENCE", billNo: paperDraftBillNo.trim(), billDate: paperDraftBillDate, documentType: paperDraftDocumentType };
+  }
+
+  function currentWorksheetFingerprint() {
+    return JSON.stringify([cart, cartRows.map(row => [row.productId, row.qty, row.unitPrice]), selectedCustomerId, invoiceNote, payableTotal, currentPaperReview()]);
+  }
+
   function openPaymentFlow(nextMethod?: PaymentMethod) {
     if (pendingCheckout) {
       setPendingBillingConfirm("checkout");
+      return;
+    }
+    if (nextMethod) setPaymentMethod(nextMethod);
+    if (worksheetReviewRef.current !== currentWorksheetFingerprint()) {
+      setActiveWorkspaceTab("worksheet");
       return;
     }
     // this handles when someone tries to open payment without any cart lines
@@ -4360,7 +4191,7 @@ export default function BillingPage() {
       if (nextMethod === "Split") ensureDefaultSplitPayments();
     }
     if ((nextMethod || paymentMethod) === "Cash" && paymentStatus === "Paid") {
-      setCashTendered(String(payableTotal));
+      if (!cashTendered.trim()) setCashTendered(String(payableTotal));
     }
     if ((nextMethod || paymentMethod) === "Split") ensureDefaultSplitPayments();
     setBillingError("");
@@ -4406,8 +4237,8 @@ export default function BillingPage() {
       if (Math.abs(splitBalance) > 0.01) {
         setPaymentError(
           splitBalance > 0
-            ? `Split is short by ${formatNpr(splitBalance)}.`
-            : `Split exceeds total by ${formatNpr(Math.abs(splitBalance))}.`,
+            ? `Split is short by ${formatBillingMoney(splitBalance)}.`
+            : `Split exceeds total by ${formatBillingMoney(Math.abs(splitBalance))}.`,
         );
         return false;
       }
@@ -4531,9 +4362,9 @@ export default function BillingPage() {
     if (cashDueAmount <= 0) return null;
     const options = [
       { label: "Exact", value: cashDueAmount },
-      { label: "NPR 500", value: 500 },
-      { label: "NPR 1,000", value: 1000 },
-      { label: "NPR 5,000", value: 5000 },
+      { label: formatBillingMoney(500), value: 500 },
+      { label: formatBillingMoney(1000), value: 1000 },
+      { label: formatBillingMoney(5000), value: 5000 },
     ];
 
     return (
@@ -4868,6 +4699,13 @@ export default function BillingPage() {
 
   async function confirmCheckout() {
     // stopping here prevents double submits and blocks invalid partial payment states
+    if (!pendingCheckout && worksheetReviewRef.current !== currentWorksheetFingerprint()) {
+      setShowPaymentModal(false);
+      setPendingBillingConfirm(null);
+      setActiveWorkspaceTab("worksheet");
+      setBillingError("The worksheet changed. Review it again before payment.");
+      return;
+    }
     if (!pendingCheckout && !canConfirm) return;
     if (!pendingCheckout && !validatePaymentBeforeConfirm()) return;
     if (!pendingCheckout && !reviewedCandidate) return;
@@ -4908,6 +4746,7 @@ export default function BillingPage() {
             customerId: reviewedCandidate!.customerId,
             draftRequestId: reviewedCandidate!.draftRequestId,
             notes: reviewedCandidate!.notes,
+            paperReview: currentPaperReview(),
             items: reviewedCandidate!.items.map((line) => ({
               productId: line.productId,
               qty: line.qty,
@@ -4971,6 +4810,13 @@ export default function BillingPage() {
           LAST_INVOICE_PRINT_STORAGE_KEY,
           invoiceId,
         );
+      }
+
+      if (invoiceId && ocrSourceFile) {
+        const original = ocrSourceFile;
+        try { await uploadInvoiceProofApi(invoiceId, original); }
+        catch (error: any) { setProofFollowup({ invoiceId, invoiceNo, file: original, error: error?.message || "Sale saved; original proof attachment needs retry." }); }
+        setOcrSourceFile(null); setOcrSourceObservations(null); setOcrCheckedFingerprint(null);
       }
 
       let paperRecordedSuccessfully = false;
@@ -5294,6 +5140,14 @@ export default function BillingPage() {
       const responseData = err?.response?.data;
       const responseCode = responseData?.code;
 
+      if (responseCode === "CHECKOUT_PAPER_REVIEW_REQUIRED") {
+        // This code is emitted only after the fresh transaction rolled back; unknown errors keep their frozen payload.
+        setPendingCheckout(null); setReviewedCandidate(null); worksheetReviewRef.current = null;
+        writeStoredBillingCart(cart, activeDraftInvoiceId, selectedCustomerId, activeDraftRequestId, null);
+        setShowPaymentModal(false); setActiveWorkspaceTab("worksheet");
+        setBillingError("Checkout was not posted. Review the physical reference or an explicit exception before retrying.");
+        return;
+      }
       if (responseCode === "CHECKOUT_REVIEW_REQUIRED") {
         setPendingCheckout(null);
         setReviewedCandidate(null);
@@ -5378,6 +5232,8 @@ export default function BillingPage() {
         return;
       }
 
+      setActiveWorkspaceTab("billing");
+      setShowPaymentModal(false);
       setBillingError(
         responseData?.error ||
           "Checkout outcome is unknown. Your bill is saved; retry to recover the same invoice.",
@@ -5616,7 +5472,7 @@ export default function BillingPage() {
           "This will remove the current billing draft, selected customer, and payment selections from this screen.",
         confirmLabel: "Clear Cart",
         tone: "danger" as const,
-        icon: "restart_alt",
+        icon: "delete",
         onConfirm: confirmResetBill,
         details: (
           <div className="space-y-2">
@@ -5637,7 +5493,7 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <span>Total</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(payableTotal)}
+                {formatBillingMoney(payableTotal)}
               </span>
             </div>
           </div>
@@ -5673,7 +5529,7 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <span>Total</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(payableTotal)}
+                {formatBillingMoney(payableTotal)}
               </span>
             </div>
           </div>
@@ -5707,7 +5563,7 @@ export default function BillingPage() {
               <span>Payable total</span>
               <span className="font-extrabold text-slate-900">
                 {pPayable !== undefined
-                  ? formatNpr(pPayable)
+                  ? formatBillingMoney(pPayable)
                   : "Not recorded (legacy submission)"}
               </span>
             </div>
@@ -5773,7 +5629,7 @@ export default function BillingPage() {
               ? "Confirm Bank Transfer"
             : paymentMethod === "eSewa"
               ? "Continue to eSewa"
-              : `Confirm ${formatNpr(dispCollect)}`,
+              : `Confirm ${formatBillingMoney(dispCollect)}`,
       tone: "primary" as const,
       icon:
         paymentMethod === "Split"
@@ -5799,20 +5655,20 @@ export default function BillingPage() {
           <div className="flex items-center justify-between gap-3">
             <span>Invoice total</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(dispTotal)}
+              {formatBillingMoney(dispTotal)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
             <span>Collect now</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(dispCollect)}
+              {formatBillingMoney(dispCollect)}
             </span>
           </div>
           {paymentMethod === "Split" ? (
             <div className="flex items-center justify-between gap-3">
               <span>eSewa amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(dispEsewa)}
+                {formatBillingMoney(dispEsewa)}
               </span>
             </div>
           ) : null}
@@ -5820,7 +5676,7 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <span>Fonepay amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(dispFonepay)}
+                {formatBillingMoney(dispFonepay)}
               </span>
             </div>
           ) : null}
@@ -5828,7 +5684,7 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <span>Bank Transfer amount</span>
               <span className="font-extrabold text-slate-900">
-                {formatNpr(dispBankTransfer)}
+                {formatBillingMoney(dispBankTransfer)}
               </span>
             </div>
           ) : null}
@@ -5860,14 +5716,14 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <span>Change due</span>
               <span className="font-extrabold text-emerald-700">
-                {formatNpr(dispChange)}
+                {formatBillingMoney(dispChange)}
               </span>
             </div>
           ) : null}
           <div className="flex items-center justify-between gap-3">
             <span>Due after bill</span>
             <span className="font-extrabold text-slate-900">
-              {formatNpr(dispBalance)}
+              {formatBillingMoney(dispBalance)}
             </span>
           </div>
           <div className="flex items-center justify-between gap-3">
@@ -5909,15 +5765,21 @@ export default function BillingPage() {
     }
 
     function onKeyDown(e: KeyboardEvent) {
+      const activeCartRowIndex = queuedCartNavigationRef.current.reduce((index, apply) => apply(index), selectedCartRowIndex);
       if (e.defaultPrevented) return;
 
       // Overlay keyboard isolation: When any modal or tool overlay is open, suppress global billing shortcuts
       if (
-        isWorksheetOpen ||
         isCalculatorOpen ||
         isDetailedHistoryOpen ||
         isCompactHistoryOpen ||
-        Boolean(typeof document !== "undefined" && document.querySelector('[data-modal-frame="true"]'))
+        Boolean(typeof document !== "undefined" && document.querySelector('[data-modal-frame="true"], .app-modal-layer [aria-modal="true"]') && !(() => {
+          const dialogs=document.querySelectorAll<HTMLElement>('[aria-modal="true"]');
+          const top=dialogs[dialogs.length-1];
+          const title=top?.getAttribute("aria-labelledby");
+          const isPayment=title && document.getElementById(title)?.textContent === "Confirm Payment";
+          return showPaymentModal && isPayment && ((e.shiftKey && e.key === "Enter") || (e.altKey && /^[1-4a]$/i.test(e.key)));
+        })())
       ) {
         return;
       }
@@ -5944,13 +5806,16 @@ export default function BillingPage() {
 
       if (e.key === "F2" || isCtrlK) {
         e.preventDefault();
-        searchRef.current?.focus();
-        searchRef.current?.select();
+        setActiveWorkspaceTab("billing");
+        setMobileBillingPane("products");
+        requestAnimationFrame(() => { searchRef.current?.focus(); searchRef.current?.select(); });
         return;
       }
       if (e.key === "F3") {
         e.preventDefault();
-        skuRef.current?.focus();
+        setActiveWorkspaceTab("billing");
+        setMobileBillingPane("products");
+        requestAnimationFrame(() => window.dispatchEvent(new Event("billing-open-scanner")));
         return;
       }
       if (e.key === "F4") {
@@ -5975,16 +5840,17 @@ export default function BillingPage() {
       }
       if (e.key === "F7") {
         e.preventDefault();
+        setActiveWorkspaceTab("billing");
         setCustomerSearchOpen(true);
         return;
       }
       if (e.key === "F8") {
         e.preventDefault();
         if (
-          selectedCartRowIndex >= 0 &&
-          selectedCartRowIndex < cartRows.length
+          activeCartRowIndex >= 0 &&
+          activeCartRowIndex < cartRows.length
         ) {
-          openPriceOverride(cartRows[selectedCartRowIndex]);
+          openPriceOverride(cartRows[activeCartRowIndex]);
         }
         return;
       }
@@ -6025,6 +5891,8 @@ export default function BillingPage() {
         e.preventDefault();
         if (showPaymentModal) {
           requestCheckoutConfirm();
+        } else if (activeWorkspaceTab === "worksheet" && !pendingCheckoutRef.current) {
+          handleContinueToPaymentFromWorksheet();
         } else {
           openPaymentFlow();
         }
@@ -6036,9 +5904,10 @@ export default function BillingPage() {
         const key = e.key.toLowerCase();
 
         // Cart Navigation
+        if (activeWorkspaceTab !== "billing" && ["arrowup","arrowdown","delete","backspace","p","q","+","=","-","_"].includes(key)) return;
         if (key === "arrowdown") {
           e.preventDefault();
-          setSelectedCartRowIndex((prev) =>
+          queueCartNavigation((prev) =>
             cartRows.length === 0
               ? -1
               : Math.min(Math.max(prev, -1) + 1, cartRows.length - 1),
@@ -6047,29 +5916,29 @@ export default function BillingPage() {
         }
         if (key === "arrowup") {
           e.preventDefault();
-          setSelectedCartRowIndex((prev) =>
+          queueCartNavigation((prev) =>
             cartRows.length === 0 ? -1 : Math.max(prev <= 0 ? 0 : prev - 1, 0),
           );
           return;
         }
         if (key === "delete" || key === "backspace") {
           if (
-            selectedCartRowIndex >= 0 &&
-            selectedCartRowIndex < cartRows.length
+            activeCartRowIndex >= 0 &&
+            activeCartRowIndex < cartRows.length
           ) {
             e.preventDefault();
-            const row = cartRows[selectedCartRowIndex];
+            const row = cartRows[activeCartRowIndex];
             if (row) removeLine(row.productId);
             return;
           }
         }
         if (e.shiftKey && (key === "+" || key === "=")) {
           if (
-            selectedCartRowIndex >= 0 &&
-            selectedCartRowIndex < cartRows.length
+            activeCartRowIndex >= 0 &&
+            activeCartRowIndex < cartRows.length
           ) {
             e.preventDefault();
-            const row = cartRows[selectedCartRowIndex];
+            const row = cartRows[activeCartRowIndex];
             if (row)
               changeQty(
                 row.productId,
@@ -6080,11 +5949,11 @@ export default function BillingPage() {
         }
         if (e.shiftKey && (key === "-" || key === "_")) {
           if (
-            selectedCartRowIndex >= 0 &&
-            selectedCartRowIndex < cartRows.length
+            activeCartRowIndex >= 0 &&
+            activeCartRowIndex < cartRows.length
           ) {
             e.preventDefault();
-            const row = cartRows[selectedCartRowIndex];
+            const row = cartRows[activeCartRowIndex];
             if (row)
               changeQty(
                 row.productId,
@@ -6095,11 +5964,11 @@ export default function BillingPage() {
         }
         if (e.shiftKey && key === "q") {
           if (
-            selectedCartRowIndex >= 0 &&
-            selectedCartRowIndex < cartRows.length
+            activeCartRowIndex >= 0 &&
+            activeCartRowIndex < cartRows.length
           ) {
             e.preventDefault();
-            const row = cartRows[selectedCartRowIndex];
+            const row = cartRows[activeCartRowIndex];
             if (row) {
               const input = document.getElementById(
                 `qty-input-${row.productId}`,
@@ -6114,11 +5983,11 @@ export default function BillingPage() {
         }
         if (key === "p") {
           if (
-            selectedCartRowIndex >= 0 &&
-            selectedCartRowIndex < cartRows.length
+            activeCartRowIndex >= 0 &&
+            activeCartRowIndex < cartRows.length
           ) {
             e.preventDefault();
-            openPriceOverride(cartRows[selectedCartRowIndex]);
+            openPriceOverride(cartRows[activeCartRowIndex]);
             return;
           }
         }
@@ -6133,7 +6002,7 @@ export default function BillingPage() {
           if (key === "1") {
             e.preventDefault();
             setPaymentMethod("Cash");
-            if (paymentStatus === "Paid") setCashTendered(String(payableTotal));
+            if (paymentStatus === "Paid" && !cashTendered.trim()) setCashTendered(String(payableTotal));
             return;
           }
           if (key === "2") {
@@ -6168,6 +6037,15 @@ export default function BillingPage() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, [
+    activeWorkspaceTab,
+    paperDraftBillNo,
+    paperDraftBillDate,
+    paperDraftDocumentType,
+    isPaperException,
+    paperExceptionReason,
+    invoiceNote,
+    reviewedCandidate,
+    cashTendered,
     canConfirm,
     grandTotal,
     paymentMethod,
@@ -6190,11 +6068,131 @@ export default function BillingPage() {
     selectedCartRowIndex,
     priceOverrideTargetId,
     payableTotal,
-    isWorksheetOpen,
     isCalculatorOpen,
     isDetailedHistoryOpen,
     isCompactHistoryOpen,
   ]);
+
+  const cartTableItems: CartTableItem[] = useMemo(() => {
+    return cartRows.map((r) => ({
+      id: r.productId,
+      productId: r.productId,
+      name: r.product.name,
+      brand: r.product.brand,
+      sku: r.product.sku,
+      saleUnit: r.product.saleUnit,
+      imageUrl: r.product.imageUrl,
+      qty: r.qty,
+      stock: r.product.stock,
+      appliedUnitPrice: r.unitPrice,
+      originalUnitPrice: r.baseUnitPrice,
+      priceType: r.priceType,
+      overrideUnitPrice: r.overrideUnitPrice,
+      overrideReason: r.overrideReason,
+      lineTotal: r.lineTotal,
+      unresolvedReason: r.unresolvedReason,
+      quantityStep: r.product.quantityStep,
+    }));
+  }, [cartRows]);
+
+  const [workspaceCustomerResults, setWorkspaceCustomerResults] = useState<Customer[] | null>(null);
+  const [workspaceCustomerLoading, setWorkspaceCustomerLoading] = useState(false);
+  const [workspaceCustomerError, setWorkspaceCustomerError] = useState<string | null>(null);
+  const workspaceCustomerRequest = useRef<AbortController | null>(null);
+  useEffect(() => () => workspaceCustomerRequest.current?.abort(), []);
+  async function searchWorkspaceCustomers(query: string) {
+    workspaceCustomerRequest.current?.abort();
+    if (!query.trim()) { setWorkspaceCustomerResults(null); setWorkspaceCustomerLoading(false); setWorkspaceCustomerError(null); return; }
+    const controller = new AbortController(); workspaceCustomerRequest.current = controller;
+    setWorkspaceCustomerResults([]); setWorkspaceCustomerLoading(true); setWorkspaceCustomerError(null);
+    await new Promise(resolve => setTimeout(resolve, 150));
+    if (controller.signal.aborted) return;
+    try { const result = await lookupCustomersApi({ q: query.trim(), page: 1, pageSize: 15 }, { signal: controller.signal });
+      if (!controller.signal.aborted) setWorkspaceCustomerResults(result.items as Customer[]);
+    } catch (error: any) { if (!controller.signal.aborted) setWorkspaceCustomerError(error?.message || "Could not search customers."); }
+    finally { if (!controller.signal.aborted) setWorkspaceCustomerLoading(false); }
+  }
+  useEffect(() => { setPriceDifferItem(null); }, [activeWorkspaceTab, selectedCustomerId, mobileBillingPane]);
+  const [catalogReload, setCatalogReload] = useState(0);
+  const [catalogProducts, setCatalogProducts] = useState<Product[]>([]);
+  const [catalogTotal, setCatalogTotal] = useState(0);
+  const [catalogLoading, setCatalogLoading] = useState(false);
+  const [catalogError, setCatalogError] = useState<string | null>(null);
+  const [availableCategories, setAvailableCategories] = useState<string[]>([]);
+  const catalogRequestRef = useRef(0);
+  useEffect(() => {
+    let live = true;
+    getCategoriesApi().then(data => { if (live) setAvailableCategories(Array.isArray(data) ? data.map((c: any) => typeof c === "string" ? c : c.name).filter(Boolean) : []); }).catch(() => {});
+    return () => { live = false; };
+  }, []);
+  useEffect(() => { setCatalogPage(1); }, [selectedCustomerId]);
+  useEffect(() => {
+    const controller = new AbortController();
+    const request = ++catalogRequestRef.current;
+    setCatalogLoading(true);
+    setCatalogError(null);
+    const timer = setTimeout(async () => {
+      try {
+        const result = await listProductsApi({ active: "true", page: catalogPage, pageSize: catalogPageSize,
+          search: catalogSearch.trim() || undefined, category: catalogCategory === "ALL" ? undefined : catalogCategory,
+          customerId: selectedCustomerId || undefined, sortBy: catalogSort as any }, { signal: controller.signal });
+        if (controller.signal.aborted || request !== catalogRequestRef.current) return;
+        setCatalogProducts(mapRawProducts(result.products || []));
+        setCatalogTotal(result.total || 0);
+        mergeProducts(mapRawProducts(result.products || []));
+      } catch (error: any) {
+        if (!controller.signal.aborted && request === catalogRequestRef.current) setCatalogError(error?.message || "Could not load products. Try again.");
+      } finally {
+        if (!controller.signal.aborted && request === catalogRequestRef.current) setCatalogLoading(false);
+      }
+    }, catalogSearch ? 180 : 0);
+    return () => { clearTimeout(timer); controller.abort(); };
+  }, [selectedCustomerId, catalogSearch, catalogCategory, catalogSort, catalogPage, catalogReload, mapRawProducts, mergeProducts]);
+  const scanBlockedRef = useRef(false);
+  scanBlockedRef.current = submitting || parkedBusy || draftRequestBusy || Boolean(pendingBillingConfirm);
+  function blockScanEntry() {
+    if (pendingCheckoutRef.current || scanBlockedRef.current || checkoutReviewBusyRef.current) {
+      showCartIssue("Finish the active review, recovery or bill operation before scanning.");
+      return true;
+    }
+    return false;
+  }
+  const handleBarcodeScan = async (barcode: string) => {
+    if (blockScanEntry()) return false;
+    const session = cartSessionRef.current;
+    try {
+      const raw = await getProductByCodeApi(barcode);
+      const product = mapRawProducts([raw.product || raw])[0];
+      if (!product?.id) throw new Error("No product found for that barcode.");
+      if (session !== cartSessionRef.current) { showCartIssue("The bill changed while scanning. Scan again for the current sale."); return false; }
+      if (blockScanEntry()) return false;
+      if (!product.active || product.sellingPriceStatus === "PENDING" || product.stock <= 0) throw new Error("This product is inactive, unpriced or out of stock.");
+      mergeProducts([product]);
+      addToCart(product.id, product.quantityStep || 1, product);
+      return true;
+    } catch (error: any) { showCartIssue(error?.message || "Could not look up barcode."); return false; }
+  };
+
+  const handleContinueToPaymentFromWorksheet = () => {
+    if (!cart.length) return;
+    const issue = paperReviewIssue(currentPaperReview());
+    if (issue) { const target=document.querySelector<HTMLElement>(isPaperException ? "#worksheet-exception-details, #worksheet-exception-reason" : "#worksheet-bill-number"); target?.focus();target?.scrollIntoView({block:"nearest"});showToast("danger", issue); return; }
+    if (ocrSourceFile && ocrCheckedFingerprint !== currentWorksheetFingerprint() && !isPaperException) {
+      setIsOcrComparisonOpen(true);
+      showToast("info", "Compare the original bill manually before continuing, or record an explicit exception.");
+      return;
+    }
+    worksheetReviewRef.current = currentWorksheetFingerprint();
+    openPaymentFlow();
+  };
+
+  const applyDirectPriceOverride = (productId: string, newRate: number) => {
+    const row = cartRows.find(line => line.productId === productId);
+    if (!row) return;
+    openPriceOverride(row);
+    setPriceOverrideDraftPrice(String(newRate));
+    setPriceOverrideDraftReason("Matched customer past purchase rate");
+  };
 
   if (loading) {
     return (
@@ -6208,346 +6206,86 @@ export default function BillingPage() {
 
   return (
     <>
-      <div
+            <div
+        data-workspace-tab={activeWorkspaceTab}
         data-billing-view-size={billingViewSize}
-        className="flex h-full w-full flex-col overflow-hidden rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] font-sans text-slate-800 shadow-sm"
+        style={{ "--billing-text": `${Math.max(13, 14 * Number(billingViewSize) / 100)}px`, "--billing-row-space": `${8 * Number(billingViewSize) / 100}px`, "--billing-control-height": `${Math.max(36, 38 * Number(billingViewSize) / 100)}px` } as React.CSSProperties}
+        className="billing-workspace"
       >
-        {/* TOP BAR */}
-        <div
-          className={cn(
-            "relative z-20 flex shrink-0 items-center justify-between border-b border-[#CFCFD3] bg-[#FFFFFF]",
-            billingView.topBar,
-          )}
-        >
-          <div className="flex min-w-0 flex-1 items-center gap-3">
-            <div className={cn("relative", billingView.searchWidth)}>
-              <Input
-                value={productQuery}
-                onChange={(value) => {
-                  setProductQuery(value);
-                  clearCartIssue();
-                }}
-                onBlur={clearCartIssue}
-                onKeyDown={handleManualSearchKeyDown}
-                placeholder="Search product name, SKU, brand... (F2)"
-                leftIcon="manage_search"
-                inputRef={searchRef}
-                className={billingView.inputHeight}
-                autoFocus
-              />
-
-              {/* SEARCH AUTOCOMPLETE DROPDOWN */}
-              {productQuery.trim().length > 0 && (
-                <div className="absolute left-0 top-[calc(100%+8px)] z-30 flex max-h-[62vh] w-full flex-col overflow-hidden rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] shadow-[0_16px_42px_-14px_rgba(0,0,0,0.22)] sm:w-[min(640px,calc(100vw-2rem))]">
-                  <div className="flex items-center justify-between border-b border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2">
-                    <div>
-                      <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
-                        Quick product search
-                      </div>
-                      <div className="mt-0.5 text-[11px] font-bold text-[#565449]">
-                        {manualSearchLoading
-                          ? "Searching active products..."
-                          : manualSearchTotal > MANUAL_SEARCH_LIMIT
-                            ? `${manualSearchTotal} matches. Keep typing to narrow.`
-                            : `${manualSearchTotal} match${manualSearchTotal === 1 ? "" : "es"}. Use arrows and Enter.`}
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      <a
-                        href="/product-lookup"
-                        className="rounded-full border border-[#CFCFD3] bg-white px-2 py-1 text-[11px] font-extrabold text-[#565449] hover:bg-[#F3F4F6]"
-                      >
-                        Product Lookup
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => setProductQuery("")}
-                        className="text-[#8C8889] hover:text-[#000000]"
-                        aria-label="Close product search results"
-                        title="Close search results"
-                      >
-                        <Icon name="close" className="text-[16px]" />
-                      </button>
-                    </div>
-                  </div>
-
-                  <div className="flex-1 overflow-y-auto p-2">
-                    {manualSearchLoading ? (
-                      <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
-                        Searching products...
-                      </div>
-                    ) : manualSearchError ? (
-                      <div role="alert" className="py-8 text-center text-[13px] font-semibold text-rose-700">
-                        {manualSearchError}
-                      </div>
-                    ) : manualResults.length === 0 ? (
-                      <div className="py-8 text-center text-[13px] font-medium text-[#8C8889]">
-                        No products found. Try another name, SKU, or brand.
-                      </div>
-                    ) : (
-                      manualResults.map((p, resultIndex) => {
-                        const low =
-                          p.stock > 0 &&
-                          p.stock <= Math.max(0, p.lowStockThreshold || 0);
-                        const outOfStock = p.stock <= 0;
-                        const selected = resultIndex === manualSearchIndex;
-                        return (
-                          <button
-                            key={p.id}
-                            ref={(element) => {
-                              manualResultRefs.current[resultIndex] = element;
-                            }}
-                            type="button"
-                            disabled={outOfStock}
-                            onClick={() => addToCart(p.id)}
-                            className={`grid w-full grid-cols-[minmax(0,1fr)_120px] items-center gap-4 rounded-[10px] border px-3 py-2.5 text-left transition ${outOfStock ? "cursor-not-allowed border-transparent bg-[#FAFAFA]" : selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
-                          >
-                            <div className="min-w-0">
-                              <div
-                                className={`flex min-w-0 items-center gap-2 truncate text-[13px] font-extrabold ${outOfStock ? "text-[#8C8889]" : "text-[#11120d]"}`}
-                              >
-                                <span className="truncate">{p.name}</span>
-                                {low && !outOfStock && (
-                                  <span className="shrink-0 rounded-[4px] bg-rose-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-rose-700">
-                                    Low
-                                  </span>
-                                )}
-                                {outOfStock && (
-                                  <span className="shrink-0 rounded-[4px] bg-rose-100 px-1.5 py-0.5 text-[9px] font-extrabold uppercase tracking-wide text-rose-700">
-                                    Out
-                                  </span>
-                                )}
-                              </div>
-                              <div
-                                className={`mt-1 flex min-w-0 flex-wrap gap-x-2 gap-y-1 text-[11px] font-bold ${selected && !outOfStock ? "text-[#334155]" : "text-[#8C8889]"}`}
-                              >
-                                <span>SKU: {p.sku}</span>
-                                <span>|</span>
-                                <span>Brand: {p.brand || "N/A"}</span>
-                              </div>
-                            </div>
-                            <div className="shrink-0 text-right">
-                              <div
-                                className={`font-mono text-[14px] font-extrabold ${outOfStock ? "text-[#8C8889]" : "text-[#11120d]"}`}
-                              >
-                                {formatNpr(p.retailPrice)}
-                              </div>
-                              <div
-                                className={`mt-1 text-[10px] font-extrabold ${outOfStock ? "text-[#BE123C]" : low ? "text-[#EA580C]" : "text-[#179B4D]"}`}
-                              >
-                                {formatQtyWithUnit(p.stock, p.saleUnit)} in
-                                stock
-                              </div>
-                            </div>
-                          </button>
-                        );
-                      })
-                    )}
-                  </div>
-
-                  {!manualSearchLoading && manualSearchTotal > MANUAL_SEARCH_LIMIT && (
-                    <div className="border-t border-[#CFCFD3] bg-[#F8F9FA] px-4 py-2 text-[11px] font-semibold text-[#8C8889]">
-                      Showing first {MANUAL_SEARCH_LIMIT}. Type more letters for
-                      faster selection.
-                    </div>
-                  )}
-                </div>
-              )}
-            </div>
-            <div className={billingView.scanWidth}>
-              <Input
-                value={skuInput}
-                onChange={(value) => {
-                  setSkuInput(value);
-                  clearCartIssue();
-                }}
-                onBlur={clearCartIssue}
-                placeholder="Scan barcode "
-                leftIcon="qr_code_scanner"
-                onEnter={addBySku}
-                className={cn("font-mono", billingView.inputHeight)}
-                inputRef={skuRef}
-              />
-            </div>
-          </div>
-
-          <div className="flex items-center gap-5 shrink-0">
-            <div className="flex items-center overflow-hidden rounded-[10px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]">
-              <button
-                type="button"
-                onClick={() => stepBillingViewSize(-1)}
-                disabled={billingViewSize === BILLING_VIEW_SIZE_OPTIONS[0]}
-                className={cn(
-                  "flex items-center justify-center border-r border-[#E5E7EB] transition hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-35",
-                  billingView.inputHeight,
-                  billingViewSize === BILLING_VIEW_SIZE_OPTIONS[0]
-                    ? "w-[34px]"
-                    : "w-[36px]",
-                )}
-                title="Make billing view more compact"
-                aria-label="Make billing view more compact"
-              >
-                <Icon name="remove" className="text-[16px]" />
-              </button>
-              <div className="min-w-[86px] px-2 text-center text-[11px] font-extrabold leading-tight">
-                <div className="uppercase text-[#8C8889]">View</div>
-                <div className="text-[#11120d]">{billingView.scaleLabel}</div>
-              </div>
-              <button
-                type="button"
-                onClick={() => stepBillingViewSize(1)}
-                disabled={
-                  billingViewSize ===
-                  BILLING_VIEW_SIZE_OPTIONS[
-                    BILLING_VIEW_SIZE_OPTIONS.length - 1
-                  ]
-                }
-                className={cn(
-                  "flex items-center justify-center border-l border-[#E5E7EB] transition hover:bg-[#F3F4F6] disabled:cursor-not-allowed disabled:opacity-35",
-                  billingView.inputHeight,
-                  billingViewSize ===
-                    BILLING_VIEW_SIZE_OPTIONS[
-                      BILLING_VIEW_SIZE_OPTIONS.length - 1
-                    ]
-                    ? "w-[34px]"
-                    : "w-[36px]",
-                )}
-                title="Make billing view larger"
-                aria-label="Make billing view larger"
-              >
-                <Icon name="add" className="text-[16px]" />
-              </button>
-            </div>
+        {/* Top Workspace Tab Coordinator Bar */}
+        <div className="billing-toolbar">
+          <div className="billing-workflow-tabs">
             <button
               type="button"
-              id="billing-calculator-trigger"
-              onClick={() => setIsCalculatorOpen(true)}
-              title="Open scratchpad calculator (Alt+C)"
-              className={billingView.topButton}
+              onClick={() => setActiveWorkspaceTab("billing")}
+              className={`billing-workflow-tab ${activeWorkspaceTab === "billing" ? "is-active" : ""}`} aria-pressed={activeWorkspaceTab === "billing"}
             >
-              <Icon name="calculate" className="text-[16px]" />
-              Calculator
+              <Icon name="point_of_sale" className="text-[20px]" />
+              <span>Billing</span>
+              {cart.length > 0 && (
+                <span
+                  className={`ml-1 rounded-full px-1.5 py-0.2 text-[10px] font-mono font-bold ${
+                    activeWorkspaceTab === "billing"
+                      ? "bg-white text-[#11120D]"
+                      : "bg-[#11120D] text-white"
+                  }`}
+                >
+                  {cart.length}
+                </span>
+              )}
             </button>
+
             <button
               type="button"
               id="billing-worksheet-trigger"
-              onClick={() => setIsWorksheetOpen(true)}
-              disabled={cartRows.length === 0}
-              title={
-                cartRows.length > 0
-                  ? "View sales worksheet preview"
-                  : "Add items to cart to view worksheet"
-              }
-              className={cn(
-                billingView.topButton,
-                cartRows.length > 0
-                  ? "border-blue-200 bg-blue-50 text-blue-800 hover:bg-blue-100"
-                  : "",
-              )}
-            >
-              <Icon name="receipt" className="text-[16px]" />
-              Worksheet
-              {cartRows.length > 0 ? ` (${cartRows.length})` : ""}
-            </button>
-            <button
-              type="button"
-              onClick={() =>
-                lastCreatedInvoiceId && openInvoicePrint(lastCreatedInvoiceId)
-              }
-              disabled={!lastCreatedInvoiceId}
-              title={
-                lastCreatedInvoiceId
-                  ? "Reprint the last finalized invoice"
-                  : "No finalized invoice in this session yet"
-              }
-              className={billingView.topButton}
-            >
-              <Icon name="print" className="text-[16px]" />
-              Reprint Last
-            </button>
-            <button
-              type="button"
-              id="billing-qr-gallery-trigger"
-              aria-label="Store Payment QRs Gallery"
               onClick={() => {
-                setIsQrGalleryOpen(true);
-                void loadEnabledPaymentAccounts();
+                setActiveWorkspaceTab("worksheet");
+                setIsWorksheetOpen(true);
               }}
-              title="Open store payment QR codes gallery"
-              className={billingView.topButton}
+              className={`billing-workflow-tab ${activeWorkspaceTab === "worksheet" ? "is-active" : ""}`} aria-pressed={activeWorkspaceTab === "worksheet"}
             >
-              <Icon name="qr_code_scanner" className="text-[16px]" />
-              QRs
+              <Icon name="description" className="text-[20px]" />
+              <span>Worksheet ({cart.length})</span>
             </button>
+
             <button
               type="button"
-              onClick={() =>
-                lastCreatedInvoiceId &&
-                openInvoiceReceiptPrint(lastCreatedInvoiceId)
-              }
-              disabled={!lastCreatedInvoiceId}
-              title={
-                lastCreatedInvoiceId
-                  ? "Print receipt for the last finalized invoice"
-                  : "No finalized invoice in this session yet"
-              }
-              className={billingView.topButton}
+              onClick={() => setActiveWorkspaceTab("history")}
+              className={`billing-workflow-tab ${activeWorkspaceTab === "history" ? "is-active" : ""}`} aria-pressed={activeWorkspaceTab === "history"}
             >
-              <Icon name="receipt_long" className="text-[16px]" />
-              Receipt
+              <Icon name="history" className="text-[20px]" />
+              <span>Purchase History</span>
+
             </button>
-            {isCashier ? (
+          </div>
+
+          {/* Operator, Terminal, Tools and persisted view density */}
+          <div className="billing-toolbar-utilities">
+            <span className="hidden sm:inline font-medium">
+              {operatorLabel} &bull; <span className="font-mono">{terminalLabel}</span>
+            </span>
+            <BillingToolsMenu onOpenCalculator={() => setIsCalculatorOpen(true)} lastInvoiceId={lastCreatedInvoiceId}/>
+            <div className="billing-density" aria-label="View density"><span>Density</span>
               <button
                 type="button"
-                onClick={() => {
-                  setShowIncomingRequests(true);
-                  setSelectedIncomingRequest(null);
-                  setIncomingRequestsError("");
-                  void loadIncomingRequests();
-                }}
-                title={`${incomingRequestsTotal} incoming request(s), ${unseenIncomingRequestCount} unseen`}
-                className={cn(
-                  billingView.topButton,
-                  unseenIncomingRequestCount > 0
-                    ? "border-emerald-700 bg-emerald-700 text-white hover:bg-emerald-800"
-                    : incomingRequestsTotal > 0
-                      ? "border-emerald-200 bg-emerald-50 text-emerald-800 hover:bg-emerald-100"
-                      : "",
-                )}
+                onClick={() => stepBillingViewSize(-1)}
+                className="billing-density-step"
+                title="Decrease density" aria-label="Decrease density" disabled={billingViewSize === "85"}
               >
-                <Icon name="forward_to_inbox" className="text-[16px]" />
-                Requests
-                {incomingRequestsTotal > 0
-                  ? ` (${incomingRequestsTotal})`
-                  : ""}
-                {unseenIncomingRequestCount > 0 ? (
-                  <span className="flex min-w-5 items-center justify-center rounded-full bg-white px-1.5 py-0.5 text-[10px] font-black text-emerald-800">
-                    {unseenIncomingRequestCount}
-                  </span>
-                ) : null}
+                -
               </button>
-            ) : null}
-            <button
-              type="button"
-              onClick={openHeldBills}
-              title={
-                visibleParkedDrafts.length > 0
-                  ? `${visibleParkedDrafts.length} held bill(s) available`
-                  : "Open held bills"
-              }
-              className={cn(
-                billingView.topButton,
-                visibleParkedDrafts.length > 0
-                  ? "border-[#11120d] bg-[#11120d] text-white hover:bg-[#11120d]"
-                  : "",
-              )}
-            >
-              <Icon name="pending_actions" className="text-[16px]" />
-              Held Bills{" "}
-              {visibleParkedDrafts.length > 0
-                ? `(${visibleParkedDrafts.length})`
-                : ""}
-            </button>
+              <span className="billing-density-label">
+                {BILLING_VIEW_SIZE_LABELS[billingViewSize]}
+              </span>
+              <button
+                type="button"
+                onClick={() => stepBillingViewSize(1)}
+                className="billing-density-step"
+                title="Increase density" aria-label="Increase density" disabled={billingViewSize === "110"}
+              >
+                +
+              </button>
+            </div>
           </div>
         </div>
 
@@ -6562,1253 +6300,217 @@ export default function BillingPage() {
                   setBillingError("");
                   clearCartIssue();
                 }}
-                className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-full transition hover:bg-rose-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-rose-500"
-                aria-label="Dismiss billing notice"
+                className="ml-auto text-[11px] underline"
               >
-                <Icon name="close" className="text-[16px]" />
+                Dismiss
               </button>
             </div>
           </div>
         ) : null}
 
-        {activeDraftRequestId && draftRequestNoticeVisible ? (
-          <div className="shrink-0 border-y border-emerald-200 bg-emerald-50 px-[22px] py-[8px] text-[12px] font-extrabold text-emerald-800">
-            <div className="flex items-center gap-2">
-              <Icon name="assignment_turned_in" className="text-[17px]" />
-              <span className="min-w-0 truncate">
-                Staff request loaded. Finalizing this bill will complete the
-                request automatically.
-              </span>
-              <button
-                type="button"
-                onClick={() => {
-                  acknowledgeDraftRequestNotice(
-                    currentUser?.id,
-                    activeDraftRequestId,
-                  );
-                  setDraftRequestNoticeVisible(false);
-                }}
-                className="ml-auto flex size-7 shrink-0 items-center justify-center rounded-full transition hover:bg-emerald-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-emerald-600"
-                aria-label="Dismiss staff request notice"
-              >
-                <Icon name="close" className="text-[16px]" />
-              </button>
-            </div>
-          </div>
-        ) : null}
-
-        {/* MAIN CONTENT GRID */}
-        <div className="flex flex-1 min-h-0 bg-[#FFFFFF] ">
-          {/* LEFT: CART TABLE */}
-          <div className="flex min-w-0 flex-1 flex-col border-r border-[#CFCFD3] bg-[#FFFFFF] ">
-            <div
-              className={cn(
-                "grid items-center text-[#11120d]",
-                billingView.tableCols,
-                billingView.header,
-              )}
-            >
-              <div className={billingView.headerHash}>#</div>
-              <div>
-                <div className={billingView.headerTitle}>Item Name</div>
-                <div className={billingView.headerSub}>SKU / Brand</div>
-              </div>
-              <div className={cn("text-right", billingView.headerTitle)}>
-                Stock
-              </div>
-              <div className="text-right">
-                <div className={billingView.headerTitle}>Unit Price</div>
-                <div className={cn(billingView.headerSub, "text-[10px]")}>
-                  (Retail/Wholesale)
-                </div>
-              </div>
-              <div className={cn("text-center", billingView.headerTitle)}>
-                Quantity
-              </div>
-              <div className={cn("text-right", billingView.headerTitle)}>
-                Total
-              </div>
-              <div aria-hidden="true" />
-            </div>
-
-            <div className="flex-1 overflow-y-auto bg-white">
-              {cartRows.length === 0 ? (
-                <div className="flex h-full flex-col items-center justify-center text-[#8C8889]">
-                  <Icon
-                    name="shopping_cart_checkout"
-                    className="text-6xl mb-4 opacity-20"
+        {proofFollowup && <div className="mx-3 mt-3 rounded-lg border border-amber-300 bg-amber-50 p-3 text-sm text-amber-900" role="status"><p className="font-medium">Sale {proofFollowup.invoiceNo || proofFollowup.invoiceId} is saved. Original proof is pending.</p><p className="mt-1">{proofFollowup.error}</p><div className="mt-2 flex flex-wrap items-center gap-2">{!proofFollowup.file && <input type="file" accept="image/jpeg,image/png,image/webp,application/pdf" aria-label="Reselect original saved-sale proof" onChange={e => { const file = e.target.files?.[0]; if (file) setProofFollowup(current => current ? { ...current, file } : null); }} />}<button type="button" disabled={!proofFollowup.file || proofRetrying} onClick={retryProofAttachment} className="rounded-lg border border-amber-300 bg-white px-3 py-1.5 disabled:opacity-40">{proofRetrying ? "Attaching…" : "Retry proof attachment"}</button><button type="button" onClick={() => { setProofFollowup(null); showToast("info", "Proof remains pending. Attach it later in Manual Bills."); }} className="px-3 py-1.5 underline">Attach later in Manual Bills</button></div></div>}
+        {activeWorkspaceTab === "billing" && <div className="flex shrink-0 gap-2 border-b border-line bg-white p-3 md:hidden" role="tablist" aria-label="Billing panel">{(["cart", "products", "customer"] as const).map(pane => <button type="button" key={pane} role="tab" aria-selected={mobileBillingPane === pane} onClick={() => setMobileBillingPane(pane)} className={`flex-1 rounded-lg px-3 py-2 text-sm font-medium ${mobileBillingPane === pane ? "bg-action text-white" : "bg-inset"}`}>{({cart:"Current sale",products:"Products",customer:"Customer"})[pane]}</button>)}</div>}
+        {/* WORKSPACE CONTENT BODY */}
+        <div className="billing-body">
+          {activeWorkspaceTab === "billing" && (
+            <div className="billing-columns">
+              {/* Column 1: Catalog Browser + Compact History (4 cols = ~33%) */}
+              <div className={`billing-products-column ${mobileBillingPane === "products" ? "" : "hidden md:flex"}`}>
+                <div className="billing-catalog-slot">
+                  <BillingProductBrowser
+                    products={catalogProducts}
+                    loading={catalogLoading}
+                    error={catalogError}
+                    onRetry={() => setCatalogReload(value => value + 1)}
+                    customerName={selectedCustomer?.name}
+                    searchTerm={catalogSearch}
+                    onSearchChange={(s) => {
+                      setCatalogSearch(s);
+                      setCatalogPage(1);
+                    }}
+                    selectedCategory={catalogCategory}
+                    onSelectCategory={(c) => {
+                      setCatalogCategory(c);
+                      setCatalogPage(1);
+                    }}
+                    categories={availableCategories}
+                    sortBy={catalogSort}
+                    onSortByChange={(s) => {
+                      setCatalogSort(s);
+                      setCatalogPage(1);
+                    }}
+                    page={catalogPage}
+                    pageSize={catalogPageSize}
+                    totalProducts={catalogTotal}
+                    onPageChange={setCatalogPage}
+                    getAddDisabledReason={(p) => normalizeQuantityValue(p.stock - getCurrentQty(p.id), 0) < getProductMinQty(p as Product)
+                      ? getCurrentQty(p.id) >= p.stock ? "All stock in cart" : "Insufficient stock"
+                      : null}
+                    onAddToCart={(p) => addToCart(p.id, p.quantityStep || 1, p as any)}
+                    canViewWholesalePrice={isManager || isCashier}
+                    searchInputRef={searchRef}
+                    barcodeInputRef={skuRef}
+                    onBarcodeScan={handleBarcodeScan}
+                    activeCustomerId={selectedCustomer?.id}
                   />
-                  <div className="text-[16px] font-extrabold">Cart Empty</div>
-                  <div className="text-[13px] font-medium mt-1">
-                    Search products with F2, or scan barcode/SKU with F3.
-                  </div>
-                </div>
-              ) : (
-                <div className="divide-y divide-[#E5E7EB]">
-                  {cartRows.map((row, idx) => {
-                    const qtyStep = getProductQtyStep(row.product);
-                    const minQty = getProductMinQty(row.product);
-                    const qtyMinus = normalizeProductCartQty(
-                      row.product,
-                      row.qty - qtyStep,
-                    );
-                    const qtyPlus = normalizeProductCartQty(
-                      row.product,
-                      row.qty + qtyStep,
-                    );
-                    const low =
-                      row.product.stock > 0 &&
-                      row.product.stock <=
-                        Math.max(0, row.product.lowStockThreshold || 0);
-                    const rowMenuOpen =
-                      openRowActionProductId === row.productId;
-
-                    return (
-                      <div
-                        key={row.productId}
-                        ref={(element) => {
-                          cartRowRefs.current[idx] = element;
-                        }}
-                        role="row"
-                        aria-selected={idx === selectedCartRowIndex}
-                        onClick={() => setSelectedCartRowIndex(idx)}
-                        className={cn(
-                          "grid items-center text-[#11120d] transition",
-                          billingView.tableCols,
-                          billingView.row,
-                          idx === selectedCartRowIndex
-                            ? "bg-[#E8F2FF] shadow-[inset_4px_0_0_0_#2F67D8]"
-                            : "hover:bg-[#F8F9FA]",
-                        )}
-                      >
-                        <div className="text-center text-[13px] font-extrabold">
-                          {idx + 1}
-                        </div>
-
-                        <div className="min-w-0">
-                          <div className={cn(billingView.rowMain, row.isUnresolved && "text-rose-700")}>
-                            {row.product.name}
-                          </div>
-                          <div className={billingView.rowSub}>
-                            SKU: {row.product.sku || "N/A"}{" "}
-                            <span className="mx-1 text-[#8C8889]">/</span>{" "}
-                            Brand: {row.product.brand || "N/A"}
-                          </div>
-                          {row.overrideReason && (
-                            <div className="truncate text-[10px] font-bold text-amber-600 mt-0.5">
-                              Reason: {row.overrideReason}
-                            </div>
-                          )}
-                          {row.unresolvedReason === "UNAVAILABLE" && (
-                            <div className="truncate text-[10px] font-bold text-rose-600 mt-0.5">
-                              Item missing from catalog
-                            </div>
-                          )}
-                        </div>
-
-                        <div className="text-right text-[13px]">
-                          {row.unresolvedReason === "UNAVAILABLE" ? (
-                            <span className="font-mono font-bold text-rose-600">—</span>
-                          ) : (
-                            <>
-                              <span
-                                className={`font-mono font-extrabold ${row.qty > row.product.stock ? "text-rose-600" : low ? "text-[#EA580C]" : "text-[#11120d]"}`}
-                              >
-                                {formatQtyWithUnit(
-                                  row.product.stock,
-                                  row.product.saleUnit,
-                                )}
-                              </span>
-                              {row.qty > row.product.stock ? (
-                                <div className="text-[10px] font-bold text-rose-500 uppercase mt-0.5">
-                                  Short {formatQty(row.qty - row.product.stock)}
-                                </div>
-                              ) : low ? (
-                                <div className="text-[10px] font-bold text-amber-500 uppercase mt-0.5">
-                                  Low Stock
-                                </div>
-                              ) : null}
-                            </>
-                          )}
-                        </div>
-
-                        <div className="text-right flex flex-col items-end">
-                          <div className="font-mono text-[14px] font-extrabold text-[#11120d]">
-                            {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
-                              ? "—"
-                              : formatNpr(row.unitPrice)}
-                          </div>
-                          <div className="flex gap-1 mt-1">
-                            {row.unresolvedReason === "UNAVAILABLE" ? (
-                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
-                                Unavailable
-                              </span>
-                            ) : row.unresolvedReason === "INACTIVE" ? (
-                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
-                                Inactive
-                              </span>
-                            ) : row.unresolvedReason === "INSUFFICIENT_STOCK" ? (
-                              <span className="rounded bg-rose-100 px-1 py-0.5 text-[9px] font-extrabold text-rose-800 uppercase">
-                                Stock Short
-                              </span>
-                            ) : row.unresolvedReason === "INVALID_STEP" ? (
-                              <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
-                                Step {row.product.quantityStep}
-                              </span>
-                            ) : row.overrideUnitPrice !== undefined ? (
-                              <span className="rounded bg-amber-100 px-1 py-0.5 text-[9px] font-extrabold text-amber-800 uppercase">
-                                Override
-                              </span>
-                            ) : row.priceType === "Wholesale" ? (
-                              <span className="rounded bg-sky-100 px-1 py-0.5 text-[9px] font-extrabold text-sky-800 uppercase">
-                                Wholesale
-                              </span>
-                            ) : (
-                              <span className="rounded bg-emerald-100 px-1 py-0.5 text-[9px] font-extrabold text-emerald-800 uppercase">
-                                Retail
-                              </span>
-                            )}
-                          </div>
-                        </div>
-
-                        <div className="flex justify-center">
-                          <div
-                            className={cn(
-                              "flex items-center overflow-hidden rounded-[8px] border border-[#CFCFD3] bg-white",
-                              billingView.qtyControl,
-                            )}
-                          >
-                            <button
-                              type="button"
-                              onClick={() => changeQty(row.productId, qtyMinus)}
-                              disabled={row.qty <= minQty}
-                              className={cn(
-                                "flex h-full items-center justify-center text-[#565449] hover:bg-[#F3F4F6] disabled:opacity-30",
-                                billingView.qtyButton,
-                              )}
-                              title={
-                                row.qty <= minQty
-                                  ? "Minimum quantity reached"
-                                  : "Decrease quantity"
-                              }
-                              aria-label={`Decrease quantity for ${row.product.name}`}
-                            >
-                              -
-                            </button>
-                            <input
-                              id={`qty-input-${row.productId}`}
-                              type="number"
-                              min={minQty}
-                              max={Math.max(minQty, row.product.stock)}
-                              step={qtyStep}
-                              value={row.qty}
-                              onChange={(e) =>
-                                changeQty(
-                                  row.productId,
-                                  Number(e.target.value || minQty),
-                                )
-                              }
-                              className={cn(
-                                "h-full border-x border-[#E5E7EB] bg-transparent text-center font-mono font-extrabold text-[#000000] outline-none",
-                                billingView.qtyInput,
-                              )}
-                              aria-label={`Quantity for ${row.product.name}`}
-                            />
-                            <button
-                              type="button"
-                              onClick={() => changeQty(row.productId, qtyPlus)}
-                              disabled={row.qty >= row.product.stock}
-                              className={cn(
-                                "flex h-full items-center justify-center text-[#565449] hover:bg-[#F3F4F6] disabled:opacity-30",
-                                billingView.qtyButton,
-                              )}
-                              title={
-                                row.qty >= row.product.stock
-                                  ? "No more stock available"
-                                  : "Increase quantity"
-                              }
-                              aria-label={`Increase quantity for ${row.product.name}`}
-                            >
-                              +
-                            </button>
-                          </div>
-                        </div>
-
-                        <div className="text-right font-mono text-[14px] font-extrabold text-[#11120d]">
-                          {row.unresolvedReason === "UNAVAILABLE" && row.overrideUnitPrice === undefined
-                            ? "—"
-                            : formatNpr(row.lineTotal)}
-                        </div>
-
-                        <div
-                          className="relative flex justify-center"
-                          data-row-action-menu-root="true"
-                        >
-                          <button
-                            type="button"
-                            onClick={() => {
-                              setSelectedCartRowIndex(idx);
-                              setOpenRowActionProductId(
-                                rowMenuOpen ? null : row.productId,
-                              );
-                            }}
-                            onFocus={() => setSelectedCartRowIndex(idx)}
-                            className={cn(
-                              "flex items-center justify-center rounded-[8px] border transition focus:outline-none focus:ring-2 focus:ring-[#11120d]/20",
-                              billingView.rowAction,
-                              rowMenuOpen
-                                ? "border-[#11120d] bg-[#11120d] text-white"
-                                : "border-[#CFCFD3] bg-white text-[#565449] hover:bg-[#F3F4F6]",
-                            )}
-                            title="Item actions"
-                            aria-label={`Open actions for ${row.product.name}`}
-                            aria-expanded={rowMenuOpen}
-                          >
-                            <Icon name="more_vert" className="text-[18px]" />
-                          </button>
-                          {rowMenuOpen ? (
-                            <div className="absolute right-0 top-[calc(100%+6px)] z-30 w-[168px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white py-1 shadow-[0_14px_30px_-18px_rgba(0,0,0,0.45)]">
-                              {canUsePriceOverride ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenRowActionProductId(null);
-                                    openPriceOverride(row);
-                                  }}
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-[#565449] hover:bg-[#F3F4F6] focus:bg-[#F3F4F6] focus:outline-none"
-                                >
-                                  <Icon name="edit" className="text-[15px]" />
-                                  {row.overrideUnitPrice !== undefined
-                                    ? "Edit price"
-                                    : "Override price"}
-                                </button>
-                              ) : null}
-                              {row.overrideUnitPrice !== undefined ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    setOpenRowActionProductId(null);
-                                    clearPriceOverride(row.productId);
-                                  }}
-                                  className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-[#B7791F] hover:bg-[#FFF7E8] focus:bg-[#FFF7E8] focus:outline-none"
-                                >
-                                  <Icon name="undo" className="text-[15px]" />
-                                  Clear override
-                                </button>
-                              ) : null}
-                              <button
-                                type="button"
-                                onClick={() => {
-                                  setOpenRowActionProductId(null);
-                                  removeLine(row.productId);
-                                }}
-                                className="flex w-full items-center gap-2 px-3 py-2 text-left text-[12px] font-extrabold text-rose-600 hover:bg-rose-50 focus:bg-rose-50 focus:outline-none"
-                              >
-                                <Icon name="delete" className="text-[15px]" />
-                                Remove item
-                              </button>
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-              )}
-            </div>
-          </div>
-
-          {/* RIGHT: SUMMARY PANEL */}
-          <div
-            className={cn(
-              "flex shrink-0 flex-col border-l border-[#CFCFD3] bg-[#FFFFFF]",
-              billingView.rightPanel,
-            )}
-          >
-            <div
-              className={cn(
-                "flex h-full min-h-0 flex-col overflow-y-auto",
-                billingView.rightPanelInner,
-              )}
-            >
-              <div className={billingView.rightTopStack}>
-                {/* Customer Card */}
-                <div
-                  className={cn(
-                    "relative border-b border-[#E5E7EB] bg-[#FFFFFF] pb-[12px]",
-                    billingView.customerCard,
-                  )}
-                >
-                  <div className="flex items-start justify-between">
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCustomerSearchOpen(!isCustomerSearchOpen)
-                      }
-                      className="flex min-w-0 flex-1 items-center gap-3 rounded-[10px] text-left transition hover:bg-[#F8F9FA] focus:outline-none focus:ring-2 focus:ring-[#11120d]/10"
-                      title="Change customer"
-                    >
-                      <div className="flex h-[40px] w-[40px] items-center justify-center rounded-[12px] bg-[#F3F4F6] text-[#565449]">
-                        <Icon name="person" className="text-[19px]" />
-                      </div>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[11px] font-extrabold uppercase text-[#8C8889]">
-                          Customer
-                        </div>
-                        <div className="truncate text-[15px] font-extrabold text-[#000000]">
-                          {selectedCustomer
-                            ? selectedCustomer.name
-                            : "Walk-in Customer"}
-                        </div>
-                        {selectedCustomer ? (
-                          <div className="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] font-bold text-[#565449]">
-                            {selectedCustomer.phone ? (
-                              <span>{selectedCustomer.phone}</span>
-                            ) : null}
-                            {selectedCustomer.panNo ? (
-                              <span className="rounded bg-slate-100 px-1.5 py-0.2 text-[10px] font-mono font-extrabold text-slate-800">
-                                PAN: {selectedCustomer.panNo}
-                              </span>
-                            ) : (
-                              <span
-                                title="Cashier cannot edit customer PAN. Request manager update if needed."
-                                className="rounded bg-amber-50 px-1.5 py-0.2 text-[10px] font-extrabold text-amber-700"
-                              >
-                                No PAN (Manager Update)
-                              </span>
-                            )}
-                          </div>
-                        ) : null}
-                        {selectedCustomer?.panNo && customerPanConflictMatches.length > 0 ? (
-                          <div className="mt-1 flex items-center justify-between rounded-[7px] border border-amber-300 bg-amber-50 px-2 py-1 text-[10px] text-amber-900">
-                            <span className="font-bold">
-                              PAN registered to {customerPanConflictMatches.length} other profile(s)
-                            </span>
-                            <span className="text-[9px] font-extrabold text-amber-700 underline">
-                              Review in search
-                            </span>
-                          </div>
-                        ) : null}
-                      </div>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() =>
-                        setCustomerSearchOpen(!isCustomerSearchOpen)
-                      }
-                      className="flex h-[32px] w-[32px] items-center justify-center rounded-[8px] text-[#8C8889] hover:bg-[#F3F4F6] hover:text-[#000000]"
-                      title={
-                        isCustomerSearchOpen
-                          ? "Close customer search"
-                          : "Change customer"
-                      }
-                      aria-label={
-                        isCustomerSearchOpen
-                          ? "Close customer search"
-                          : "Change customer"
-                      }
-                    >
-                      <Icon
-                        name={isCustomerSearchOpen ? "close" : "edit"}
-                        className="text-[18px]"
-                      />
-                    </button>
-                  </div>
-
-                  {selectedCustomer ? (
-                    <div className="mt-2 flex items-center gap-2 border-t border-[#F3F4F6] pt-2">
-                      <button
-                        ref={compactHistoryTriggerRef}
-                        type="button"
-                        onClick={() => setIsCompactHistoryOpen((prev) => !prev)}
-                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
-                        title="Toggle recent cart item history"
-                      >
-                        <Icon name="schedule" className="text-[14px]" />
-                        Recent Items
-                      </button>
-                      <button
-                        type="button"
-                        onClick={() => setIsDetailedHistoryOpen(true)}
-                        className="flex items-center gap-1 rounded-[8px] border border-[#E5E7EB] bg-[#F8FAFC] px-2.5 py-1 text-[11px] font-bold text-[#374151] hover:bg-[#F1F5F9]"
-                        title="Open full searchable purchase history"
-                      >
-                        <Icon name="history" className="text-[14px]" />
-                        Full History
-                      </button>
-                    </div>
-                  ) : null}
-
-                  {isCustomerSearchOpen ? (
-                    <div className="absolute left-0 right-0 top-full z-30 mt-2 max-h-[min(70vh,520px)] overflow-y-auto rounded-[14px] border border-[#CFCFD3] bg-white p-3 shadow-xl">
-                      <Input
-                        value={customerQuery}
-                        onChange={(val) => {
-                          setCustomerQuery(val);
-                          setCustomerPanConflictPage(1);
-                        }}
-                        onKeyDown={handleCustomerSearchKeyDown}
-                        placeholder="Find by name, phone, or 9-digit PAN..."
-                        autoFocus
-                        leftIcon="search"
-                        className="mb-2"
-                      />
-
-                      {(customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) ? (
-                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900 space-y-1.5">
-                          <div className="flex items-center gap-1 font-bold">
-                            <Icon name="warning" className="text-[14px] text-amber-600" />
-                            <span>Registered PAN Matches ({customerPanConflictTotal || customerPanConflictMatches.length})</span>
-                          </div>
-                          {customerPanConflictWarning ? (
-                            <div className="text-[11px]">{customerPanConflictWarning}</div>
-                          ) : null}
-                          {customerPanConflictMatches.length > 0 ? (
-                            <div className="max-h-[120px] overflow-y-auto space-y-1 pt-1">
-                              {customerPanConflictMatches.map((m) => (
-                                <div key={m.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
-                                  <div className="min-w-0">
-                                    <div className="font-bold text-[#11120D] truncate">
-                                      {m.name} {!m.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
-                                    </div>
-                                    <div className="text-[10px] text-slate-500">
-                                      {m.phone || "No phone"} {m.panNo ? `· PAN: ${m.panNo}` : ""}
-                                    </div>
-                                  </div>
-                                  <button
-                                    type="button"
-                                    onClick={() => {
-                                      handleSelectCustomer(m);
-                                      setCustomerSearchOpen(false);
-                                    }}
-                                    className="shrink-0 rounded bg-amber-600 px-2 py-0.5 text-[10px] font-bold text-white hover:bg-amber-700"
-                                  >
-                                    Select Profile
-                                  </button>
-                                </div>
-                              ))}
-                            </div>
-                          ) : (
-                            <div className="text-[11px] text-amber-800 italic pt-1">
-                              No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
-                            </div>
-                          )}
-                          {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
-                            <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
-                              <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
-                              <div className="flex gap-1">
-                                <button
-                                  type="button"
-                                  disabled={customerPanConflictPage <= 1}
-                                  onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
-                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
-                                >
-                                  Prev
-                                </button>
-                                <button
-                                  type="button"
-                                  disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
-                                  onClick={() => setCustomerPanConflictPage((p) => p + 1)}
-                                  className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
-                                >
-                                  Next
-                                </button>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : customerPanConflictWarning ? (
-                        <div className="mb-2 rounded-[8px] border border-amber-300 bg-amber-50 p-2 text-[11px] font-semibold text-amber-900">
-                          <div className="flex items-center gap-1 font-bold">
-                            <Icon name="warning" className="text-[14px] text-amber-600" />
-                            <span>Registered PAN Notice</span>
-                          </div>
-                          <div className="mt-0.5">{customerPanConflictWarning}</div>
-                        </div>
-                      ) : null}
-
-                      {customerLookupLoading ? (
-                        <div className="flex items-center gap-2 px-2 py-1 text-[11px] font-bold text-[#565449]">
-                          <Icon name="sync" className="animate-spin text-[14px]" />
-                          <span>Searching server directory...</span>
-                        </div>
-                      ) : null}
-
-                      <div className="max-h-[240px] overflow-y-auto space-y-1">
-                        {customerOptions.map((opt, index) => {
-                          const selected = index === customerSearchIndex;
-                          if (opt.type === "CLEAR") {
-                            return (
-                              <button
-                                key="clear"
-                                ref={(el) => {
-                                  customerResultRefs.current[index] = el;
-                                }}
-                                type="button"
-                                onClick={() => {
-                                  handleSelectCustomer(null);
-                                  setCustomerSearchOpen(false);
-                                }}
-                                className={`flex w-full items-center justify-between rounded-[8px] px-3 py-2 text-left text-[13px] font-semibold text-rose-600 transition ${selected ? "bg-rose-100" : "hover:bg-rose-50"}`}
-                              >
-                                Clear Selection
-                              </button>
-                            );
-                          }
-                          const c = opt.customer;
-                          return (
-                            <button
-                              key={c.id}
-                              ref={(el) => {
-                                customerResultRefs.current[index] = el;
-                              }}
-                              type="button"
-                              onClick={() => {
-                                handleSelectCustomer(c);
-                                setCustomerSearchOpen(false);
-                              }}
-                              className={`flex w-full items-center justify-between rounded-[8px] border px-3 py-2 text-left text-[13px] transition ${selected ? "border-[#8DB6FF] bg-[#E8F2FF] shadow-sm" : "border-transparent hover:bg-[#F3F4F6]"}`}
-                            >
-                              <div className="min-w-0">
-                                <div className="font-extrabold text-[#000000]">
-                                  {c.name}
-                                </div>
-                                {c.address ? (
-                                  <div className="truncate text-[10px] text-[#8C8889]">
-                                    {c.address}
-                                  </div>
-                                ) : null}
-                              </div>
-                              <div className="flex items-center gap-2 text-right">
-                                {c.panNo ? (
-                                  <span className="rounded bg-slate-100 px-1.5 py-0.5 text-[10px] font-mono font-extrabold text-slate-700">
-                                    PAN {c.panNo}
-                                  </span>
-                                ) : null}
-                                <span className="font-medium text-[#8C8889]">
-                                  {c.phone}
-                                </span>
-                              </div>
-                            </button>
-                          );
-                        })}
-                        {customerOptions.length === 0 && !customerLookupLoading && (
-                          <div className="text-center text-[12px] text-[#8C8889] py-2">
-                            No customers found
-                          </div>
-                        )}
-                      </div>
-                      {currentUser &&
-                      ["admin", "manager", "cashier"].includes(
-                        currentUser.role,
-                      ) ? (
-                        <div className="mt-3 border-t border-[#E5E7EB] pt-3">
-                          {!quickCustomerOpen ? (
-                            <button
-                              type="button"
-                              onClick={() => {
-                                setQuickCustomerError("");
-                                setCustomerPanConflictPage(1);
-                                setQuickCustomerPanAck(false);
-                                setQuickCustomerOpen(true);
-                              }}
-                              className="w-full rounded-[9px] border border-dashed border-[#9CA3AF] px-3 py-2 text-left text-[12px] font-bold text-[#374151] hover:bg-[#F8FAFC] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[#2563EB]"
-                            >
-                              + Add a customer
-                            </button>
-                          ) : (
-                            <form
-                              onSubmit={handleQuickCustomerSubmit}
-                              className="space-y-2"
-                              onKeyDown={(event) => event.stopPropagation()}
-                            >
-                              <div className="text-[12px] font-extrabold text-[#111827]">
-                                Add a customer
-                              </div>
-                              {([
-                                ["name", "Name", true],
-                                ["phone", "Phone (optional)", false],
-                                ["email", "Email (optional)", false],
-                                ["panNo", "PAN (optional)", false],
-                                ["address", "Address (optional)", false],
-                              ] as const).map(([field, label, required]) => (
-                                <label
-                                  key={field}
-                                  className="block text-[11px] font-semibold text-[#4B5563]"
-                                >
-                                  {label}
-                                  <input
-                                    autoFocus={field === "name"}
-                                    aria-label={label}
-                                    required={required}
-                                    value={quickCustomerDraft[field]}
-                                    onChange={(event) => {
-                                      const val = event.target.value;
-                                      setQuickCustomerDraft((draft) => ({
-                                        ...draft,
-                                        [field]: val,
-                                      }));
-                                      if (field === "panNo") {
-                                        setCustomerPanConflictPage(1);
-                                        setQuickCustomerPanAck(false);
-                                      }
-                                    }}
-                                    className="mt-1 block min-h-[36px] w-full rounded-[8px] border border-[#CFCFD3] bg-white px-2.5 text-[13px] text-[#111827] outline-none focus:border-[#2563EB] focus:ring-2 focus:ring-[#BFDBFE]"
-                                  />
-                                </label>
-                              ))}
-                              {((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0) && quickCustomerDraft.panNo.trim()) ? (
-                                <div className="rounded-[8px] border border-amber-300 bg-amber-50 p-2.5 text-[11px] text-amber-900 space-y-1.5">
-                                  <div className="flex items-center gap-1 font-bold">
-                                    <Icon name="warning" className="text-[14px] text-amber-600" />
-                                    <span>PAN already registered to existing profile(s):</span>
-                                  </div>
-                                  {customerPanConflictMatches.length > 0 ? (
-                                    <div className="max-h-[140px] overflow-y-auto space-y-1">
-                                      {customerPanConflictMatches.map((match) => (
-                                        <div key={match.id} className="flex items-center justify-between gap-2 rounded bg-white p-1.5 border border-amber-200">
-                                          <div className="min-w-0">
-                                            <div className="font-bold text-[#111827] truncate">
-                                              {match.name} {!match.isActive ? <span className="text-rose-600 text-[9px]">[INACTIVE]</span> : null}
-                                            </div>
-                                            <div className="text-[10px] text-slate-500">
-                                              {match.phone || "No phone"} {match.panNo ? `· PAN: ${match.panNo}` : ""}
-                                            </div>
-                                          </div>
-                                          <button
-                                            type="button"
-                                            onClick={() => {
-                                              handleSelectCustomer(match);
-                                              setQuickCustomerOpen(false);
-                                              setCustomerSearchOpen(false);
-                                              setQuickCustomerDraft({ name: "", phone: "", email: "", panNo: "", address: "" });
-                                              setQuickCustomerPanAck(false);
-                                            }}
-                                            className="shrink-0 rounded bg-amber-600 px-2 py-1 text-[10px] font-bold text-white hover:bg-amber-700"
-                                          >
-                                            Select Instead
-                                          </button>
-                                        </div>
-                                      ))}
-                                    </div>
-                                  ) : (
-                                    <div className="text-[11px] text-amber-800 italic pt-1">
-                                      No matches on page {customerPanConflictPage}. Use Prev to return to page 1.
-                                    </div>
-                                  )}
-                                  {customerPanConflictServerTotal > 20 || customerPanConflictPage > 1 ? (
-                                    <div className="flex items-center justify-between pt-1 border-t border-amber-200 text-[10px] font-bold text-amber-900">
-                                      <span>Page {customerPanConflictPage} of {Math.max(1, Math.ceil(customerPanConflictServerTotal / 20))}</span>
-                                      <div className="flex gap-1">
-                                        <button
-                                          type="button"
-                                          disabled={customerPanConflictPage <= 1}
-                                          onClick={() => setCustomerPanConflictPage((p) => Math.max(1, p - 1))}
-                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
-                                        >
-                                          Prev
-                                        </button>
-                                        <button
-                                          type="button"
-                                          disabled={customerPanConflictPage >= Math.ceil(customerPanConflictServerTotal / 20)}
-                                          onClick={() => setCustomerPanConflictPage((p) => p + 1)}
-                                          className="rounded bg-white px-1.5 py-0.5 border border-amber-300 disabled:opacity-40"
-                                        >
-                                          Next
-                                        </button>
-                                      </div>
-                                    </div>
-                                  ) : null}
-                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-amber-800">
-                                    <input
-                                      type="checkbox"
-                                      checked={quickCustomerPanAck}
-                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
-                                    />
-                                    <span>Proceed creating new customer profile with duplicate PAN</span>
-                                  </label>
-                                </div>
-                              ) : null}
-                              {customerPanConflictError && quickCustomerDraft.panNo.trim() ? (
-                                <div className="rounded-[8px] border border-rose-300 bg-rose-50 p-2.5 text-[11px] text-rose-900 space-y-1.5">
-                                  <div className="flex items-center gap-1 font-bold">
-                                    <Icon name="warning" className="text-[14px] text-rose-600" />
-                                    <span>{customerPanConflictError}</span>
-                                  </div>
-                                  <label className="flex items-center gap-1.5 pt-1 font-bold cursor-pointer text-[10px] text-rose-800">
-                                    <input
-                                      type="checkbox"
-                                      checked={quickCustomerPanAck}
-                                      onChange={(e) => setQuickCustomerPanAck(e.target.checked)}
-                                    />
-                                    <span>Proceed creating customer profile without online PAN verification</span>
-                                  </label>
-                                </div>
-                              ) : null}
-                              {quickCustomerError ? (
-                                <div
-                                  role="alert"
-                                  className="text-[12px] font-semibold text-rose-700"
-                                >
-                                  {quickCustomerError}
-                                </div>
-                              ) : null}
-                              <div className="flex gap-2 pt-1">
-                                <button
-                                  type="button"
-                                  disabled={quickCustomerBusy}
-                                  onClick={() => {
-                                    setQuickCustomerOpen(false);
-                                    setQuickCustomerError("");
-                                    setQuickCustomerPanAck(false);
-                                  }}
-                                  className="min-h-[36px] flex-1 rounded-[8px] border border-[#CFCFD3] px-3 text-[12px] font-bold text-[#374151] disabled:opacity-50"
-                                >
-                                  Cancel
-                                </button>
-                                <button
-                                  type="submit"
-                                  disabled={quickCustomerBusy || (Boolean(quickCustomerDraft.panNo.trim()) && ((customerPanConflictMatches.length > 0 || customerPanConflictTotal > 0 || Boolean(customerPanConflictError)) && !quickCustomerPanAck))}
-                                  className="min-h-[36px] flex-1 rounded-[8px] bg-[#1D4ED8] px-3 text-[12px] font-bold text-white hover:bg-[#1E40AF] focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[#1D4ED8] disabled:cursor-wait disabled:opacity-50"
-                                >
-                                  {quickCustomerBusy ? "Adding…" : "Add customer"}
-                                </button>
-                              </div>
-                            </form>
-                          )}
-                        </div>
-                      ) : null}
-                    </div>
-                  ) : null}
-
-                  <div className="mt-3 flex flex-wrap gap-2 border-t border-[#E5E7EB] pt-3">
-                    {selectedCustomer ? (
-                      <>
-                        <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
-                          Customer
-                        </span>
-                        {customerMode === "LOYALTY" && (
-                          <span className="rounded-[8px] bg-emerald-100 text-emerald-800 px-2 py-1 text-[11px] font-extrabold">
-                            Loyalty {selectedCustomer.loyaltyPercent}%
-                          </span>
-                        )}
-                        {customerMode === "ADMIN_WHOLESALE" && (
-                          <span className="rounded-[8px] bg-sky-100 text-sky-800 px-2 py-1 text-[11px] font-extrabold">
-                            Wholesale {selectedCustomer.wholesalePercent}%
-                          </span>
-                        )}
-                        {customerPanConflictMatches.length > 0 && selectedCustomer.panNo && (
-                          <span
-                            title={customerPanConflictWarning || "PAN registered to multiple customer profiles"}
-                            className="rounded-[8px] bg-amber-100 text-amber-900 px-2 py-1 text-[11px] font-extrabold"
-                          >
-                            ⚠️ PAN Shared
-                          </span>
-                        )}
-                      </>
-                    ) : (
-                      <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
-                        Walk-in
-                      </span>
-                    )}
-                    {customerMode === "LOYALTY" && (
-                      <span className="rounded-[8px] bg-indigo-100 text-indigo-800 px-2 py-1 text-[11px] font-extrabold">
-                        Qty eligible
-                      </span>
-                    )}
-                  </div>
                 </div>
 
-                {/* Customer Purchase History (Advisory Context) */}
-                {selectedCustomer && cart.length > 0 && (
-                  <div className="rounded-[12px] border border-[#E5E7EB] bg-[#F8FAFC] p-3 text-[12px]">
-                    <div className="flex items-center justify-between gap-2 border-b border-[#E5E7EB] pb-2 mb-2">
-                      <div className="flex items-center gap-1.5 font-extrabold text-[#111827]">
-                        <Icon name="history" className="text-[16px] text-[#2563EB]" />
-                        <span>Recent Cart Purchases</span>
-                      </div>
-                      <span className="rounded bg-slate-200 px-1.5 py-0.5 text-[9px] font-extrabold text-slate-700 uppercase tracking-wide">
-                        Advisory
-                      </span>
-                    </div>
-
-                    {cartProductIds.length > 20 ? (
-                      <div className="mb-2 text-[11px] font-semibold text-slate-600">
-                        Showing history for the first 20 of {cartProductIds.length} cart products.
-                      </div>
-                    ) : null}
-
-                    {customerHistoryLoading ? (
-                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
-                        Loading purchase history…
-                      </div>
-                    ) : customerHistoryError ? (
-                      <div className="py-2 text-center text-[11px] font-semibold text-amber-700">
-                        {customerHistoryError}
-                      </div>
-                    ) : customerHistory.length === 0 ? (
-                      <div className="py-2 text-center text-[11px] font-semibold text-slate-500">
-                        {cartProductIds.length > 20
-                          ? "No previous purchases recorded for the 20 products checked."
-                          : "No previous purchases recorded for items in this cart."}
-                      </div>
-                    ) : (
-                      <div className="max-h-[160px] overflow-y-auto space-y-2 pr-1">
-                        {customerHistory.map((item) => {
-                          const product = normalizePurchaseHistoryProduct(item);
-                          const trimmedInvoiceId = typeof item.invoiceId === "string" ? item.invoiceId.trim() : "";
-                          let invoiceHref: string | null = null;
-                          if (trimmedInvoiceId && !/[\u0000-\u001f\u007f]/.test(trimmedInvoiceId)) {
-                            try {
-                              invoiceHref = `/invoices?invoiceId=${encodeURIComponent(trimmedInvoiceId)}`;
-                            } catch {
-                              // A malformed Unicode ID cannot be encoded as a URL value.
-                            }
-                          }
-                          return (
-                          <div
-                            key={item.id}
-                            className="rounded-[8px] border border-[#E2E8F0] bg-white p-2 text-[11px] shadow-xs"
-                          >
-                            <div className="flex items-start justify-between gap-2">
-                              <div className="min-w-0 font-bold text-[#1E293B] truncate">
-                                {product.name}
-                              </div>
-                              <div className="shrink-0 font-mono font-extrabold text-[#0F172A]">
-                                {formatNpr(item.appliedUnitPrice)}
-                              </div>
-                            </div>
-                            <div className="mt-1 text-[10px] text-slate-500">
-                              {getIdentitySourceLabel(product.identitySource)}
-                            </div>
-                            <div className="mt-1 flex items-center justify-between text-[10px] text-slate-500 font-medium">
-                              <span>
-                                Qty: {item.qty} ·{" "}
-                                {invoiceHref ? (
-                                  <Link
-                                    to={invoiceHref}
-                                    className="font-semibold text-blue-700 underline hover:text-blue-900"
-                                    aria-label={`View invoice ${item.invoiceNo || trimmedInvoiceId}`}
-                                  >
-                                    Inv #{item.invoiceNo || trimmedInvoiceId}
-                                  </Link>
-                                ) : (
-                                  <>Inv #{item.invoiceNo || "—"}</>
-                                )}
-                              </span>
-                              <span>
-                                {new Date(item.invoiceDate).toLocaleDateString(undefined, {
-                                  month: "short",
-                                  day: "numeric",
-                                  year: "numeric",
-                                })}
-                              </span>
-                            </div>
-                          </div>
-                          );
-                        })}
-                      </div>
-                    )}
-                    <div className="mt-2 text-[10px] text-slate-500 italic">
-                      Historical prices are reference context only and do not modify current billing rates.
-                    </div>
-                  </div>
-                )}
-
-                {/* Bill Summary */}
-                <div
-                  className={cn(
-                    "border-b border-[#E5E7EB] bg-[#FFFFFF] pb-[10px]",
-                    billingView.billSummary,
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "flex items-center gap-2 font-extrabold text-[#000000]",
-                      billingView.billSummaryTitle,
-                    )}
-                  >
-                    <Icon name="receipt_long" className="text-[#2F67D8]" /> Bill
-                    Summary
-                  </div>
-
-                  <div className="mb-3 grid grid-cols-2 gap-2 text-[11px] font-extrabold text-[#565449]">
-                    <div className="rounded-[10px] border border-[#E5E7EB] bg-[#F8F9FA] px-2.5 py-2">
-                      <div className="text-[9px] uppercase tracking-wide text-[#8C8889]">
-                        Date
-                      </div>
-                      <div className="mt-0.5 truncate text-[#11120d]">
-                        {billDateLabel}
-                      </div>
-                    </div>
-                    <div className="rounded-[10px] border border-[#E5E7EB] bg-[#F8F9FA] px-2.5 py-2">
-                      <div className="text-[9px] uppercase tracking-wide text-[#8C8889]">
-                        Time
-                      </div>
-                      <div className="mt-0.5 truncate text-[#11120d]">
-                        {billTimeLabel}
-                      </div>
-                    </div>
-                  </div>
-
-                  <div
-                    className={cn(
-                      "font-semibold text-[#565449]",
-                      billingView.billSummaryRows,
-                    )}
-                  >
-                    <div className="flex justify-between items-center">
-                      <span>Subtotal</span>
-                      <span className="font-mono font-extrabold text-[#000000]">
-                        {formatNpr(subTotal)}
-                      </span>
-                    </div>
-                    {subtotalDiscount > 0 && (
-                      <div className="flex justify-between items-center text-rose-600">
-                        <span>Customer Discount</span>
-                        <span className="font-mono font-extrabold">
-                          (-{formatNpr(subtotalDiscount)})
-                        </span>
-                      </div>
-                    )}
-                    {hasPriceOverrides && (
-                      <div
-                        className={`flex justify-between items-center ${overrideDiffIsReduction ? "text-rose-600" : "text-amber-600"}`}
-                      >
-                        <span>{overrideDiffLabel}</span>
-                        <span className="font-mono font-extrabold">
-                          {overrideDiffDisplay}
-                        </span>
-                      </div>
-                    )}
-                    {totalVisibleSavings > 0 && (
-                      <div className="flex justify-between items-center text-emerald-700">
-                        <span>Total Savings</span>
-                        <span className="font-mono font-extrabold">
-                          {formatNpr(totalVisibleSavings)}
-                        </span>
-                      </div>
-                    )}
-
-                    <div className="my-[10px] border-t border-dashed border-[#CFCFD3]" />
-
-                    <div className="flex justify-between items-center">
-                      <span>Total Items</span>
-                      <span className="font-mono font-extrabold text-[#000000]">
-                        {cartRows.length}
-                      </span>
-                    </div>
-                    <div className="flex justify-between items-center">
-                      <span>Total Quantity</span>
-                      <span className="font-mono font-extrabold text-[#000000]">
-                        {formatQty(
-                          cartRows.reduce((sum, line) => sum + line.qty, 0),
-                        )}
-                      </span>
-                    </div>
-                  </div>
+                <div className="shrink-0">
+                  <BillingCompactCartHistory
+                    selectedCustomerName={selectedCustomer?.name}
+                    selectedCustomerId={selectedCustomer?.id}
+                    cartItems={cartTableItems.map((it) => ({
+                      productId: it.productId,
+                      name: it.name,
+                      unitPrice: it.appliedUnitPrice,
+                    }))}
+                    historyItems={customerHistory}
+                    loading={customerHistoryLoading}
+                    error={customerHistoryError}
+                    onOpenDetailedHistory={() => openWorkspaceHistory("CART_ITEMS")}
+                    onOpenInvoice={(id) => openWorkspaceHistory("CART_ITEMS", "ALL", id)}
+                  />
                 </div>
               </div>
 
-              <div className={billingView.rightCheckoutStack}>
-                <div
-                  className={cn(
-                    "border-b border-[#E5E7EB] bg-[#FFFFFF]",
-                    billingView.statusCard,
-                  )}
-                >
-                  {cartRows.length === 0 ? (
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-[44px] w-[34px] shrink-0 items-center justify-center rounded-[10px] bg-[#F3F4F6] text-[#8C8889]">
-                        <Icon name="point_of_sale" className="text-[18px]" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-extrabold text-[#000000]">
-                          No items in bill
-                        </div>
-                        <div className="mt-1 flex flex-wrap gap-1.5">
-                          <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
-                            F2 Product Search
-                          </span>
-                          <span className="rounded-[8px] border border-[#CFCFD3] bg-[#F8F9FA] px-2 py-1 text-[11px] font-extrabold text-[#565449]">
-                            F3 Barcode/SKU
-                          </span>
-                        </div>
-                      </div>
-                    </div>
-                  ) : (
-                    <div className="flex items-center gap-3">
-                      <span className="flex h-[44px] w-[34px] shrink-0 items-center justify-center rounded-[10px] bg-[#EAF8EF] text-[#179B4D]">
-                        <Icon name="task_alt" className="text-[18px]" />
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="text-[13px] font-extrabold text-[#000000]">
-                          Ready for checkout
-                        </div>
-                        <div className="mt-0.5 truncate text-[12px] font-semibold text-[#8C8889]">
-                          {cartRows.length} line(s) |{" "}
-                          {formatQty(
-                            cartRows.reduce((sum, line) => sum + line.qty, 0),
-                          )}{" "}
-                          unit(s) |{" "}
-                          {selectedCustomer
-                            ? selectedCustomer.name
-                            : "Walk-in customer"}
-                        </div>
-                      </div>
-                    </div>
-                  )}
-                </div>
-                <div
-                  className={cn(
-                    "rounded-[14px] bg-[#FFFFFF]",
-                    billingView.grandCard,
-                  )}
-                >
-                  <div
-                    className={cn(
-                      "font-extrabold uppercase text-[#2F67D8]",
-                      billingView.grandLabel,
-                    )}
-                  >
-                    Grand Total
-                  </div>
-                  <div
-                    className={cn(
-                      "font-mono font-extrabold leading-none text-[#000000]",
-                      billingView.grandTotal,
-                    )}
-                  >
-                    {formatNpr(payableTotal)}
-                  </div>
-                </div>
+              {/* Column 2: Central Cart (5 cols = ~42%) */}
+              <div className={`billing-cart-column ${mobileBillingPane === "cart" ? "" : "hidden md:flex"}`}>
+                <BillingCartTable
+                  cart={cartTableItems}
+                  note={invoiceNote}
+                  onChangeNote={setInvoiceNote}
+                  selectedRowIndex={selectedCartRowIndex}
+                  onSelectRow={index => { queuedCartNavigationRef.current = []; if (cartNavigationFrameRef.current !== null) cancelAnimationFrame(cartNavigationFrameRef.current); cartNavigationFrameRef.current = null; setSelectedCartRowIndex(index); }}
+                  onUpdateQty={(productId, newQty) => changeQty(productId, newQty)}
+                  onRemoveItem={(productId) => removeLine(productId)}
+                  onClearCart={requestResetBill}
+                  onOpenPriceOverride={(item) => {
+                    const row = cartRows.find((r) => r.productId === item.productId);
+                    if (row) openPriceOverride(row);
+                  }}
+                  onParkBill={requestParkBill}
+                  parkedCount={parkedDrafts.length}
+                  onOpenParkedModal={() => setShowParkedBills(true)}
+                  customerHistoryItems={customerHistory}
+                  selectedCustomerId={selectedCustomer?.id}
+                  onOpenDifferPopover={(item, past, anchor) => setPriceDifferItem({ item, past, anchor })}
+                />
+              </div>
 
-                <button
-                  type="button"
-                  disabled={!canConfirm}
-                  onClick={() => openPaymentFlow()}
-                  title={
-                    pendingCheckout
-                      ? "Retry or recover submitted checkout"
-                      : canConfirm
-                        ? "Open payment"
-                        : "Add at least one item to bill before payment"
-                  }
-                  className={cn(
-                    "flex w-full items-center justify-center gap-2 rounded-[14px] bg-[#11120d] font-extrabold text-white transition hover:bg-[#000000] active:scale-[0.98] disabled:cursor-not-allowed disabled:opacity-45 disabled:active:scale-100",
-                    billingView.payButton,
-                  )}
-                >
-                  <Icon name={pendingCheckout ? "sync" : "payment"} className="text-[20px]" />{" "}
-                  {pendingCheckout ? "RECOVER CHECKOUT (Shift + Enter)" : "PAY NOW (Shift + Enter)"}
-                </button>
+              {/* Column 3: Customer & Payment Summary + Quick Actions (3 cols = ~25%) */}
+              <div className={`billing-summary-column ${mobileBillingPane === "customer" ? "" : "hidden md:flex"}`}>
+                <BillingCustomerSummary searchOpen={isCustomerSearchOpen} onChangeSearchOpen={setCustomerSearchOpen}
+                  onOpenQrGallery={() => setIsQrGalleryOpen(true)}
+                  selectedCustomer={selectedCustomer as any}
+                  recentPurchase={[...customerHistory].sort((a, b) => Date.parse(b.invoiceDate || "1970-01-01") - Date.parse(a.invoiceDate || "1970-01-01"))[0]}
+                  onSelectCustomer={(c) => { if (c) setCustomers(current => { const exists = current.some(customer => customer.id === c.id); return exists ? current.map(customer => customer.id === c.id ? { ...customer, ...c } as Customer : customer) : [...current, c as Customer]; }); setSelectedCustomerId(c?.id || null); }}
+                  customers={customers as any}
+                  searchResults={workspaceCustomerResults}
+                  searchLoading={workspaceCustomerLoading}
+                  searchError={workspaceCustomerError}
+                  onSearchCustomers={searchWorkspaceCustomers}
+                  subTotal={subTotal}
+                  discountLabel={subtotalDiscountMeta.label}
+                  discountPercent={subtotalDiscountMeta.percent || 0}
+                  discountAmount={subtotalDiscount}
+                  payableTotal={payableTotal}
+                  onReviewInWorksheet={() => setActiveWorkspaceTab("worksheet")}
+                  onOpenCustomerHistory={() => openWorkspaceHistory()}
+                  onOpenDueHistory={() => openWorkspaceHistory("INVOICES", "OUTSTANDING")}
+                  cartItemCount={cart.length}
+                  canReviewWorksheet={cart.length > 0}
+                  canConfirm={canConfirm}
+                  pendingCheckout={pendingCheckout}
+                  onPayNow={() => openPaymentFlow()}
+                  paymentMethod={paymentMethod === "Cash" ? "CASH" : paymentMethod === "Fonepay" ? "FONEPAY" : paymentMethod === "Bank Transfer" ? "BANK" : "OTHER"}
+                  onChangePaymentMethod={value => setPaymentMethod(value === "CASH" ? "Cash" : value === "FONEPAY" ? "Fonepay" : "Bank Transfer")}
+                  amountReceived={cashTendered}
+                  onChangeAmountReceived={setCashTendered}
+                />
 
-                <div className="grid grid-cols-2 gap-3">
-                  <button
-                    type="button"
-                    disabled={cart.length === 0 || parkedBusy}
-                    onClick={requestParkBill}
-                    title={
-                      cart.length === 0
-                        ? "Add at least one item before parking a bill"
-                        : parkedBusy
-                          ? "Held bill action is already running"
-                          : "Park current bill"
-                    }
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-[12px] border border-[#CFCFD3] bg-[#FFFFFF] font-extrabold text-[#2F67D8] transition hover:bg-[#F8F9FA] disabled:cursor-not-allowed disabled:opacity-50",
-                      billingView.secondaryButton,
-                    )}
-                  >
-                    <Icon name="local_parking" className="text-[18px]" /> Park
-                    (F6)
-                  </button>
-                  <button
-                    type="button"
-                    disabled={!hasBillDraft}
-                    onClick={requestResetBill}
-                    title={
-                      hasBillDraft
-                        ? "Clear current billing draft"
-                        : "No billing draft to clear"
-                    }
-                    className={cn(
-                      "flex items-center justify-center gap-2 rounded-[12px] border border-rose-200 bg-[#FFF1F2] font-extrabold text-rose-600 transition hover:bg-rose-100 disabled:cursor-not-allowed disabled:border-[#CFCFD3] disabled:bg-[#FFFFFF] disabled:text-[#8C8889] disabled:opacity-50",
-                      billingView.secondaryButton,
-                    )}
-                  >
-                    <Icon name="delete_sweep" className="text-[18px]" /> Clear
-                    (F9)
-                  </button>
-                </div>
+
               </div>
             </div>
-          </div>
-        </div>
-
-        {/* FOOTER */}
-        <div
-          className={cn(
-            "flex shrink-0 items-center justify-between gap-3 overflow-hidden border-t border-[#CFCFD3] bg-[#F8F9FA] font-extrabold text-[#565449]",
-            billingView.footer,
           )}
-        >
-          <div className="flex min-w-0 items-center gap-3 whitespace-nowrap">
-            <span>
-              F2 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Search
-            </span>
-            <span>
-              F3 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Scanner
-            </span>
-            <span className="hidden xl:inline">
-              F4 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Cash
-            </span>
-            <span className="hidden xl:inline">
-              F5 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              eSewa
-            </span>
-            <span>
-              F6 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Park
-            </span>
-            <span className="hidden 2xl:inline">
-              F7 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Customer
-            </span>
-            <span className="hidden 2xl:inline">
-              Alt+H <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Held
-            </span>
-            <span>
-              F9 <span className="font-semibold text-[#CFCFD3] mx-1">|</span>{" "}
-              Clear
-            </span>
-            <span>
-              Shift+Enter{" "}
-              <span className="font-semibold text-[#CFCFD3] mx-1">|</span> Pay
-            </span>
-            <button
-              type="button"
-              onClick={() => setShowShortcutHelp(true)}
-              className="inline-flex items-center gap-1 rounded-[5px] border border-[#CFCFD3] bg-white px-1.5 py-1 text-[10px] font-extrabold text-[#565449] transition hover:bg-[#F3F4F6] focus:outline-none focus:ring-2 focus:ring-[#11120d]/15"
-            >
-              <Icon name="keyboard" className="text-[14px]" />
-              More shortcuts
-            </button>
-          </div>
-          <div className="hidden min-w-0 shrink items-center gap-4 whitespace-nowrap lg:flex">
-            <span className="max-w-[260px] truncate">
-              Operator: {operatorLabel}
-            </span>
-            <span className="shrink-0">Terminal: {terminalLabel}</span>
+
+          {activeWorkspaceTab === "worksheet" && (
+            <BillingWorksheetView
+              cart={cartTableItems}
+              customer={selectedCustomer as any}
+              subTotal={subTotal}
+              discountLabel={subtotalDiscountMeta.label}
+                  discountPercent={subtotalDiscountMeta.percent || 0}
+              discountAmount={subtotalDiscount}
+              payableTotal={payableTotal}
+              cashReceived={paymentMethod === "Cash" ? cashTendered : ""}
+              onChooseCustomer={() => { setActiveWorkspaceTab("billing"); setCustomerSearchOpen(true); }}
+              cashierName={currentUser?.name || operatorLabel}
+              business={businessIdentity}
+              note={invoiceNote}
+              onChangeNote={setInvoiceNote}
+              paperDocumentType={paperDraftDocumentType}
+              onChangePaperDocumentType={setPaperDraftDocumentType}
+              paperBillNo={paperDraftBillNo}
+              onChangePaperBillNo={setPaperDraftBillNo}
+              paperBillDate={paperDraftBillDate}
+              onChangePaperBillDate={setPaperDraftBillDate}
+              isPaperException={isPaperException}
+              onTogglePaperException={setIsPaperException}
+              paperExceptionReason={paperExceptionReason}
+              onChangePaperExceptionReason={setPaperExceptionReason}
+              onUpdateQty={(productId, newQty) => changeQty(productId, newQty)}
+              onRemoveItem={(productId) => removeLine(productId)}
+              onBackToBilling={() => setActiveWorkspaceTab("billing")}
+              onContinueToPayment={handleContinueToPaymentFromWorksheet}
+              onOpenOcrComparison={() => setIsOcrComparisonOpen(true)}
+            />
+          )}
+
+          <div className={activeWorkspaceTab === "history" ? "h-full min-h-0" : "hidden"}>
+            <BillingPurchaseHistoryV2 selectedCustomer={selectedCustomer as any} cart={cartTableItems}
+              visible={activeWorkspaceTab === "history"} navigation={historyNavigation}
+              onChangeCustomer={() => { setActiveWorkspaceTab("billing"); setCustomerSearchOpen(true); }}
+              onReturnToBilling={() => setActiveWorkspaceTab("billing")} />
           </div>
         </div>
+      <div className={`billing-shortcut-footer ${activeWorkspaceTab === "billing" ? "hidden md:flex" : "hidden"}`}><span>Shortcuts</span>{[["F2","Search"],["F3","Scanner"],["F4","Cash"],["F5","eSewa"],["F6","Park"],["F7","Customer"],["Alt+H","Held"],["F8","Price"],["F9","Clear"],["Shift+Enter","Review"]].map(([key,label])=><span key={key}><kbd>{key}</kbd> {label}</span>)}<span className="ml-auto">Operator: {operatorLabel} · Terminal: {terminalLabel}</span></div>
+      {activeWorkspaceTab === "billing" && <div className="shrink-0 border-t border-line bg-white p-3 md:hidden"><div className="flex items-center justify-between gap-3"><span className="text-sm font-semibold">{pendingCheckout ? typeof pendingCheckout.payload.confirmation?.payableTotal === "number" ? formatBillingMoney(pendingCheckout.payload.confirmation.payableTotal) : "Submitted total not recorded" : formatBillingMoney(payableTotal)}</span><button type="button" disabled={!canConfirm} onClick={() => pendingCheckout ? openPaymentFlow() : setActiveWorkspaceTab("worksheet")} className="rounded-lg bg-action px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-40">{pendingCheckout ? "Recover checkout" : "Review in Worksheet"}</button></div></div>}
       </div>
 
-      <ModalFrame
+      {/* OCR Comparison Modal */}
+      <BillingOcrComparisonModal presentation="billing"
+        open={isOcrComparisonOpen}
+        onClose={() => setIsOcrComparisonOpen(false)}
+        cart={cartTableItems}
+        payableTotal={payableTotal}
+        currentBillNo={paperDraftBillNo}
+        currentBillDate={paperDraftBillDate}
+        sourceFile={ocrSourceFile}
+        sourceObservations={ocrSourceObservations}
+        fingerprint={currentWorksheetFingerprint()}
+        onRetainSource={(file, observations, checked, fingerprint) => { setOcrSourceFile(file); setOcrSourceObservations(observations); setOcrCheckedFingerprint(checked ? fingerprint : null); }}
+        onApplyReference={(no, date) => {
+          setPaperDraftBillNo(no);
+          setPaperDraftBillDate(date);
+          showToast("success", `Applied reference: ${no}`);
+        }}
+      />
+
+      {/* Price Differ Popover */}
+      <BillingPriceDifferPopover
+        open={Boolean(priceDifferItem)}
+        onClose={() => setPriceDifferItem(null)}
+        item={priceDifferItem ? cartTableItems.find(line => line.productId === priceDifferItem.item.productId) || null : null}
+        pastPurchases={priceDifferItem?.past || []}
+        anchor={priceDifferItem?.anchor}
+        onApplyPastPrice={(price) => {
+          if (priceDifferItem) {
+            applyDirectPriceOverride(priceDifferItem.item.productId, price);
+          }
+        }}
+      />
+
+<ModalFrame presentation="billing"
         open={showShortcutHelp}
         onClose={() => setShowShortcutHelp(false)}
         title="Billing shortcuts"
@@ -7901,6 +6603,8 @@ export default function BillingPage() {
         ensureDefaultSplitPayments={ensureDefaultSplitPayments}
         invoiceNote={invoiceNote}
         setInvoiceNote={setInvoiceNote}
+        isPaperException={isPaperException}
+        paperExceptionReason={paperExceptionReason}
         paperDraftBillNo={paperDraftBillNo}
         setPaperDraftBillNo={setPaperDraftBillNo}
         paperDraftDocumentType={paperDraftDocumentType}
@@ -7922,10 +6626,10 @@ export default function BillingPage() {
         paymentStateTone={paymentStateTone}
         paymentStateTitle={paymentStateTitle}
         paymentStateDetail={paymentStateDetail}
-        formatNpr={formatNpr}
+        formatBillingMoney={formatBillingMoney}
         formatQty={formatQty}
       />
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={!!priceOverrideTargetRow}
         onClose={closePriceOverride}
         title={isManager ? "Approve price override" : "Verify price override"}
@@ -7946,7 +6650,7 @@ export default function BillingPage() {
                   </div>
                   <div className="mt-1 text-[12px] font-semibold text-[#8C8889]">
                     SKU {priceOverrideTargetRow.product.sku} | Normal{" "}
-                    {formatNpr(priceOverrideTargetRow.baseUnitPrice)}
+                    {formatBillingMoney(priceOverrideTargetRow.baseUnitPrice)}
                   </div>
                 </div>
                 <div className="rounded-[14px] border border-slate-200 bg-white px-3 py-2 text-right">
@@ -8070,7 +6774,7 @@ export default function BillingPage() {
             <div className="flex items-center justify-between gap-3">
               <div>
                 {priceOverrideTargetRow.overrideUnitPrice !== undefined ? (
-                  <DialogButton
+                  <DialogButton presentation="billing"
                     variant="danger"
                     icon="undo"
                     onClick={() => {
@@ -8083,8 +6787,8 @@ export default function BillingPage() {
                 ) : null}
               </div>
               <div className="flex items-center gap-3">
-                <DialogButton onClick={closePriceOverride}>Cancel</DialogButton>
-                <DialogButton
+                <DialogButton presentation="billing" onClick={closePriceOverride}>Cancel</DialogButton>
+                <DialogButton presentation="billing"
                   variant="primary"
                   icon="verified_user"
                   onClick={applyPriceOverride}
@@ -8104,7 +6808,7 @@ export default function BillingPage() {
         ) : null}
       </ModalFrame>
 
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={stockConflicts.length > 0}
         onClose={() => {
           setStockConflicts([]);
@@ -8201,14 +6905,14 @@ export default function BillingPage() {
           </div>
 
           <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-end">
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => void refreshStockConflictList()}
               disabled={stockRefreshBusy}
               icon="sync"
             >
               {stockRefreshBusy ? "Refreshing..." : "Refresh Stock"}
             </DialogButton>
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={applyAllStockConflictSuggestions}
               variant="primary"
               icon="done_all"
@@ -8219,7 +6923,7 @@ export default function BillingPage() {
         </div>
       </ModalFrame>
 
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={showIncomingRequests}
         onClose={() => {
           if (draftRequestBusy) return;
@@ -8462,7 +7166,7 @@ export default function BillingPage() {
                               {formatQty(getRequestTotalQty(request))} unit(s)
                             </div>
                             <div className="mt-1 font-mono text-[13px] font-extrabold text-[#11120d]">
-                              {formatNpr(getRequestEstimatedTotal(request))}
+                              {formatBillingMoney(getRequestEstimatedTotal(request))}
                             </div>
                           </div>
                           <Icon
@@ -8684,7 +7388,7 @@ export default function BillingPage() {
                           </div>
                         </div>
                         <div className="shrink-0 font-mono text-[11px] font-extrabold text-[#11120d]">
-                          {formatNpr(
+                          {formatBillingMoney(
                             requestedQty *
                               Number(product?.retailPrice || 0),
                           )}
@@ -8836,7 +7540,7 @@ export default function BillingPage() {
         )}
       </ModalFrame>
 
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={showParkedBills}
         onClose={() => setShowParkedBills(false)}
         title="Held bills"
@@ -8925,7 +7629,7 @@ export default function BillingPage() {
                             {formatQty(units)} total qty
                           </span>
                           <span className="rounded-[7px] border border-[#CFCFD3] bg-[#F3F4F6] px-2 py-0.5">
-                            {formatNpr(Number(draft.subTotal || 0))}
+                            {formatBillingMoney(Number(draft.subTotal || 0))}
                           </span>
                         </div>
                         {preview ? (
@@ -8967,7 +7671,7 @@ export default function BillingPage() {
         </div>
       </ModalFrame>
 
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={!!pendingStaleResume}
         onClose={() => setPendingStaleResume(null)}
         title="Review held bill changes"
@@ -8975,7 +7679,7 @@ export default function BillingPage() {
         maxWidthClass="max-w-[760px]"
         footer={
           <>
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => void discardPendingStaleResume()}
               variant="danger"
               icon="delete"
@@ -8983,7 +7687,7 @@ export default function BillingPage() {
             >
               Discard Held Bill
             </DialogButton>
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => {
                 if (pendingStaleResume)
                   void loadResumedParkedDraft(pendingStaleResume);
@@ -9032,7 +7736,7 @@ export default function BillingPage() {
                     </div>
                   </div>
                   <div className="text-right font-mono font-extrabold text-[#565449]">
-                    {formatNpr(warning.parkedUnitPrice)}
+                    {formatBillingMoney(warning.parkedUnitPrice)}
                   </div>
                   <div
                     className={cn(
@@ -9042,7 +7746,7 @@ export default function BillingPage() {
                         : "text-[#565449]",
                     )}
                   >
-                    {formatNpr(warning.currentUnitPrice)}
+                    {formatBillingMoney(warning.currentUnitPrice)}
                   </div>
                   <div
                     className={cn(
@@ -9061,7 +7765,7 @@ export default function BillingPage() {
         </div>
       </ModalFrame>
 
-      <ModalFrame
+      <ModalFrame presentation="billing"
         open={Boolean(
           acceptedResolution &&
             (!showIncomingRequests ||
@@ -9080,7 +7784,7 @@ export default function BillingPage() {
         layer="critical"
         footer={
           <div className="grid w-full gap-2 sm:grid-cols-[auto_1fr_1fr]">
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => {
                 setAcceptedResolution(null);
                 setAcceptedResolutionReason("");
@@ -9090,14 +7794,14 @@ export default function BillingPage() {
             >
               Keep accepted
             </DialogButton>
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => void resolveAcceptedRequest("RETURN_TO_QUEUE")}
               disabled={draftRequestBusy}
               icon="move_to_inbox"
             >
               Return to queue
             </DialogButton>
-            <DialogButton
+            <DialogButton presentation="billing"
               onClick={() => void resolveAcceptedRequest("CANCEL")}
               disabled={draftRequestBusy}
               variant="danger"
@@ -9159,7 +7863,7 @@ export default function BillingPage() {
       </ModalFrame>
 
       {pendingBillingConfirmConfig ? (
-        <ConfirmDialog
+        <ConfirmDialog presentation="billing"
           open={!!pendingBillingConfirmConfig}
           title={pendingBillingConfirmConfig.title}
           message={pendingBillingConfirmConfig.message}
@@ -9174,7 +7878,7 @@ export default function BillingPage() {
       ) : null}
 
       {pendingDiscardParked ? (
-        <ConfirmDialog
+        <ConfirmDialog presentation="billing"
           open={!!pendingDiscardParked}
           title="Discard held bill?"
           message="This parked draft will be permanently removed from Held Bills."
@@ -9205,7 +7909,7 @@ export default function BillingPage() {
         />
       ) : null}
 
-      <SuccessDialog
+      <SuccessDialog presentation="billing"
         open={showSuccess}
         title="Invoice created successfully"
         message="The invoice has been finalized and recorded in KhataSathi."
@@ -9217,26 +7921,26 @@ export default function BillingPage() {
         secondaryAction={
           lastCreatedInvoiceId ? (
             <div className="flex flex-wrap gap-2">
-              <DialogButton
+              <DialogButton presentation="billing"
                 onClick={() => openInvoicePrint(lastCreatedInvoiceId)}
                 icon="print"
               >
                 Print Invoice
               </DialogButton>
-              <DialogButton
+              <DialogButton presentation="billing"
                 onClick={() => openInvoiceReceiptPrint(lastCreatedInvoiceId)}
                 icon="receipt_long"
               >
                 Receipt
               </DialogButton>
               {savedSaleResult && savedSaleResult.balanceDue > 0 ? (
-                <DialogButton onClick={() => {
+                <DialogButton presentation="billing" onClick={() => {
                   setShowSuccess(false);
                   setManualPaymentInvoiceId(savedSaleResult.invoiceId);
                 }} icon="payments">Record Received Payment</DialogButton>
               ) : null}
               {savedSaleResult && !savedSaleResult.paperRecorded && !savedSaleResult.paperBillNo ? (
-                <DialogButton
+                <DialogButton presentation="billing"
                   onClick={() => {
                     setShowSuccess(false);
                     setPaperFollowup({
@@ -9267,22 +7971,22 @@ export default function BillingPage() {
             </div>
             <div className="flex justify-between items-center text-[#565449]">
               <span>Total Amount</span>
-              <span className="font-mono font-bold text-[#11120D]">{formatNpr(savedSaleResult.total)}</span>
+              <span className="font-mono font-bold text-[#11120D]">{formatBillingMoney(savedSaleResult.total)}</span>
             </div>
             <div className="flex justify-between items-center text-[#565449]">
               <span>Collected / Paid</span>
-              <span className="font-mono font-bold text-emerald-700">{formatNpr(savedSaleResult.effectivePaidAmount)}</span>
+              <span className="font-mono font-bold text-emerald-700">{formatBillingMoney(savedSaleResult.effectivePaidAmount)}</span>
             </div>
             {savedSaleResult.pendingGatewayAmount && savedSaleResult.pendingGatewayAmount > 0 ? (
               <div className="flex justify-between items-center text-amber-800">
                 <span>Pending Verification (Gateway)</span>
-                <span className="font-mono font-bold">{formatNpr(savedSaleResult.pendingGatewayAmount)}</span>
+                <span className="font-mono font-bold">{formatBillingMoney(savedSaleResult.pendingGatewayAmount)}</span>
               </div>
             ) : null}
             {savedSaleResult.balanceDue > 0 ? (
               <div className="flex justify-between items-center text-amber-800">
                 <span>Balance Due</span>
-                <span className="font-mono font-bold">{formatNpr(savedSaleResult.balanceDue)}</span>
+                <span className="font-mono font-bold">{formatBillingMoney(savedSaleResult.balanceDue)}</span>
               </div>
             ) : null}
             <div className="flex justify-between items-center text-[#565449] pt-1 border-t border-[#E5E7EB]">
@@ -9324,36 +8028,6 @@ export default function BillingPage() {
         onClose={() => setManualPaymentInvoiceId(null)}
       />
 
-      <BillingWorksheetModal
-        open={isWorksheetOpen}
-        onClose={() => setIsWorksheetOpen(false)}
-        onContinueToPayment={() => {
-          setIsWorksheetOpen(false);
-          openPaymentFlow();
-        }}
-        onOpenCustomerHistory={() => {
-          setIsWorksheetOpen(false);
-          setIsDetailedHistoryOpen(true);
-        }}
-        items={cartRows.map((r) => ({
-          productId: r.productId,
-          name: r.product.name,
-          sku: r.product.sku,
-          saleUnit: r.product.saleUnit,
-          qty: r.qty,
-          appliedUnitPrice: r.unitPrice,
-          lineTotal: r.lineTotal,
-          overrideUnitPrice: r.overrideUnitPrice,
-          overrideReason: r.overrideReason,
-        }))}
-        customer={selectedCustomer}
-        subTotal={subTotal}
-        discountPercent={subtotalDiscountMeta.percent}
-        discountAmount={subtotalDiscount}
-        payableTotal={payableTotal}
-        formatNpr={formatNpr}
-        formatQtyWithUnit={formatQtyWithUnit}
-      />
 
       <BillingCalculatorModal
         open={isCalculatorOpen}
@@ -9570,7 +8244,7 @@ export default function BillingPage() {
           </div>
         </div>
       )}
-      <CashierQrGalleryModal
+      <CashierQrGalleryModal presentation="billing"
         open={isQrGalleryOpen}
         onClose={() => setIsQrGalleryOpen(false)}
       />

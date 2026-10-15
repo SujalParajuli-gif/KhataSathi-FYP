@@ -91,7 +91,7 @@ export async function create(req: Request, res: Response) {
   try {
     const newCust = await custService.createCustomer({
       name: parseCustomerName(req.body.name),
-      phone: parseOptionalText(req.body.phone),
+      phone: custService.parseRequiredCustomerPhone(req.body.phone),
       email: parseOptionalText(req.body.email),
       loyaltyPercent: parsePercent(req.body.loyaltyPercent, "Loyalty percent"),
       wholesalePercent: parsePercent(
@@ -99,7 +99,7 @@ export async function create(req: Request, res: Response) {
         "Wholesale percent",
       ),
       panNo: custService.parseCustomerPan(req.body.panNo),
-      address: custService.parseCustomerAddress(req.body.address),
+      address: custService.parseRequiredCustomerAddress(req.body.address),
       createdById: req.user!.id,
       createdByRole:
         req.user!.role === "ADMIN"
@@ -147,10 +147,10 @@ export async function createQuick(req: Request, res: Response) {
 
     const customer = await custService.createCustomer({
       name: parseCustomerName(body.name),
-      phone: parseOptionalText(body.phone),
+      phone: custService.parseRequiredCustomerPhone(body.phone),
       email: parseOptionalText(body.email),
       panNo: custService.parseCustomerPan(body.panNo),
-      address: custService.parseCustomerAddress(body.address),
+      address: custService.parseRequiredCustomerAddress(body.address),
       loyaltyPercent: 0,
       wholesalePercent: 0,
       createdById: req.user!.id,
@@ -182,11 +182,8 @@ export async function createDiscountedByCashier(req: Request, res: Response) {
       return;
     }
 
-    const phone = parseOptionalText(req.body.phone);
-    if (!phone) {
-      res.status(400).json({ error: "Phone number is required for cashier-created discounted customers." });
-      return;
-    }
+    const phone = custService.parseRequiredCustomerPhone(req.body.phone);
+    const address = custService.parseRequiredCustomerAddress(req.body.address);
 
     const customer = await custService.createDiscountedCustomerByCashier(
       req.user!.id,
@@ -194,6 +191,8 @@ export async function createDiscountedByCashier(req: Request, res: Response) {
         name: parseCustomerName(req.body.name),
         phone,
         email: parseOptionalText(req.body.email),
+        address,
+        panNo: custService.parseCustomerPan(req.body.panNo),
         discountType: parseDiscountType(req.body.discountType),
         discountPercent: parsePercent(req.body.discountPercent, "Discount percent"),
       },
@@ -201,6 +200,10 @@ export async function createDiscountedByCashier(req: Request, res: Response) {
 
     res.status(201).json(customer);
   } catch (err: any) {
+      if (err instanceof custService.CustomerValidationError) {
+        res.status(400).json({ error: err.message, field: err.field });
+        return;
+      }
     const message = String(err?.message || "");
     if (
       message.includes("required") ||
@@ -290,10 +293,12 @@ export async function approveDiscountRequest(req: Request, res: Response) {
             ? undefined
             : parsePercent(req.body.discountPercent, "Discount percent"),
         adminNote: parseOptionalReason(req.body?.adminNote),
+        address: typeof req.body?.address === "string" ? req.body.address : undefined,
       },
     );
     res.json(request);
   } catch (err: any) {
+    if (err instanceof custService.CustomerValidationError) { res.status(400).json({ error: err.message, field: err.field }); return; }
     const message = String(err?.message || "");
     if (message.includes("not found")) {
       res.status(404).json({ error: message });
@@ -748,6 +753,100 @@ export async function getCustomerPurchaseHistory(req: Request, res: Response) {
       return;
     }
     console.error("Get customer purchase history error:", err);
+    res.status(500).json({ error: "Internal server error" });
+  }
+}
+
+export async function getCustomerInvoiceEvents(req: Request, res: Response) {
+  try {
+    const customerId = String(req.params.customerId || "").trim();
+    if (!customerId) {
+      res.status(400).json({ error: "Customer ID is required." });
+      return;
+    }
+
+    const page = Math.max(1, parseInt(String(req.query.page || "1"), 10) || 1);
+    const pageSize = Math.min(100, Math.max(1, parseInt(String(req.query.pageSize || "20"), 10) || 20));
+
+    const q = typeof req.query.q === "string" && req.query.q.trim() ? req.query.q.trim() : undefined;
+
+    let type: "PURCHASE" | "RETURN" | "REPLACEMENT" | "ALL" | undefined;
+    if (typeof req.query.type === "string") {
+      const normalizedType = req.query.type.trim().toUpperCase();
+      if (["PURCHASE", "RETURN", "REPLACEMENT", "ALL"].includes(normalizedType)) {
+        type = normalizedType as any;
+      } else {
+        res.status(400).json({ error: "Invalid type filter. Allowed: PURCHASE, RETURN, REPLACEMENT, ALL." });
+        return;
+      }
+    }
+
+    let paymentStatus: "ALL" | "PAID" | "UNPAID" | "PARTIALLY_PAID" | "OUTSTANDING" | undefined;
+    if (typeof req.query.paymentStatus === "string") {
+      const normalizedStatus = req.query.paymentStatus.trim().toUpperCase();
+      if (["ALL", "PAID", "UNPAID", "PARTIALLY_PAID", "OUTSTANDING"].includes(normalizedStatus)) {
+        paymentStatus = normalizedStatus as any;
+      } else {
+        res.status(400).json({ error: "Invalid paymentStatus filter. Allowed: ALL, PAID, UNPAID, PARTIALLY_PAID, OUTSTANDING." });
+        return;
+      }
+    }
+
+    let from: string | undefined;
+    if (typeof req.query.from === "string" && req.query.from.trim()) {
+      try {
+        parseBusinessDate(req.query.from.trim(), "from");
+        from = req.query.from.trim();
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'from' date." });
+        return;
+      }
+    }
+
+    let to: string | undefined;
+    if (typeof req.query.to === "string" && req.query.to.trim()) {
+      try {
+        parseBusinessDate(req.query.to.trim(), "to");
+        to = req.query.to.trim();
+      } catch (err: any) {
+        res.status(400).json({ error: err.message || "Invalid 'to' date." });
+        return;
+      }
+    }
+
+    if (from && to) {
+      const fromDate = parseBusinessDate(from, "from");
+      const toDate = parseBusinessDate(to, "to");
+      if (fromDate.getTime() > toDate.getTime()) {
+        res.status(400).json({ error: "The 'from' date cannot be after the 'to' date." });
+        return;
+      }
+    }
+
+    let productIds: string[] | undefined;
+    if (req.query.productIds !== undefined) {
+      if (typeof req.query.productIds !== "string") { res.status(400).json({ error: "productIds must be a comma-separated string." }); return; }
+      productIds = [...new Set(req.query.productIds.split(",").map(id => id.trim()).filter(Boolean))];
+      if (productIds.length > 100 || productIds.some(id => id.length > 120)) { res.status(400).json({ error: "Cart history supports up to 100 product IDs, each at most 120 characters." }); return; }
+    }
+    const result = await custService.getCustomerInvoiceEvents({
+      customerId,
+      productIds,
+      page,
+      pageSize,
+      q,
+      type,
+      paymentStatus,
+      from,
+      to,
+    });
+    res.json(result);
+  } catch (err: any) {
+    if (String(err?.message || "").includes("Customer not found")) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    console.error("Get customer invoice events error:", err);
     res.status(500).json({ error: "Internal server error" });
   }
 }

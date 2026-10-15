@@ -1,3 +1,4 @@
+import { useModalDialogFocus } from "~/components/ui/Modal";
 import React from "react";
 import type { ReactNode } from "react";
 import { createPortal } from "react-dom";
@@ -17,6 +18,7 @@ import {
 } from "~/lib/invoices";
 
 type Props = {
+  formatMoney?: (value: number) => string;
   open: boolean;
   invoice: AppInvoice | null;
   onClose: () => void;
@@ -33,6 +35,7 @@ type Props = {
 // the main invoice detail modal — handles showing everything about a specific invoice
 // shows customer info, line items, payment breakdown, cancellation details if any, and overall totals
 export default function InvoiceDetailModal({
+  formatMoney = formatNpr,
   open,
   invoice,
   onClose,
@@ -43,18 +46,10 @@ export default function InvoiceDetailModal({
   error,
 }: Props) {
   useBodyScrollLock(open);
+  const dialogRef = React.useRef<HTMLDivElement>(null);
+  useModalDialogFocus(open, dialogRef, onClose, `${invoice?.id || "pending"}:${Boolean(loading)}:${Boolean(error)}`);
 
-  React.useEffect(() => {
-    if (!open) return;
-    function handleKeyDown(event: KeyboardEvent) {
-      if (event.key === "Escape") {
-        event.preventDefault();
-        onClose();
-      }
-    }
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open, onClose]);
+
 
   if (!open || typeof document === "undefined") return null;
 
@@ -68,6 +63,9 @@ export default function InvoiceDetailModal({
           aria-label="Close"
         />
         <div
+          ref={dialogRef}
+          tabIndex={-1}
+          data-modal-frame="true"
           role="dialog"
           aria-modal="true"
           aria-label="Loading invoice details"
@@ -107,6 +105,9 @@ export default function InvoiceDetailModal({
           aria-label="Close"
         />
         <div
+          ref={dialogRef}
+          tabIndex={-1}
+          data-modal-frame="true"
           role="dialog"
           aria-modal="true"
           aria-label="Invoice load error"
@@ -151,6 +152,9 @@ export default function InvoiceDetailModal({
       />
 
       <div
+        ref={dialogRef}
+        tabIndex={-1}
+        data-modal-frame="true"
         role="dialog"
         aria-modal="true"
         aria-label={`Invoice ${invoice.invoiceNo}`}
@@ -242,7 +246,7 @@ export default function InvoiceDetailModal({
                 Net total
               </div>
               <div className="font-mono text-[18px] font-extrabold text-[#2F67D8]">
-                {formatNpr(invoice.netTotal)}
+                {formatMoney(invoice.netTotal)}
               </div>
             </div>
           </div>
@@ -288,14 +292,14 @@ export default function InvoiceDetailModal({
                           </span>
                         </div>
                         <div className="mt-[2px] text-[11px] text-[#8C8889]">
-                          {formatNpr(item.unitPrice)} / unit
+                          {formatMoney(item.unitPrice)} / unit
                         </div>
                         {item.overrideUnitPrice !== undefined ? (
                           <div className="mt-1 inline-flex max-w-full items-center gap-1 rounded-[8px] border border-amber-200 bg-amber-50 px-2 py-1 text-[10px] font-extrabold text-amber-700">
                             <span>Price override</span>
                             {item.originalUnitPrice !== undefined ? (
                               <span className="font-mono">
-                                from {formatNpr(item.originalUnitPrice)}
+                                from {formatMoney(item.originalUnitPrice)}
                               </span>
                             ) : null}
                           </div>
@@ -312,7 +316,7 @@ export default function InvoiceDetailModal({
                           x{item.qty}
                         </div>
                         <div className="font-mono font-extrabold text-[#000000]">
-                          {formatNpr(item.lineTotal)}
+                          {formatMoney(item.lineTotal)}
                         </div>
                       </div>
                     </div>
@@ -332,13 +336,13 @@ export default function InvoiceDetailModal({
                 <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
                   <div className="font-bold text-[#8C8889]">Paid</div>
                   <div className="mt-[4px] font-mono font-extrabold text-[#000000]">
-                    {formatNpr(invoice.paidAmount)}
+                    {formatMoney(invoice.paidAmount)}
                   </div>
                 </div>
                 <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
                   <div className="font-bold text-[#8C8889]">Due</div>
                   <div className="mt-[4px] font-mono font-extrabold text-[#000000]">
-                    {formatNpr(invoice.dueAmount)}
+                    {formatMoney(invoice.dueAmount)}
                   </div>
                 </div>
                 <div className="rounded-[14px] border border-[#DADDE3] bg-[#F8FAFC] p-3">
@@ -415,25 +419,25 @@ export default function InvoiceDetailModal({
                         <div className="flex items-center justify-between gap-[8px]">
                           <span className="font-bold text-[#8C8889]">Original paid</span>
                           <span className="font-mono font-extrabold text-[#000000]">
-                            {formatNpr(note.originalPaidTotal)}
+                            {formatMoney(note.originalPaidTotal)}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-[8px]">
                           <span className="font-bold text-[#8C8889]">Credit transferred</span>
                           <span className="font-mono font-extrabold text-[#000000]">
-                            {formatNpr(note.creditedAmount)}
+                            {formatMoney(note.creditedAmount)}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-[8px]">
                           <span className="font-bold text-[#8C8889]">Replacement total</span>
                           <span className="font-mono font-extrabold text-[#000000]">
-                            {formatNpr(note.replacementNetTotal)}
+                            {formatMoney(note.replacementNetTotal)}
                           </span>
                         </div>
                         <div className="flex items-center justify-between gap-[8px]">
                           <span className="font-bold text-[#8C8889]">Customer credit</span>
                           <span className="font-mono font-extrabold text-[#179B4D]">
-                            {formatNpr(note.customerCreditAmount)}
+                            {formatMoney(note.customerCreditAmount)}
                           </span>
                         </div>
                       </div>
@@ -522,20 +526,20 @@ export default function InvoiceDetailModal({
                               : "text-[#000000]"
                           }`}
                         >
-                          {formatNpr(payment.amount)}
+                          {formatMoney(payment.amount)}
                         </div>
                         {payment.cashTendered !== undefined ? (
                           <div className="mt-[6px] space-y-1 text-[11px] font-semibold text-[#565449]">
                             <div>
                               Tendered:{" "}
                               <span className="font-mono font-extrabold text-[#000000]">
-                                {formatNpr(payment.cashTendered)}
+                                {formatMoney(payment.cashTendered)}
                               </span>
                             </div>
                             <div>
                               Change:{" "}
                               <span className="font-mono font-extrabold text-[#179B4D]">
-                                {formatNpr(payment.changeAmount || 0)}
+                                {formatMoney(payment.changeAmount || 0)}
                               </span>
                             </div>
                           </div>
@@ -604,40 +608,40 @@ export default function InvoiceDetailModal({
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Subtotal</span>
                   <span className="font-mono font-extrabold text-[#000000]">
-                    {formatNpr(invoice.subtotal)}
+                    {formatMoney(invoice.subtotal)}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Discount</span>
                   <span className="font-mono font-extrabold text-[#BE123C]">
-                    -{formatNpr(invoice.discount)}
+                    -{formatMoney(invoice.discount)}
                   </span>
                 </div>
                 <div className="flex items-center justify-between rounded-[12px] border border-[#DADDE3] bg-[#F8FAFC] px-3 py-2">
                   <span className="font-extrabold text-[#565449]">Original net total</span>
                   <span className="font-mono text-[16px] font-extrabold text-[#000000]">
-                    {formatNpr(invoice.netTotal)}
+                    {formatMoney(invoice.netTotal)}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Total paid</span>
                   <span className="font-mono font-extrabold text-[#000000]">
-                    {formatNpr(invoice.paidAmount)}
+                    {formatMoney(invoice.paidAmount)}
                   </span>
                 </div>
                 <div className="flex justify-between">
                   <span className="font-bold text-[#8C8889]">Remaining due</span>
                   <span className="font-mono font-extrabold text-[#000000]">
-                    {formatNpr(invoice.dueAmount)}
+                    {formatMoney(invoice.dueAmount)}
                   </span>
                 </div>
 
-                {(invoice.correctionCredit || 0) > 0 && <p className="text-[12px]">Replacement settlement credit: <strong className="font-mono">{formatNpr((invoice.correctionCredit || 0) - (invoice.correctionCreditReleased || 0))}</strong> (noncash; original receipts remain on the source sale)</p>}
-                {(invoice.correctionCreditReleased || 0) > 0 && <p className="text-[12px]">Credit restored to original source: <strong className="font-mono">{formatNpr(invoice.correctionCreditReleased || 0)}</strong> (noncash)</p>}
-                {(invoice.creditApplied || 0) > 0 && <p className="text-[12px]">Applied customer credit: <strong className="font-mono">{formatNpr(invoice.creditApplied || 0)}</strong> (separate from receipts)</p>}
+                {(invoice.correctionCredit || 0) > 0 && <p className="text-[12px]">Replacement settlement credit: <strong className="font-mono">{formatMoney((invoice.correctionCredit || 0) - (invoice.correctionCreditReleased || 0))}</strong> (noncash; original receipts remain on the source sale)</p>}
+                {(invoice.correctionCreditReleased || 0) > 0 && <p className="text-[12px]">Credit restored to original source: <strong className="font-mono">{formatMoney(invoice.correctionCreditReleased || 0)}</strong> (noncash)</p>}
+                {(invoice.creditApplied || 0) > 0 && <p className="text-[12px]">Applied customer credit: <strong className="font-mono">{formatMoney(invoice.creditApplied || 0)}</strong> (separate from receipts)</p>}
                 {(invoice.returnAdjustment || 0) > 0 && <div className="space-y-2 text-[12px]">
-                  <p>Approved return reduction: <strong className="font-mono">{formatNpr(invoice.returnAdjustment || 0)}</strong></p>
-                  <p>Original return credit (before applications): <strong className="font-mono">{formatNpr(invoice.retainedReturnCredit || 0)}</strong></p>
+                  <p>Approved return reduction: <strong className="font-mono">{formatMoney(invoice.returnAdjustment || 0)}</strong></p>
+                  <p>Original return credit (before applications): <strong className="font-mono">{formatMoney(invoice.retainedReturnCredit || 0)}</strong></p>
                   <p className="text-[#565449]">Credit stays with this original sale's owner. No payout or automatic application is recorded.</p>
                 </div>}
                 <div className="my-[8px] border-t border-dashed border-[#CFCFD3]" />

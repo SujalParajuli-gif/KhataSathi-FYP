@@ -39,9 +39,10 @@ export interface ProductFilters {
     includeDraftReservations?: boolean;
     page?: number;
     pageSize?: number;
-    sortBy?: "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest";
+    sortBy?: "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest" | "popularity";
     pricingStatus?: "all" | "ready" | "pending";
     photoStatus?: "all" | "with_photo" | "without_photo";
+    customerId?: string;
 }
 
 export const PRODUCT_TAX_CATEGORIES = [
@@ -121,6 +122,78 @@ async function listStockFilteredProductIds(input: {
     };
 }
 
+async function listPopularityRankedProducts(input: {
+    where: any;
+    customerId?: string;
+    page: number;
+    pageSize: number;
+    settings: any;
+    includeDraftReservations?: boolean;
+}) {
+    const clauses: Prisma.Sql[] = [];
+    if (input.where.brandId) clauses.push(Prisma.sql`p.brandId = ${input.where.brandId}`);
+    if (input.where.category) clauses.push(Prisma.sql`p.category = ${input.where.category}`);
+    if (input.where.isActive !== undefined) clauses.push(Prisma.sql`p.isActive = ${input.where.isActive}`);
+    if (input.where.sellingPriceStatus) clauses.push(Prisma.sql`p.sellingPriceStatus = ${input.where.sellingPriceStatus}`);
+    if (input.where.imageUrl) clauses.push(Prisma.sql`p.imageUrl IS NOT NULL AND p.imageUrl <> ''`);
+    if (input.where.OR) clauses.push(Prisma.sql`(p.imageUrl IS NULL OR p.imageUrl = '')`);
+    const productWhere = clauses.length ? Prisma.sql`WHERE ${Prisma.join(clauses, " AND ")}` : Prisma.empty;
+    const customerId = input.customerId || null;
+    const skip = (input.page - 1) * input.pageSize;
+    const [counts, ranked] = await Promise.all([
+      prisma.$queryRaw(Prisma.sql`SELECT COUNT(*) AS total FROM Product p ${productWhere}`),
+      prisma.$queryRaw(Prisma.sql`
+        SELECT p.id FROM Product p
+        LEFT JOIN Brand b ON b.id = p.brandId
+        LEFT JOIN InvoiceItem item ON item.productId = p.id
+        LEFT JOIN Invoice sale ON sale.id = item.invoiceId
+          AND sale.status = 'FINALIZED' AND sale.cancelledAt IS NULL AND sale.deletedAt IS NULL
+          AND NOT EXISTS (SELECT 1 FROM CreditNote replacement WHERE replacement.originalInvoiceId = sale.id AND replacement.replacementInvoiceId IS NOT NULL)
+        ${productWhere}
+        GROUP BY p.id, p.imageUrl, p.name, b.name
+        ORDER BY COUNT(DISTINCT CASE WHEN sale.customerId = ${customerId} THEN sale.id END) DESC,
+          MAX(CASE WHEN sale.customerId = ${customerId} THEN COALESCE(sale.finalizedAt, sale.createdAt) END) DESC,
+          COUNT(DISTINCT sale.id) DESC,
+          (p.imageUrl IS NOT NULL AND p.imageUrl <> '') DESC,
+          COALESCE(b.name, '') ASC, p.name ASC, p.id ASC
+        LIMIT ${input.pageSize} OFFSET ${skip}`),
+    ]);
+    const total = Number(counts[0]?.total || 0);
+    const pageIds = ranked.map(row => row.id);
+
+    const fullProducts = (pageIds.length
+        ? await prisma.product.findMany({
+            where: { id: { in: pageIds } },
+            include: {
+                brand: { select: { id: true, name: true } },
+                searchAliases: { where: { isEnabled: true }, select: { alias: true } },
+            },
+        })
+        : []) as Array<
+            Prisma.ProductGetPayload<{
+                include: {
+                    brand: { select: { id: true; name: true } };
+                    searchAliases: { where: { isEnabled: true }; select: { alias: true } };
+                };
+            }>
+        >;
+
+    const productById = new Map(fullProducts.map((p) => [p.id, p]));
+    const orderedProducts = pageIds.flatMap((id) => {
+        const prod = productById.get(id);
+        return prod ? [withAvailableStock(applyBusinessThresholds(prod, input.settings))] : [];
+    });
+
+    return {
+        products: input.includeDraftReservations
+            ? await withPendingDraftQuantities(orderedProducts)
+            : orderedProducts,
+        total,
+        page: input.page,
+        pageSize: input.pageSize,
+    };
+}
+
 // listing products with support for search, filtering, pagination, and low-stock-only mode
 // low stock mode requires special handling because we need to resolve each product's threshold
 // before we can determine if it is below the threshold
@@ -138,6 +211,7 @@ export async function listProducts(filters: ProductFilters) {
         sortBy = "photos_first",
         pricingStatus = "all",
         photoStatus = "all",
+        customerId,
     } = filters;
 
     const where: any = {};
@@ -224,6 +298,15 @@ export async function listProducts(filters: ProductFilters) {
             page,
             pageSize,
         };
+    } else if (sortBy === "popularity" || (customerId && sortBy === "photos_first")) {
+        return listPopularityRankedProducts({
+            where,
+            customerId,
+            page,
+            pageSize,
+            settings,
+            includeDraftReservations,
+        });
     } else {
         // normal listing with database-level pagination
         let orderBy: any = [

@@ -172,3 +172,41 @@ export async function listCustomerReceivables(query: unknown, role: string) {
       basis: "Recorded original-sale and captured correction obligations and successful receipts; due and retained credit are separate, unknown settlement is withheld" };
   }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
 }
+
+export async function getCustomerReceivablesSummaryForCashier(customerId: string) {
+  return prisma.$transaction(async (tx) => {
+    const customer = await tx.customer.findUnique({
+      where: { id: customerId },
+      select: {
+        id: true,
+        name: true,
+        isActive: true,
+        invoices: {
+          where: { status: "FINALIZED" },
+          orderBy: [{ finalizedAt: "desc" }, { id: "desc" }],
+          include: receivableInclude,
+        },
+      },
+    });
+
+    if (!customer) {
+      return null;
+    }
+
+    const summary = summarizeReceivableCustomer(customer);
+    const state: "EXISTS" | "NONE" | "NEEDS_REVIEW" =
+      summary.unresolvedCount > 0
+        ? "NEEDS_REVIEW"
+        : summary.supportedDue > 0
+          ? "EXISTS"
+          : "NONE";
+
+    return {
+      customerId: customer.id,
+      state,
+      hasDue: summary.supportedDue > 0,
+      totalDue: summary.unresolvedCount > 0 ? null : summary.supportedDue,
+      currency: "NPR",
+    };
+  }, { isolationLevel: Prisma.TransactionIsolationLevel.RepeatableRead });
+}

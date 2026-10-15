@@ -1,5 +1,15 @@
 import { z } from "zod";
 import { optionalSafeText, safeText } from "../../lib/requestValidation";
+import { parseBusinessDate } from "../../lib/businessDate";
+import { EXTERNAL_DOCUMENT_TYPES } from "./manualBill/validation";
+
+export const paperReviewSchema = z.discriminatedUnion("kind", [
+  z.object({ kind: z.literal("REFERENCE"), billNo: safeText("Paper bill number", 120).min(1),
+    billDate: z.string().refine(value => { try { parseBusinessDate(value, "Bill date"); return true; } catch { return false; } }, "Invalid bill date"),
+    documentType: z.enum(EXTERNAL_DOCUMENT_TYPES) }).strict(),
+  z.object({ kind: z.literal("EXCEPTION"), reason: safeText("Paper exception reason", 500).min(1) }).strict(),
+]);
+export type PaperReviewInput = z.infer<typeof paperReviewSchema>;
 
 const optionalIdSchema = optionalSafeText("ID", 120);
 const optionalPinSchema = optionalSafeText("Override PIN", 20);
@@ -116,6 +126,7 @@ export const checkoutConfirmationSchema = z
 export const checkoutBodySchema = z
   .object({
     operationKey: checkoutOperationKeySchema,
+    paperReview: paperReviewSchema.optional(),
     draftInvoiceId: optionalIdSchema,
     draftRequestId: optionalIdSchema,
     customerId: optionalIdSchema,

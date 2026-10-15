@@ -3,7 +3,6 @@ import { Link } from "react-router";
 import BrandLogo from "~/components/ui/BrandLogo";
 import GIcon from "~/components/ui/GIcon";
 import UserAvatar from "~/components/ui/UserAvatar";
-import navData from "~/config/ui.nav.json";
 import { API_BASE_URL } from "~/lib/api/baseUrl";
 import { alertColor, alertIcon, alertTone } from "~/lib/alerts/alerts";
 import { useAlerts } from "~/lib/alerts/alerts-context";
@@ -11,8 +10,9 @@ import { useAlerts } from "~/lib/alerts/alerts-context";
 type Props = {
   pageTitle: string;
   greetingText?: string;
-  onOpenMobileSidebar: () => void;
+  onOpenMobileSidebar?: () => void;
   onToggleCollapse: () => void;
+  onOpenSearch?: () => void;
   isMobileSidebarOpen?: boolean;
   isCollapsed: boolean;
   userName?: string;
@@ -25,12 +25,12 @@ type Props = {
   contextLabel?: string;
 };
 
-// the top navigation bar — shows the page title, greeting, notification bell, and user profile link
 export default function Topbar({
   pageTitle,
   greetingText = "Welcome back",
   onOpenMobileSidebar,
   onToggleCollapse,
+  onOpenSearch,
   isMobileSidebarOpen = false,
   isCollapsed,
   userName = "User",
@@ -42,22 +42,19 @@ export default function Topbar({
   showDesktopCollapseToggle = true,
   contextLabel,
 }: Props) {
-  const [bellOpen, setBellOpen] = useState(false); // whether the notification dropdown is visible
+  const [bellOpen, setBellOpen] = useState(false);
   const [accountOpen, setAccountOpen] = useState(false);
   const bellRef = useRef<HTMLDivElement>(null);
   const accountRef = useRef<HTMLDivElement>(null);
   const { alerts, loading, refreshAlerts, unreadCount } = useAlerts();
 
-  // closing the notification dropdown when the user clicks outside of it
+  // Close dropdowns on outside click or Escape
   useEffect(() => {
     function handleClickOutside(event: MouseEvent) {
       if (bellRef.current && !bellRef.current.contains(event.target as Node)) {
         setBellOpen(false);
       }
-      if (
-        accountRef.current &&
-        !accountRef.current.contains(event.target as Node)
-      ) {
+      if (accountRef.current && !accountRef.current.contains(event.target as Node)) {
         setAccountOpen(false);
       }
     }
@@ -80,125 +77,152 @@ export default function Topbar({
     };
   }, [accountOpen, bellOpen]);
 
-  // toggling the bell dropdown — refreshing alerts when opening
   function toggleBell() {
     if (!showNotifications) return;
     const nextOpen = !bellOpen;
     setBellOpen(nextOpen);
     if (nextOpen) {
-      refreshAlerts(100); // fetching fresh alerts when the dropdown opens
+      refreshAlerts(100);
     }
   }
 
-  // only showing the 4 most recent alerts in the dropdown preview
   const previewAlerts = alerts.slice(0, 4);
 
   return (
-    <header className="relative z-[60] h-[68px] shrink-0 border-b border-[#CFCFD3] bg-white/95 backdrop-blur-md">
-      <div
-        className={
-          staffMode
-            ? "flex h-full items-center px-[14px] sm:px-[20px]"
-            : "flex h-full items-center px-[12px] sm:px-[20px]"
-        }
-      >
-        <div className="flex w-full items-center justify-between gap-2.5 sm:gap-4">
-          <div className="min-w-0 flex items-center gap-2.5 sm:gap-4">
-            <div className="flex items-center gap-3">
-              {/* mobile hamburger menu button — only visible on small screens */}
-              {staffMode ? (
-                <BrandLogo className="h-9 w-[126px] lg:hidden" />
-              ) : (
-                <button
-                  type="button"
-                  onClick={onOpenMobileSidebar}
-                  className="flex h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#F3F4F6] hover:text-[#000000] active:scale-95 lg:hidden"
-                  aria-label="Open sidebar"
-                  aria-expanded={isMobileSidebarOpen}
-                  aria-controls="app-sidebar"
-                >
-                  <GIcon name="menu" />
-                </button>
-              )}
+    <header className="relative z-[60] h-[68px] shrink-0 border-b border-[#D8DDE5] bg-white/95 backdrop-blur-md">
+      <div className="flex h-full items-center justify-between px-3 sm:px-6">
+        {/* Left Section: Mobile Brand or Toggles + Page Identity */}
+        <div className="flex min-w-0 items-center gap-2.5 sm:gap-4">
+          {/* Desktop Collapse Toggle */}
+          {showDesktopCollapseToggle ? (
+            <button
+              type="button"
+              onClick={onToggleCollapse}
+              className="hidden h-9 w-9 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95 lg:flex"
+              aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+              aria-expanded={!isCollapsed}
+              aria-controls="app-sidebar"
+            >
+              <GIcon name={isCollapsed ? "menu" : "menu_open"} sizePx={20} />
+            </button>
+          ) : null}
 
-              {/* desktop sidebar collapse toggle button */}
-              {showDesktopCollapseToggle ? (
-                <button
-                  type="button"
-                  onClick={onToggleCollapse}
-                  className="hidden h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449] transition hover:bg-[#E7E8EA] hover:text-[#000000] active:scale-95 lg:flex"
-                  aria-label={isCollapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  aria-expanded={!isCollapsed}
-                  aria-controls="app-sidebar"
-                >
-                  <GIcon name={isCollapsed ? "menu" : "menu_open"} />
-                </button>
-              ) : null}
-
-              {/* page title and greeting text */}
-              <div className={staffMode ? "hidden min-w-0 sm:block" : "min-w-0"}>
-                <h1 className="truncate text-[16px] font-bold  text-[#000000]">
+          {/* Desktop Page Title */}
+          <div className="hidden lg:flex min-w-0 items-center gap-2">
+            <div className="min-w-0">
+              <div className="flex items-center gap-2">
+                <h1 className="truncate text-[17px] font-bold text-slate-900 tracking-tight">
                   {pageTitle}
                 </h1>
-                <div className="flex min-w-0 items-center gap-1.5 text-[12px] font-medium text-[#8C8889] opacity-90">
-                  <span className="hidden truncate sm:inline">{greetingText}</span>
-                  {contextLabel ? (
-                    <span className="shrink-0 rounded-full border border-sky-200 bg-sky-50 px-1.5 py-0.5 text-[9px] font-extrabold text-sky-800 sm:text-[10px]">
-                      {contextLabel}
-                    </span>
-                  ) : null}
-                </div>
+                {contextLabel ? (
+                  <span className="inline-block shrink-0 rounded-full border border-slate-200 bg-slate-100 px-2 py-0.5 text-[9.5px] font-bold text-slate-600">
+                    {contextLabel}
+                  </span>
+                ) : null}
+              </div>
+              <div className="flex min-w-0 items-center gap-1.5 text-[11px] font-medium text-slate-400">
+                <span className="truncate">{greetingText}</span>
               </div>
             </div>
           </div>
 
-          <div className="flex shrink-0 items-center gap-2 sm:gap-3">
-            {/* notification bell with dropdown */}
-            {showNotifications ? (
-              <div className="relative" ref={bellRef}>
+          {/* Mobile Page Title with KhataSathi Brand Logo */}
+          <div className="flex lg:hidden min-w-0 items-center gap-2.5">
+            <Link
+              to="/"
+              className="shrink-0 flex items-center transition hover:opacity-85 active:scale-95"
+              aria-label="KhataSathi Home"
+            >
+              <BrandLogo
+                variant="icon"
+                className="h-8 w-8 rounded-[9px] border border-slate-200/90 bg-white shadow-2xs p-0.5"
+              />
+            </Link>
+            <div className="h-6 w-[1px] bg-slate-200 shrink-0" />
+            <div className="min-w-0 flex flex-col justify-center">
+              <div className="flex items-center gap-1.5">
+                <span className="text-[10px] font-bold uppercase tracking-wider text-slate-400">
+                  KhataSathi
+                </span>
+                {contextLabel ? (
+                  <span className="shrink-0 rounded-full border border-slate-200 bg-slate-100 px-1.5 py-0.2 text-[8.5px] font-bold text-slate-600">
+                    {contextLabel}
+                  </span>
+                ) : null}
+              </div>
+              <h1 className="truncate text-[15px] sm:text-[16px] font-bold text-slate-900 tracking-tight leading-tight">
+                {pageTitle}
+              </h1>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Section: Global Actions (Search, Notifications, Profile) */}
+        <div className="flex shrink-0 items-center gap-2 sm:gap-2.5">
+          {/* Quick Page Search Button */}
+          {onOpenSearch ? (
+            <button
+              type="button"
+              onClick={onOpenSearch}
+              className="flex h-9 items-center gap-2 rounded-[10px] border border-slate-200 bg-white px-2.5 text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95"
+              aria-label="Search navigation pages"
+              title="Search pages (Ctrl K)"
+            >
+              <GIcon name="search" sizePx={18} className="text-slate-500" />
+              <span className="hidden md:inline text-[12px] font-semibold text-slate-500">
+                Search
+              </span>
+              <kbd className="hidden md:inline rounded bg-slate-100 px-1 py-0.5 text-[9.5px] font-bold text-slate-400">
+                ⌘K
+              </kbd>
+            </button>
+          ) : null}
+
+          {/* Notification Bell with Dropdown */}
+          {showNotifications ? (
+            <div className="relative" ref={bellRef}>
               <button
                 type="button"
                 onClick={toggleBell}
-                className="relative flex h-[40px] w-[40px] items-center justify-center rounded-[14px] border border-[#CFCFD3] bg-[#FFFFFF] text-[#565449]  transition hover:bg-[#F3F4F6] hover:text-[#000000] active:scale-95"
+                className="relative flex h-9 w-9 items-center justify-center rounded-[10px] border border-slate-200 bg-white text-slate-600 transition hover:bg-slate-100 hover:text-slate-900 active:scale-95"
                 aria-label="Notifications"
+                aria-expanded={bellOpen}
               >
-                <GIcon name="notifications" />
-                {/* showing unread count badge on the bell icon */}
+                <GIcon name="notifications" sizePx={19} />
                 {unreadCount > 0 ? (
-                  <span className="absolute -right-1 -top-1 min-w-[18px] rounded-full bg-[#2F67D8] px-1 text-center text-[10px] font-extrabold leading-[18px] text-white ">
+                  <span className="absolute -right-1 -top-1 flex h-[18px] min-w-[18px] items-center justify-center rounded-full bg-[#2563EB] px-1 text-[10px] font-bold text-white shadow-xs">
                     {unreadCount > 9 ? "9+" : unreadCount}
                   </span>
                 ) : null}
               </button>
 
-              {/* notification dropdown panel — shows a preview of recent alerts */}
+              {/* Notification Dropdown Panel */}
               {bellOpen ? (
-                <div className="fixed left-3 right-3 top-[58px] z-50 overflow-hidden rounded-[20px] border border-[#DADDE3] bg-[#FFFFFF] shadow-2xl sm:absolute sm:left-auto sm:right-0 sm:top-[48px] sm:w-[360px] sm:max-w-[calc(100vw-24px)]">
-                  <div className="flex items-center justify-between border-b border-[#E5E7EB] px-4 py-3">
-                    <span className="text-[14px] font-extrabold text-[#000000]">
+                <div className="fixed left-3 right-3 top-[58px] z-50 overflow-hidden rounded-[16px] border border-[#D8DDE5] bg-white shadow-2xl sm:absolute sm:left-auto sm:right-0 sm:top-[44px] sm:w-[360px] sm:max-w-[calc(100vw-24px)] animate-in fade-in-0 zoom-in-95 duration-150">
+                  <div className="flex items-center justify-between border-b border-slate-100 px-4 py-3 bg-slate-50/70">
+                    <span className="text-[13px] font-bold text-slate-900">
                       Notifications
                     </span>
                     {unreadCount > 0 ? (
-                      <span className="rounded-full border border-[#C5D7FF] bg-[#EEF4FF] px-2 py-0.5 text-[11px] font-extrabold text-[#2F67D8]">
+                      <span className="rounded-full bg-blue-100 px-2 py-0.5 text-[10.5px] font-bold text-blue-700">
                         {unreadCount} unread
                       </span>
                     ) : null}
                   </div>
 
-                  <div className="max-h-[min(380px,calc(100dvh-140px))] overflow-y-auto">
+                  <div className="max-h-[min(380px,calc(100dvh-140px))] overflow-y-auto [scrollbar-width:thin]">
                     {loading && previewAlerts.length === 0 ? (
-                      <div className="p-6 text-center text-[13px] text-slate-400">
+                      <div className="p-6 text-center text-[12.5px] text-slate-400">
                         Loading...
                       </div>
                     ) : null}
 
                     {!loading && previewAlerts.length === 0 ? (
-                      <div className="p-6 text-center text-[13px] text-slate-400">
+                      <div className="p-6 text-center text-[12.5px] text-slate-400">
                         No notifications
                       </div>
                     ) : null}
 
-                    {/* rendering each alert preview row with the appropriate color theme */}
                     {previewAlerts.map((alert) => {
                       const tone = alertTone(alert);
 
@@ -207,41 +231,37 @@ export default function Topbar({
                           key={alert.key}
                           to="/alerts"
                           onClick={() => setBellOpen(false)}
-                          className={`flex items-start gap-3 border-b border-[rgba(207,207,211,0.4)] px-[16px] py-[12px] last:border-0 ${tone.previewHover} ${
+                          className={`flex items-start gap-3 border-b border-slate-100 px-4 py-3 last:border-0 transition-colors ${tone.previewHover} ${
                             alert.read ? "bg-white" : tone.previewUnread
                           }`}
                         >
                           <div
-                            className={`mt-0.5 flex h-9 w-9 shrink-0 items-center justify-center rounded-xl ${alertColor(
+                            className={`mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-[8px] ${alertColor(
                               alert,
                             )}`}
                           >
-                            <GIcon
-                              name={alertIcon(alert)}
-                              className="text-[18px]"
-                            />
+                            <GIcon name={alertIcon(alert)} sizePx={17} />
                           </div>
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-start justify-between gap-3">
-                              <div className="truncate text-[13px] font-semibold text-[#000000]">
+                            <div className="flex items-start justify-between gap-2">
+                              <div className="truncate text-[12.5px] font-semibold text-slate-900">
                                 {alert.title}
                               </div>
                               <div
                                 className={`shrink-0 text-[10px] font-medium ${
-                                  alert.read ? "text-[#8C8889]" : tone.time
+                                  alert.read ? "text-slate-400" : tone.time
                                 }`}
                               >
                                 {alert.timeLabel}
                               </div>
                             </div>
-                            <div className="mt-[4px] break-words text-[11px] leading-[20px] text-[#8C8889]">
+                            <div className="mt-1 break-words text-[11px] leading-snug text-slate-500">
                               {alert.message}
                             </div>
                           </div>
-                          {/* showing a small colored dot for unread alerts */}
                           {!alert.read ? (
                             <span
-                              className={`mt-1.5 h-2.5 w-2.5 shrink-0 rounded-full ${tone.unreadDot}`}
+                              className={`mt-1.5 h-2 w-2 shrink-0 rounded-full ${tone.unreadDot}`}
                             />
                           ) : null}
                         </Link>
@@ -249,84 +269,39 @@ export default function Topbar({
                     })}
                   </div>
 
-                  {/* link to the full alerts page */}
                   <Link
                     to="/alerts"
                     onClick={() => setBellOpen(false)}
-                    className="block border-t border-[#CFCFD3] px-[16px] py-[12px] text-center text-[12px] font-bold text-[#000000] transition-colors hover:bg-[#F3F4F6]"
+                    className="block border-t border-slate-100 bg-slate-50/50 px-4 py-2.5 text-center text-[11.5px] font-bold text-blue-600 transition-colors hover:bg-slate-100"
                   >
                     View all notifications
                   </Link>
                 </div>
               ) : null}
-              </div>
-            ) : null}
+            </div>
+          ) : null}
 
-            {/* user profile link — shows avatar, name, and role badge */}
-            {staffMode ? (
-              <div ref={accountRef} className="relative lg:hidden">
-                <button
-                  type="button"
-                  onClick={() => setAccountOpen((current) => !current)}
-                  className="flex h-10 w-10 items-center justify-center rounded-[12px] border border-[#CFCFD3] bg-white transition hover:bg-[#F3F4F6]"
-                  aria-label="Open account menu"
-                  aria-expanded={accountOpen}
-                >
-                  <UserAvatar
-                    src={profileImage ? `${API_BASE_URL}${profileImage}` : undefined}
-                    alt="Profile"
-                    className="flex h-8 w-8 items-center justify-center overflow-hidden rounded-[10px] bg-[#F3F4F6]"
-                    fallback={<GIcon name="person" className="text-[#565449]" />}
-                  />
-                </button>
-
-                {accountOpen ? (
-                  <div className="absolute right-0 top-12 z-50 w-[248px] overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-white shadow-xl">
-                    <div className="border-b border-[#CFCFD3] px-4 py-3">
-                      <div className="truncate text-[13px] font-bold text-black">
-                        {userName}
-                      </div>
-                      <div className="mt-0.5 text-[10px] font-extrabold uppercase text-[#8C8889]">
-                        {roleLabel} account
-                      </div>
-                    </div>
-                    <Link
-                      to="/logout"
-                      onClick={() => setAccountOpen(false)}
-                      className="flex items-center gap-3 px-4 py-3 text-[13px] font-bold text-rose-600 transition hover:bg-rose-50"
-                    >
-                      <GIcon name="logout" className="text-[19px]" />
-                      Log out
-                    </Link>
-                  </div>
-                ) : null}
+          {/* User Profile Card Link */}
+          <Link
+            to={profileHref}
+            className="flex items-center gap-2.5 rounded-[10px] border border-slate-200 bg-white p-1 sm:px-2.5 sm:py-1 transition hover:bg-slate-100 active:scale-95"
+            aria-label="Open user profile"
+          >
+            <UserAvatar
+              src={profileImage ? `${API_BASE_URL}${profileImage}` : undefined}
+              alt="Profile"
+              className="flex h-7 w-7 items-center justify-center overflow-hidden rounded-full border border-slate-200 bg-slate-100 text-[11px] font-bold text-slate-700"
+              fallback={<GIcon name="person" sizePx={16} className="text-slate-500" />}
+            />
+            <div className="hidden sm:block text-left leading-tight">
+              <div className="truncate text-[12px] font-bold text-slate-900 max-w-[120px]">
+                {userName}
               </div>
-            ) : null}
-
-            <Link
-              to={profileHref}
-              className={[
-                "items-center gap-3 rounded-[16px] border border-[#CFCFD3] bg-[#FFFFFF] p-[6px] transition hover:border-[#8C8889] hover:bg-[#F3F4F6] active:scale-[0.98] sm:pr-[12px]",
-                staffMode ? "hidden lg:flex" : "flex",
-              ].join(" ")}
-              aria-label="Open profile"
-            >
-              <UserAvatar
-                src={profileImage ? `${API_BASE_URL}${profileImage}` : undefined}
-                alt="Profile"
-                className="flex h-[32px] w-[32px] items-center justify-center overflow-hidden rounded-[12px] border border-[#CFCFD3] bg-[#F3F4F6]"
-                fallback={<GIcon name="person" className="text-[#565449]" />}
-              />
-              <div className="hidden text-left leading-tight sm:block">
-                <div className="whitespace-nowrap text-[13px] font-bold text-[#000000]">
-                  {userName}
-                </div>
-                <div className="text-[10px] font-extrabold uppercase text-[#8C8889]">
-                  {roleLabel}
-                </div>
+              <div className="truncate text-[9.5px] font-semibold uppercase tracking-wider text-slate-400">
+                {roleLabel}
               </div>
-            </Link>
-          </div>
+            </div>
+          </Link>
         </div>
       </div>
     </header>

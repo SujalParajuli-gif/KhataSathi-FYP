@@ -1,19 +1,19 @@
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useLocation } from "react-router";
+import CommandSearchModal from "~/components/layout/CommandSearchModal";
+import MobileBottomNav from "~/components/layout/MobileBottomNav";
 import Sidebar from "~/components/layout/Sidebar";
-import StaffBottomNav from "~/components/layout/StaffBottomNav";
 import Topbar from "~/components/layout/Topbar";
 import Icon from "~/components/ui/Icon";
 import { ToastProvider } from "~/components/ui/Toast";
-import navData from "~/config/ui.nav.json";
+import { getAuthorizedNavItems } from "~/config/navigation";
 import { useBodyScrollLock } from "~/hooks/useBodyScrollLock";
+import { AlertsProvider } from "~/lib/alerts/alerts-context";
 import { isRateLimited } from "~/lib/api/client";
 import { touchUserPresenceApi } from "~/lib/api/endpoints";
-import { AlertsProvider } from "~/lib/alerts/alerts-context";
 import { getAuthUser } from "~/lib/auth";
 import { useBusinessCapabilities } from "~/lib/businessCapabilities";
 import { businessModeLabel } from "~/lib/capabilityRecovery";
-import { hasCapabilityRouteAccess } from "~/lib/routeAccess";
 
 type Props = {
   children: ReactNode;
@@ -86,16 +86,21 @@ export default function AppShell({ children, statusBanner }: Props) {
   const location = useLocation();
   const capabilities = useBusinessCapabilities();
   const [isMobileOpen, setIsMobileOpen] = useState(false);
-  const [isCollapsed, setIsCollapsed] = useState(true);
+  const [isCollapsed, setIsCollapsed] = useState(false);
+  const [isSearchOpen, setIsSearchOpen] = useState(false);
   const [user, setUser] = useState(() => getAuthUser());
 
   const role = (user?.role?.toLowerCase() as any) ?? "staff";
   const isStaff = role === "staff";
   const usesCompactDesktopRail = role === "cashier" || role === "staff";
   const sidebarStorageKey = `${SIDEBAR_STATE_STORAGE_KEY}:${user?.id ?? role}`;
-  const effectiveCollapsed = usesCompactDesktopRail ? true : isCollapsed;
+  const billingSidebarPilot = location.pathname === "/billing";
+  const [floatingSidebarOpen, setFloatingSidebarOpen] = useState(false);
+  const closeFloatingSidebar = useCallback(() => setFloatingSidebarOpen(false), []);
+  const effectiveCollapsed = billingSidebarPilot || usesCompactDesktopRail ? true : isCollapsed;
+  useEffect(() => { setFloatingSidebarOpen(false); }, [location.pathname, location.key]);
 
-  useBodyScrollLock(!isStaff && isMobileOpen);
+  useBodyScrollLock(isMobileOpen);
 
   useEffect(() => {
     const handleReauth = () => setUser(getAuthUser());
@@ -105,16 +110,27 @@ export default function AppShell({ children, statusBanner }: Props) {
 
   useEffect(() => {
     const saved = window.localStorage.getItem(sidebarStorageKey);
-    setIsCollapsed(saved ? saved === "collapsed" : true);
-  }, [sidebarStorageKey]);
+    if (saved) {
+      setIsCollapsed(saved === "collapsed");
+    } else {
+      setIsCollapsed(usesCompactDesktopRail);
+    }
+  }, [sidebarStorageKey, usesCompactDesktopRail]);
 
   useEffect(() => {
     setIsMobileOpen(false);
   }, [location.pathname]);
 
+  // Global keyboard shortcuts (Ctrl+K for search, Escape for closing drawers/modals)
   useEffect(() => {
-    function closeOnEscape(event: KeyboardEvent) {
-      if (event.key === "Escape") setIsMobileOpen(false);
+    function handleKeyDown(event: KeyboardEvent) {
+      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
+        event.preventDefault();
+        setIsSearchOpen((prev) => !prev);
+      } else if (event.key === "Escape") {
+        setIsMobileOpen(false);
+        setIsSearchOpen(false);
+      }
     }
 
     function closeAtDesktop(event: MediaQueryListEvent) {
@@ -122,10 +138,10 @@ export default function AppShell({ children, statusBanner }: Props) {
     }
 
     const desktopQuery = window.matchMedia("(min-width: 1024px)");
-    window.addEventListener("keydown", closeOnEscape);
+    document.addEventListener("keydown", handleKeyDown);
     desktopQuery.addEventListener("change", closeAtDesktop);
     return () => {
-      window.removeEventListener("keydown", closeOnEscape);
+      document.removeEventListener("keydown", handleKeyDown);
       desktopQuery.removeEventListener("change", closeAtDesktop);
     };
   }, []);
@@ -156,6 +172,7 @@ export default function AppShell({ children, statusBanner }: Props) {
   }, [user?.id, isStaff]);
 
   function toggleDesktopSidebar() {
+    if (billingSidebarPilot) { setFloatingSidebarOpen(open => !open); return; }
     if (usesCompactDesktopRail) return;
 
     setIsCollapsed((current) => {
@@ -171,17 +188,14 @@ export default function AppShell({ children, statusBanner }: Props) {
   const contentOffsetClass = effectiveCollapsed
     ? "lg:ml-[80px]"
     : "lg:ml-[260px]";
-  const visibleItems = useMemo(
-    () =>
-      navData.sidebar.items.filter(
-        (item) =>
-          item.roles.includes(role) &&
-          hasCapabilityRouteAccess(item.to, capabilities),
-      ),
+
+  const authorizedNavItems = useMemo(
+    () => getAuthorizedNavItems(role, capabilities),
     [role, capabilities],
   );
+
   const pageTitle = useMemo(() => {
-    const matched = visibleItems
+    const matched = authorizedNavItems
       .filter(
         (item) =>
           item.to === location.pathname ||
@@ -189,7 +203,7 @@ export default function AppShell({ children, statusBanner }: Props) {
       )
       .sort((left, right) => right.to.length - left.to.length)[0];
     return matched?.pageTitle ?? prettifyPathname(location.pathname);
-  }, [visibleItems, location.pathname]);
+  }, [authorizedNavItems, location.pathname]);
 
   const roleLabel =
     role === "cashier"
@@ -216,28 +230,33 @@ export default function AppShell({ children, statusBanner }: Props) {
         >
           Skip to main content
         </a>
-        <div className="h-dvh overflow-hidden bg-white text-ink">
+        <div data-billing-shell={isBillingRoute ? "true" : undefined} className="h-dvh overflow-hidden bg-white text-slate-900">
+          {/* Unified Desktop Sidebar & Mobile Drawer */}
           <Sidebar
             role={role}
             capabilities={capabilities}
             isMobileOpen={isMobileOpen}
-            isCollapsed={effectiveCollapsed}
-            mobileEnabled={!isStaff}
+            isCollapsed={billingSidebarPilot ? !floatingSidebarOpen : effectiveCollapsed}
+            floatingEnabled={billingSidebarPilot}
+            floatingOpen={floatingSidebarOpen}
+            onCloseFloating={closeFloatingSidebar}
             onOpenMobile={() => setIsMobileOpen(true)}
             onCloseMobile={() => setIsMobileOpen(false)}
+            onOpenSearch={() => setIsSearchOpen(true)}
+            userName={user?.name ?? "User"}
+            roleLabel={roleLabel}
           />
 
           <div
-            className={`flex h-dvh min-w-0 flex-col transition-[margin] duration-200 ${contentOffsetClass}`}
+            className={`flex h-dvh min-w-0 flex-col transition-[margin] duration-250 ease-[cubic-bezier(0.22,1,0.36,1)] ${contentOffsetClass}`}
           >
             <Topbar
               pageTitle={pageTitle}
-              onOpenMobileSidebar={() => {
-                if (!isStaff) setIsMobileOpen(true);
-              }}
+              onOpenMobileSidebar={() => setIsMobileOpen(true)}
               onToggleCollapse={toggleDesktopSidebar}
+              onOpenSearch={() => setIsSearchOpen(true)}
               isMobileSidebarOpen={isMobileOpen}
-              isCollapsed={effectiveCollapsed}
+              isCollapsed={billingSidebarPilot ? !floatingSidebarOpen : effectiveCollapsed}
               userName={user?.name ?? "User"}
               roleLabel={roleLabel}
               profileImage={user?.profileImage}
@@ -245,7 +264,7 @@ export default function AppShell({ children, statusBanner }: Props) {
               greetingText={`Welcome back, ${user?.name?.split(" ")[0] ?? roleLabel}`}
               showNotifications={!isStaff}
               staffMode={isStaff}
-              showDesktopCollapseToggle={!usesCompactDesktopRail}
+              showDesktopCollapseToggle={billingSidebarPilot || !usesCompactDesktopRail}
               contextLabel={businessModeLabel(capabilities.businessMode)}
             />
 
@@ -255,22 +274,36 @@ export default function AppShell({ children, statusBanner }: Props) {
               id="app-main-content"
               data-app-scroll-container
               className={[
-                "min-h-0 flex-1 overscroll-contain bg-white",
+                "min-h-0 flex-1 overscroll-contain",
                 isBillingRoute
-                  ? "overflow-hidden p-[12px] sm:p-[16px] lg:p-[18px]"
+                  ? "billing-main"
                   : isImportReviewRoute
                     ? "overflow-y-auto p-[12px] sm:p-[16px] lg:p-[18px] xl:overflow-hidden"
                   : "overflow-y-auto p-[12px] sm:p-[20px] lg:p-[24px]",
-                isStaff && !isBillingRoute
-                  ? "pb-[calc(84px+env(safe-area-inset-bottom))] lg:pb-[24px]"
-                  : "",
+                // Bottom padding on mobile so fixed bottom navigation never obscures content
+                  isBillingRoute
+                    ? ""
+                    : "pb-[calc(76px+env(safe-area-inset-bottom))] lg:pb-[24px]",
               ].join(" ")}
             >
               {children}
             </main>
           </div>
 
-          {isStaff ? <StaffBottomNav capabilities={capabilities} /> : null}
+          {/* Role-Aware Mobile Bottom Navigation for All Roles */}
+          <MobileBottomNav
+            role={role}
+            capabilities={capabilities}
+            isDrawerOpen={isMobileOpen}
+            onOpenDrawer={() => setIsMobileOpen(true)}
+          />
+
+          {/* Global Command Search Modal (Ctrl/Cmd+K) */}
+          <CommandSearchModal
+            isOpen={isSearchOpen}
+            onClose={() => setIsSearchOpen(false)}
+            items={authorizedNavItems}
+          />
         </div>
       </ToastProvider>
     </AlertsProvider>

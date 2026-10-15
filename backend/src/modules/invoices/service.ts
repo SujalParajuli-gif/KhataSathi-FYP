@@ -1,3 +1,4 @@
+import { paperReviewSchema, type PaperReviewInput } from "./validation";
 import { applicationReturnBasisTx, allocateApplicationRelease, setApplicationReleasesTx, effectiveApplicationAmount } from "../customers/applicationSettlement";
 import { assertOriginalReturnBasisTx } from "../returns/settlement";
 import { receivableInclude, projectReceivableInvoice } from "../customers/receivables";
@@ -1194,6 +1195,7 @@ export type CheckoutConfirmationInput = {
 };
 
 export type CheckoutInput = {
+  paperReview?: PaperReviewInput;
   operationKey: string;
   draftInvoiceId?: string | null;
   draftRequestId?: string | null;
@@ -1279,6 +1281,7 @@ export function buildCheckoutPayloadHash(
     discountAmount:
       input.discountAmount === undefined ? null : roundCurrency(input.discountAmount),
     notes: normalizeInvoiceNotes(input.notes),
+    ...(input.paperReview ? { paperReview: paperReviewSchema.parse(input.paperReview) } : {}),
     items: items.map((item) => ({
       productId: item.productId,
       qty: item.qty,
@@ -2495,6 +2498,12 @@ export async function checkoutInvoiceTx(
     );
   }
 
+  // Old operation hashes may replay without paperReview; only a fresh ordinary posting requires it.
+  if (!operationKey.startsWith("rec_")) {
+    const paper = paperReviewSchema.safeParse(input.paperReview);
+    if (!paper.success) throw Object.assign(new Error("Worksheet paper reference or an explicit exception reason is required."), { statusCode: 400, code: "CHECKOUT_PAPER_REVIEW_REQUIRED" });
+  }
+
   const draftRequestId = String(input.draftRequestId || "").trim();
   let linkedDraftRequest: any = null;
   if (draftRequestId) {
@@ -2904,6 +2913,10 @@ export async function checkoutInvoiceTx(
       }
     : null;
 
+  if (input.paperReview) {
+    await tx.auditLog.create({ data: { actorId: cashierId, action: "CHECKOUT_PAPER_REVIEWED", entityType: "Invoice", entityId: invoice.id,
+      meta: { operationKey, review: paperReviewSchema.parse(input.paperReview) } } });
+  }
   const response = { invoice: responseInvoice, esewaPaymentIntent };
   await tx.checkoutOperation.update({
     where: { id: operation.id },

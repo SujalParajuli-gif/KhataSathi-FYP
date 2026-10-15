@@ -87,6 +87,7 @@ export async function checkout(req: Request, res: Response) {
 
     const result = await invoiceService.checkoutInvoice(req.user!.id, {
       operationKey: body.operationKey,
+      paperReview: body.paperReview,
       draftInvoiceId: body.draftInvoiceId,
       draftRequestId: body.draftRequestId,
       customerId: body.customerId,
@@ -101,6 +102,7 @@ export async function checkout(req: Request, res: Response) {
 
     res.status(201).json(result);
   } catch (err: any) {
+    if (err?.code === "CHECKOUT_PAPER_REVIEW_REQUIRED") { res.status(400).json({ error: err.message, code: err.code }); return; }
     if (sendStockConflict(res, err)) return;
 
     if (err instanceof invoiceService.CheckoutReviewConflictError) {

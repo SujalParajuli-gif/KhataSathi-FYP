@@ -1,6 +1,10 @@
+import { getInvoiceApi } from "~/lib/api/endpoints";
+import type { CartTableItem } from "~/components/billing/BillingCartTable";
+import BillingOcrComparisonModal from "~/components/billing/BillingOcrComparisonModal";
+import type { BillScanObservations } from "~/lib/api/manualBills";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import ProjectSelect from "~/components/ui/ProjectSelect";
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import type {
   ExternalDocumentType,
   PublicSaleCandidate,
@@ -60,6 +64,15 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
   // Upload modal state
   const [uploadOpen, setUploadOpen] = useState(false);
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [comparisonOpen, setComparisonOpen] = useState(false);
+  const [comparisonMode, setComparisonMode] = useState<"UPLOAD" | "SAVED">("UPLOAD");
+  const [savedComparisonFile, setSavedComparisonFile] = useState<File | null>(null);
+  const [savedComparisonObservations, setSavedComparisonObservations] = useState<BillScanObservations | null>(null);
+  const [savedComparisonCart, setSavedComparisonCart] = useState<CartTableItem[]>([]);
+  const [savedComparisonTotal, setSavedComparisonTotal] = useState(0);
+  const [comparisonPreparing, setComparisonPreparing] = useState(false);
+
+  const [uploadObservations, setUploadObservations] = useState<BillScanObservations | null>(null);
   const [uploadTitle, setUploadTitle] = useState("");
   const [uploadRemarks, setUploadRemarks] = useState("");
   const [uploading, setUploading] = useState(false);
@@ -102,6 +115,28 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
   const [candidates, setCandidates] = useState<PublicSaleCandidate[]>([]);
   const [selectedCandidate, setSelectedCandidate] = useState<PublicSaleCandidate | null>(null);
   const [candidateLoading, setCandidateLoading] = useState(false);
+  const comparisonTarget = useRef("");
+  comparisonTarget.current = `${attachOpen}:${selectedDoc?.id}:${selectedCandidate?.id}`;
+  useEffect(() => () => { comparisonTarget.current = ""; }, []);
+
+  async function compareSelectedSavedSale() {
+    if (!selectedDoc || !selectedCandidate || comparisonPreparing) return;
+    const target = comparisonTarget.current;
+    setComparisonPreparing(true); setAttachError(null);
+    try {
+      const [blob, result] = await Promise.all([fetchSalesEvidenceBlob(selectedDoc.id, "file"), getInvoiceApi(selectedCandidate.id)]);
+      if (comparisonTarget.current !== target) return;
+      const invoice = result.invoice || result;
+      setSavedComparisonFile(new File([blob], selectedDoc.fileName, { type: blob.type || selectedDoc.mimeType }));
+      setSavedComparisonObservations(null);
+      setSavedComparisonCart((invoice.items || []).map((line: any) => ({ id: line.id, productId: line.productId,
+        name: line.displayProduct ? (line.displayProduct.name || "Historical identity unavailable") : line.snapshotCapturedAt ? (line.productNameSnapshot || "Historical identity unavailable") : (line.product?.name || "Historical identity unavailable"),
+        sku: line.displayProduct ? line.displayProduct.sku : line.snapshotCapturedAt ? line.productSkuSnapshot : line.product?.sku,
+        saleUnit: line.saleUnit || null, qty: line.qty, stock: 0, appliedUnitPrice: line.appliedUnitPrice, originalUnitPrice: line.appliedUnitPrice, lineTotal: line.lineTotal })));
+      setSavedComparisonTotal(invoice.netTotal); setComparisonMode("SAVED"); setComparisonOpen(true);
+    } catch (error: any) { if (comparisonTarget.current === target) setAttachError(error?.message || "Could not open the original bill and saved sale for comparison."); }
+    finally { setComparisonPreparing(false); }
+  }
 
   // Attach reference form
   const [attachBillNo, setAttachBillNo] = useState("");
@@ -419,6 +454,13 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
 
   return (
     <div className="space-y-4">
+      <BillingOcrComparisonModal open={comparisonOpen} onClose={() => setComparisonOpen(false)}
+        cart={comparisonMode === "SAVED" ? savedComparisonCart : []} payableTotal={comparisonMode === "SAVED" ? savedComparisonTotal : null}
+        currentBillNo={comparisonMode === "SAVED" ? attachBillNo : ""} currentBillDate={comparisonMode === "SAVED" ? attachBillDate : ""}
+        savedSale={comparisonMode === "SAVED"} sourceFile={comparisonMode === "SAVED" ? savedComparisonFile : uploadFile}
+        sourceObservations={comparisonMode === "SAVED" ? savedComparisonObservations : uploadObservations}
+        onRetainSource={(file, observations) => { if (comparisonMode === "SAVED") { setSavedComparisonFile(file); setSavedComparisonObservations(observations); } else { setUploadFile(file); setUploadObservations(observations); } }}
+        onApplyReference={(billNo) => { if (comparisonMode === "UPLOAD" && billNo) setUploadTitle(`Manual bill ${billNo}`); }} />
       {/* Informational Banner on Deferred Recovery */}
       <div className="rounded-2xl border border-control-line bg-control-hover p-4 text-[13px] text-action flex items-start gap-3">
         <GIcon name="info" className="text-secondary text-[20px] shrink-0 mt-0.5" />
@@ -689,7 +731,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
               <input
                 type="file"
                 accept="image/jpeg,image/png,image/webp,application/pdf"
-                onChange={(e) => setUploadFile(e.target.files?.[0] || null)}
+                onChange={(e) => { setUploadFile(e.target.files?.[0] || null); setUploadObservations(null); setComparisonMode("UPLOAD"); setComparisonOpen(Boolean(e.target.files?.[0])); }}
                 required
                 className="w-full text-[13px] file:mr-4 file:rounded-xl file:border-0 file:bg-[#11120d] file:px-4 file:py-2 file:text-[13px] file:font-bold file:text-white hover:file:bg-black"
               />
@@ -761,6 +803,7 @@ export default function ManualBillEvidenceWorkspace({ onRefreshParent }: Props) 
           onClose={() => setAttachOpen(false)}
           title={selectedDoc.saleRecoveryStatus === "ATTACHED" ? "Correct Proof Association" : "Attach Proof to Existing Sale"}
         >
+          {selectedCandidate && <button type="button" disabled={comparisonPreparing} onClick={compareSelectedSavedSale} className="mb-3 rounded-lg border border-control-line px-3 py-2 text-sm">{comparisonPreparing ? "Opening comparison…" : "Compare original proof with this recorded sale"}</button>}
           <div className="space-y-4 text-left max-h-[80vh] overflow-y-auto pr-1">
             {selectedDoc.saleRecoveryStatus === "ATTACHED" && <div className="rounded-xl border border-control-line bg-control-hover p-3 text-sm">
               <p>Current sale: {sourceInvoice?.invoiceNo || "Loading…"} · {sourceInvoice?.externalBillNo || "No paper reference"} · {sourceInvoice?.billRecordStatus}</p>

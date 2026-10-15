@@ -23,6 +23,7 @@ type AccountAssetState = {
 };
 
 type Props = {
+  presentation?: "default" | "billing";
   open: boolean;
   onClose: () => void;
 };
@@ -38,6 +39,7 @@ function isAuthorizedCashierActor(
 
 export default function CashierQrGalleryModal({
   open,
+  presentation,
   onClose,
 }: Props) {
   const [accounts, setAccounts] = useState<EnabledPaymentAccountDto[]>([]);
@@ -342,7 +344,7 @@ export default function CashierQrGalleryModal({
   }, [open, onClose, fetchAccountsAndAssets, revokeAllCreatedUrls]);
 
   return (
-    <ModalFrame
+    <ModalFrame presentation={presentation}
       open={open}
       title="Store Payment QRs Gallery"
       description="Scan static QR codes to receive payment. Cashier verifies confirmation on merchant account."

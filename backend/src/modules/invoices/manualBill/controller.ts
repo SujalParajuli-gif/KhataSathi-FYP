@@ -1,3 +1,7 @@
+import path from "node:path";
+import crypto from "node:crypto";
+import { getTempUploadDir } from "../../documents/service";
+import { uploadInvoiceProof } from "./proofUpload";
 import type { Request, Response } from "express";
 import fs from "fs";
 import { ZodError } from "zod/v4";
@@ -17,6 +21,7 @@ import {
   ManualBillValidationError,
   type ManualBillActor,
 } from "./types";
+import { readSalesBill, SalesReviewError } from "../../salesEvidence/review";
 
 function extractActor(req: Request): ManualBillActor {
   const user = req.user!;
@@ -187,4 +192,34 @@ export async function getProofThumbnailHandler(req: Request, res: Response) {
   } catch (err) {
     return handleManualBillError(res, err);
   }
+}
+
+export async function scanBillPreviewHandler(req: Request, res: Response) {
+  try {
+    if (!req.file || !req.file.buffer) {
+      return res.status(400).json({ error: "A bill image or PDF file is required." });
+    }
+    const result = await readSalesBill(req.file.buffer, req.file.mimetype);
+    return res.json(result);
+  } catch (err: any) {
+    if (err instanceof SalesReviewError) {
+      return res.status(err.status).json({ error: err.message });
+    }
+    console.error("Scan bill preview error:", err);
+    return res.status(503).json({ error: "Bill reading failed or is unavailable." });
+  }
+}
+
+
+export async function uploadInvoiceProofHandler(req: Request, res: Response) {
+  let temporary: string | null = null;
+  try {
+    if (!req.file) { res.status(400).json({ error: "A bill image or PDF is required." }); return; }
+    if (!["image/jpeg", "image/png", "image/webp", "application/pdf"].includes(req.file.mimetype)) { res.status(400).json({ error: "Use a JPEG, PNG, WebP image or PDF." }); return; }
+    temporary = path.join(getTempUploadDir(), `${crypto.randomUUID()}.tmp`);
+    await fs.promises.writeFile(temporary, req.file.buffer);
+    const result = await uploadInvoiceProof(String(req.params.invoiceId), { path: temporary, originalname: req.file.originalname, mimetype: req.file.mimetype, size: req.file.size }, extractActor(req));
+    res.status(result.replayed ? 200 : 201).json(result);
+  } catch (error) { handleManualBillError(res, error); }
+  finally { if (temporary) await fs.promises.unlink(temporary).catch(() => {}); }
 }

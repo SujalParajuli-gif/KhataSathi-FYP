@@ -222,7 +222,17 @@ export default function ProjectSelect({
   useEffect(() => {
     if (!open) return;
     const activeOption = menuRef.current?.querySelectorAll<HTMLElement>("[role='option']")[activeIndex];
-    activeOption?.scrollIntoView({ block: "nearest" });
+    // Scroll only the portalled option list. scrollIntoView can also move the
+    // document while the menu's initial fixed position is being established.
+    const menu = menuRef.current;
+    if (menu && activeOption) {
+      const top = activeOption.offsetTop;
+      const bottom = top + activeOption.offsetHeight;
+      if (top < menu.scrollTop) menu.scrollTop = top;
+      else if (bottom > menu.scrollTop + menu.clientHeight) {
+        menu.scrollTop = bottom - menu.clientHeight;
+      }
+    }
   }, [activeIndex, open]);
 
   function selectValue(nextValue: string) {

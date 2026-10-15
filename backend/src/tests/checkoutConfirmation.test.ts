@@ -382,6 +382,7 @@ const key = "confirm-checkout-test-key-001";
 function makeInput(overrides: Partial<any> = {}) {
   return {
     operationKey: key,
+    paperReview: { kind: "EXCEPTION" as const, reason: "Reviewed test fixture without physical paper" },
     customerId: "customer",
     items: [
       { productId: "p1", qty: 2 },
@@ -636,7 +637,7 @@ test("legacy completed operation replay without confirmation succeeds without re
     const first = await checkoutInvoice("cashier", freshInput);
 
     // Now pretend the stored operation in DB was completed under legacy format without confirmation
-    const legacyInputWithoutConf = makeInput({ confirmation: null });
+    const legacyInputWithoutConf = makeInput({ confirmation: null, paperReview: undefined });
     const legacyHash = buildCheckoutPayloadHash(
       legacyInputWithoutConf,
       legacyInputWithoutConf.items.map((i: any) => ({
@@ -1201,4 +1202,43 @@ test("changed destination tuple with same checkout key conflicts as different bi
   } finally {
     mock.restore();
   }
+});
+
+
+test("fresh missing paper review enters transaction and rolls back all posting effects", async () => {
+  const mock = harness();
+  try {
+    await assert.rejects(checkoutInvoice("cashier", makeInput({ paperReview: undefined })), /Worksheet paper reference/);
+    assert.deepEqual(mock.state.operations, {});
+    assert.deepEqual(mock.state.invoices, {});
+    assert.equal(mock.state.stock.length, 0);
+    assert.equal(mock.state.payments.length, 0);
+    assert.equal(mock.state.audits.length, 0);
+  } finally { mock.restore(); }
+});
+
+test("client recovery-looking operation key cannot bypass fresh paper review", async () => {
+  const mock = harness();
+  try {
+    await assert.rejects(checkoutInvoice("cashier", makeInput({ operationKey: "rec_client_supplied_key", paperReview: undefined })), /Recovery operation keys cannot be used/);
+    assert.deepEqual(mock.state.operations, {});
+    assert.deepEqual(mock.state.invoices, {});
+    assert.equal(mock.state.stock.length, 0);
+    assert.equal(mock.state.payments.length, 0);
+  } finally { mock.restore(); }
+});
+test("paper exception audit is committed once and changed reason cannot replay the same key", async () => {
+  const mock = harness();
+  try {
+    const input = makeInput();
+    await checkoutInvoice("cashier", input);
+    const audits = mock.state.audits.filter((a: any) => a.action === "CHECKOUT_PAPER_REVIEWED");
+    assert.equal(audits.length, 1);
+    assert.equal(audits[0].actorId, "cashier");
+    assert.equal(audits[0].meta.review.reason, input.paperReview.reason);
+    await checkoutInvoice("cashier", input);
+    assert.equal(mock.state.audits.filter((a: any) => a.action === "CHECKOUT_PAPER_REVIEWED").length, 1);
+    await assert.rejects(checkoutInvoice("cashier", makeInput({ paperReview: { kind: "EXCEPTION", reason: "Changed reason" } })), /different|conflict|contents/i);
+    assert.equal(mock.state.stock.length, 2);
+  } finally { mock.restore(); }
 });

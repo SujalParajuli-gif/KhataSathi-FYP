@@ -86,12 +86,13 @@ export default function BillingCalculatorModal({
   }
 
   return (
-    <ModalFrame
+    <ModalFrame presentation="billing"
       open={open}
       title="Scratchpad Calculator"
       description="Quick arithmetic calculations for manual billing reference."
       onClose={onClose}
-      maxWidthClass="max-w-[380px]"
+      dialogClassName="billing-calculator-dialog"
+      maxWidthClass="max-w-[360px]"
       footer={
         <div className="flex w-full items-center justify-between gap-2">
           <button
@@ -131,7 +132,7 @@ export default function BillingCalculatorModal({
             className="w-full bg-transparent text-right font-mono text-[20px] font-bold text-[#11120D] placeholder:text-[#8C8889] focus:outline-none"
             aria-label="Calculator input"
           />
-          <div className="mt-1 min-h-[28px] text-[22px] font-extrabold">
+          <div className="mt-1 text-[22px] font-extrabold" aria-live="polite">
             {evaluation ? (
               evaluation.success ? (
                 <span className="text-emerald-700">= {evaluation.formatted}</span>
@@ -141,7 +142,7 @@ export default function BillingCalculatorModal({
                 </span>
               )
             ) : (
-              <span className="text-slate-400 text-[14px]">&nbsp;</span>
+              null
             )}
           </div>
         </div>

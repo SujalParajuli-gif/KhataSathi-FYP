@@ -232,6 +232,7 @@ test("ordinary checkout replays both pre-request and intermediate null-request o
 function input(parked = false, payment = false, confirmation = true): any {
   return {
     operationKey: key,
+    ...(confirmation ? { paperReview: { kind: "EXCEPTION", reason: "Reviewed snapshot fixture without physical reference" } } : {}),
     draftInvoiceId: parked ? "parked" : undefined,
     customerId: "customer",
     items: [{ productId: "p1", qty: 1 }, { productId: "p2", qty: 1 }],

@@ -1,4 +1,16 @@
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
+async function openReviewedPayment(page: Page) {
+  const trigger = page.getByRole("button", { name: /Review in Worksheet|Recover checkout/ });
+  const recovery = /Recover checkout/i.test(await trigger.innerText());
+  await trigger.click();
+  if (!recovery) {
+    await page.getByRole("switch",{name:"Physical bill reference unavailable"}).click();
+    await page.getByRole("combobox", {name:"Exception reason"}).click();
+    await page.getByRole("option", {name:"Other",exact:true}).click();
+    await page.getByLabel("Exception details").fill("Explicit test-fixture exception; handwritten reference unavailable");
+    await page.getByRole("button", { name: "Continue to Payment", exact: true }).click();
+  }
+}
 
 test("billing checkout review captures reviewed prices and handles review conflict rollback", async ({ page }) => {
   const user = { id: "cashier", name: "Cashier", role: "cashier" };
@@ -89,11 +101,12 @@ test("billing checkout review captures reviewed prices and handles review confli
   await page.goto("/billing");
 
   // Cart has 1 item of Rs 50
-  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeEnabled();
-  await page.getByRole("button", { name: /PAY NOW/ }).click();
+  await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/ })).toBeEnabled();
+  await openReviewedPayment(page);
 
-  // In payment modal, click FINAL CHECKOUT
-  await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
+  // Keyboard checkout enters the same explicit final confirmation and conflict flow.
+  await expect(page.getByRole("button", { name: /FINAL CHECKOUT/ })).toBeEnabled();
+  await page.keyboard.press("Shift+Enter");
 
   // Confirm dialog opens
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
@@ -193,8 +206,8 @@ test("refreshed prices derive matching payment allocations, change due, and paya
   await page.goto("/billing");
 
   // Open payment modal
-  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeEnabled();
-  await page.getByRole("button", { name: /PAY NOW/ }).click();
+  await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/ })).toBeEnabled();
+  await openReviewedPayment(page);
 
   // Enter tendered amount of 500
   const tenderInput = page.getByPlaceholder("0.00");
@@ -207,11 +220,15 @@ test("refreshed prices derive matching payment allocations, change due, and paya
 
   // Dialog must show updated price of 100 and exact change of 400
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
-  await expect(page.getByText(/NPR 100/i).first()).toBeVisible();
-  await expect(page.getByText(/NPR 400/i).first()).toBeVisible();
+  await expect(page.getByText(/रु 100/i).first()).toBeVisible();
+  await expect(page.getByText(/रु 400/i).first()).toBeVisible();
 
   await page.getByRole("button", { name: /^Confirm/i }).click();
 
+  await expect(page.getByRole("heading", { name: "Sales Worksheet", exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Continue to Payment", exact: true }).click();
+  await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
+  await page.getByRole("button", { name: /^Confirm/i }).click();
   await expect(page.getByText(/Invoice created successfully|Success/i).first()).toBeVisible();
 
   expect(capturedCheckoutPayload).toBeDefined();
@@ -282,9 +299,10 @@ test("unresolved cart lines and quantity step mismatches block checkout with vis
   // Check that badges are rendered
   await expect(page.getByText(/Unavailable/i).first()).toBeVisible();
   await expect(page.getByText(/Step 2/i).first()).toBeVisible();
+  await expect(page.getByText(/Requires attention • resolve the item notices/)).toBeVisible();
 
   // Checkout button is disabled
-  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/ })).toBeDisabled();
 });
 
 test("pending recovery snapshot survives and prevents destructive cart clearing", async ({ page }) => {
@@ -638,8 +656,8 @@ test("customer wholesale vs loyalty mode change invalidates open checkout review
   await page.goto("/billing");
 
   // Open payment modal
-  await expect(page.getByRole("button", { name: /PAY NOW/ })).toBeEnabled();
-  await page.getByRole("button", { name: /PAY NOW/ }).click();
+  await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/ })).toBeEnabled();
+  await openReviewedPayment(page);
 
   // Enter sufficient cash tender
   await page.getByPlaceholder("0.00").fill("500");
@@ -647,7 +665,7 @@ test("customer wholesale vs loyalty mode change invalidates open checkout review
   // Click FINAL CHECKOUT to reach confirm dialog (based on initial loyalty mode: wholesale 40 - 10% loyalty = 36)
   await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
-  await expect(page.getByText(/NPR 36/i).first()).toBeVisible();
+  await expect(page.getByText(/रु 36/i).first()).toBeVisible();
 
   // While confirmation dialog is open, customer pricing mode changes on server to wholesale mode:
   // loyaltyPercent 0, wholesalePercent 10.
@@ -671,11 +689,15 @@ test("customer wholesale vs loyalty mode change invalidates open checkout review
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
 
   // Renewed dialog shows updated price (retail 50 - 10% wholesale = 45)
-  await expect(page.getByText(/NPR 45/i).first()).toBeVisible();
+  await expect(page.getByText(/रु 45/i).first()).toBeVisible();
 
   await page.getByRole("button", { name: /^Confirm/i }).click();
 
   // Invoice finalized successfully
+  await expect(page.getByRole("heading", { name: "Sales Worksheet", exact: true }).first()).toBeVisible();
+  await page.getByRole("button", { name: "Continue to Payment", exact: true }).click();
+  await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
+  await page.getByRole("button", { name: /^Confirm/i }).click();
   await expect(page.getByText(/Invoice created successfully|Success/i).first()).toBeVisible();
   expect(checkoutAttempts.length).toBeGreaterThan(0);
   const lastAttempt = checkoutAttempts[checkoutAttempts.length - 1];
@@ -773,7 +795,7 @@ test("delayed parking mutation serializes fresh checkout and preserves pending r
 
   // While parking mutation is in-flight on the server, parkedBusy is active
   // Assert fresh checkout is disabled and cannot be opened/submitted
-  await expect(page.getByRole("button", { name: /PAY NOW/i })).toBeDisabled();
+  await expect(page.getByRole("button", { name: /Review in Worksheet|Recover checkout/i })).toBeDisabled();
   expect(checkoutAttempts.length).toBe(0);
 
   // Release the in-flight parking response
@@ -797,7 +819,7 @@ test("delayed parking mutation serializes fresh checkout and preserves pending r
   await page.reload();
 
   // Open payment and submit checkout
-  await page.getByRole("button", { name: /PAY NOW/ }).click();
+  await openReviewedPayment(page);
   await page.getByPlaceholder("0.00").fill("100");
   await page.getByRole("button", { name: /FINAL CHECKOUT/ }).click();
   await expect(page.getByText(/Finalize this invoice\?/i)).toBeVisible();
@@ -806,8 +828,8 @@ test("delayed parking mutation serializes fresh checkout and preserves pending r
   // Checkout enters unknown outcome / pending recovery state
   await expect(page.getByText(/Network timeout or server failure|Checkout outcome is unknown/i).first()).toBeVisible();
 
-  // Close payment modal to return to billing screen
-  await page.getByRole("button", { name: "Close dialog", exact: true }).click();
+  // An uncertain response returns directly to Billing with the frozen recovery action.
+  await expect(page.getByRole("button", { name: "Close dialog", exact: true })).not.toBeVisible();
 
   // Verify RECOVER CHECKOUT is visible on screen
   await expect(page.getByRole("button", { name: /RECOVER CHECKOUT/i })).toBeVisible();
@@ -834,4 +856,84 @@ test("delayed parking mutation serializes fresh checkout and preserves pending r
   expect(storedAfterGuards.pendingCheckout?.operationKey).toBe(originalOpKey);
   expect(storedAfterGuards.pendingCheckout?.payload?.confirmation?.payableTotal).toBe(60);
   await expect(page.getByRole("button", { name: /RECOVER CHECKOUT/i })).toBeVisible();
+});
+
+test("cart quantity controls follow unit steps and mobile review clears the bottom navigation", async ({page}) => {
+ const user={id:"cashier",name:"Cashier",role:"cashier"};
+ const product={id:"stepped",name:"Stepped Product",sku:"STEP",retailPrice:20,wholesalePrice:20,stock:20,isActive:true,quantityStep:2,saleUnit:"PIECE"};
+ await page.addInitScript(({user,product})=>{
+  localStorage.setItem("khatasathi_auth_user",JSON.stringify(user));
+  localStorage.setItem("khatasathi_billing_cart",JSON.stringify({cart:[{productId:product.id,qty:2}],savedAt:new Date().toISOString()}));
+ },{user,product});
+ await page.route(url=>url.pathname.startsWith("/api/"),async route=>{
+  const path=new URL(route.request().url()).pathname;
+  let body: unknown={};
+  if(path.endsWith("/auth/me"))body={user};
+  else if(path.endsWith("/capabilities"))body={businessMode:"FULL_POS",catalogEnabled:true,inventoryEnabled:true,posEnabled:true,stockTracked:true};
+  else if(path.includes("/products"))body={products:[product],total:1};
+  else if(["/customers","/brands","/categories"].some(end=>path.endsWith(end)))body=[];
+  await route.fulfill({status:200,contentType:"application/json",body:JSON.stringify(body)});
+ });
+ await page.goto("/billing");
+ const quantity=page.getByRole("spinbutton",{name:"Quantity of Stepped Product"});
+ await expect(quantity).toHaveValue("2");
+ await page.getByRole("button",{name:"Increase quantity of Stepped Product"}).click();
+ await expect(quantity).toHaveValue("4");
+ await page.getByRole("button",{name:"Decrease quantity of Stepped Product"}).click();
+ await expect(quantity).toHaveValue("2");
+ await page.setViewportSize({width:390,height:844});
+ const review=page.getByRole("button",{name:"Review in Worksheet",exact:true});
+ await expect(review).toBeVisible();
+ await expect.poll(async()=>{const box=await review.boundingBox();return box ? box.y+box.height:9999;}).toBeLessThan(780);
+ await review.click(); await expect(page.getByRole("heading",{name:"Sales Worksheet"}).first()).toBeVisible();
+});
+
+test("portaled customer picker selects customers and quick creation retains failed input before retry", async ({page}) => {
+ const user={id:"cashier",name:"Cashier",role:"cashier"};
+ const existing={id:"customer-existing",name:"Existing Buyer",phone:"9841000001",address:"Kathmandu",loyaltyPercent:0,wholesalePercent:0};
+ const created={id:"customer-new",name:"New Buyer",phone:"9841000002",address:"Lalitpur",loyaltyPercent:0,wholesalePercent:0};
+ let createAttempts=0;
+ await page.addInitScript(user=>localStorage.setItem("khatasathi_auth_user",JSON.stringify(user)),user);
+ await page.route(url=>url.pathname.startsWith("/api/"),async route=>{
+  const path=new URL(route.request().url()).pathname;
+  const respond=(body:unknown,status=200)=>route.fulfill({status,contentType:"application/json",body:JSON.stringify(body)});
+  if(path.endsWith("/auth/me"))return respond({user});
+  if(path.endsWith("/capabilities"))return respond({businessMode:"FULL_POS",catalogEnabled:true,inventoryEnabled:true,posEnabled:true,stockTracked:true});
+  if(path.endsWith("/customers/quick")){
+   createAttempts++;
+   expect(route.request().postDataJSON()).toMatchObject({name:created.name,phone:created.phone,address:created.address});
+   return createAttempts===1 ? respond({error:"Temporary create failure"},503):respond(created,201);
+  }
+  if(path.endsWith("/customers/lookup"))return respond({items:[existing],total:1,page:1,pageSize:20});
+  if(path.endsWith("/customers"))return respond([existing]);
+  if(path.includes("receivables-summary"))return respond({state:"NONE",hasDue:false,totalDue:0,currency:"NPR"});
+  if(path.includes("/products"))return respond({products:[],total:0});
+  if(path.endsWith("/brands")||path.endsWith("/categories"))return respond([]);
+  return respond({});
+ });
+ await page.goto("/billing");
+ await page.getByRole("button",{name:"Select",exact:true}).click();
+ const picker=page.getByRole("dialog",{name:"Choose customer",exact:true});
+ await expect(picker).toBeVisible();
+ await picker.getByPlaceholder("Find by name, phone, or 9-digit PAN...").fill("Existing");
+ await picker.getByText(existing.name,{exact:true}).click();
+ await expect(picker).not.toBeVisible();
+ await expect(page.getByText(existing.name,{exact:true}).first()).toBeVisible();
+ await page.getByRole("button",{name:"Change",exact:true}).click();
+ await picker.getByRole("button",{name:"+ Add a customer",exact:true}).click();
+ const create=page.getByRole("dialog",{name:"Create customer",exact:true});
+ await expect(create).toBeVisible();
+ await create.getByPlaceholder("e.g. Ramesh Shrestha").fill(created.name);
+ await create.getByPlaceholder("e.g. 9841234567").fill(created.phone);
+ await create.getByPlaceholder("e.g. Kalanki, Kathmandu").fill(created.address);
+ await create.getByRole("button",{name:"Save & Select Customer"}).click();
+ await expect(create.getByText(/Failed to create customer|503|Temporary create failure/)).toBeVisible();
+ await expect(create.getByPlaceholder("e.g. Ramesh Shrestha")).toHaveValue(created.name);
+ await create.getByRole("button",{name:"Save & Select Customer"}).click();
+ await expect(create).not.toBeVisible(); await expect(picker).not.toBeVisible();
+ await expect(page.getByText(created.name,{exact:true}).first()).toBeVisible();
+ expect(createAttempts).toBe(2);
+ await page.getByRole("button",{name:"Change",exact:true}).click();
+ await page.keyboard.press("Escape"); await expect(picker).not.toBeVisible();
+ await expect(page.getByText(created.name,{exact:true}).first()).toBeVisible();
 });

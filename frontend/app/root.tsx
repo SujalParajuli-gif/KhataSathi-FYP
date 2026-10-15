@@ -46,11 +46,14 @@ export const links: Route.LinksFunction = () => [
 // this sets up the base HTML structure with meta tags, stylesheets, and scripts
 export function Layout({ children }: { children: React.ReactNode }) {
   return (
-    <html lang="en">
+    // Extensions can add document-level attributes before React hydrates.
+    // Limit suppression to this element; app content keeps mismatch diagnostics.
+    <html lang="en" suppressHydrationWarning>
       <head>
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <meta name="theme-color" content="#11120D" />
+        <meta name="mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-capable" content="yes" />
         <meta name="apple-mobile-web-app-status-bar-style" content="default" />
         <meta name="apple-mobile-web-app-title" content="KhataSathi" />

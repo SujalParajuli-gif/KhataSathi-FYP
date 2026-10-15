@@ -40,7 +40,7 @@ type Customer = {
   purchaseHistoryState: PurchaseHistoryState;
 };
 
-type DiscountFormErrors = Partial<Record<"name" | "phone" | "email", string>>;
+type DiscountFormErrors = Partial<Record<"name" | "phone" | "email" | "address", string>>;
 
 type PurchaseSummary = {
   lastPurchaseLabel: string;
@@ -792,6 +792,7 @@ export default function DiscountsPage() {
   const [discountRequests, setDiscountRequests] = useState<CustomerDiscountRequest[]>([]);
   const [requestBusyId, setRequestBusyId] = useState<string | null>(null);
   const [requestNotes, setRequestNotes] = useState<Record<string, string>>({});
+  const [requestAddresses, setRequestAddresses] = useState<Record<string, string>>({});
   const [requestPercents, setRequestPercents] = useState<Record<string, number>>({});
   const [loading, setLoading] = useState(true); // first-load state for the page
   const [loadError, setLoadError] = useState(""); // fetch error shown when initial data loading fails
@@ -814,6 +815,7 @@ export default function DiscountsPage() {
   const [deleteBusy, setDeleteBusy] = useState(false);
 
   const [fName, setFName] = useState(""); // modal field: customer name
+  const [fAddress, setFAddress] = useState("");
   const [fPhone, setFPhone] = useState(""); // modal field: phone number
   const [fEmail, setFEmail] = useState(""); // modal field: optional email
   const [fIsLoyalty, setFIsLoyalty] = useState(false); // modal field: whether loyalty should stay active
@@ -982,6 +984,7 @@ export default function DiscountsPage() {
     setEditingId(null);
     setFName("");
     setFPhone("");
+    setFAddress("");
     setFEmail("");
     setFIsLoyalty(false);
     setFWholesaleDiscount("");
@@ -1000,12 +1003,14 @@ export default function DiscountsPage() {
   async function saveCustomer() {
     const name = fName.trim();
     const phone = fPhone.trim();
+    const address = fAddress.trim();
     const email = fEmail.trim();
     const nextErrors: DiscountFormErrors = {};
 
     // these validation checks keep obviously bad customer data from reaching the backend
     if (!name) nextErrors.name = "Customer name is required.";
     if (!phone) nextErrors.phone = "Phone is required.";
+    if (!editingId && !address) nextErrors.address = "Address is required for a new customer.";
     if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       nextErrors.email = "Enter a valid email address.";
     }
@@ -1052,6 +1057,7 @@ export default function DiscountsPage() {
 
       const created = await createCustomerApi({
         name,
+        address,
         phone,
         email: email || undefined,
         loyaltyPercent: nextIsLoyalty ? loyaltyDiscountPercent : 0,
@@ -1232,6 +1238,7 @@ export default function DiscountsPage() {
 
     try {
       const approved = await approveCustomerDiscountRequestApi(request.id, {
+        address: requestAddresses[request.id]?.trim() || undefined,
         discountPercent: requestPercents[request.id] ?? request.discountPercent,
         adminNote: requestNotes[request.id]?.trim() || undefined,
       });
@@ -1437,6 +1444,7 @@ export default function DiscountsPage() {
                         className="h-[42px] w-full rounded-[12px] border border-slate-200 bg-white px-3 text-[13px] font-bold outline-none focus:border-slate-900"
                       />
                     </label>
+<label className="block space-y-1 text-sm"><span>Customer address (required for a new customer)</span><input value={requestAddresses[request.id] || ""} onChange={e => setRequestAddresses(current => ({ ...current, [request.id]: e.target.value }))} placeholder="Existing customers keep their saved address" className="w-full rounded-xl border border-control-line bg-white px-3 py-2 text-sm" /></label>
                     <label className="space-y-1">
                       <div className="text-[11px] font-extrabold uppercase text-slate-400">
                         Admin note
@@ -1850,6 +1858,7 @@ export default function DiscountsPage() {
                   leftIcon="call"
                 />
               </div>
+              {!editingId && <div className="space-y-2"><div className="text-[12px] font-semibold text-muted">Address</div><Input value={fAddress} onChange={setFAddress} placeholder="Customer address" invalid={Boolean(formErrors.address)} helperText={formErrors.address} /></div>}
 
               <div className="space-y-2 lg:col-span-2">
                 <div className="text-[12px] font-extrabold uppercase  text-slate-400">

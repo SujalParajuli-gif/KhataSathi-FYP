@@ -129,7 +129,7 @@ export default function PaginationBar({
 
           <label className="flex items-center gap-[8px] text-[12px] font-semibold text-[#8C8889]">
             Rows
-            <ProjectSelect
+            <ProjectSelect aria-label="Rows per page"
               value={pageSize}
               onChange={(event) => onPageSizeChange(Number(event.target.value))}
               className="h-[34px] rounded-[10px] border border-[#CFCFD3] bg-white px-[10px] text-[12px] font-bold text-[#565449] outline-none"
@@ -319,7 +319,7 @@ export default function PaginationBar({
       <div className="flex flex-1 justify-center lg:justify-end items-center gap-2 order-2 lg:order-none">
         <span className="lg:hidden text-[14px] text-slate-600 font-medium">showing</span>
         <div className="relative">
-          <ProjectSelect
+          <ProjectSelect aria-label="Rows per page"
             value={pageSize}
             onChange={(event) => onPageSizeChange(Number(event.target.value))}
             className="h-10 rounded-md border border-[#CFCFD3] bg-white pl-3 pr-7 text-[14px] font-bold text-slate-700 outline-none hover:bg-slate-50 cursor-pointer appearance-none"

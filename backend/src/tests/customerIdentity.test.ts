@@ -9,6 +9,7 @@ import {
   parseCustomerPan,
   parseCustomerAddress,
   createCustomer,
+  approveCustomerDiscountRequest,
   updateCustomer,
   getCustomer,
   listCustomers,
@@ -429,13 +430,13 @@ test("quick create rejects discount and unknown fields without writing", async (
 test("quick create rejects invalid identity and duplicate phone without creating a record", async () => {
   await withCustomerDatabaseMocks([{ id: "existing", name: "Existing", phone: "+9779800000000" }], async (ctx) => {
     const invalid = makeMockResponse();
-    await createQuick(makeMockRequest({ id: "manager-1", role: "MANAGER" }, { name: "Buyer", panNo: 123 }), invalid);
+    await createQuick(makeMockRequest({ id: "manager-1", role: "MANAGER" }, { name: "Buyer", phone: "+9779811111111", address: "Kathmandu", panNo: 123 }), invalid);
     assert.equal(invalid.statusCodeValue, 400);
     assert.equal(invalid.jsonBody.field, "panNo");
     assert.equal(ctx.getCustomers().length, 1);
 
     const duplicate = makeMockResponse();
-    await createQuick(makeMockRequest({ id: "cashier-1", role: "CASHIER" }, { name: "Buyer", phone: "+9779800000000" }), duplicate);
+    await createQuick(makeMockRequest({ id: "cashier-1", role: "CASHIER" }, { name: "Buyer", phone: "+9779800000000", address: "Kathmandu" }), duplicate);
     assert.equal(duplicate.statusCodeValue, 409);
     assert.equal(ctx.getCustomers().length, 1);
   });
@@ -446,7 +447,7 @@ test("create controller returns 400 with field when panNo or address validation 
     // Non-text PAN
     const req1 = makeMockRequest(
       { id: "admin-1", role: "ADMIN" },
-      { name: "Test Store", panNo: 999999 },
+      { name: "Test Store", phone: "+9779811111111", address: "Kathmandu", panNo: 999999 },
     );
     const res1 = makeMockResponse();
 
@@ -460,7 +461,7 @@ test("create controller returns 400 with field when panNo or address validation 
     // Oversized address
     const req2 = makeMockRequest(
       { id: "admin-1", role: "ADMIN" },
-      { name: "Test Store", address: "a".repeat(65_536) },
+      { name: "Test Store", phone: "+9779811111111", address: "a".repeat(65_536) },
     );
     const res2 = makeMockResponse();
 
@@ -604,7 +605,7 @@ test("quick-create role gate allows ADMIN, MANAGER, CASHIER and rejects STAFF", 
   assert.equal(staffRes.statusCodeValue, 403);
 });
 
-test("cashier-discounted customer creation does not accept or pass panNo or address", async () => {
+test("cashier-discounted customer creation retains optional PAN and requires address", async () => {
   await withCustomerDatabaseMocks([], async (ctx) => {
     // Attempting to send panNo and address to cashier-discounted route
     // Cashier role check
@@ -640,10 +641,44 @@ test("cashier-discounted customer creation does not accept or pass panNo or addr
       // Verify that panNo and address were NOT saved via cashier-discounted route
       const created = ctx.getCustomers()[0];
       assert.equal(created.name, "Discounted Customer");
-      assert.equal(created.panNo, null, "Cashier-discounted route must not persist panNo");
-      assert.equal(created.address, null, "Cashier-discounted route must not persist address");
+      assert.equal(created.panNo, "001234567", "Cashier-discounted creation preserves optional PAN text");
+      assert.equal(created.address, "Kathmandu", "Cashier-discounted creation must retain the required address");
     } finally {
       prisma.user.findUnique = originalFindUnique;
     }
   });
+});
+
+ test("all customer creation controllers reject missing phone or address before writing", async () => {
+ await withCustomerDatabaseMocks([], async ctx => {
+  for (const controller of [create, createQuick, createDiscountedByCashier]) {
+   for (const field of ["phone", "address"]) {
+    const body: any = {name:"Buyer",phone:"9841000000",address:"Kathmandu",discountType:"LOYALTY",discountPercent:5};
+    if (controller === createQuick) { delete body.discountType; delete body.discountPercent; }
+    delete body[field];
+    const response=makeMockResponse();
+    await controller(makeMockRequest({id:"cashier-1",role:"CASHIER"},body),response);
+    assert.equal(response.statusCodeValue,400);
+    assert.equal(response.jsonBody.field,field);
+   }
+  }
+  assert.equal(ctx.getCustomers().length,0); assert.equal(ctx.getAuditLogs().length,0);
+ });
+});
+
+test("discount approval requires address only for a newly created customer", async () => {
+ const original=prisma.$transaction;
+ let existing: any=null; const writes: string[]=[];
+ const request: any={id:"request",status:"PENDING",phone:"9841000000",customerName:"Buyer",discountPercent:5,discountType:"LOYALTY",requestedById:"cashier",requestedBy:{id:"cashier",name:"Cashier"}};
+ const tx: any={customerDiscountRequest:{findUnique:async()=>request,update:async({data}:any)=>{writes.push("approval");return {...request,...data};}},customer:{findUnique:async()=>existing,create:async({data}:any)=>{writes.push("customer");return {id:"customer",...data};},update:async({data}:any)=>{writes.push("update");return {...existing,...data};}},auditLog:{create:async()=>{writes.push("audit");}}};
+ prisma.$transaction=async(work:any)=>work(tx);
+ try {
+  await assert.rejects(approveCustomerDiscountRequest("request","manager"), (e:any)=>e instanceof CustomerValidationError && e.field==="address");
+  assert.deepEqual(writes,[]);
+  await approveCustomerDiscountRequest("request","manager",{address:"Kathmandu"});
+  assert.deepEqual(writes,["customer","approval","audit"]);
+  writes.length=0; existing={id:"legacy",phone:request.phone,address:null,name:"Buyer"};
+  await approveCustomerDiscountRequest("request","manager");
+  assert.deepEqual(writes,["update","approval","audit"]);
+ } finally {prisma.$transaction=original;}
 });

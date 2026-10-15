@@ -1,4 +1,7 @@
+import { receivableInclude, projectReceivableInvoice } from "./receivables";
+import { parseReturnSettlement } from "../returns/settlement";
 import prisma from "../../db/prisma";
+import { Prisma } from "@prisma/client";
 import { getCashierPrivilege } from "../settings/service";
 import { resolveDisplayProduct, type DisplayProduct } from "../invoices/service";
 import { buildBusinessDateRange } from "../../lib/businessDate";
@@ -63,6 +66,28 @@ export function parseCustomerAddress(value: unknown): string | null {
       "address",
       `Address cannot exceed ${CUSTOMER_ADDRESS_TEXT_BYTE_LIMIT} bytes.`,
     );
+  }
+  return trimmed;
+}
+
+export function parseRequiredCustomerAddress(value: unknown): string {
+  const parsed = parseCustomerAddress(value);
+  if (!parsed) {
+    throw new CustomerValidationError("address", "Customer address is required.");
+  }
+  return parsed;
+}
+
+export function parseRequiredCustomerPhone(value: unknown): string {
+  if (value === undefined || value === null) {
+    throw new CustomerValidationError("phone", "Customer phone number is required.");
+  }
+  if (typeof value !== "string") {
+    throw new CustomerValidationError("phone", "Phone number must be text.");
+  }
+  const trimmed = value.trim();
+  if (!trimmed) {
+    throw new CustomerValidationError("phone", "Customer phone number is required.");
   }
   return trimmed;
 }
@@ -238,6 +263,8 @@ export async function createDiscountedCustomerByCashier(
     name: string;
     phone: string;
     email?: string;
+    address?: string | null;
+    panNo?: string | null;
     discountType: "LOYALTY" | "WHOLESALE";
     discountPercent: number;
   },
@@ -268,6 +295,8 @@ export async function createDiscountedCustomerByCashier(
     name: data.name,
     phone: data.phone,
     email: data.email,
+    address: data.address,
+    panNo: data.panNo,
     loyaltyPercent: data.discountType === "LOYALTY" ? discountPercent : 0,
     wholesalePercent: data.discountType === "WHOLESALE" ? discountPercent : 0,
     createdById: cashierId,
@@ -360,7 +389,7 @@ export async function listCustomerDiscountRequests(
 export async function approveCustomerDiscountRequest(
   requestId: string,
   adminId: string,
-  data: { discountPercent?: number; adminNote?: string } = {},
+  data: { discountPercent?: number; adminNote?: string; address?: string } = {},
 ) {
   return prisma.$transaction(async (tx) => {
     const request = await tx.customerDiscountRequest.findUnique({
@@ -398,7 +427,8 @@ export async function approveCustomerDiscountRequest(
       : await tx.customer.create({
           data: {
             ...customerPayload,
-            phone: request.phone,
+            phone: parseRequiredCustomerPhone(request.phone),
+            address: parseRequiredCustomerAddress(data.address),
             createdById: request.requestedById,
             createdByRole: "CASHIER",
           },
@@ -1274,5 +1304,91 @@ export async function getCustomerPurchaseHistory(params: CustomerPurchaseHistory
       pageSize,
       totalPages,
     };
+  });
+}
+
+export type CustomerInvoiceEventsSummary = {
+  totalEvents: number;
+  uniqueProducts: number;
+  latestPurchaseDate: string | null;
+};
+
+export async function getCustomerInvoiceEvents(input: {
+  customerId: string; from?: string; to?: string;
+  type?: "ALL" | "PURCHASE" | "RETURN" | "REPLACEMENT";
+  paymentStatus?: "ALL" | "PAID" | "PARTIALLY_PAID" | "UNPAID" | "CANCELLED" | "OUTSTANDING";
+  q?: string; productIds?: string[]; page?: number; pageSize?: number;
+}) {
+  const { customerId, from, to, type = "ALL", paymentStatus = "ALL", q, productIds = [], page = 1, pageSize = 20 } = input;
+  if (!await prisma.customer.findUnique({ where: { id: customerId }, select: { id: true } })) throw new CustomerValidationError("customerId", "Customer not found");
+  const range = buildBusinessDateRange({ from, to });
+  const term = q?.trim();
+  const identitySearch = term ? { OR: [
+    { productNameSnapshot: { contains: term } }, { productSkuSnapshot: { contains: term } },
+    { snapshotCapturedAt: null, product: { OR: [{ name: { contains: term } }, { sku: { contains: term } }] } },
+  ] } : {};
+  const base: any = { customerId, status: "FINALIZED", deletedAt: null };
+  const saleWhere: any = { ...base };
+  if (range) saleWhere.OR = [{ finalizedAt: range }, { finalizedAt: null, createdAt: range }];
+  if (productIds.length) saleWhere.items = { some: { productId: { in: productIds } } };
+  if (term) saleWhere.AND = [{ OR: [{ invoiceNo: { contains: term } }, { externalBillNo: { contains: term } }, { notes: { contains: term } }, { items: { some: identitySearch } }] }];
+  if (type === "PURCHASE") saleWhere.creditNoteAsReplacement = null;
+  if (type === "REPLACEMENT") saleWhere.creditNoteAsReplacement = { isNot: null };
+  if (paymentStatus !== "ALL" && paymentStatus !== "OUTSTANDING") saleWhere.paymentStatus = paymentStatus;
+  if (paymentStatus === "OUTSTANDING") saleWhere.cancelledAt = null;
+  const returnWhere: any = { status: "APPROVED", invoice: base };
+  if (range) returnWhere.OR = [{ reviewedAt: range }, { reviewedAt: null, createdAt: range }];
+  if (productIds.length) returnWhere.items = { some: { productId: { in: productIds } } };
+  if (term) returnWhere.AND = [{ OR: [{ note: { contains: term } }, { invoice: { OR: [{ invoiceNo: { contains: term } }, { externalBillNo: { contains: term } }] } }, { items: { some: { invoiceItem: identitySearch } } }] }];
+  return prisma.$transaction(async (tx: any) => {
+    // Lightweight event identities cover the whole scope; only the selected page gets financial/detail projection.
+    // OUTSTANDING requires the established reconciliation projection, not paymentStatus arithmetic.
+    const sales = type === "RETURN" ? [] : await tx.invoice.findMany({ where: saleWhere,
+      ...(paymentStatus === "OUTSTANDING" ? { include: { ...receivableInclude, items: { select: { productId: true } } } } :
+        { select: { id: true, finalizedAt: true, createdAt: true, items: { select: { productId: true } } } }) });
+    const eligibleSales = paymentStatus === "OUTSTANDING" ? sales.filter((i: any) => { const balance = projectReceivableInvoice(i); return balance.due === null || balance.due > 0; }) : sales;
+    const returns = (type === "ALL" || type === "RETURN") && paymentStatus === "ALL" ? await tx.returnRequest.findMany({ where: returnWhere,
+      select: { id: true, invoiceId: true, reviewedAt: true, createdAt: true, items: { select: { productId: true } } } }) : [];
+    const identities = [
+      ...eligibleSales.map((i: any) => ({ id: i.id, invoiceId: i.id, kind: "SALE", date: i.finalizedAt || i.createdAt, productIds: i.items.map((x: any) => x.productId) })),
+      ...returns.map((r: any) => ({ id: r.id, invoiceId: r.invoiceId, kind: "RETURN", date: r.reviewedAt || r.createdAt, productIds: r.items.map((x: any) => x.productId) })),
+    ].sort((a, b) => b.date.getTime() - a.date.getTime() || a.id.localeCompare(b.id));
+    const total = identities.length;
+    const selected = identities.slice((page - 1) * pageSize, page * pageSize);
+    const detailSales = selected.some(x => x.kind === "SALE") ? await tx.invoice.findMany({ where: { id: { in: selected.filter(x => x.kind === "SALE").map(x => x.id) } }, include: {
+      ...receivableInclude, creditNotesAsOriginal: { include: { replacementInvoice: { select: { invoiceNo: true } } } }, creditNoteAsReplacement: { include: { originalInvoice: { select: { invoiceNo: true } } } }, items: { include: { product: { select: { id: true, name: true, sku: true, imageUrl: true } } } },
+    } }) : [];
+    const detailReturns = selected.some(x => x.kind === "RETURN") ? await tx.returnRequest.findMany({ where: { id: { in: selected.filter(x => x.kind === "RETURN").map(x => x.id) } }, include: {
+      invoice: { select: { invoiceNo: true, externalBillNo: true, externalBillDate: true, externalDocumentType: true, cancelledAt: true } },
+      items: { include: { invoiceItem: { include: { product: { select: { id: true, name: true, sku: true, imageUrl: true } } } } } },
+      refundPayments: { where: { status: "SUCCESS" }, select: { method: true } },
+    } }) : [];
+    const saleById = new Map(detailSales.map((i: any) => [i.id, i]));
+    const returnById = new Map(detailReturns.map((r: any) => [r.id, r]));
+    const preview = (line: any) => { const identity = resolveDisplayProduct(line, "FINALIZED"); return { productId: line.productId, name: identity.name || "Historical product unavailable", sku: identity.sku, imageUrl: line.product?.imageUrl || null, qty: line.qty, unitPrice: line.appliedUnitPrice }; };
+    const events = selected.map(event => {
+      if (event.kind === "RETURN") {
+        const r: any = returnById.get(event.id); const settlement = parseReturnSettlement(r.settlement);
+        return { id: r.id, invoiceId: r.invoiceId, invoiceNo: r.invoice.invoiceNo, eventType: "RETURN", date: event.date.toISOString(),
+          itemCount: r.items.length, itemPreviews: r.items.map((line: any) => ({ ...preview(line.invoiceItem), qty: line.qtyReturned, unitPrice: line.unitPrice })),
+          totalAmount: settlement ? -settlement.approvedReturnValue : null, paidAmount: r.refundAmount, dueAmount: null,
+          paymentStatus: "RECORDED", paymentMethods: [...new Set(r.refundPayments.map((p: any) => p.method))], notes: r.note,
+          externalBillNo: r.invoice.externalBillNo, externalBillDate: r.invoice.externalBillDate?.toISOString().slice(0, 10) || null,
+          externalDocumentType: r.invoice.externalDocumentType, isCancelled: Boolean(r.invoice.cancelledAt), hasReturns: true };
+      }
+      const i: any = saleById.get(event.id); const balance = projectReceivableInvoice(i);
+      return { id: i.id, invoiceId: i.id, invoiceNo: i.invoiceNo, eventType: i.creditNoteAsReplacement ? "REPLACEMENT" : "PURCHASE", date: event.date.toISOString(),
+        itemCount: i.items.length, itemPreviews: i.items.map(preview), totalAmount: i.netTotal, paidAmount: balance.recordedReceipts,
+        dueAmount: balance.due, paymentStatus: i.paymentStatus, paymentMethods: [...new Set(i.payments.filter((p: any) => p.kind === "CHARGE" && p.status === "SUCCESS").map((p: any) => p.method))],
+        notes: i.notes, externalBillNo: i.externalBillNo, externalBillDate: i.externalBillDate?.toISOString().slice(0, 10) || null,
+        externalDocumentType: i.externalDocumentType, isCancelled: Boolean(i.cancelledAt), hasReturns: i.returnRequests.some((r: any) => r.status === "APPROVED"),
+        replacementInvoiceNo: i.creditNotesAsOriginal.find((c: any) => c.replacementInvoiceId)?.replacementInvoice?.invoiceNo || null,
+        originalInvoiceNo: i.creditNoteAsReplacement?.originalInvoice?.invoiceNo || null };
+    });
+    const latest = identities.find(x => x.kind === "SALE");
+    return { events, total, page, pageSize, totalPages: Math.ceil(total / pageSize), summary: {
+      totalEvents: total, uniqueProducts: new Set(identities.flatMap(x => x.productIds).filter(id => !productIds.length || productIds.includes(id))).size,
+      latestPurchaseDate: latest?.date.toISOString() || null,
+    } };
   });
 }

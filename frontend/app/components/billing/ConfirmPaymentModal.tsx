@@ -1,7 +1,8 @@
+import { BILLING_NOTE_MAX_LENGTH } from "~/lib/billingWorkspace";
+import ProjectSelect from "~/components/ui/ProjectSelect";
 import React from "react";
 import { ModalFrame } from "~/components/ui/Modal";
 import Icon from "~/components/ui/Icon";
-import ProjectSelect from "~/components/ui/ProjectSelect";
 import ProjectDateInput from "~/components/ui/ProjectDateInput";
 import type { EnabledPaymentAccountDto } from "~/lib/api/paymentAccounts";
 import type { ExternalDocumentType } from "~/lib/api/manualBills";
@@ -103,6 +104,8 @@ export interface ConfirmPaymentModalProps {
   // Notes & Paper Bill record
   invoiceNote: string;
   setInvoiceNote: (val: string) => void;
+  isPaperException?: boolean;
+  paperExceptionReason?: string;
   paperDraftBillNo: string;
   setPaperDraftBillNo: (val: string) => void;
   paperDraftDocumentType: ExternalDocumentType;
@@ -132,7 +135,7 @@ export interface ConfirmPaymentModalProps {
   paymentStateDetail: string;
 
   // Formatting helpers
-  formatNpr: (n: number) => string;
+  formatBillingMoney: (n: number) => string;
   formatQty: (q: number) => string;
 }
 
@@ -196,6 +199,8 @@ export default function ConfirmPaymentModal({
   ensureDefaultSplitPayments,
   invoiceNote,
   setInvoiceNote,
+  isPaperException = false,
+  paperExceptionReason,
   paperDraftBillNo,
   setPaperDraftBillNo,
   paperDraftDocumentType,
@@ -217,9 +222,10 @@ export default function ConfirmPaymentModal({
   paymentStateTone,
   paymentStateTitle,
   paymentStateDetail,
-  formatNpr,
+  formatBillingMoney,
   formatQty,
 }: ConfirmPaymentModalProps) {
+  const roundingAdjustment = Math.round((payableTotal - Math.max(0, subTotal - subtotalDiscount)) * 100) / 100;
   const totalItemCount = cartRows.length;
   const totalQtyCount = cart.reduce((sum, line) => sum + (line.qty || 0), 0);
 
@@ -241,14 +247,17 @@ export default function ConfirmPaymentModal({
 
   return (
     <ModalFrame
+      presentation="billing"
+      dismissOnBackdrop={false}
+      dialogClassName="billing-payment-dialog"
       open={open}
-      onClose={onClose}
+      onClose={() => {if(!submitting&&!stockRefreshBusy)onClose();}}
       title="Confirm Payment"
       description="Finalize payment and record the physical bill details"
       maxWidthClass="max-w-[1020px]"
       headerActions={
         <div className="flex items-center gap-2">
-          <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
+          <span className="hidden sm:inline-flex items-center px-2 py-0.5 rounded text-xs font-semibold bg-slate-100 text-slate-600 border border-slate-200">
             4 of 4
           </span>
           <button
@@ -283,7 +292,7 @@ export default function ConfirmPaymentModal({
               type="button"
               disabled={!canConfirm || submitting || stockRefreshBusy}
               onClick={onConfirm}
-              className="flex h-[42px] px-5 items-center justify-center gap-2 rounded-lg bg-blue-600 hover:bg-blue-700 active:bg-blue-800 text-xs font-bold text-white transition-all shadow-sm hover:shadow disabled:cursor-not-allowed disabled:opacity-50"
+              className="billing-dialog-primary"
             >
               <Icon name="lock" className="text-[16px]" />
               {primaryCtaLabel}
@@ -292,7 +301,7 @@ export default function ConfirmPaymentModal({
         </div>
       }
     >
-      <div className="space-y-4 text-slate-800">
+      <div className="billing-payment-content space-y-4 text-slate-800">
         {/* Top 3 Metric Summary Cards */}
         <div className="grid grid-cols-1 md:grid-cols-3 gap-3.5">
           {/* Card 1: Items & Qty */}
@@ -340,14 +349,14 @@ export default function ConfirmPaymentModal({
           <div className="flex items-center justify-between p-3.5 rounded-xl border border-emerald-200 bg-emerald-50/50 shadow-sm">
             <div className="flex items-center space-x-3">
               <div className="w-10 h-10 rounded-xl bg-emerald-100 text-emerald-700 flex items-center justify-center shrink-0 font-bold text-[14px]">
-                Rs.
+                रु
               </div>
               <div>
                 <p className="text-[11px] font-semibold text-emerald-800 uppercase tracking-wider">
                   Amount Due
                 </p>
                 <p className="text-base font-bold text-slate-900 font-mono tracking-tight">
-                  {formatNpr(payableTotal)}
+                  {formatBillingMoney(payableTotal)}
                 </p>
               </div>
             </div>
@@ -356,9 +365,9 @@ export default function ConfirmPaymentModal({
         </div>
 
         {/* Main 2-Column Split Grid */}
-        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-stretch">
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
           {/* LEFT COLUMN: Payment Configuration & Specific Gateway Details */}
-          <div className="lg:col-span-7 flex flex-col justify-between space-y-4">
+          <div className="lg:col-span-7 flex flex-col gap-4">
             <div className="space-y-4">
               {/* Step 1: Select Payment Method */}
               <div className="space-y-2">
@@ -403,10 +412,10 @@ export default function ConfirmPaymentModal({
                   >
                     <img
                       src="/assets/images/fonepay.png"
-                      alt="Fonepay"
-                      className="h-[18px] max-w-[56px] object-contain mb-1"
+                      alt=""
+                      className="h-[24px] w-[72px] object-contain"
                     />
-                    <span className="text-xs">Fonepay</span>
+                    <span className="sr-only">Fonepay</span>
                   </button>
 
                   {/* eSewa */}
@@ -426,7 +435,7 @@ export default function ConfirmPaymentModal({
                   >
                     <img
                       src="/assets/images/esewa/logo.png"
-                      alt="eSewa"
+                      alt=""
                       className="h-5 w-5 rounded-full object-contain mb-1"
                     />
                     <span className="text-xs">eSewa</span>
@@ -517,13 +526,13 @@ export default function ConfirmPaymentModal({
             </div>
 
             {/* Step 3: Specific Payment Details */}
-            <div className="space-y-3 flex-1 flex flex-col justify-between pt-1">
+            <div className="space-y-3 pt-1">
               {/* A. CASH METHOD */}
               {paymentMethod === "Cash" && (
                 <>
                   <div className="flex items-center justify-between">
                     <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      3. Cash Payment Details
+                      {paymentStatus === "Unpaid" ? "Outstanding balance" : "3. Cash Payment Details"}
                     </h2>
                   </div>
 
@@ -535,11 +544,12 @@ export default function ConfirmPaymentModal({
                         </label>
                         <div className="relative rounded-lg shadow-sm">
                           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500 font-bold text-sm">
-                            Rs.
+                            रु
                           </div>
                           <input
                             type="text"
                             autoFocus
+                            aria-label="Payment cash received"
                             value={cashTendered}
                             onChange={(e) => {
                               setCashTendered(e.target.value.replace(/[^\d.]/g, ""));
@@ -575,7 +585,7 @@ export default function ConfirmPaymentModal({
                           }}
                           className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:hover:bg-slate-100 rounded-md border border-slate-200 transition-colors"
                         >
-                          Rs. 500
+                          रु 500
                         </button>
                         <button
                           type="button"
@@ -587,7 +597,7 @@ export default function ConfirmPaymentModal({
                           }}
                           className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:hover:bg-slate-100 rounded-md border border-slate-200 transition-colors"
                         >
-                          Rs. 1,000
+                          रु 1,000
                         </button>
                         <button
                           type="button"
@@ -599,7 +609,7 @@ export default function ConfirmPaymentModal({
                           }}
                           className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:hover:bg-slate-100 rounded-md border border-slate-200 transition-colors"
                         >
-                          Rs. 2,000
+                          रु 2,000
                         </button>
                         <button
                           type="button"
@@ -611,7 +621,7 @@ export default function ConfirmPaymentModal({
                           }}
                           className="px-2.5 py-1 text-xs font-semibold text-slate-700 bg-slate-100 hover:bg-slate-200 disabled:opacity-40 disabled:hover:bg-slate-100 rounded-md border border-slate-200 transition-colors"
                         >
-                          Rs. 5,000
+                          रु 5,000
                         </button>
                       </div>
 
@@ -623,7 +633,7 @@ export default function ConfirmPaymentModal({
                             <span className="text-xs font-bold text-amber-900">Cash Short</span>
                           </div>
                           <span className="text-sm font-bold font-mono text-amber-800">
-                            Need {formatNpr(cashShort)} more
+                            Need {formatBillingMoney(cashShort)} more
                           </span>
                         </div>
                       )}
@@ -637,7 +647,7 @@ export default function ConfirmPaymentModal({
                           <span className="text-xs font-bold text-emerald-950">Change Due</span>
                         </div>
                         <span className="text-base font-bold font-mono text-emerald-800 tracking-tight">
-                          {formatNpr(changeDue)}
+                          {formatBillingMoney(changeDue)}
                         </span>
                       </div>
                     </div>
@@ -649,7 +659,7 @@ export default function ConfirmPaymentModal({
                         </label>
                         <div className="relative rounded-lg shadow-sm">
                           <div className="absolute inset-y-0 left-0 pl-3 flex items-center pointer-events-none text-slate-500 font-bold text-sm">
-                            Rs.
+                            रु
                           </div>
                           <input
                             type="text"
@@ -660,18 +670,18 @@ export default function ConfirmPaymentModal({
                               setPaymentError("");
                               setBillingError("");
                             }}
-                            placeholder="e.g. 500"
+                            aria-label="Payment amount paid" inputMode="decimal" placeholder="e.g. 500"
                             className="w-full text-base font-mono font-bold text-slate-900 bg-white border border-slate-300 rounded-lg pl-10 pr-4 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
                           />
                         </div>
                         <p className="text-[11px] text-slate-500">
-                          Enter amount greater than 0 and less than {formatNpr(payableTotal)}.
+                          Enter amount greater than 0 and less than {formatBillingMoney(payableTotal)}.
                         </p>
                       </div>
                     </div>
                   ) : (
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                      Unpaid invoice: Total {formatNpr(payableTotal)} will remain as outstanding customer credit.
+                      Unpaid invoice: Total {formatBillingMoney(payableTotal)} will remain as outstanding customer credit.
                     </div>
                   )}
                 </>
@@ -682,10 +692,10 @@ export default function ConfirmPaymentModal({
                 <>
                   <div className="flex items-center justify-between">
                     <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      3. Fonepay Payment Details
+                      {paymentStatus === "Unpaid" ? "Outstanding balance" : "3. Fonepay Payment Details"}
                     </h2>
                     <span className="text-[11px] text-rose-600 font-semibold flex items-center gap-1">
-                      <Icon name="verified" className="text-[14px]" /> QR Merchant verified
+                      {paymentStatus !== "Unpaid" && <>Manual payment confirmation required</>}
                     </span>
                   </div>
 
@@ -704,7 +714,7 @@ export default function ConfirmPaymentModal({
                               setPaymentError("");
                               setBillingError("");
                             }}
-                            placeholder="e.g. 500"
+                            aria-label="Payment amount paid" inputMode="decimal" placeholder="e.g. 500"
                             className="w-full text-sm font-mono font-bold text-slate-800 bg-white border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
                           />
                         </div>
@@ -792,7 +802,7 @@ export default function ConfirmPaymentModal({
                           />
                           <label htmlFor="fonepay-dest-verify" className="text-xs font-medium text-slate-700 cursor-pointer select-none">
                             I checked this receiving account and received{" "}
-                            {formatNpr(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
+                            {formatBillingMoney(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
                           </label>
                         </div>
                       ) : null}
@@ -818,19 +828,19 @@ export default function ConfirmPaymentModal({
                         <div className="flex items-center space-x-2">
                           <img
                             src="/assets/images/fonepay.png"
-                            alt="Fonepay"
+                            alt=""
                             className="h-4 max-w-[48px] object-contain"
                           />
                           <span className="text-xs font-bold text-rose-950">Fonepay collection</span>
                         </div>
                         <span className="text-sm font-bold font-mono text-rose-900 tracking-tight">
-                          {formatNpr(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
+                          {formatBillingMoney(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
                         </span>
                       </div>
                     </div>
                   ) : (
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                      Unpaid invoice: Total {formatNpr(payableTotal)} will remain as outstanding customer credit.
+                      Unpaid invoice: Total {formatBillingMoney(payableTotal)} will remain as outstanding customer credit.
                     </div>
                   )}
                 </>
@@ -841,7 +851,7 @@ export default function ConfirmPaymentModal({
                 <>
                   <div className="flex items-center justify-between">
                     <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      3. eSewa Payment Details
+                      {paymentStatus === "Unpaid" ? "Outstanding balance" : "3. eSewa Payment Details"}
                     </h2>
                   </div>
 
@@ -860,7 +870,7 @@ export default function ConfirmPaymentModal({
                               setPaymentError("");
                               setBillingError("");
                             }}
-                            placeholder="e.g. 500"
+                            aria-label="Payment amount paid" inputMode="decimal" placeholder="e.g. 500"
                             className="w-full text-sm font-mono font-bold text-slate-800 bg-white border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
                           />
                         </div>
@@ -870,7 +880,7 @@ export default function ConfirmPaymentModal({
                         <div className="flex items-center space-x-3">
                           <img
                             src="/assets/images/esewa/logo.png"
-                            alt="eSewa"
+                            alt=""
                             className="h-7 w-7 rounded-full object-contain"
                           />
                           <div>
@@ -893,19 +903,19 @@ export default function ConfirmPaymentModal({
                         <div className="flex items-center space-x-2">
                           <img
                             src="/assets/images/esewa/logo.png"
-                            alt="eSewa"
+                            alt=""
                             className="h-5 w-5 rounded-full object-contain"
                           />
                           <span className="text-xs font-bold text-emerald-950">eSewa Pending Allocation</span>
                         </div>
                         <span className="text-sm font-bold font-mono text-emerald-800 tracking-tight">
-                          {formatNpr(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
+                          {formatBillingMoney(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
                         </span>
                       </div>
                     </div>
                   ) : (
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                      Unpaid invoice: Total {formatNpr(payableTotal)} will remain as outstanding customer credit.
+                      Unpaid invoice: Total {formatBillingMoney(payableTotal)} will remain as outstanding customer credit.
                     </div>
                   )}
                 </>
@@ -916,7 +926,7 @@ export default function ConfirmPaymentModal({
                 <>
                   <div className="flex items-center justify-between">
                     <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
-                      3. Bank Transfer Details
+                      {paymentStatus === "Unpaid" ? "Outstanding balance" : "3. Bank Transfer Details"}
                     </h2>
                   </div>
 
@@ -935,7 +945,7 @@ export default function ConfirmPaymentModal({
                               setPaymentError("");
                               setBillingError("");
                             }}
-                            placeholder="e.g. 500"
+                            aria-label="Payment amount paid" inputMode="decimal" placeholder="e.g. 500"
                             className="w-full text-sm font-mono font-bold text-slate-800 bg-white border border-slate-300 rounded-lg px-3 py-2 focus:ring-2 focus:ring-blue-500 outline-none"
                           />
                         </div>
@@ -1023,7 +1033,7 @@ export default function ConfirmPaymentModal({
                           />
                           <label htmlFor="bank-dest-verify" className="text-xs font-medium text-slate-700 cursor-pointer select-none">
                             I checked this receiving account and received{" "}
-                            {formatNpr(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
+                            {formatBillingMoney(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
                           </label>
                         </div>
                       ) : null}
@@ -1034,13 +1044,13 @@ export default function ConfirmPaymentModal({
                           <span className="text-xs font-bold text-blue-950">Bank transfer collection</span>
                         </div>
                         <span className="text-sm font-bold font-mono text-blue-900 tracking-tight">
-                          {formatNpr(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
+                          {formatBillingMoney(paymentStatus === "Paid" ? payableTotal : Number(paidAmount) || 0)}
                         </span>
                       </div>
                     </div>
                   ) : (
                     <div className="p-3.5 bg-slate-50 border border-slate-200 rounded-xl text-xs text-slate-600">
-                      Unpaid invoice: Total {formatNpr(payableTotal)} will remain as outstanding customer credit.
+                      Unpaid invoice: Total {formatBillingMoney(payableTotal)} will remain as outstanding customer credit.
                     </div>
                   )}
                 </>
@@ -1048,7 +1058,7 @@ export default function ConfirmPaymentModal({
 
               {/* E. SPLIT PAYMENT METHOD */}
               {paymentMethod === "Split" && (
-                <div className="flex flex-col flex-1 justify-between space-y-3">
+                <div className="flex flex-col gap-3">
                   <div className="space-y-2">
                     <div className="flex items-center justify-between">
                       <h2 className="text-xs font-bold uppercase tracking-wider text-slate-700">
@@ -1065,8 +1075,8 @@ export default function ConfirmPaymentModal({
                         {isSplitBalanced
                           ? "✓ Balanced"
                           : splitBalance > 0
-                            ? `${formatNpr(splitBalance)} short`
-                            : `${formatNpr(Math.abs(splitBalance))} over`}
+                            ? `${formatBillingMoney(splitBalance)} short`
+                            : `${formatBillingMoney(Math.abs(splitBalance))} over`}
                       </div>
                     </div>
 
@@ -1208,7 +1218,7 @@ export default function ConfirmPaymentModal({
                                       />
                                       <span>
                                         I checked this receiving account and received{" "}
-                                        {formatNpr(Number(row.amount) || 0)}
+                                        {formatBillingMoney(Number(row.amount) || 0)}
                                       </span>
                                     </label>
                                   ) : null}
@@ -1217,7 +1227,7 @@ export default function ConfirmPaymentModal({
 
                               {row.method === "CASH" && rowChange > 0 && (
                                 <div className="md:col-span-4 text-[10px] font-bold text-emerald-700">
-                                  Return change {formatNpr(rowChange)} for this cash row.
+                                  Return change {formatBillingMoney(rowChange)} for this cash row.
                                 </div>
                               )}
                             </div>
@@ -1283,7 +1293,7 @@ export default function ConfirmPaymentModal({
                   {/* Balanced status banner aligned flush to bottom (no dead whitespace) */}
                   <div
                     className={cn(
-                      "flex items-center justify-between p-3.5 rounded-xl border shadow-sm mt-auto",
+                      "flex items-center justify-between p-3.5 rounded-xl border shadow-sm",
                       isSplitBalanced
                         ? "bg-emerald-50 border-emerald-200"
                         : "bg-amber-50 border-amber-200",
@@ -1306,8 +1316,8 @@ export default function ConfirmPaymentModal({
                           {isSplitBalanced
                             ? "Total allocated equals the payable amount."
                             : splitBalance > 0
-                              ? `${formatNpr(splitBalance)} remaining to allocate.`
-                              : `${formatNpr(Math.abs(splitBalance))} allocated over total.`}
+                              ? `${formatBillingMoney(splitBalance)} remaining to allocate.`
+                              : `${formatBillingMoney(Math.abs(splitBalance))} allocated over total.`}
                         </p>
                       </div>
                     </div>
@@ -1317,7 +1327,7 @@ export default function ConfirmPaymentModal({
                         isSplitBalanced ? "text-emerald-800" : "text-amber-800",
                       )}
                     >
-                      {formatNpr(payableTotal)}
+                      {formatBillingMoney(payableTotal)}
                     </span>
                   </div>
                 </div>
@@ -1330,13 +1340,14 @@ export default function ConfirmPaymentModal({
                     Invoice Note <span className="text-[10px] text-slate-400 font-normal">(Optional)</span>
                   </div>
                   <div className="text-[10px] font-mono text-slate-400">
-                    {invoiceNote.length} / 120
+                    {invoiceNote.length} / {BILLING_NOTE_MAX_LENGTH}
                   </div>
                 </div>
                 <input
                   type="text"
                   value={invoiceNote}
-                  onChange={(e) => setInvoiceNote(e.target.value.slice(0, 120))}
+                  aria-label="Invoice Note" maxLength={BILLING_NOTE_MAX_LENGTH}
+                  onChange={(e) => setInvoiceNote(e.target.value)}
                   placeholder="Add a short note for this invoice..."
                   className="h-[36px] w-full rounded-lg border border-slate-300 bg-white px-3 text-xs font-medium text-slate-800 outline-none transition focus:border-blue-500 focus:ring-1 focus:ring-blue-500"
                 />
@@ -1355,14 +1366,14 @@ export default function ConfirmPaymentModal({
                     Settlement Summary
                   </h3>
                 </div>
-                <span className="text-[10px] font-medium text-slate-400 font-mono">NPR</span>
+                <span className="text-[10px] font-medium text-slate-400 font-mono">रु</span>
               </div>
 
               <div className="space-y-1.5 text-xs">
                 <div className="flex justify-between text-slate-600">
                   <span>Subtotal ({totalItemCount} {totalItemCount === 1 ? "item" : "items"})</span>
                   <span className="font-mono text-slate-800 font-semibold">
-                    {formatNpr(subTotal)}
+                    {formatBillingMoney(subTotal)}
                   </span>
                 </div>
 
@@ -1370,7 +1381,7 @@ export default function ConfirmPaymentModal({
                   <div className="flex justify-between text-rose-600">
                     <span>Discount</span>
                     <span className="font-mono font-semibold">
-                      -{formatNpr(subtotalDiscount)}
+                      -{formatBillingMoney(subtotalDiscount)}
                     </span>
                   </div>
                 )}
@@ -1387,10 +1398,11 @@ export default function ConfirmPaymentModal({
                   </div>
                 )}
 
+                {roundingAdjustment !== 0 && <div className="flex justify-between text-slate-600" title="Automatic adjustment to the nearest whole rupee after discount"><span>Rounding adjustment</span><span>{roundingAdjustment > 0 ? "+" : "−"}{formatBillingMoney(Math.abs(roundingAdjustment))}</span></div>}
                 <div className="border-t border-slate-200 pt-1.5 flex justify-between font-bold text-slate-900 text-sm">
                   <span>Payable Total</span>
                   <span className="font-mono text-slate-950 font-bold">
-                    {formatNpr(payableTotal)}
+                    {formatBillingMoney(payableTotal)}
                   </span>
                 </div>
 
@@ -1399,45 +1411,45 @@ export default function ConfirmPaymentModal({
                   <>
                     <div className="flex justify-between text-blue-700 pt-1">
                       <span>Cash collected</span>
-                      <span className="font-mono font-bold">{formatNpr(splitCashNum)}</span>
+                      <span className="font-mono font-bold">{formatBillingMoney(splitCashNum)}</span>
                     </div>
                     {splitEsewaAmount > 0 && (
                       <div className="flex justify-between text-emerald-700">
                         <span>eSewa (Pending Gateway)</span>
-                        <span className="font-mono font-bold">{formatNpr(splitEsewaAmount)}</span>
+                        <span className="font-mono font-bold">{formatBillingMoney(splitEsewaAmount)}</span>
                       </div>
                     )}
                     {splitFonepayAmount > 0 && (
                       <div className="flex justify-between text-rose-700">
                         <span>Fonepay amount</span>
-                        <span className="font-mono font-bold">{formatNpr(splitFonepayAmount)}</span>
+                        <span className="font-mono font-bold">{formatBillingMoney(splitFonepayAmount)}</span>
                       </div>
                     )}
                     <div className="flex justify-between text-slate-800 border-t border-slate-200 pt-1 font-semibold">
                       <span>Total Allocated</span>
-                      <span className="font-mono font-bold">{formatNpr(splitTotal)}</span>
+                      <span className="font-mono font-bold">{formatBillingMoney(splitTotal)}</span>
                     </div>
                     {!isSplitBalanced && (
                       <div className="flex justify-between text-amber-700 font-bold">
                         <span>Split balance</span>
                         <span className="font-mono">
                           {splitBalance > 0
-                            ? `${formatNpr(splitBalance)} short`
-                            : `${formatNpr(Math.abs(splitBalance))} over`}
+                            ? `${formatBillingMoney(splitBalance)} short`
+                            : `${formatBillingMoney(Math.abs(splitBalance))} over`}
                         </span>
                       </div>
                     )}
                   </>
                 ) : (
                   <>
-                    <div className="flex justify-between font-semibold text-emerald-700 pt-1">
-                      <span>Total Collected</span>
-                      <span className="font-mono font-bold">{formatNpr(effectivePaidAmount)}</span>
+                    <div className="flex justify-between font-semibold text-slate-700 pt-1">
+                      <span>{paymentStatus === "Unpaid" ? "Collected now" : "Collection to record"}</span>
+                      <span className="font-mono font-bold">{formatBillingMoney(effectivePaidAmount)}</span>
                     </div>
                     {balanceDue > 0 && (
                       <div className="flex justify-between font-semibold text-amber-700">
                         <span>Balance Due</span>
-                        <span className="font-mono font-bold">{formatNpr(balanceDue)}</span>
+                        <span className="font-mono font-bold">{formatBillingMoney(balanceDue)}</span>
                       </div>
                     )}
                   </>
@@ -1459,7 +1471,7 @@ export default function ConfirmPaymentModal({
                       {cashShort > 0 ? "Cash Short" : "Change Due"}
                     </span>
                     <span className="font-mono font-bold text-sm">
-                      {formatNpr(cashShort > 0 ? cashShort : changeDue)}
+                      {formatBillingMoney(cashShort > 0 ? cashShort : changeDue)}
                     </span>
                   </div>
                 )}
@@ -1497,13 +1509,13 @@ export default function ConfirmPaymentModal({
                   {paymentStateTone === "fonepay" ? (
                     <img
                       src="/assets/images/fonepay.png"
-                      alt="Fonepay"
+                      alt=""
                       className="h-3.5 max-w-[22px] object-contain"
                     />
                   ) : paymentStateTone === "esewa" ? (
                     <img
                       src="/assets/images/esewa/logo.png"
-                      alt="eSewa"
+                      alt=""
                       className="h-4 w-4 object-contain rounded-full"
                     />
                   ) : (
@@ -1523,7 +1535,7 @@ export default function ConfirmPaymentModal({
                 </span>
                 <div className="min-w-0">
                   <div className="text-xs font-bold text-slate-900 leading-tight">
-                    {paymentStateTitle}
+                    {paymentStatus === "Unpaid" && paymentMethod !== "Split" ? "Will save without payment" : paymentStateTitle}
                   </div>
                   <div className="truncate text-[10px] font-medium text-slate-500">
                     {paymentStateDetail}
@@ -1533,7 +1545,7 @@ export default function ConfirmPaymentModal({
             </article>
 
             {/* Paper Bill Record Card (#FFFBF5 Warm amber card) */}
-            <article className="p-4 rounded-xl border border-amber-200 bg-[#FFFBF5] space-y-3 shadow-sm">
+            <article className="billing-payment-paper space-y-3">
               <div className="flex items-start space-x-2">
                 <div className="w-7 h-7 rounded-lg bg-amber-100 text-amber-700 flex items-center justify-center shrink-0 mt-0.5">
                   <Icon name="history_edu" className="text-[16px]" />
@@ -1548,7 +1560,8 @@ export default function ConfirmPaymentModal({
                 </div>
               </div>
 
-              <div className="space-y-2.5">
+              {isPaperException && <p className="billing-exception-status">Physical bill reference unavailable · {paperExceptionReason || "Reason required in Worksheet"}. {paperDraftBillNo.trim() ? "Previously entered details are retained below and still follow the selected recording choice." : "No paper reference is recorded from this exception."}</p>}
+              {(!isPaperException || Boolean(paperDraftBillNo.trim())) && <div className="space-y-2.5">
                 <div className="grid grid-cols-2 gap-2">
                   <div className="space-y-1">
                     <label className="block text-[11px] font-semibold text-slate-700">
@@ -1626,14 +1639,14 @@ export default function ConfirmPaymentModal({
                     {storageLimitationWarning}
                   </div>
                 ) : null}
-              </div>
+              </div>}
             </article>
           </div>
         </div>
 
         {/* Global Payment / Billing Error Banner */}
         {(paymentError || billingError) && (
-          <div className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-700 flex items-center space-x-2">
+          <div role="alert" className="rounded-xl border border-rose-200 bg-rose-50 px-3.5 py-2.5 text-xs font-bold text-rose-700 flex items-center space-x-2">
             <Icon name="error" className="text-[16px] text-rose-600 shrink-0" />
             <span>{paymentError || billingError}</span>
           </div>

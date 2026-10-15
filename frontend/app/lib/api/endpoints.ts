@@ -1,3 +1,4 @@
+import type { PaperReview } from "../billingWorkspace";
 import { API_BASE_URL } from "./baseUrl";
 import api from "./client";
 import { LONG_API_TIMEOUT_MS, ORDINARY_API_TIMEOUT_MS } from "./requestPolicy";
@@ -265,9 +266,10 @@ interface ProductFilters {
     draftReservations?: string;
     page?: number;
     pageSize?: number;
-    sortBy?: "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest";
+    sortBy?: "popularity" | "photos_first" | "name_asc" | "name_desc" | "brand_asc" | "price_asc" | "price_desc" | "newest";
     pricingStatus?: "all" | "ready" | "pending";
     photoStatus?: "all" | "with_photo" | "without_photo";
+    customerId?: string;
 }
 
 const PRODUCT_SEARCH_SESSION_KEY = "khatasathi:product-search-session";
@@ -1311,7 +1313,7 @@ export async function lookupCustomersApi(
 }
 
 // creating a new customer with name and optional phone, email, and discount percentages
-export async function createCustomerApi(data: { name: string; phone?: string; email?: string; loyaltyPercent?: number; wholesalePercent?: number }) {
+export async function createCustomerApi(data: { name: string; phone: string; address: string; email?: string; loyaltyPercent?: number; wholesalePercent?: number }) {
     const res = await api.post("/api/customers", data);
     return res.data;
 }
@@ -1365,7 +1367,7 @@ export async function listCustomerDiscountRequestsApi(
 
 export async function approveCustomerDiscountRequestApi(
     id: string,
-    data?: { discountPercent?: number; adminNote?: string },
+    data?: { discountPercent?: number; adminNote?: string; address?: string },
 ) {
     const res = await api.patch(`/api/customers/discount-requests/${id}/approve`, data || {});
     return res.data as CustomerDiscountRequest;
@@ -1437,6 +1439,7 @@ export type CustomerProductPurchaseHistoryItem = {
         sku: string | null;
         source: "CAPTURED" | "LEGACY_LIVE_FALLBACK" | "LEGACY_UNAVAILABLE" | "DRAFT_CURRENT";
     };
+    saleUnit?: string | null;
     qty: number;
     appliedUnitPrice: number;
 };
@@ -1571,6 +1574,96 @@ export async function getCustomerPurchaseHistoryApi(
     return res.data;
 }
 
+export type CustomerReceivablesSummaryResponse = {
+    customerId: string;
+    state: "EXISTS" | "NONE" | "NEEDS_REVIEW";
+    hasDue: boolean;
+    totalDue: number;
+    currency: string;
+};
+
+export async function getCustomerReceivablesSummaryApi(
+    customerId: string,
+    options?: { signal?: AbortSignal },
+): Promise<CustomerReceivablesSummaryResponse> {
+    const res = await api.get<CustomerReceivablesSummaryResponse>(
+        `/api/customers/${encodeURIComponent(customerId)}/receivables-summary`,
+        { signal: options?.signal },
+    );
+    return res.data;
+}
+
+export type CustomerInvoiceEventItem = {
+    id: string;
+    invoiceId?: string;
+    invoiceNo: string;
+    eventType: "PURCHASE" | "RETURN" | "REPLACEMENT";
+    date: string;
+    itemCount: number;
+    itemPreviews: Array<{
+        productId: string;
+        name: string;
+        sku?: string | null;
+        imageUrl?: string | null;
+        qty: number;
+        unitPrice: number;
+    }>;
+    totalAmount: number | null;
+    paidAmount: number;
+    dueAmount: number | null;
+    paymentStatus: string;
+    paymentMethods: string[];
+    notes?: string | null;
+    externalBillNo?: string | null;
+    externalBillDate?: string | null;
+    externalDocumentType?: string | null;
+    isCancelled: boolean;
+    hasReturns: boolean;
+    replacementInvoiceNo?: string | null;
+    originalInvoiceNo?: string | null;
+};
+
+export type CustomerInvoiceEventsSummary = {
+    totalEvents: number;
+    uniqueProducts: number;
+    latestPurchaseDate: string | null;
+};
+
+export type CustomerInvoiceEventsResponse = {
+    events: CustomerInvoiceEventItem[];
+    summary: CustomerInvoiceEventsSummary;
+    total: number;
+    page: number;
+    pageSize: number;
+    totalPages: number;
+};
+
+export type CustomerInvoiceEventsParams = {
+    productIds?: string;
+    page?: number;
+    pageSize?: number;
+    q?: string;
+    type?: "PURCHASE" | "RETURN" | "REPLACEMENT" | "ALL";
+    paymentStatus?: "ALL" | "PAID" | "UNPAID" | "PARTIALLY_PAID" | "OUTSTANDING";
+    from?: string;
+    to?: string;
+};
+
+export async function getCustomerInvoiceEventsApi(
+    customerId: string,
+    params: CustomerInvoiceEventsParams,
+    options?: { signal?: AbortSignal },
+): Promise<CustomerInvoiceEventsResponse> {
+    const res = await api.get<CustomerInvoiceEventsResponse>(
+        `/api/customers/${encodeURIComponent(customerId)}/invoice-events`,
+        {
+            params,
+            signal: options?.signal,
+        },
+    );
+    return res.data;
+}
+
 export async function deactivateCustomerApi(id: string) {
     const res = await api.patch(`/api/customers/${id}/deactivate`);
     return res.data;
@@ -1585,6 +1678,7 @@ export async function createInvoiceApi(customerId?: string) {
 }
 
 export type CheckoutInvoiceInput = {
+    paperReview?: PaperReview;
     operationKey: string;
     draftInvoiceId?: string;
     draftRequestId?: string;

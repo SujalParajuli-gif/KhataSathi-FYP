@@ -11,6 +11,7 @@ import {
   getOne,
   getProductPurchaseHistory,
   getCustomerPurchaseHistory,
+  getCustomerInvoiceEvents,
   lookupCustomers,
   list,
   listDiscountRequests,
@@ -21,7 +22,7 @@ import { authGuard } from "../../middleware/auth";
 import { denyStaff, requireRole } from "../../middleware/rbac";
 import { requireBusinessCapability } from "../settings/capabilities";
 
-import { listCustomerReceivables } from "./receivables";
+import { listCustomerReceivables, getCustomerReceivablesSummaryForCashier } from "./receivables";
 import { ZodError } from "zod";
 import { applyCustomerCredit, reverseCustomerCredit, CreditApplicationConflict } from "./creditApplications";
 import { FinancialTransactionConflictError } from "../../lib/transactionLocks";
@@ -38,6 +39,20 @@ router.get("/receivables", requirePos, requireRole("ADMIN", "MANAGER"), async (r
     if (error instanceof ZodError) { res.status(400).json({ error: "Invalid customer receivables filters" }); return; }
     console.error("Customer receivables failed", error);
     res.status(500).json({ error: "Customer receivables could not be loaded" });
+  }
+});
+
+router.get("/:customerId/receivables-summary", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), async (req, res) => {
+  try {
+    const summary = await getCustomerReceivablesSummaryForCashier(String(req.params.customerId));
+    if (!summary) {
+      res.status(404).json({ error: "Customer not found" });
+      return;
+    }
+    res.json(summary);
+  } catch (error) {
+    console.error("Customer receivables summary failed", error);
+    res.status(500).json({ error: "Customer receivables summary could not be loaded" });
   }
 });
 
@@ -84,6 +99,7 @@ router.get("/:id/discounts/:discountType/delete-safety", requireRole("ADMIN", "M
 router.delete("/:id/discounts/:discountType", requireRole("ADMIN", "MANAGER"), deleteDiscount);
 router.get("/:customerId/purchase-history", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), getCustomerPurchaseHistory);
 router.get("/:customerId/product-history", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), getProductPurchaseHistory);
+router.get("/:customerId/invoice-events", requirePos, requireRole("ADMIN", "MANAGER", "CASHIER"), getCustomerInvoiceEvents);
 router.get("/:id", getOne); // fetching a single customer by ID
 router.post("/", requireRole("ADMIN", "MANAGER"), create); // admin and managers can create new customers
 router.put("/:id", requireRole("ADMIN", "MANAGER"), update); // admin and managers can update customer info

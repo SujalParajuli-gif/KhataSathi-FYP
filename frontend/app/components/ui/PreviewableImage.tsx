@@ -10,6 +10,7 @@ function cn(...values: Array<string | false | null | undefined>) {
 type ZoomLevel = "fit" | "100" | "200";
 
 type Props = {
+  presentation?: "default" | "billing";
   src?: string | null;
   fallbackSrc?: string | null;
   previewSrc?: string | null;
@@ -26,6 +27,7 @@ type Props = {
 };
 
 export default function PreviewableImage({
+  presentation = "default",
   src,
   fallbackSrc,
   previewSrc,
@@ -149,7 +151,7 @@ export default function PreviewableImage({
         ) : null}
       </button>
 
-      <ModalFrame
+      <ModalFrame presentation={presentation} dialogClassName={presentation==="billing"?"billing-preview-dialog":undefined}
         open={open}
         title={`Image preview for ${title || alt}`}
         description={subtitle}

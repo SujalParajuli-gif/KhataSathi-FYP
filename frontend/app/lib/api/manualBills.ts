@@ -489,3 +489,48 @@ export async function reviseSalesEvidenceRecovery(
   const res = await api.post(`/api/sales-evidence/${documentId}/recovery/revise`, data);
   return res.data;
 }
+
+export interface BillScanObservationLine {
+  name: string;
+  code: string | null;
+  unit: string | null;
+  quantity: string | null;
+  unitPrice: string | null;
+}
+
+export interface BillScanObservations {
+  billNumber: string | null;
+  customerName: string | null;
+  billDate: string | null;
+  total: string | null;
+  lines: BillScanObservationLine[];
+}
+
+export interface BillScanPreviewResponse {
+  observations: BillScanObservations;
+  model: string;
+}
+
+export async function scanBillPreviewApi(file: File, options?: { signal?: AbortSignal }): Promise<BillScanPreviewResponse> {
+  const formData = new FormData();
+  formData.append("file", file);
+  const res = await api.post<BillScanPreviewResponse>(
+    "/api/invoices/manual-bills/scan-preview",
+    formData,
+    {
+      headers: {
+        "Content-Type": "multipart/form-data",
+      },
+      timeout: 60_000,
+      signal: options?.signal,
+    },
+  );
+  return res.data;
+}
+
+
+export async function uploadInvoiceProofApi(invoiceId: string, file: File) {
+  const data = new FormData(); data.append("file", file);
+  const response = await api.post<{ documentId: string; replayed: boolean; invoice: ManualBillRecord }>(`/api/invoices/manual-bills/${encodeURIComponent(invoiceId)}/proof-upload`, data, { headers: { "Content-Type": "multipart/form-data" } });
+  return response.data;
+}
